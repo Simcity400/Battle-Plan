@@ -32,23 +32,70 @@
 //! # What this module does instead
 //!
 //! It freezes the process itself, BEFORE MinHook is called, and holds the
-//! freeze across the call. Every live thread is opened with an access mask
-//! that is a superset of MinHook's own `THREAD_ACCESS` and suspended. If any
-//! thread cannot be accounted for, the freeze is REFUSED and MinHook is never
-//! called, so nothing is patched or unpatched.
+//! freeze across the call. Every thread THE KERNEL WALK RETURNS is opened for
+//! `MAXIMUM_ALLOWED` and its GRANTED rights are then checked to cover
+//! [`FREEZE_THREAD_ACCESS`], which is a superset of MinHook's own
+//! `THREAD_ACCESS`; asking for the narrower mask up front makes the walk skip
+//! what it cannot open, which is why the check is on the answer rather than on
+//! the request. Every such thread that is LIVE is suspended, and one PROVEN
+//! TERMINATED is retained instead -- there is nothing to suspend. If any thread
+//! the walk returns cannot be accounted for either way, the freeze is REFUSED
+//! and MinHook is never called, so nothing is patched or unpatched.
+//!
+//! "EVERY THREAD THE WALK RETURNS" IS NOT BY ITSELF "EVERY LIVE THREAD", and
+//! the summary says so here rather than leaving it to a caveat further down. A
+//! live walk can miss a thread two ways -- one this process cannot open at all,
+//! and one created behind its cursor by a thread reaped ahead of it. So the
+//! walk is not the authority the fixed point rests on. A pass that looks quiet
+//! is CONFIRMED against a materialised system roster that lists this process's
+//! threads without opening any of them, and a thread it names that this freeze
+//! does not hold refuses the freeze rather than being patched around. Both holes
+//! and the confirmation are set out under "The walk's own fail-open" below.
 //!
 //! When the freeze succeeds, MinHook's `Freeze()` runs against a process where
-//! every live thread is already suspended by us on a handle we already proved
-//! openable at its access mask. Its `OpenThread` therefore cannot fail (the
-//! grant cannot shrink and the thread cannot exit while suspended) and its
-//! `SuspendThread` cannot fail -- but only because this module makes room for
-//! it. `SuspendThread` fails rather than increment past
+//! every other live thread is already suspended by us, on a handle the kernel
+//! told us carries at least [`FREEZE_THREAD_ACCESS`]. Two things follow, and
+//! they are NOT equally certain.
+//!
+//! Its `SuspendThread` does not fail, unconditionally, and only because this
+//! module makes room for it: `SuspendThread` fails rather than increment past
 //! `MAXIMUM_SUSPEND_COUNT`, so a thread we suspend to exactly that ceiling is
 //! one MinHook cannot suspend, and MinHook's answer to that is its fail-open
-//! branch. Our suspension therefore refuses unless MinHook's own would still
-//! fit on top of it. With that, the fail-open branch is unreachable for every
-//! thread this module accounted for, and `ProcessThreadIPs` now runs for
-//! threads it previously skipped.
+//! branch. Our suspension therefore refuses unless MinHook's own would still fit
+//! on top of it.
+//!
+//! Its `OpenThread` is only EXPECTED to succeed, and that half is the weaker
+//! claim of the two -- stated as an expectation because it is not established,
+//! and nothing in this file establishes it. What was verified is the access on
+//! OUR handle, at the moment the walk opened it; MinHook opens a SECOND handle
+//! afterwards. Absent a descriptor rewritten in between and absent resource
+//! failure that open succeeds -- and both exclusions are reachable:
+//!
+//!  * the thread's security descriptor was rewritten in between, which nothing
+//!    in this process does and which an external actor could equally use to
+//!    defeat our own open one line earlier;
+//!  * the open failed for a reason that has nothing to do with security at all
+//!    -- an exhausted handle table, or a kernel allocation failure.
+//!
+//! MinHook's response to either is its fail-open branch: it strikes the thread
+//! off, skips `ProcessThreadIPs`, and rewrites the bytes anyway, and the thread
+//! resumes into them when our freeze drops.
+//!
+//! Closing it is a change to the vendored library, not to this file, and it is
+//! NOT simply "abort on the first failure". `Freeze()` calls `ProcessThreadIPs`
+//! for each thread as it succeeds, so a failure on thread N leaves threads 1..N
+//! with instruction pointers already RELOCATED for a patch that then never
+//! lands -- aborting there resumes them at addresses that mean nothing. The real
+//! fix is two-phase: prove every handle, suspension and context first, relocate
+//! nothing until all of them hold, or else save and roll back every context it
+//! changed. That is another pass over the thread list or a context backup, not
+//! another system snapshot. It is recorded here as what it is: the last
+//! fail-open this module narrows but does not remove.
+//!
+//! So: for every thread this module accounted for, MinHook's fail-open branch is
+//! unreachable absent one of the failures above, and `ProcessThreadIPs` now runs
+//! for threads it previously skipped. That is a narrowing, not an elimination,
+//! and the list above says exactly what is left.
 //!
 //! # "Accounted for" means suspended or PROVEN gone
 //!
@@ -61,19 +108,178 @@
 //!
 //! A thread is accounted for here only when
 //!
-//!  * it was opened and suspended -- it is provably not running; or
-//!  * `OpenThread` failed with `ERROR_INVALID_PARAMETER`, meaning the kernel
-//!    has no thread with that id, so the id in our snapshot is stale; or
-//!  * `OpenThread` failed some OTHER way AND a fresh enumeration of THIS
-//!    PROCESS, taken after that failure, no longer lists the id -- see
-//!    "Thread ids are system-wide" below; or
-//!  * the handle was opened, `SuspendThread` failed, AND the thread object is
-//!    signalled at that instant, which is positive proof the thread has
-//!    terminated and will execute no further user-mode instruction.
+//!  * it was suspended -- it is provably not running; or
+//!  * `SuspendThread` failed AND the thread object is signalled at that instant,
+//!    which is positive proof the thread has terminated and will execute no
+//!    further user-mode instruction.
 //!
-//! Anything else refuses. Every id that is NOT already held suspended has its
-//! disposition re-derived from scratch each pass, so a recycled id belonging
-//! to a new live thread is opened and suspended like any other.
+//! Anything else refuses. Every thread NOT already accounted for has its
+//! disposition re-derived from scratch each pass.
+//!
+//! # The enumeration is the KERNEL's, and every thread it returns is OURS
+//!
+//! `NtGetNextThread(ProcessHandle, ...)` walks this process's own thread list
+//! and hands back an open handle to each thread in turn. Two consequences run
+//! through everything below.
+//!
+//! It is not a list this module builds, so there is no enumeration buffer to
+//! reserve, bound or guard against growth inside the frozen window, and the walk
+//! is scoped by a process handle, so OWNERSHIP IS BY CONSTRUCTION. The machinery
+//! that used to establish it -- `OpenThread` on a bare, system-wide thread id, a
+//! denial that had to be explained by a second snapshot because ids are recycled
+//! across processes, and a successful open that had to be interrogated with
+//! `GetProcessIdOfThread` in case it had landed on a stranger's thread -- is not
+//! cheaper here, it is inapplicable. Ids are never the input.
+//!
+//! It replaced `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)`, which builds a
+//! list of every thread ON THE MACHINE and left this module to throw all but its
+//! own away. MEASURED on Windows 10.0.26200
+//! (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): 14,243 system-wide
+//! entries walked to keep 3, at 65-131 ms per pass and at least two passes per
+//! freeze. A clean freeze cost 129-258 ms and now costs 15.4-25.1 ms, holding
+//! seven threads and settling each of their suspensions -- of which the WALKING
+//! is 114-334 us and the rest is the single roster confirmation that closes the
+//! fixed point. That time is the game stopped, once per detour installed.
+//!
+//! # The walk's own fail-open, and the two things that close it
+//!
+//! The walk takes a DesiredAccess, and MEASURED, IT SKIPS A THREAD IT CANNOT
+//! OPEN AT THAT ACCESS AND STILL REPORTS A CLEAN END. One thread of this process
+//! given an empty DACL: asking for [`FREEZE_THREAD_ACCESS`] returned five
+//! threads and `STATUS_NO_MORE_ENTRIES` while the system snapshot listed six.
+//! Enumerating at the access this module happens to need would therefore hide
+//! exactly the thread it cannot stop, which is MinHook's own fail-open moved one
+//! layer up.
+//!
+//! So the walk asks for `MAXIMUM_ALLOWED`, which returned all six -- `READ_CONTROL
+//! | WRITE_DAC` is granted to an object's owner whatever its DACL says -- and
+//! every returned handle's GRANTED access is then checked against
+//! [`FREEZE_THREAD_ACCESS`] before the thread is touched. A shortfall REFUSES,
+//! by [`FreezeRefusal::ThreadRights`], carrying the mask it did get.
+//!
+//! THAT IS NOT ENOUGH ON ITS OWN, and neither is the walk. A thread of this
+//! process to which we have LITERALLY NO access is skipped SILENTLY -- the pass
+//! does not see it, so the pass could go on to be the quiet one while it runs.
+//! Two configurations reach that, and the second was missed on the first
+//! telling:
+//!
+//!  * a thread whose OWNER is not this process's token -- one created into
+//!    `hoi4.exe` by a different security principal before we attached. Nothing
+//!    that creates a thread in this process produces that: our own threads and
+//!    the injector's `CreateRemoteThread` all carry this user's token;
+//!  * a thread whose security descriptor carries an explicit OWNER RIGHTS SID
+//!    ACE. That ACE REPLACES the owner's implicit `READ_CONTROL | WRITE_DAC`,
+//!    so a SAME-OWNER thread can be made invisible to this walk. The
+//!    owner-rights argument the `MAXIMUM_ALLOWED` choice rests on does not
+//!    survive it.
+//!
+//! AND THE LIVE WALK ADDS A HOLE OF ITS OWN, which is the more serious of the
+//! two because it needs no unusual configuration at all. `NtGetNextThread` is a
+//! cursor, not a snapshot: there is no instant at which it knows the whole list.
+//! So an unaccounted thread can create a successor BEHIND the cursor and then
+//! exit and be REAPED AHEAD of it. The pass returns neither, all three of its
+//! counts stay zero, the walk looks quiet, and the successor is running while
+//! MinHook rewrites a prologue underneath it.
+//!
+//! The system-wide snapshot this module replaced did not have that hole. Not
+//! because it enumerated better -- because it returned A LIST, so "everything in
+//! it is accounted for" is a statement that can be made at all. A cursor holds
+//! nothing, and there is nothing to make the statement about. That property, and
+//! only that one, is what a fixed point over a live walk has to buy back;
+//! whether the list is itself taken under exclusion is a separate question this
+//! module does not settle, below.
+//!
+//! BOTH ARE ANSWERED BY THE SAME THING, and it is implemented here rather than
+//! left as a residual:
+//! [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`]. A pass that
+//! already looks quiet must be CONFIRMED against a roster the kernel MATERIALISES
+//! INTO A BUFFER -- `NtQuerySystemInformation(SystemProcessInformation)`, which
+//! lists every thread of this process by `ClientId` WITHOUT OPENING ANY OF THEM.
+//! A thread it names that this freeze does not hold sends the loop round again,
+//! and one that survives the pass budget REFUSES by
+//! [`FreezeRefusal::RosterUnheld`], naming it.
+//!
+//! ACCESS-INDEPENDENCE is what answers the two configurations above, and it is
+//! MEASURED rather than argued for the shape that can be built here: a thread
+//! this process has been denied every access to by an empty DACL is still in the
+//! roster, and the confirmation still names it
+//! (`the_roster_names_a_live_thread_the_walk_did_not_account_for`). That the
+//! call opens no thread is the reason to expect it; the measurement is why it is
+//! stated. It is NOT established for every security shape -- the OWNER RIGHTS
+//! construction was not built -- so the claim is exactly as wide as the test.
+//!
+//! WHAT IT DOES FOR THE CURSOR RACE IS WEAKER, and is stated as such next.
+//!
+//! HOW STRONG THAT IS, said exactly, because the obvious overstatement is that
+//! the roster is ATOMIC with respect to thread creation inside one process. THAT
+//! IS NOT ESTABLISHED HERE. What was measured is its layout, its contents and
+//! its cost; whether the kernel copies one process's thread sublist under
+//! exclusion is a question about `ntoskrnl`, and this module has no evidence
+//! either way (adversarial review, round 20).
+//!
+//! NOR IS IT ESTABLISHED FOR THE ENUMERATION THIS REPLACED. An earlier draft
+//! argued parity by asserting that `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)`
+//! is built on this same information class. That is an implementation claim
+//! about Windows with no evidence behind it in this workspace, and it is
+//! WITHDRAWN (adversarial review, round 21).
+//!
+//! SO THE CLAIM IS THE NARROW ONE, and it is enough for what round 19 raised.
+//! The walk is a CURSOR: it holds no list at all, and a thread can be created
+//! and reaped between two of its steps with nothing anywhere recording that it
+//! existed. The roster is A LIST THE KERNEL WRITES INTO A BUFFER: whatever
+//! exclusion it is or is not taken under, what comes back is a set of thread
+//! identities that can be compared against the held set, and every one of them
+//! must be held or the freeze does not return. No materialisation against some
+//! is the difference, and the fixed point rests on it.
+//!
+//! WHAT WOULD SETTLE THE REST, named rather than left as "could not determine":
+//! the `ntoskrnl` implementation of this information class, or a documented
+//! contract for it, showing whether the per-process thread sublist is copied
+//! under the process's thread-list lock. Until then, a thread created and reaped
+//! entirely inside one roster call is a residual, and this module claims no
+//! user-mode alternative avoids it.
+//!
+//! WHAT IT COSTS, MEASURED rather than asserted
+//! (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): 11.5-17.8 ms and
+//! ~3.2 MB per call, because it walks the whole process table -- 2,695-2,699
+//! processes -- to answer about one. The obvious way to make that cheaper is
+//! not available: `NtQuerySystemInformationEx` does not accept a process filter
+//! for this class on the measured build, returning `STATUS_INVALID_INFO_CLASS`.
+//! That is one API on one Windows version, not a proof that nothing cheaper
+//! exists anywhere -- it is the alternative that was tried.
+//!
+//! EXACTLY ONE READ WHEN THE FIRST QUIET-LOOKING PASS CONFIRMS, which is the
+//! ordinary case and the one that was MEASURED: 15.4-25.1 ms for a clean freeze
+//! at two passes, against 129-258 ms for the enumeration it replaced.
+//!
+//! ONE PER QUIET-LOOKING PASS OTHERWISE, and that is the number to plan against
+//! because it bounds BOTH outcomes. A pass can read the roster, be sent round
+//! again by a thread it named, and the freeze can still SUCCEED later after
+//! another read; a thread the walk can never return -- the inaccessible case --
+//! makes every pass quiet-looking and refuses at the end of them. Either way the
+//! ceiling is [`MAX_PASSES`] reads, ARITHMETICALLY 184-285 ms at the measured
+//! per-call cost. "Once per freeze" is the common case, not a bound.
+//!
+//! The buffer it fills is reserved BEFORE the first suspension and reused, so
+//! the frozen window still allocates nothing; a buffer that has become too small
+//! refuses rather than growing.
+//!
+//! # A terminated thread STAYS in the kernel's list, and is recorded
+//!
+//! The snapshot dropped a thread the moment it terminated. The process thread
+//! list keeps it until it is REAPED, and reaping cannot happen while any handle
+//! to it is open -- in a process that joins its threads, the joiner holds
+//! exactly such handles and is itself suspended by pass 1.
+//!
+//! So the walk goes on returning terminated threads for as long as the freeze
+//! lasts. Deciding them afresh every pass made [`pass_is_quiet`] permanently
+//! false and every freeze under thread churn ended in
+//! [`FreezeRefusal::NotQuiescent`] -- measured, and the reason
+//! [`AccountedThread`] exists. A thread proven terminated is RECORDED: counted
+//! as a vanish once, on the pass that proved it, and skipped afterwards. Its
+//! handle is kept, because holding a handle is what stops the thread object
+//! being deleted and its id recycled onto a new thread that the id-keyed skip
+//! would then wave through.
 //!
 //! # A suspend failure that settles nothing DEFERS, and is never waited out
 //!
@@ -100,10 +306,9 @@
 //! before the patch, and the patch happens at the fixed point. So an
 //! unsettled suspend failure is now neither a suspension nor a vanish: it is
 //! UNSETTLED, [`pass_is_quiet`] cannot end the loop on a pass that saw one, and
-//! the next pass re-derives that id's disposition from scratch exactly as it
-//! does for every other id it does not already hold. By then the thread is
-//! absent from the snapshot, or opens with `ERROR_INVALID_PARAMETER`, or
-//! suspends, or is signalled.
+//! the next pass re-derives that thread's disposition from scratch exactly as it
+//! does for every other thread it has not already accounted for. By then the
+//! thread suspends, or is signalled.
 //!
 //! Three properties are what make that better than a shorter wait:
 //!
@@ -115,38 +320,59 @@
 //!    and no game thread ever reaches this module.
 //!    [`only_the_freeze_lock_blocks_in_this_module`] pins exactly that: one
 //!    lock, the zero-timeout probe, and nothing else;
-//!  * the elapsed time a deferral costs is WORK -- a fresh
-//!    `CreateToolhelp32Snapshot` and a re-derivation of every id not already
-//!    held -- performed by the freezing thread, while the exiting thread (which
-//!    is by definition NOT one we hold suspended) runs to its end on any other
-//!    core. One such pass is MEASURED at 95-110 ms on this machine
-//!    (`runs/ir_waitfree_freeze/pass_cost.txt`), so a single deferral already
-//!    buys more elapsed time than the 50 ms wait did;
+//!  * the elapsed time a deferral costs is WORK -- a fresh walk and a
+//!    re-derivation of every thread not already accounted for -- performed by
+//!    the freezing thread, while the exiting thread (which is by definition NOT
+//!    one we hold suspended) runs to its end on any other core;
 //!  * a deferral that keeps failing still REFUSES, and names the thread and the
 //!    OS error it could not settle, exactly as an immediate refusal did.
 //!
-//! [`MAX_UNSETTLED_REDERIVATIONS`] is the allowance, and it is deliberately
-//! small for the reason the second bullet implies: a pass is EXPENSIVE, so
-//! letting an unsettled id run the [`MAX_PASSES`] budget out would hold the game
-//! for a measured 994 ms to 1.22 s and trade one stall for a bigger one.
+//! [`MAX_PASSES`] is the allowance, and it is the ONLY one. There was a second,
+//! smaller bound on the unsettled streak specifically -- two further passes --
+//! and it existed because a pass then cost 95-110 ms and letting a streak run
+//! the full budget out was measured holding the process for 994 ms to 1.22 s.
 //!
-//! What this is NOT is free. The comparison, stated so nobody has to reconstruct
-//! it, and counted in PASSES because a pass is the unit that costs:
+//! Both halves of that inverted when the enumeration moved to the kernel walk.
+//! Two re-derivations stopped being ~200 ms of grace and became ~100 us, at
+//! which point the smaller bound REFUSED freezes that would previously have
+//! settled -- measured, at round 366 of a churn run -- and a refused freeze is a
+//! hook that does not install. Meanwhile the whole budget stopped costing a
+//! second: a refusal that spends all sixteen passes was OBSERVED at 0.4-5.0 ms
+//! over four debug-build samples on one machine with three threads to hold
+//! (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), against the
+//! 994 ms-1.22 s the same path cost when a pass was a system-wide snapshot --
+//! and that older figure was dominated by a per-pass cost that did NOT scale
+//! with our thread count, where this one does. So
+//! the smaller bound was DELETED rather than retuned: there is no longer a
+//! reason to refuse before the pass budget runs out, and a second bound that can
+//! only ever fire on the same pass as the first is a mechanism with no behaviour
+//! of its own.
 //!
-//!  * a clean freeze is 2 passes, unchanged, MEASURED at 189-208 ms;
+//! The comparison, stated so nobody has to reconstruct it, and counted in
+//! PASSES because a pass is the unit that costs:
+//!
+//!  * a clean freeze is 2 passes, MEASURED at 15.4-25.1 ms
+//!    (`runs/ix_batch_freeze/enumeration_cost_measured.txt`) -- 114-334 us of
+//!    walking plus ONE roster confirmation; it was 129-258 ms when every pass
+//!    was a system-wide snapshot;
 //!  * an unsettled probe used to cost 1 pass plus up to 50 ms BLOCKED, and then
 //!    either proceed or refuse;
-//!  * it now costs up to 3 passes to refuse -- MEASURED at 278-330 ms -- and up
-//!    to 4 to proceed, because the pass that finally settles the id counts it as
-//!    newly suspended or vanished and therefore cannot itself be the quiet one;
+//!  * it now costs whatever it takes, bounded by [`MAX_PASSES`]. A thread that
+//!    settles on the next pass costs one extra pass; one that never settles
+//!    spends all sixteen and then refuses, at 0.4-5.0 ms across four OBSERVED
+//!    debug-build samples on one machine (Windows 11 10.0.26200) with three
+//!    threads to hold. That is a sample, not a bound: a pass scales with the
+//!    process's thread count, and hoi4.exe holds far more than three, so the
+//!    number to reason from is the PASS COUNT and the per-thread work a pass
+//!    does. The pass that
+//!    finally settles a thread counts it as newly suspended or vanished and so
+//!    cannot itself be the quiet one, which is why proceeding costs one pass
+//!    more than settling did;
 //!  * the common case, a thread already signalled when its suspend is refused,
 //!    is unchanged and costs nothing at all.
 //!
-//! So this is more wall clock, none of it spent blocked. The reason that is the
-//! right trade rather than a worse one is the pass cost itself, and closing THAT
-//! is a different change: `NtGetNextThread` returns handles straight from the
-//! kernel and would remove the system-wide walk this module pays at least twice
-//! per freeze.
+//! So the deferral is more passes, none of them spent blocked, and a pass is no
+//! longer expensive.
 //!
 //! What no design here can do is prove termination with zero latency: a
 //! terminating thread's object signals when the kernel signals it, and nothing
@@ -154,82 +380,44 @@
 //! implied -- the freezing thread spends work it was going to spend anyway
 //! instead of blocking, and it stops requiring the proof to arrive on demand.
 //!
-//! # Thread ids are system-wide, and that is why `OpenThread` can be DENIED
+//! # The id-keyed hole that is left, and its bound
 //!
-//! `OpenThread` takes a bare thread id -- `CLIENT_ID.UniqueProcess` is NULL --
-//! so the kernel resolves it against the SYSTEM-WIDE id table, not against
-//! this process. Ids are recycled from that table, and nothing reserves a
-//! freed id for the process that last used it.
+//! Membership in the accounted set is keyed on the thread id alone, and that is
+//! a known hole rather than a covered case. A suspended thread cannot exit by
+//! itself, so reaching it needs something to call `TerminateThread` on a thread
+//! we hold, and the kernel to recycle that id onto a new thread before the next
+//! pass -- at which point the new thread is skipped as already accounted for and
+//! the patch lands while it runs.
 //!
-//! So the sequence below is ordinary rather than exotic, and MEASURED here
-//! (see `an_id_that_is_no_longer_ours_does_not_refuse_the_freeze`): one of our
-//! threads exits between the snapshot and the open; the kernel hands its id to
-//! a thread in a DIFFERENT process; our `OpenThread` therefore targets a
-//! stranger's thread and is correctly refused with `ERROR_ACCESS_DENIED` (5).
-//! Under the churn the module's own tests generate this happened in roughly
-//! one run in five, and every single occurrence had the same shape: the id was
-//! absent from a fresh enumeration of our own process, and a system-wide
-//! snapshot named another process as its owner. Six of eight probed instances
-//! could not even be opened for `THREAD_QUERY_LIMITED_INFORMATION`, so asking
-//! the handle who owns it is not a usable test; re-enumerating our own
-//! process is.
+//! Bounded, not eliminated. `hoi4.exe` does not name `TerminateThread` anywhere
+//! (exact-a729 string scan; `SuspendThread` and `ResumeThread` DO resolve in the
+//! same scan, at 0x14306b3f0 and 0x14306b400, so the method does find import
+//! names). Loaded DLLs and dynamically resolved names are not covered by that.
+//! Closing it means testing each held handle with a zero-timeout wait before
+//! trusting the entry.
 //!
-//! The SAME recycling also makes `OpenThread` SUCCEED on a thread that is not
-//! ours, and that half went unhandled for longer: another process running as
-//! this user hands over [`FREEZE_THREAD_ACCESS`] without complaint, and the
-//! freeze then suspended a stranger's thread and held it for the length of the
-//! patch. Every successfully opened handle is now checked with
-//! `GetProcessIdOfThread` before it is suspended; a thread belonging to another
-//! process counts as a vanish (our thread with that id has ended) and an owner
-//! that cannot be read refuses.
-//!
-//! Reading that denial as "a thread of ours that may be running" refused an
-//! entire hook installation, at exactly the rate above. It is also
-//! self-contradictory: a live thread of our own process IS openable at
-//! [`FREEZE_THREAD_ACCESS`], which is the claim the paragraph about MinHook's
-//! `OpenThread` above rests on. Both statements cannot hold of one thread.
-//!
-//! The disposition does NOT rest on that openability claim, deliberately. It
-//! rests on the enumeration alone: a `CreateToolhelp32Snapshot` lists every
-//! thread currently attached to this process, so if the id is absent from a
-//! snapshot taken AFTER the failed open, then no thread of ours that was alive
-//! at the moment of that open still exists. Our thread with that id is gone,
-//! whatever the error code said and whoever holds the id now. If the id IS
-//! still ours, the freeze refuses -- fail-closed, unchanged.
-//!
-//! That leaves one window, and it is the same window the
-//! `ERROR_INVALID_PARAMETER` arm has always had: the kernel may hand the freed
-//! id straight back to a NEW thread of ours after the re-enumeration. Such a
-//! thread is genuinely new, it is counted as a vanish rather than as a
-//! suspension, [`pass_is_quiet`] therefore cannot end the loop on this pass,
-//! and the next pass enumerates it and suspends it like any other.
-//!
-//! NOT true of an id we already hold, and this is a known hole rather than a
-//! covered case: membership in the frozen set is keyed on the thread id alone.
-//! A suspended thread cannot exit by itself, so the only way to reach the hole
-//! is for something to call `TerminateThread` on a thread we hold suspended
-//! and for the kernel to recycle that id onto a new thread before the next
-//! pass -- at which point the new thread is skipped as already-frozen and the
-//! patch lands while it runs. Bounded, not eliminated: `hoi4.exe` does not
-//! name `TerminateThread` anywhere (exact-a729 string scan; `SuspendThread`
-//! and `ResumeThread` DO resolve in the same scan, at 0x14306b3f0 and
-//! 0x14306b400, so the method does find import names). Loaded DLLs and
-//! dynamically resolved names are not covered by that. Closing it means
-//! testing each held handle with a zero-timeout wait before trusting the
-//! entry.
+//! It is NARROWER for a thread accounted for as terminated, and deliberately so:
+//! this module keeps that thread's HANDLE, an open handle stops the thread
+//! object being deleted, and an id is not freed for reuse until the object is.
+//! So the recycling that would defeat the key cannot happen to those entries
+//! while the freeze lasts.
 //!
 //! A thread created by ANOTHER process between the last pass and the patch
-//! (`CreateRemoteThread`) is in no snapshot at all, and no user-mode snapshot
-//! fixed point can see it. `hoi4.exe` does not name `CreateRemoteThread`
-//! either, but this workspace's own injector does exactly that at attach.
+//! (`CreateRemoteThread`) is in no enumeration at all, and no user-mode fixed
+//! point can see it. `hoi4.exe` does not name `CreateRemoteThread` either, but
+//! this workspace's own injector does exactly that at attach.
 //!
 //! # "With every other thread suspended", which is shorthand
 //!
-//! This module says that a lot, and it is exact only at the fixed point. Inside
-//! the loop it means: with everything THIS FREEZE HAS ALREADY SUSPENDED still
-//! held. Three kinds of thread are outside that set while a pass runs -- an id
-//! this pass has not reached yet, an id left UNSETTLED by a failed suspend, and
-//! a thread created since the snapshot.
+//! This module says that a lot. AT THE FIXED POINT IT MEANS EVERY THREAD THE
+//! ROSTER LISTED, and it is the roster confirmation rather than the walk that
+//! makes it mean that much: the freeze returns only once a roster of this
+//! process's threads named nothing it does not hold. How far that is from
+//! "every thread there is" is the residual stated above. Inside the loop it
+//! means less again: with everything THIS FREEZE HAS ALREADY SUSPENDED still
+//! held. Three kinds of thread are outside that set while a pass runs -- one the
+//! walk has not reached yet, one left UNSETTLED by a failed suspend, and one
+//! created since the walk passed its place in the list.
 //!
 //! Nothing rests on the shorthand, which is why it is left standing rather than
 //! expanded at each of its thirteen sites. Every claim that uses it is a claim
@@ -242,10 +430,17 @@
 //! # Why it iterates
 //!
 //! A thread created after the enumeration is not in it. The loop therefore
-//! re-enumerates until a pass finds nothing new; at that point every live
-//! thread is suspended, and because only this thread is running and it creates
-//! no threads, the set cannot grow again. Failing to reach that fixed point
-//! within [`MAX_PASSES`] refuses.
+//! re-enumerates until a pass finds nothing new AND the roster confirms it; at
+//! that point every thread the roster listed for this process is accounted for,
+//! so the only thread of this process the roster shows running is this one, and
+//! it creates no threads -- the set cannot grow FROM INSIDE. What that argument
+//! rests on, and what it does not establish, is stated above. Failing to reach
+//! the fixed point within [`MAX_PASSES`] refuses.
+//!
+//! "FROM INSIDE" IS THE WHOLE CLAIM. Another process can still insert a thread
+//! with `CreateRemoteThread` during the quiet walk or between it and the patch,
+//! and no user-mode fixed point sees that -- it is the residual stated above,
+//! and this workspace's own injector is an example of a process that does it.
 //!
 //! # Cost, and the hazard this trades for
 //!
@@ -259,44 +454,66 @@
 //! This is not a new hazard class in this workspace: the four hand-rolled
 //! suspenders this module replaced already pushed to a `Vec` (the Rust global
 //! allocator, i.e. the process heap) with threads suspended. It is a wider
-//! window. Buffers are therefore reserved before the first suspension and
-//! reused across passes, and -- since the reservation was only ever a hope --
-//! exhausting one inside the window now REFUSES
+//! window. The one table this module keeps is therefore reserved before the
+//! first suspension and reused across passes, and -- since the reservation was
+//! only ever a hope -- exhausting it inside the window REFUSES
 //! ([`FreezeRefusal::CapacityExceeded`]) instead of growing it.
 //!
-//! Two of OUR OWN allocator calls used to sit inside that window, which no
-//! amount of reserving would have moved:
+//! THIS MODULE'S OWN SNAPSHOTS ARE GONE FROM THAT WINDOW. There were three
+//! kinds: the per-pass enumeration, the recycled-id re-enumeration on a denied
+//! `OpenThread`, and MinHook's. The first two were `CreateToolhelp32Snapshot`
+//! calls whose heap behaviour could only be argued from disassembly of one
+//! Windows build; the walk that replaced them allocates nothing in user mode at
+//! all, so the question is removed rather than bounded. Two of our own allocator
+//! calls went with them: the enumeration buffer that Rust freed on the
+//! successful `return Ok(freeze)` -- with every other thread still suspended, on
+//! every successful freeze -- and a second table sized differently from the
+//! first, so that a burst could fit in one and reallocate the other. There is
+//! one table now, it is owned by [`ProcessFreeze`], and it is freed only after
+//! `Drop` has resumed everything.
 //!
-//!  * the enumeration buffer was a local of [`freeze_other_threads_inner`], so
-//!    Rust FREED it on the successful `return Ok(freeze)` -- with every other
-//!    thread still suspended, on every successful freeze. Both buffers are now
-//!    owned by [`ProcessFreeze`] and are freed only after its `Drop` has
-//!    resumed everything;
-//!  * the suspended-handle table was reserved one thread-count short of the
-//!    enumeration's, so a burst that fitted in one could reallocate the other.
+//! WHAT IS LEFT INSIDE THE WINDOW, enumerated rather than summarised, because a
+//! guarantee stated as "nothing" invites the reader to assume more than is true.
+//! It is split by WHAT PAYS IT, because a flat per-thread-per-pass list
+//! overstates the work every pass after the first actually does:
 //!
-//! What is left inside the window is `CreateToolhelp32Snapshot`, ours and
-//! MinHook's. On Windows 10.0.26100 the `TH32CS_SNAPTHREAD` path allocates
-//! with `NtAllocateVirtualMemory` and builds a section with `NtCreateSection`;
-//! no `RtlAllocateHeap` and no loader-lock acquisition appear on it, so on that
-//! build it does not wait for either lock. That is implementation evidence
-//! about one build, not a documented contract, and `NtGetNextThread` would
-//! remove the question rather than bound it.
+//!  * UNCONDITIONALLY, per thread the walk returns, every pass:
+//!    `NtGetNextThread` to step onto it, `NtQueryObject` to read the access the
+//!    kernel granted, and `GetThreadId` -- the identity is read BEFORE the
+//!    accounted-set is consulted, because the set is keyed by it;
+//!  * PER THREAD NOT YET ACCOUNTED FOR: `SuspendThread`, and on a failed suspend
+//!    the zero-timeout `WaitForSingleObject` termination probe. A thread already
+//!    recorded by [`AccountedThread`] is stepped over -- neither suspended again
+//!    nor probed again, which is why a second pass over a quiet
+//!    process is nearly all walk;
+//!  * PER HANDLE THIS PASS DOES NOT KEEP: one `CloseHandle`. A KEPT handle is
+//!    closed once, in `Drop`, after the resume;
+//!  * ONCE PER PASS THAT SUSPENDED SOMETHING, and only if it is not the last
+//!    pass: one `GetThreadContext` per HELD thread (every thread suspended so
+//!    far, not only this pass's), inside `settle_suspensions`. A pass that
+//!    suspends nothing reads no contexts at all.
 //!
-//! The recycled-id check below adds one more snapshot inside that window, on
-//! the rare path where `OpenThread` is denied. It builds no list -- it answers
-//! as it walks -- so it adds no Rust allocation, only the `kernel32` call. A
-//! reserved buffer would NOT have been good enough there: the reservation is
-//! sized from the thread count at the start of the freeze, and a process
-//! churning threads is exactly the one that can exceed it.
+//! MinHook then takes its own `CreateToolhelp32Snapshot` and its own
+//! suspensions.
 //!
-//! What would close it rather than narrow it: enumerating with
-//! `NtGetNextThread`, which returns handles straight from the kernel and needs
-//! no user-mode allocation, and/or `HeapLock` on the process heap before the
-//! first suspension. Neither removes MinHook's own snapshot from the frozen
-//! window. Whether `CreateToolhelp32Snapshot` allocates from the process
-//! default heap was not determined here; settling it needs kernelbase
-//! disassembly or a live patched `hoi4.exe`.
+//! Those are synchronous kernel calls, and the guarantee is exactly this: none
+//! of them ALLOCATES IN USER MODE, none of them takes a user-mode lock this
+//! module could deadlock on, and none of them makes an explicit TIMED wait --
+//! the one wait in the module has a zero timeout, which is a poll.
+//!
+//! IT IS NOT A CLAIM THAT NOTHING BLOCKS IN THE KERNEL, and one of them
+//! deliberately does. `GetThreadContext` cannot answer until the target's
+//! suspension has actually taken effect, which is exactly why it is what
+//! completes them -- so it blocks for as long as the kernel takes to stop a
+//! thread that was still executing when `SuspendThread` returned. That is
+//! bounded by the thread leaving kernel mode rather than by anything this module
+//! chooses, and it is the price of KNOWING a thread is stopped instead of
+//! assuming it. What the calls cost in practice is MEASURED at the top of this
+//! header.
+//!
+//! MinHook's snapshot is the one item no change here can move, and `HeapLock`
+//! on the process heap before the first suspension is what would close the
+//! remaining hazard rather than narrow it.
 //!
 //! # Patching without MinHook
 //!
@@ -312,22 +529,20 @@
 //! callers replace sequences whose interior is a legitimate branch target and
 //! nothing here can prove where such a thread should resume.
 
+use core::ffi::c_void;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     GetThreadContext, CONTEXT, CONTEXT_CONTROL_AMD64,
 };
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcessId, GetCurrentThreadId, GetProcessIdOfThread, OpenThread, ResumeThread,
-    SuspendThread, WaitForSingleObject, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
-    THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, GetThreadId, ResumeThread,
+    SuspendThread,
+    WaitForSingleObject, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_CONTEXT,
+    THREAD_SUSPEND_RESUME,
 };
 
 /// `SYNCHRONIZE`. Lives under `Win32::Storage::FileSystem` in `windows-sys`,
@@ -335,32 +550,30 @@ use windows_sys::Win32::System::Threading::{
 /// right, not a game constant.
 const SYNCHRONIZE: u32 = 0x0010_0000;
 
-/// The access mask every thread is opened with.
+/// The access every thread must be GRANTED, which is no longer the access it is
+/// opened with -- see the second paragraph.
 ///
 /// MUST remain a superset of MinHook's `THREAD_ACCESS`
 /// (`THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION |
-/// THREAD_SET_CONTEXT`, `minhook/src/hook.c`). That superset relation is the
-/// whole reason a successful freeze lets us say MinHook's own `OpenThread`
-/// cannot fail: we already obtained everything it will ask for. `SYNCHRONIZE`
-/// is ours, for the termination proof.
+/// THREAD_SET_CONTEXT`, `minhook/src/hook.c`). That superset relation is what
+/// lets a successful freeze say MinHook's own `OpenThread` will be granted
+/// everything it asks for -- CONDITIONAL, as the module header sets out, on the
+/// thread's security descriptor not being rewritten between our open and
+/// MinHook's. Drop a bit from this mask and the claim fails unconditionally
+/// instead. `SYNCHRONIZE` is ours, for the termination proof.
 ///
-/// The ownership check below needs a QUERY right and this mask already carries
-/// one. `THREAD_QUERY_LIMITED_INFORMATION` was added here and then removed
-/// again, because the claim that `GetProcessIdOfThread` requires it
-/// SPECIFICALLY is wrong, and the mask is not the place for a redundant bit.
-/// MEASURED on Windows 10.0.26200, opening this thread four times with one mask
-/// each (`runs/ib_harness_fixes/probe_thread_query_rights_result.txt`):
+/// It is no longer the mask threads are OPENED with -- the walk asks the kernel
+/// for `MAXIMUM_ALLOWED` and this is what the answer is measured against, by
+/// [`granted_access_covers_the_freeze`]. That is a strictly stronger use of it:
+/// the kernel reports what it granted, rather than this module inferring it from
+/// an open that succeeded.
 ///
-/// ```text
-/// THREAD_QUERY_INFORMATION only         -> GetProcessIdOfThread returned our pid
-/// THREAD_QUERY_LIMITED_INFORMATION only -> GetProcessIdOfThread returned our pid
-/// THREAD_SUSPEND_RESUME only            -> GetProcessIdOfThread FAILED, os error 5
-/// both query rights                     -> GetProcessIdOfThread returned our pid
-/// ```
-///
-/// So either query right authorises it and neither alone is load-bearing; what
-/// IS load-bearing is that some query right is present, which is why the
-/// suspend-only row is quoted rather than left as an assumption.
+/// A QUERY right is in it because `GetThreadId` needs one to name the thread a
+/// refusal reports. MEASURED on Windows 10.0.26200 for the ownership read this
+/// replaced (`runs/ib_harness_fixes/probe_thread_query_rights_result.txt`),
+/// either query right authorises that family of calls and a suspend-only mask
+/// fails it with ERROR_ACCESS_DENIED, so what is load-bearing is that SOME query
+/// right is present rather than which.
 pub(crate) const FREEZE_THREAD_ACCESS: u32 = THREAD_SUSPEND_RESUME
     | THREAD_GET_CONTEXT
     | THREAD_QUERY_INFORMATION
@@ -373,12 +586,23 @@ pub(crate) const FREEZE_THREAD_ACCESS: u32 = THREAD_SUSPEND_RESUME
 pub(crate) const MINHOOK_THREAD_ACCESS: u32 =
     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | THREAD_SET_CONTEXT;
 
-/// `OpenThread` reports this when no thread with the given id exists.
-const ERROR_INVALID_PARAMETER: u32 = 87;
+/// `MAXIMUM_ALLOWED`. The access the walk asks for, and the reason it asks for
+/// this and not [`FREEZE_THREAD_ACCESS`] is MEASURED -- see
+/// [`walk_next_thread`] and `runs/ix_batch_freeze/enumeration_cost_measured.txt`.
+///
+/// Lives under `Win32::System::SystemServices` in `windows-sys`, which this
+/// crate does not otherwise need. It is a standard access right, not a game
+/// constant.
+const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 
-/// The only benign reason `Thread32Next` stops. Anything else means the list
-/// was TRUNCATED, and a truncated list is a list of threads we did not see.
-const ERROR_NO_MORE_FILES: u32 = 18;
+/// `ObjectBasicInformation`, the `NtQueryObject` class that reports what a
+/// handle was actually GRANTED.
+const OBJECT_BASIC_INFORMATION: u32 = 0;
+
+/// `STATUS_NO_MORE_ENTRIES`: the walk reached the end of this process's thread
+/// list. THE ONLY status that ends a walk without refusing it -- see
+/// [`walk_stop_is_end_of_list`].
+const STATUS_NO_MORE_ENTRIES: i32 = 0x8000_001Au32 as i32;
 
 /// Windows' `MAXIMUM_SUSPEND_COUNT`. `SuspendThread` fails rather than
 /// incrementing past it.
@@ -396,53 +620,6 @@ const SUSPENSIONS_STILL_TO_COME: u32 = 1;
 /// threads. The headroom covers a burst of thread creation racing the first
 /// pass; a process that never settles is refused rather than retried forever.
 pub(crate) const MAX_PASSES: u32 = 16;
-
-/// How many FURTHER passes may re-derive an id that a suspend failure left
-/// unsettled, before the freeze refuses and names the thread.
-///
-/// Counted as re-derivations and not as passes deliberately, because those are
-/// different numbers and naming it for the wrong one is how the constant ends up
-/// permitting something other than what it says: the pass that FIRST sees the
-/// unsettled probe is not a re-derivation, so this value of 2 means three
-/// consecutive unsettled passes in total, and the test asserts exactly that.
-///
-/// A pass is not cheap. `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)` walks the
-/// whole SYSTEM's thread list, and this module then filters it to our process;
-/// MEASURED on Windows 10.0.26200, debug build, three threads to suspend
-/// (`runs/ir_waitfree_freeze/pass_cost.txt`): a clean two-pass freeze took
-/// 189-208 ms, so a pass costs roughly 95-110 ms. Letting an unsettled id run
-/// the full [`MAX_PASSES`] budget out was measured at 994 ms to 1.22 s
-/// (`runs/ir_waitfree_freeze/pass_cost_unbounded_mutation.txt`) -- twenty to
-/// twenty-five times the wait it replaced, which would have been trading one
-/// stall for a bigger one.
-///
-/// Two, because ONE re-derivation already gives a mid-exit thread more elapsed
-/// time than the deleted 50 ms wait ever did, and the second is margin. A thread
-/// caught between `SuspendThread` refusing it and its thread object signalling
-/// is microseconds from being signalled, so a single fresh snapshot -- 95-110 ms
-/// of it -- is already an enormous margin on the thing being waited for.
-///
-/// WHAT IT COUNTS IS A STREAK, NOT A THREAD, and the distinction is not
-/// cosmetic. The allowance is spent per FREEZE: it starts on the first pass that
-/// ends with an unsettled probe, is cleared by the first pass that settles
-/// everything it saw, and is exhausted by consecutive unsettled passes whether
-/// or not they name the same id. So the thread the refusal names may have been
-/// probed only once. That is deliberate and it is the fail-closed direction --
-/// a shared budget refuses SOONER than a per-thread one -- and it is the
-/// direction available: per-thread state would have to be built INSIDE the
-/// frozen window, where a buffer that outgrows its reservation takes the
-/// allocator's lock a suspended thread may hold, which is the one failure worse
-/// than refusing.
-///
-/// The claim this therefore does NOT make: that the named thread is provably not
-/// mid-exit. The claim it does make: this freeze has now spent
-/// `MAX_UNSETTLED_REDERIVATIONS` whole system-wide thread walks, with the
-/// process held, without the set closing, and the next one is not worth the
-/// game's time.
-///
-/// It is a BOUND on how long a refusal takes, not a bound on correctness:
-/// exceeding it refuses, fail-closed, exactly as an immediate refusal did.
-pub(crate) const MAX_UNSETTLED_REDERIVATIONS: u32 = 2;
 
 /// Entered [`freeze_other_threads`], whatever the outcome.
 static FREEZE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -472,17 +649,16 @@ static SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS: AtomicU64 = AtomicU64::new(0);
 /// How many enumeration passes every freeze in this process has spent between
 /// them, whatever each one then decided.
 ///
-/// A pass is this module's unit of cost: its fixed-point enumeration is a
-/// system-wide thread-list walk, and from the second pass on it is taken inside
+/// A pass is this module's unit of cost: its fixed-point enumeration is a walk
+/// of this process's thread list, and from the second pass on it is taken inside
 /// the frozen window.
 ///
-/// COUNTS PASSES, NOT SNAPSHOTS, and the two are not the same number. Each pass
-/// takes exactly one fixed-point enumeration, but a pass that meets a denied
-/// `OpenThread` also takes a [`id_is_still_in_this_process`] snapshot per such
-/// id -- the recycled-id evidence, which the module header describes. So this is
-/// a floor on the walks a freeze performed, not a total, and it is the right
-/// floor: the per-pass enumeration is the cost every freeze pays on every pass,
-/// and the recycled-id probe is a rare extra on a rare path.
+/// COUNTS FIXED-POINT PASSES, and one further walk per freeze is deliberately
+/// NOT counted: the sizing walk that runs before the first suspension, whose
+/// only product is the thread count the frozen-window buffer is bounded from. It
+/// is excluded because this counter's job is to say what the FROZEN part of a
+/// freeze cost, and because keeping "a clean freeze spends two passes" true is
+/// what makes the number readable.
 ///
 /// It is the number that says what freezing has actually cost the game, which
 /// neither [`FREEZE_ATTEMPTS`] nor [`ProcessFreeze::passes`] can: the first does
@@ -490,27 +666,10 @@ static SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS: AtomicU64 = AtomicU64::new(0);
 /// freezes that SUCCEEDED, so every refusal's cost was previously unobservable.
 ///
 /// It is also the only instrument that can say a refusal respected
-/// [`MAX_UNSETTLED_REDERIVATIONS`]. Counting deferrals cannot: a second thread
-/// caught mid-exit adds deferrals without adding passes, so a deferral bound
-/// either flakes or has to be loosened until it stops testing anything.
+/// [`MAX_PASSES`]. Counting deferrals cannot: a second thread caught mid-exit
+/// adds deferrals without adding passes, so a deferral-based bound either flakes
+/// or has to be loosened until it stops testing anything.
 static FREEZE_PASSES_SPENT: AtomicU64 = AtomicU64::new(0);
-/// How many times an `OpenThread` failure that was NOT "no such thread id" was
-/// excused because a fresh enumeration of this process no longer listed the
-/// id.
-///
-/// This is the recycled-id population the module header describes, and it
-/// exists for the same reason the two counters above do: so a test can say the
-/// path was REACHED rather than merely not-refused. Every occurrence measured
-/// here reported `ERROR_ACCESS_DENIED`.
-static OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS: AtomicU64 = AtomicU64::new(0);
-/// How many times a thread we SUCCESSFULLY opened turned out to belong to
-/// another process, and was therefore left alone.
-///
-/// The population that was previously suspended without anyone noticing. It is
-/// counted for the same reason as the three above: so a test can say the
-/// ownership check was REACHED, rather than merely that nothing went wrong on
-/// a machine where no id happened to be recycled across a process boundary.
-static OPEN_SUCCESSES_EXCUSED_AS_ANOTHER_PROCESSES: AtomicU64 = AtomicU64::new(0);
 
 std::thread_local! {
     /// Per-thread copy of [`FREEZE_ATTEMPTS`].
@@ -551,24 +710,11 @@ pub fn suspend_failures_deferred_to_a_later_pass() -> u64 {
     SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS.load(Ordering::Acquire)
 }
 
-/// How many enumeration passes every freeze in this process has spent. THE cost
-/// number, and a FLOOR on the system-wide thread-list walks those freezes
-/// performed: one per pass, plus a rare extra whenever a denied `OpenThread`
-/// has to be explained.
+/// How many fixed-point enumeration passes every freeze in this process has
+/// spent. THE cost number: one thread-list walk per pass, taken inside the
+/// frozen window from the second pass on.
 pub fn freeze_passes_spent() -> u64 {
     FREEZE_PASSES_SPENT.load(Ordering::Acquire)
-}
-
-/// How many `OpenThread` failures were excused because the id had left this
-/// process by the time it was re-enumerated -- the recycled-id case.
-pub fn open_failures_excused_as_no_longer_ours() -> u64 {
-    OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS.load(Ordering::Acquire)
-}
-
-/// How many threads we opened successfully belonged to another process, and
-/// were therefore never suspended -- the recycled-id case that SUCCEEDS.
-pub fn open_successes_excused_as_another_processes() -> u64 {
-    OPEN_SUCCESSES_EXCUSED_AS_ANOTHER_PROCESSES.load(Ordering::Acquire)
 }
 
 /// Serialises every test in this crate that touches process-global suspend
@@ -600,41 +746,103 @@ pub(crate) fn os_suspend_state_guard() -> MutexGuard<'static, ()> {
 /// not touch, and those need different operator responses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeRefusal {
-    /// `CreateToolhelp32Snapshot` failed.
-    Snapshot(u32),
-    /// `Thread32First` failed, so no thread list was obtained at all.
+    /// The kernel thread-walk entry point could not be resolved in `ntdll`, so
+    /// this process's thread list could not be read at all. Carries
+    /// `GetLastError` from the refused `GetProcAddress`.
+    ///
+    /// There is deliberately no fallback. The enumeration this module replaced
+    /// -- a system-wide `CreateToolhelp32Snapshot` filtered to our pid -- cost a
+    /// MEASURED 65-131 ms per pass and at least two passes per freeze, which is
+    /// the game stopped for a quarter of a second per detour; keeping it as a
+    /// standby would keep that cost one edit away and would leave two
+    /// enumerations to reason about instead of one.
+    EnumeratorUnavailable { os_error: u32 },
+    /// The thread walk stopped with something other than
+    /// `STATUS_NO_MORE_ENTRIES`, so the thread list is TRUNCATED and the
+    /// threads past the stop were never seen. Carries the NTSTATUS.
     Enumeration(u32),
-    /// A thread could not be opened, the failure was not "no such thread id",
-    /// and the id was still this process's own on re-enumeration.
-    ThreadOpen { thread: u32, os_error: u32 },
+    /// A thread of this process was reached by the walk, and the access the
+    /// kernel granted on it is short of [`FREEZE_THREAD_ACCESS`] -- so it could
+    /// not be suspended, or could not be suspended in a way MinHook's own
+    /// suspension still fits on top of.
+    ///
+    /// This is the refusal that keeps the walk fail-closed. MEASURED
+    /// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): asking the walk
+    /// for [`FREEZE_THREAD_ACCESS`] directly makes it SKIP such a thread and
+    /// still report a clean end -- five threads returned where the system
+    /// snapshot listed six. Walking with [`MAXIMUM_ALLOWED`] returns it, because
+    /// `READ_CONTROL | WRITE_DAC` is granted to an object's owner whatever its
+    /// DACL says, and the shortfall then arrives here instead of vanishing.
+    ///
+    /// `thread` is 0 when the id could not be read either. That is the ordINARY
+    /// case rather than an edge: `GetThreadId` needs a query right, and the
+    /// denial that took the suspend right usually took that one too. The
+    /// GRANTED mask is what an operator has to go on, and it is exact.
+    ThreadRights { thread: u32, granted: u32 },
     /// The freeze ran out of passes to re-derive a suspend that had settled
     /// nothing, and this is the thread the LAST such pass could not settle.
     ///
-    /// Either budget can end it -- [`MAX_UNSETTLED_REDERIVATIONS`] consecutive
-    /// unsettled passes, or [`MAX_PASSES`] reached while the last pass was still
-    /// unsettled -- so this does not name which, because a refusal that guesses
-    /// its own cause sends an operator to the wrong place. What both mean is the
-    /// same: no more passes are being spent on it.
+    /// [`MAX_PASSES`] was reached with the last pass still unsettled. It means
+    /// exactly one thing: no more passes are being spent on it.
     ///
     /// A single unsettled probe is not this: it defers, and the next pass asks
     /// again. Nor is this a claim that THIS thread was unsettled for the whole
-    /// streak -- the allowance is spent per freeze rather than per thread, so a
-    /// streak can span more than one id and the name is the one that ended it.
-    /// The OS error is that thread's own.
+    /// streak -- the pass budget is spent per freeze rather than per thread, so
+    /// a streak can span more than one thread and the name is the one that ended
+    /// it. The OS error is that thread's own.
     ThreadSuspend { thread: u32, os_error: u32 },
     /// A thread was suspended, but too close to Windows' maximum suspend
     /// count for MinHook's own suspension to succeed on top of ours.
     SuspendCeiling { thread: u32, previous_count: u32 },
+    /// The system roster that closes the fixed point could not be read.
+    ///
+    /// FAIL CLOSED: without it a quiet walk is not proof that the set is
+    /// closed -- see [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`].
+    RosterUnavailable { status: i32 },
+    /// The roster was read and this process is not in it, or its own running
+    /// thread is not in its entry. Either means the bytes are not what this
+    /// module believes them to be.
+    RosterUnreadable,
+    /// The roster kept listing a thread the walk never returned, until the pass
+    /// budget ran out.
+    ///
+    /// The two configurations that reach it: a thread this process cannot open
+    /// AT ALL, which the walk skips in silence; and a thread being created and
+    /// destroyed fast enough that every walk misses it. Both are refusals rather
+    /// than fail-opens, which is the point.
+    RosterUnheld { thread: u32, passes: u32 },
     /// Threads kept appearing; the process never went quiet.
-    NotQuiescent { passes: u32, still_running: u32 },
-    /// A frozen thread's context could not be read, so it could not be proven
-    /// outside the bytes about to be rewritten. Only reachable through
-    /// [`ProcessFreeze::any_instruction_pointer_in`].
+    ///
+    /// `unaccounted` is what the LAST pass had to account for that it was not
+    /// already holding -- suspended, proven terminated, or left unsettled. It is
+    /// at least 1 by construction: a pass with nothing to account for is a quiet
+    /// pass, and a quiet pass returns the freeze instead of reaching here.
+    NotQuiescent { passes: u32, unaccounted: u32 },
+    /// A held thread's context could not be read.
+    ///
+    /// TWO callers reach this, and the refusal deliberately does not guess which
+    /// -- both mean the same thing, that a thread this freeze holds could not be
+    /// interrogated, and neither leaves anything patched.
+    /// [`ProcessFreeze::any_instruction_pointer_in`] reads contexts to prove no
+    /// thread is stopped inside the bytes about to be rewritten;
+    /// [`ProcessFreeze::settle_suspensions`] reads them to force the suspensions
+    /// to complete. A read that fails defeats either.
     ThreadContext { thread: u32, os_error: u32 },
-    /// A thread was opened, but which process owns it could not be read, so it
-    /// could not be established that suspending it would stop a thread of
-    /// OURS rather than a stranger's.
-    ThreadOwner { thread: u32, os_error: u32 },
+    /// The access the kernel granted on a walked thread could not be READ:
+    /// `NtQueryObject` refused the handle. Carries the NTSTATUS.
+    ///
+    /// Separate from [`FreezeRefusal::ThreadRights`] on purpose. That one says
+    /// the thread grants too little; this one says the question could not be
+    /// asked, and answering it as a zero grant would name the wrong cause.
+    ThreadRightsUnreadable { status: u32 },
+    /// A thread reached by the walk could not be identified: `GetThreadId`
+    /// refused the handle the kernel had just given us.
+    ///
+    /// FAIL CLOSED rather than skipped. Membership in the accounted set is keyed on
+    /// the thread id, so a thread with no id cannot be recorded as held, cannot
+    /// be recognised as already held on the next pass, and cannot be named in
+    /// any refusal it causes.
+    ThreadIdentity { os_error: u32 },
     /// A buffer reserved before the first suspension was exhausted while
     /// threads were held suspended.
     ///
@@ -648,22 +856,26 @@ pub enum FreezeRefusal {
 impl fmt::Display for FreezeRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Snapshot(code) => write!(
+            Self::EnumeratorUnavailable { os_error } => write!(
                 f,
-                "detour patch refused: thread snapshot failed (os error {code}); \
-                 no target byte was touched"
+                "detour patch refused: the kernel thread walk (ntdll \
+                 NtGetNextThread / NtQueryObject) could not be resolved (os \
+                 error {os_error}), so this process's thread list could not be \
+                 read; no target byte was touched"
             ),
             Self::Enumeration(code) => write!(
                 f,
-                "detour patch refused: thread enumeration failed (os error {code}); \
-                 no target byte was touched"
+                "detour patch refused: the thread walk stopped with status \
+                 {code:#010x} rather than reaching the end of the list, so the \
+                 threads past the stop were never seen; no target byte was touched"
             ),
-            Self::ThreadOpen { thread, os_error } => write!(
+            Self::ThreadRights { thread, granted } => write!(
                 f,
-                "detour patch refused: thread {thread} could not be opened \
-                 (os error {os_error}) and is still this process's own, so it \
-                 could not be proven outside the patch site; no target byte \
-                 was touched"
+                "detour patch refused: a thread of this process (id {thread}, 0 \
+                 when the same denial hid its id) granted only {granted:#010x}, \
+                 which is short of the access this freeze needs to suspend it \
+                 and leave MinHook room to suspend it again; no target byte was \
+                 touched"
             ),
             Self::ThreadSuspend { thread, os_error } => write!(
                 f,
@@ -682,27 +894,49 @@ impl fmt::Display for FreezeRefusal {
                  suspension on top of ours -- which would fail, and MinHook \
                  patches anyway when it does; no target byte was touched"
             ),
-            Self::NotQuiescent {
-                passes,
-                still_running,
-            } => write!(
+            Self::RosterUnavailable { status } => write!(
                 f,
-                "detour patch refused: {still_running} thread(s) were still \
-                 starting after {passes} passes, so the process never went \
-                 quiet; no target byte was touched"
+                "detour patch refused: the system thread roster could not be \
+                 read (NTSTATUS {status:#x}), and a walk alone cannot prove the \
+                 thread set closed; no target byte was touched"
+            ),
+            Self::RosterUnreadable => write!(
+                f,
+                "detour patch refused: the system thread roster does not list \
+                 this process's own running thread, so its layout is not what \
+                 this module reads; no target byte was touched"
+            ),
+            Self::RosterUnheld { thread, passes } => write!(
+                f,
+                "detour patch refused: on the last of {passes} passes the system \
+                 roster listed thread {thread} in this process and the thread \
+                 walk had not returned it, so it could not be suspended -- \
+                 either this process cannot open it at all, or it is being \
+                 recreated faster than the walk reaches it; no target byte was \
+                 touched"
+            ),
+            Self::NotQuiescent { passes, unaccounted } => write!(
+                f,
+                "detour patch refused: the last of {passes} passes still had \
+                 {unaccounted} thread(s) to account for, so the process never \
+                 went quiet; no target byte was touched"
             ),
             Self::ThreadContext { thread, os_error } => write!(
                 f,
-                "detour patch refused: the context of frozen thread {thread} \
-                 could not be read (os error {os_error}), so it could not be \
-                 proven outside the patch site; no target byte was touched"
+                "detour patch refused: the context of held thread {thread} could \
+                 not be read (os error {os_error}), so neither its suspension \
+                 could be proven complete nor its instruction pointer proven \
+                 outside the patch site; no target byte was touched"
             ),
-            Self::ThreadOwner { thread, os_error } => write!(
+            Self::ThreadRightsUnreadable { status } => write!(
                 f,
-                "detour patch refused: thread {thread} was opened but its \
-                 owning process could not be read (os error {os_error}), so it \
-                 could not be established as this process's own; no target \
-                 byte was touched"
+                "detour patch refused: the access granted on a thread of this                  process could not be read (NtQueryObject status {status:#010x}),                  so it could not be established that this freeze can stop it; no                  target byte was touched"
+            ),
+            Self::ThreadIdentity { os_error } => write!(
+                f,
+                "detour patch refused: a thread of this process could not be \
+                 identified (GetThreadId, os error {os_error}), so it could not \
+                 be recorded as held or named; no target byte was touched"
             ),
             Self::CapacityExceeded { buffer, capacity } => write!(
                 f,
@@ -726,104 +960,37 @@ pub(crate) enum ThreadDisposition {
     Refuse,
 }
 
-/// Who owns the thread behind a handle `OpenThread` DID give us.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OpenedThread {
-    /// A thread of this process. It is ours to suspend.
-    Ours,
-    /// The id was recycled onto another process's thread. Our thread with that
-    /// id has ended, and this one is not ours to touch.
-    AnotherProcesses,
+/// Does the access the kernel GRANTED on a thread handle cover everything this
+/// freeze -- and MinHook after it -- is going to ask of that thread?
+///
+/// The walk asks for [`MAXIMUM_ALLOWED`], so what comes back is whatever the
+/// thread's own security allows rather than what we wanted. This is where that
+/// difference is decided, and it is decided in one direction only: a handle
+/// short of [`FREEZE_THREAD_ACCESS`] cannot be suspended (or cannot have its
+/// context read, or cannot be waited on for the termination proof), and a thread
+/// this module cannot stop is exactly the thread MinHook would patch around.
+///
+/// FAIL CLOSED: the shortfall refuses. It is never skipped, because skipping is
+/// what asking the walk for a narrower mask does by itself -- MEASURED, and the
+/// reason this function exists at all.
+pub(crate) fn granted_access_covers_the_freeze(granted: u32) -> bool {
+    granted & FREEZE_THREAD_ACCESS == FREEZE_THREAD_ACCESS
 }
 
-/// What an `OpenThread` failure says ON ITS OWN, before anything is
-/// re-enumerated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OpenFailure {
-    /// The kernel has NO thread with this id anywhere in the system, which is
-    /// what `ERROR_INVALID_PARAMETER` means. The id in our snapshot is stale
-    /// and nothing further needs asking.
-    NoSuchThreadId,
-    /// Some other code. The kernel found *a* thread with this id and would not
-    /// give us a handle to it. Because ids are system-wide that thread need
-    /// not be ours, so this decides NOTHING by itself -- see
-    /// [`classify_unopenable_thread`].
-    Unopenable,
-}
-
-/// `OpenThread` failed. Which of the two questions does the code answer?
+/// Did the walk stop because the thread list ended, or because it broke?
 ///
-/// Deliberately NOT a disposition. The old form of this function mapped every
-/// code but `ERROR_INVALID_PARAMETER` -- explicitly including
-/// `ERROR_ACCESS_DENIED` -- straight to a refusal, on the reading that such a
-/// thread "may well be running". Measured, that reading was wrong about which
-/// PROCESS the thread belongs to: see the module header. The code alone cannot
-/// settle it, so this function no longer pretends to.
-pub(crate) fn classify_open_failure(os_error: u32) -> OpenFailure {
-    if os_error == ERROR_INVALID_PARAMETER {
-        OpenFailure::NoSuchThreadId
-    } else {
-        OpenFailure::Unopenable
-    }
-}
-
-/// The kernel has a thread with this id and would not let us open it. Is that
-/// thread ours?
+/// `STATUS_NO_MORE_ENTRIES` is the terminal status: the process has no thread
+/// after the one the cursor names. Reading any other stop as end-of-list
+/// certifies a TRUNCATED enumeration -- the threads past the break are never
+/// suspended, and the fixed point then concludes the process is quiet while they
+/// run.
 ///
-/// `id_is_still_ours` must come from an enumeration of THIS PROCESS taken
-/// AFTER the failed open, because that ordering is the whole proof: a snapshot
-/// lists every thread attached to the process at the moment it is taken, so an
-/// id missing from it belongs to no thread of ours that was alive at the
-/// earlier open. That thread is gone. An id still present is a live thread of
-/// ours that we could not stop, and refuses.
-///
-/// FAIL CLOSED in the direction that matters: this excuses an open failure
-/// only on positive evidence that the id left this process, never on the error
-/// code, and never on a snapshot taken before the failure.
-pub(crate) fn classify_unopenable_thread(id_is_still_ours: bool) -> ThreadDisposition {
-    if id_is_still_ours {
-        ThreadDisposition::Refuse
-    } else {
-        ThreadDisposition::Gone
-    }
-}
-
-/// `OpenThread` SUCCEEDED. Is the thread on the other end of that handle ours?
-///
-/// The module header already establishes that ids are system-wide and that our
-/// thread with a given id can exit between the snapshot and the open. It drew
-/// only half the conclusion. The other half is this: when the kernel then hands
-/// that id to a thread in a DIFFERENT process, `OpenThread` does not
-/// necessarily fail. Another process running as the same user, at the same
-/// integrity level, hands out `FREEZE_THREAD_ACCESS` without complaint -- which
-/// is the ordinary case for sibling test processes, and for anything else the
-/// user is running.
-///
-/// Without this check the next line SUSPENDS that stranger's thread, keeps its
-/// handle in `frozen`, and resumes it whenever this freeze is dropped. That is
-/// a recorder reaching outside its own process to stop another program's
-/// threads, which is not a hazard this module is allowed to trade for anything.
-///
-/// A thread that is NOT ours is `Gone` in exactly the sense the enumeration
-/// meant: our thread with that id has ended. It is counted as a vanish, so
-/// [`pass_is_quiet`] cannot end the loop on this pass and a successor thread
-/// that reused the id is still enumerated next pass.
-pub(crate) fn classify_opened_thread_owner(owner: u32, ours: u32) -> OpenedThread {
-    if owner == ours {
-        OpenedThread::Ours
-    } else {
-        OpenedThread::AnotherProcesses
-    }
-}
-
-/// Did `Thread32Next` stop because the list ended, or because it broke?
-///
-/// `ERROR_NO_MORE_FILES` is the documented terminal result. Reading any other
-/// stop as end-of-list certifies a TRUNCATED enumeration -- the threads past
-/// the break are never suspended, and the fixed point then concludes the
-/// process is quiet while they run.
-pub(crate) fn enumeration_stop_is_end_of_list(os_error: u32) -> bool {
-    os_error == ERROR_NO_MORE_FILES
+/// MEASURED that the distinction is real and not defensive decoration: walking
+/// with an access the token cannot be granted stopped with 0xC0000061
+/// (`STATUS_PRIVILEGE_NOT_HELD`) rather than with the terminal status
+/// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`).
+pub(crate) fn walk_stop_is_end_of_list(status: i32) -> bool {
+    status == STATUS_NO_MORE_ENTRIES
 }
 
 /// Does our suspension leave room for the one MinHook still has to take?
@@ -845,12 +1012,16 @@ pub(crate) fn leaves_room_for_minhooks_suspension(previous_count: u32) -> bool {
 
 /// Is a pass allowed to conclude the process is quiet?
 ///
-/// ONLY when it saw nothing outside the set it already holds suspended. A
-/// thread that vanished mid-pass is not a free pass: it was running when the
-/// snapshot was taken, so it may have started a successor that the snapshot
-/// cannot contain, and that successor would never be enumerated if this pass
-/// were allowed to be the last. Counting only newly SUSPENDED threads misses
-/// exactly that case.
+/// ONLY when it saw nothing this freeze had not already accounted for. A thread
+/// NEWLY proven terminated is not a free pass: it was running recently enough to
+/// still be in the list, so it may have started a successor, and that successor
+/// would never be walked if this pass were allowed to be the last. Counting only
+/// newly SUSPENDED threads misses exactly that case.
+///
+/// `vanished` counts a thread ONCE, on the pass that proved it terminated, and
+/// that is what makes this reachable at all: the kernel keeps a terminated
+/// thread in the process list until it is reaped, so a count re-derived every
+/// pass would never fall to zero. See [`AccountedThread`].
 ///
 /// `unsettled` is the third count and the one that replaced a wait: a thread
 /// whose `SuspendThread` failed and whose thread object was not signalled at
@@ -859,10 +1030,13 @@ pub(crate) fn leaves_room_for_minhooks_suspension(previous_count: u32) -> bool {
 /// would be a fail-open -- a vanish is a positive claim that the thread ended,
 /// and this is the absence of any claim at all.
 ///
-/// This still terminates. Once every live thread is suspended, no thread runs
-/// to create another and no suspended thread can exit, so the vanished count
-/// falls to zero as the kernel drops the terminated entries from its list; and
-/// an id that stays unsettled runs the pass budget out and REFUSES, by name.
+/// This still terminates. Once every thread the walk returns is suspended, no
+/// thread of this process that the walk can see runs to create another and no
+/// suspended thread can exit, so a pass comes that accounts for nothing new --
+/// and whether that pass is the LAST one is then the roster's decision, not this
+/// function's. Whatever the reason, a thread that stays unsettled runs the pass
+/// budget out and REFUSES, by name: termination does not rest on the argument
+/// above.
 pub(crate) fn pass_is_quiet(newly_suspended: u32, vanished: u32, unsettled: u32) -> bool {
     newly_suspended == 0 && vanished == 0 && unsettled == 0
 }
@@ -895,7 +1069,17 @@ pub(crate) fn classify_suspend_failure(signalled: bool) -> ThreadDisposition {
 /// owns.
 static FREEZE_LOCK: Mutex<()> = Mutex::new(());
 
-/// Every other thread in this process, suspended until this value is dropped.
+/// Every other LIVE thread this freeze could establish, suspended until this
+/// value is dropped -- established by the roster confirmation that ends the
+/// freeze, not by the walk that found them, and no wider than what that
+/// confirmation proves. Its two limits are the module header's residuals: the
+/// roster's own construction, and a thread another process inserts afterwards.
+///
+/// A returned thread PROVEN TERMINATED is not suspended -- there is nothing to
+/// suspend. It is retained instead, as an [`AccountedThread`] with
+/// `suspended: false`, so that the fixed point can be reached and so that its
+/// handle keeps its id out of circulation. Custody, not suspension, is what the
+/// two dispositions have in common.
 ///
 /// # Safety obligation of every holder
 ///
@@ -903,7 +1087,7 @@ static FREEZE_LOCK: Mutex<()> = Mutex::new(());
 /// as it lives, so anything that waits on another thread -- a `join`, a
 /// channel receive, a lock another thread holds -- deadlocks the process with
 /// certainty rather than by chance.
-/// # Why the buffers live HERE and not in the function that fills them
+/// # Why the buffer lives HERE and not in the function that fills it
 ///
 /// Rust destroys a function's locals before it returns. A `Vec` held as a
 /// local of [`freeze_other_threads_inner`] is therefore FREED on the successful
@@ -911,25 +1095,69 @@ static FREEZE_LOCK: Mutex<()> = Mutex::new(());
 /// thread suspended. On Windows that free is a `HeapFree` on the process heap,
 /// and if any suspended thread owns that heap's lock it waits for a thread that
 /// cannot run. That is the exact hang this module's header warns about, taken
-/// on EVERY successful freeze, and the generous reservations do not touch it:
-/// they stop the buffer growing, not it being dropped.
+/// on EVERY successful freeze, and the generous reservation does not touch it:
+/// it stops the buffer growing, not it being dropped.
 ///
-/// Owning the buffers here moves both frees after `Drop::drop` has resumed
-/// every thread. Field order matters and is deliberate: fields drop in
-/// declaration order AFTER `Drop::drop` runs, so the two buffers are freed
-/// while `_serialisation` is still held, and no competing freezer can be
-/// suspending anyone while we call the allocator.
+/// Owning the buffer here moves that free after `Drop::drop` has resumed every
+/// thread. Field order matters and is deliberate: fields drop in declaration
+/// order AFTER `Drop::drop` runs, so the table is freed while `_serialisation`
+/// is still held, and no competing freezer can be suspending anyone while we
+/// call the allocator.
+///
+/// ONE buffer, where there used to be two. The thread list is no longer
+/// materialised at all: [`ThreadWalk::next_thread`] hands back one handle at a
+/// time straight from the kernel, each is decided on the spot, and the ones this
+/// freeze does not keep are closed inside the same iteration. So the enumeration
+/// scratch that had to be reserved, bounded and guarded against growth is simply
+/// gone, and with it every way a pass could reach the allocator.
 pub struct ProcessFreeze {
-    /// `(thread id, handle)` for each thread this freeze suspended.
-    frozen: Vec<(u32, HANDLE)>,
-    /// Scratch for the per-pass thread enumeration. Reserved before the first
-    /// suspension, reused by every pass, and never grown while frozen.
-    enumeration: Vec<u32>,
-    /// Held for the lifetime of the freeze, and released only once both
-    /// buffers above are gone.
+    /// Every thread this freeze has ACCOUNTED FOR: suspended, or proven
+    /// terminated.
+    accounted: Vec<AccountedThread>,
+    /// The roster buffer, reserved before the first suspension and reused by
+    /// every confirmation. Owned here so it is freed only after `Drop` has
+    /// resumed everything, for the same reason the table above is.
+    roster: Vec<u8>,
+    /// Held for the lifetime of the freeze, and released only once the buffers
+    /// above are gone.
     _serialisation: MutexGuard<'static, ()>,
     /// Enumeration passes it took to reach the fixed point.
     passes: u32,
+}
+
+/// One thread this freeze has accounted for, and how.
+///
+/// # Why a terminated thread is KEPT here, handle and all
+///
+/// The kernel's thread list is not the system snapshot this module used to read.
+/// A snapshot drops a thread as soon as it terminates; the process thread list
+/// keeps it until it is REAPED, which cannot happen while any handle to it is
+/// open -- and in a process that joins its threads, the joiner holds exactly
+/// such handles and is itself suspended by pass 1.
+///
+/// So the walk goes on returning terminated threads for as long as the freeze
+/// lasts. Deciding them afresh every pass made [`pass_is_quiet`] permanently
+/// false and every freeze under thread churn ended in
+/// [`FreezeRefusal::NotQuiescent`] -- MEASURED, before this existed. Recording
+/// the disposition is what makes the fixed point reachable: the thread is
+/// counted as a vanish ONCE, on the pass that proved it, and is skipped as
+/// already accounted for after that.
+///
+/// Its HANDLE is kept for a second reason, and it is the one that keeps the
+/// skip exact. A thread id is freed for reuse when the thread object is
+/// deleted, and holding a handle is what stops that deletion, so no new thread
+/// can take this id while this freeze holds it -- which is what makes an
+/// id-keyed "already accounted for" test sound for a thread that has ended.
+struct AccountedThread {
+    /// The thread id, and the key every pass tests membership on.
+    id: u32,
+    /// An open handle to it, closed only when the freeze is dropped.
+    handle: HANDLE,
+    /// True when THIS freeze suspended it, and it must therefore be resumed.
+    /// False for a thread proven terminated, which is not resumed because it
+    /// was never suspended -- calling `ResumeThread` on it would lower a
+    /// suspend count this freeze did not raise.
+    suspended: bool,
 }
 
 /// `CONTEXT` at the alignment `GetThreadContext` requires.
@@ -948,9 +1176,13 @@ struct AlignedContext(CONTEXT);
 const _: () = assert!(core::mem::align_of::<AlignedContext>() == 16);
 
 impl ProcessFreeze {
-    /// How many threads are held suspended.
+    /// How many threads are held SUSPENDED.
+    ///
+    /// Not how many are accounted for: a thread proven terminated is accounted
+    /// for and is not held, and reporting it here would say the freeze had
+    /// stopped something it never stopped.
     pub fn frozen_thread_count(&self) -> usize {
-        self.frozen.len()
+        self.accounted.iter().filter(|entry| entry.suspended).count()
     }
 
     /// How many enumeration passes the fixed point took. Two is the quiet-
@@ -972,28 +1204,156 @@ impl ProcessFreeze {
     /// `frozen` is suspended, so its context is stable and cannot move between
     /// this read and the caller's write.
     ///
-    /// Threads accounted for as PROVEN GONE are absent from `frozen` and are
-    /// correctly not consulted: a terminated thread executes no further
-    /// user-mode instruction, so it cannot be inside the range.
+    /// Threads accounted for as PROVEN TERMINATED are skipped, and correctly so:
+    /// such a thread executes no further user-mode instruction, so it cannot be
+    /// inside the range. Reading its context would also fail, turning a
+    /// correctly accounted thread into a refusal.
+    ///
+    /// # This call is also what COMPLETES the suspension
+    ///
+    /// `SuspendThread` is asynchronous. It returns as soon as the suspend is
+    /// requested, and a thread already running in user mode can retire further
+    /// instructions before the kernel actually stops it -- OBSERVED here, by
+    /// [`threads_churning_during_the_freeze_are_all_accounted_for`], as a
+    /// suspended worker advancing a counter once after the freeze was held.
+    /// Reading a thread's context forces that transition to finish, because the
+    /// kernel cannot answer with a context until the thread has left kernel
+    /// mode.
+    ///
+    /// So every path that rewrites bytes under this freeze performs one. The
+    /// callers that write their own bytes call THIS, before they write; the
+    /// MinHook path gets it from MinHook, whose `Freeze()` reads every thread's
+    /// context in `ProcessThreadIPs` before a single byte is patched. Neither
+    /// depends on `SuspendThread` having taken effect by the time it returned,
+    /// and neither should: it has not.
     pub fn any_instruction_pointer_in(
         &self,
         ranges: &[(usize, usize)],
     ) -> Result<bool, FreezeRefusal> {
-        for &(thread_id, handle) in &self.frozen {
+        let mut found = false;
+        // EVERY held thread is read, even after a hit. Short-circuiting would
+        // leave the threads past it unsettled, and settling is half of what this
+        // call is for; the caller that gets `true` refuses to patch anyway, so
+        // the reads it costs are never on a path that matters.
+        self.read_held_contexts(|rip| {
+            if ranges.iter().any(|(start, end)| rip >= *start && rip < *end) {
+                found = true;
+            }
+        })?;
+        Ok(found)
+    }
+
+    /// Force every held suspension to COMPLETE, and answer nothing else.
+    ///
+    /// `SuspendThread` is asynchronous -- see
+    /// [`ProcessFreeze::any_instruction_pointer_in`] for what that costs and how
+    /// it was observed. This is that half on its own, for the one caller that
+    /// needs the completion and has no range to ask about: the freeze loop,
+    /// which must not declare a set closed while a thread it holds is still
+    /// finishing a kernel-mode operation.
+    ///
+    /// It is a NAMED operation rather than `any_instruction_pointer_in(&[])`
+    /// because the empty-range spelling gets its effect from an implementation
+    /// detail -- that the range test happens after the context read -- and a
+    /// future edit could add an early return for the empty case and silently
+    /// delete the completion this module's correctness rests on.
+    ///
+    /// FAIL CLOSED: a context that cannot be read is a thread that cannot be
+    /// proven stopped, and it refuses.
+    pub fn settle_suspensions(&self) -> Result<(), FreezeRefusal> {
+        self.read_held_contexts(|_| {})
+    }
+
+    /// Which thread, if any, does the system roster list for this process that
+    /// this freeze is not holding?
+    ///
+    /// # Why a quiet walk is not enough on its own
+    ///
+    /// `NtGetNextThread` is a LIVE walk, not a snapshot, and that difference is
+    /// the whole reason this exists. There is no instant at which the walk knows
+    /// the whole list, so an unaccounted thread can create a successor BEHIND
+    /// the cursor and then exit and be reaped BEFORE the cursor reaches its own
+    /// place. The pass then returns neither of them: `newly_suspended`,
+    /// `vanished` and `unsettled` are all zero, the walk looks quiet, and the
+    /// successor is running while MinHook rewrites a prologue underneath it.
+    ///
+    /// A cursor holds NO LIST AT ALL, which is the property that has to be
+    /// bought back. What this reads instead is a list the kernel writes into a
+    /// buffer, so there is a set of identities to compare the held set against.
+    /// Whether that list is taken under exclusion from thread creation is NOT
+    /// established -- see the module header, which withdrew a parity argument
+    /// that assumed it.
+    ///
+    /// # What this reads, and what it costs
+    ///
+    /// `NtQuerySystemInformation(SystemProcessInformation)` materialises exactly
+    /// such a roster: every process, and every process's threads by `ClientId`,
+    /// filled into a buffer the caller already owns. MEASURED on this machine at
+    /// 11.5-17.8 ms and ~3.2 MB
+    /// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), because it walks
+    /// the whole process table to answer about one process. The `Ex` form does
+    /// not accept a process filter for this class on the measured build --
+    /// `STATUS_INVALID_INFO_CLASS` -- which is the alternative that was tried,
+    /// not a proof that none exists.
+    ///
+    /// ONE READ WHEN THE FIRST QUIET-LOOKING PASS CONFIRMS, and up to
+    /// [`MAX_PASSES`] reads when passes keep naming threads -- whether they end
+    /// in success or in refusal. Only a pass that already looks quiet asks.
+    ///
+    /// # It also answers the access hole
+    ///
+    /// The roster names threads by `ClientId` WITHOUT OPENING THEM, so a thread
+    /// this process cannot open at all -- which the walk skips in silence, and
+    /// which was this module's other fail-open -- appears here and is refused by
+    /// the same comparison.
+    ///
+    /// AS WIDE AS THE MEASUREMENT AND NO WIDER: a thread denied EVERY access by
+    /// an empty DACL is still listed, and is still named
+    /// (`the_roster_names_a_live_thread_the_walk_did_not_account_for`). The
+    /// OWNER RIGHTS SID construction was NOT built and is NOT covered. That the
+    /// call opens no thread is the reason to expect the wider claim; it is not
+    /// evidence for it.
+    ///
+    /// Returns the id of the first thread the roster lists that this freeze does
+    /// not hold, or `None` when it named nothing.
+    fn what_the_roster_names_that_we_do_not_hold(
+        &mut self,
+        walk: &ThreadWalk,
+        current_thread_id: u32,
+        our_process_id: usize,
+    ) -> Result<Option<u32>, FreezeRefusal> {
+        let filled = walk.read_roster(&mut self.roster)?;
+        // THE SYSCALL AND THE PARSE ARE SPLIT, and deliberately: the bytes are
+        // where this can be wrong, and a test that had to take a real freeze to
+        // reach the parse would hold every other thread of the test binary
+        // stopped for as long as it ran. [`roster_names_an_unheld_thread`] is
+        // pure, and is tested on a roster read with nothing suspended at all.
+        roster_names_an_unheld_thread(
+            &self.roster[..filled],
+            our_process_id,
+            current_thread_id,
+            |id| self.accounted.iter().any(|entry| entry.id == id),
+        )
+    }
+
+    /// Read every held thread's context, handing each instruction pointer to
+    /// `visit`. The one place `GetThreadContext` is called.
+    fn read_held_contexts(
+        &self,
+        mut visit: impl FnMut(usize),
+    ) -> Result<(), FreezeRefusal> {
+        for entry in self.accounted.iter().filter(|entry| entry.suspended) {
             let mut context: AlignedContext = unsafe { std::mem::zeroed() };
             context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-            if unsafe { GetThreadContext(handle, &mut context.0) } == 0 {
+            if unsafe { GetThreadContext(entry.handle, &mut context.0) } == 0 {
                 return Err(FreezeRefusal::ThreadContext {
-                    thread: thread_id,
+                    thread: entry.id,
                     os_error: unsafe { GetLastError() },
                 });
             }
-            let rip = context.0.Rip as usize;
-            if ranges.iter().any(|(start, end)| rip >= *start && rip < *end) {
-                return Ok(true);
-            }
+            visit(context.0.Rip as usize);
         }
-        Ok(false)
+        Ok(())
     }
 }
 
@@ -1001,159 +1361,498 @@ impl Drop for ProcessFreeze {
     fn drop(&mut self) {
         // Resume in reverse order of suspension, and resume every thread even
         // if one resume fails: a thread left suspended is a hung game.
-        for (_, handle) in self.frozen.drain(..).rev() {
+        //
+        // A thread accounted for as TERMINATED is closed and not resumed. It was
+        // never suspended by this freeze, and resuming it would decrement a
+        // suspend count somebody else raised.
+        for entry in self.accounted.drain(..).rev() {
             unsafe {
-                ResumeThread(handle);
-                CloseHandle(handle);
+                if entry.suspended {
+                    ResumeThread(entry.handle);
+                }
+                CloseHandle(entry.handle);
             }
         }
     }
 }
 
-/// May a buffer being filled right now call the allocator?
-///
-/// Only outside the frozen window. Inside it, a reallocation takes the Rust
-/// global allocator's lock, which a suspended thread may hold, and the process
-/// hangs with nobody left to release it. Passing this explicitly is what stops
-/// the answer being re-derived by whoever edits the loop next.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Growth {
-    /// Nothing is suspended yet.
-    Allowed,
-    /// Threads are held. Exhausting the reservation REFUSES.
-    Forbidden,
-}
-
-/// How many entries each frozen-window buffer must hold, given the thread
+/// How many entries the frozen-window handle table must hold, given the thread
 /// count seen before the first suspension.
-///
-/// One function for both buffers, because the defect it replaces was them
-/// disagreeing: the enumeration got `n + (4n + 64)` and the handle table got
-/// `4n + 64`, so between those two sizes lay a burst that the ids fitted and
-/// their handles did not -- and that is the overflow that happens with a
-/// thread already suspended and nothing yet owning the suspension.
 ///
 /// The headroom covers a burst of thread creation racing the first pass. It is
 /// a BOUND, not an estimate: exceeding it refuses, so being wrong about the
 /// burst size costs a refusal and never an allocation while frozen.
+///
+/// It used to size TWO buffers and the defect it was written for was them
+/// disagreeing. There is only one buffer now -- the thread list is never
+/// materialised -- so the disagreement it guarded against cannot recur, and what
+/// is left is the headroom rule itself.
 pub(crate) fn frozen_window_buffer_bound(thread_count: usize) -> usize {
     thread_count.saturating_add(thread_count.saturating_mul(4).saturating_add(64))
 }
 
-/// Snapshot this process's thread ids into `out`, replacing its contents.
+/// `NtGetNextThread`, resolved from `ntdll` at the top of every freeze.
 ///
-/// Reuses `out`'s capacity so a verification pass taken while threads are
-/// suspended does not allocate. Under [`Growth::Forbidden`] that reuse is
-/// ENFORCED rather than hoped for: a snapshot with more ids than the
-/// reservation holds refuses instead of growing the buffer.
-fn enumerate_thread_ids(out: &mut Vec<u32>, growth: Growth) -> Result<(), FreezeRefusal> {
-    out.clear();
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(FreezeRefusal::Snapshot(unsafe { GetLastError() }));
-    }
-    let process_id = unsafe { GetCurrentProcessId() };
-    let current_thread_id = unsafe { GetCurrentThreadId() };
-    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
-    entry.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
-    if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
-        let code = unsafe { GetLastError() };
-        unsafe { CloseHandle(snapshot) };
-        return Err(FreezeRefusal::Enumeration(code));
-    }
-    loop {
-        if entry.th32OwnerProcessID == process_id && entry.th32ThreadID != current_thread_id {
-            if growth == Growth::Forbidden && out.len() == out.capacity() {
-                unsafe { CloseHandle(snapshot) };
-                return Err(FreezeRefusal::CapacityExceeded {
-                    buffer: "thread enumeration",
-                    capacity: out.capacity(),
-                });
-            }
-            out.push(entry.th32ThreadID);
+/// `(ProcessHandle, ThreadHandle, DesiredAccess, HandleAttributes, Flags,
+/// NewThreadHandle) -> NTSTATUS`.
+type NtGetNextThreadFn =
+    unsafe extern "system" fn(HANDLE, HANDLE, u32, u32, u32, *mut HANDLE) -> i32;
+
+/// `NtQueryObject`, resolved beside it.
+///
+/// `(Handle, ObjectInformationClass, ObjectInformation, ObjectInformationLength,
+/// ReturnLength) -> NTSTATUS`.
+type NtQueryObjectFn = unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32) -> i32;
+
+/// `PUBLIC_OBJECT_BASIC_INFORMATION`. Only `granted_access` is read; the rest is
+/// declared so the length handed to `NtQueryObject` is the one it expects.
+#[repr(C)]
+struct ObjectBasicInformation {
+    attributes: u32,
+    granted_access: u32,
+    handle_count: u32,
+    pointer_count: u32,
+    reserved: [u32; 10],
+}
+
+/// `NtQuerySystemInformation`, resolved beside them.
+///
+/// `(SystemInformationClass, SystemInformation, SystemInformationLength,
+/// ReturnLength) -> NTSTATUS`.
+type NtQuerySystemInformationFn =
+    unsafe extern "system" fn(u32, *mut c_void, u32, *mut u32) -> i32;
+
+/// `SystemProcessInformation`. The one class that materialises a per-process
+/// THREAD ROSTER, which is what closes the fixed point -- see
+/// [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`].
+const SYSTEM_PROCESS_INFORMATION: u32 = 5;
+
+/// `STATUS_INFO_LENGTH_MISMATCH`: the buffer was too small.
+const STATUS_INFO_LENGTH_MISMATCH: i32 = -1_073_741_820; // 0xC0000004
+
+/// The x64 layout of the roster, in the four numbers this module reads out of
+/// it. MEASURED against `GetCurrentThreadId` on every call
+/// ([`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`] refuses if this process's own running
+/// thread is not in its own roster), so a layout change fails loudly rather
+/// than silently reporting an empty process.
+///
+/// `SYSTEM_PROCESS_INFORMATION` is 0x100 bytes and is followed immediately by
+/// `NumberOfThreads` × `SYSTEM_THREAD_INFORMATION` of 0x50 bytes each;
+/// `UniqueProcessId` sits at 0x50 in the process entry and `ClientId.UniqueThread`
+/// at 0x30 in each thread entry.
+const ROSTER_PROCESS_ENTRY_BYTES: usize = 0x100;
+const ROSTER_THREAD_ENTRY_BYTES: usize = 0x50;
+const ROSTER_NEXT_ENTRY_OFFSET: usize = 0x00;
+const ROSTER_THREAD_COUNT_OFFSET: usize = 0x04;
+const ROSTER_PROCESS_ID_OFFSET: usize = 0x50;
+const ROSTER_THREAD_PROCESS_OFFSET: usize = 0x28;
+const ROSTER_THREAD_ID_OFFSET: usize = 0x30;
+
+/// The two `ntdll` entry points the walk is made of.
+///
+/// Resolved once per freeze, BEFORE the first suspension, and never inside the
+/// frozen window: `GetProcAddress` takes the loader lock, and a suspended thread
+/// may hold it.
+#[derive(Clone, Copy)]
+pub(crate) struct ThreadWalk {
+    next: NtGetNextThreadFn,
+    query: NtQueryObjectFn,
+    roster: NtQuerySystemInformationFn,
+    process: HANDLE,
+}
+
+impl ThreadWalk {
+    /// Resolve the walk, or refuse the freeze.
+    ///
+    /// FAIL CLOSED, with no fallback: see [`FreezeRefusal::EnumeratorUnavailable`].
+///
+/// All THREE entry points are resolved here, including the roster's: a freeze
+/// that could not confirm its fixed point is a freeze that cannot happen.
+    fn resolve() -> Result<Self, FreezeRefusal> {
+        let ntdll: [u16; 10] = [
+            b'n' as u16, b't' as u16, b'd' as u16, b'l' as u16, b'l' as u16, b'.' as u16,
+            b'd' as u16, b'l' as u16, b'l' as u16, 0,
+        ];
+        let module = unsafe { GetModuleHandleW(ntdll.as_ptr()) };
+        if module.is_null() {
+            return Err(FreezeRefusal::EnumeratorUnavailable {
+                os_error: unsafe { GetLastError() },
+            });
         }
-        if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
-            // Do NOT break on an arbitrary Thread32Next error. Treating any
-            // stop as end-of-list would certify a partial enumeration: the
-            // threads past the truncation point would never be suspended, and
-            // the fixed point below would happily conclude the process was
-            // quiet. (This sentence is also the regression guard for the source
-            // scan that enforces it -- it once failed on prose like this.)
-            let code = unsafe { GetLastError() };
-            unsafe { CloseHandle(snapshot) };
-            return if enumeration_stop_is_end_of_list(code) {
-                Ok(())
-            } else {
-                Err(FreezeRefusal::Enumeration(code))
-            };
+        let next = unsafe { GetProcAddress(module, c"NtGetNextThread".as_ptr().cast()) };
+        let Some(next) = next else {
+            return Err(FreezeRefusal::EnumeratorUnavailable {
+                os_error: unsafe { GetLastError() },
+            });
+        };
+        let query = unsafe { GetProcAddress(module, c"NtQueryObject".as_ptr().cast()) };
+        let Some(query) = query else {
+            return Err(FreezeRefusal::EnumeratorUnavailable {
+                os_error: unsafe { GetLastError() },
+            });
+        };
+        let roster =
+            unsafe { GetProcAddress(module, c"NtQuerySystemInformation".as_ptr().cast()) };
+        let Some(roster) = roster else {
+            return Err(FreezeRefusal::EnumeratorUnavailable {
+                os_error: unsafe { GetLastError() },
+            });
+        };
+        Ok(Self {
+            // The two casts are the whole of the unsafety here: `ntdll` exports
+            // both symbols with these signatures, and calling either through a
+            // wrong one corrupts the stack.
+            next: unsafe { core::mem::transmute::<unsafe extern "system" fn() -> isize, NtGetNextThreadFn>(next) },
+            query: unsafe { core::mem::transmute::<unsafe extern "system" fn() -> isize, NtQueryObjectFn>(query) },
+            roster: unsafe { core::mem::transmute::<unsafe extern "system" fn() -> isize, NtQuerySystemInformationFn>(roster) },
+            // The pseudo-handle. It is not a real handle, needs no closing, and
+            // is always this process, which is what makes every thread the walk
+            // returns OURS BY CONSTRUCTION.
+            process: unsafe { GetCurrentProcess() },
+        })
+    }
+
+    /// The thread after `cursor` in this process's thread list, or `None` at the
+    /// end of it.
+    ///
+    /// # Why this replaced a system-wide snapshot
+    ///
+    /// `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)` builds a list of EVERY
+    /// thread on the machine and this module then threw all but its own away.
+    /// MEASURED on Windows 10.0.26200
+    /// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): 14,243 system-wide
+    /// entries walked to keep 3 of ours, at 65-131 ms per pass, at least twice
+    /// per freeze. The same enumeration through this call takes 4-12 us. That is
+    /// the whole of the ~190-250 ms a clean freeze used to cost, and it is time
+    /// the game spent stopped.
+    ///
+    /// # Why the access asked for is MAXIMUM_ALLOWED
+    ///
+    /// Because the walk decides what to do with a thread it cannot open at the
+    /// requested access, and MEASURED, IT SKIPS IT AND REPORTS A CLEAN END. One
+    /// thread of this process given an empty DACL: asking for
+    /// [`FREEZE_THREAD_ACCESS`] returned five threads and
+    /// `STATUS_NO_MORE_ENTRIES` while the system snapshot listed six. Enumerating
+    /// at the access we happen to need would therefore hide exactly the thread we
+    /// cannot stop -- MinHook's own fail-open, reintroduced one layer up.
+    ///
+    /// [`MAXIMUM_ALLOWED`] returned all six, because `READ_CONTROL | WRITE_DAC`
+    /// is granted to an object's OWNER whatever its DACL says. The shortfall then
+    /// becomes visible to [`granted_access_covers_the_freeze`] and refuses by
+    /// name.
+    ///
+    /// WHAT THIS WALK STILL CANNOT SEE, and what does see it: a thread of this
+    /// process to which we have LITERALLY NO access never appears here at all --
+    /// silently, so a pass that misses it would otherwise still be able to be
+    /// the quiet one. Two configurations reach that -- a thread owned by a
+    /// different security principal, and a thread carrying an explicit OWNER
+    /// RIGHTS SID ACE, which REPLACES the owner's implicit `READ_CONTROL |
+    /// WRITE_DAC` and so defeats the argument this access choice rests on.
+    ///
+    /// NEITHER IS LEFT TO THIS WALK. The fixed point does not rest on it: a
+    /// quiet pass is confirmed against a roster that names threads WITHOUT
+    /// OPENING THEM, so a thread this walk cannot see is named there and refuses
+    /// the freeze. MEASURED for an empty DACL, not established for the OWNER
+    /// RIGHTS construction -- see
+    /// [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`], which
+    /// states exactly how far that goes.
+    ///
+    /// # Ownership needs no check any more
+    ///
+    /// The walk is scoped by a process handle, so every thread it returns is a
+    /// thread of THIS process. The recycled-id machinery this replaced --
+    /// `OpenThread` on a bare, system-wide id, a denial that had to be explained
+    /// by a second snapshot, and a successful open that had to be interrogated
+    /// with `GetProcessIdOfThread` because it might belong to a stranger -- is
+    /// not merely cheaper here, it is inapplicable. Ids are never the input.
+    ///
+    /// FAIL CLOSED: any stop that is not the end of the list refuses, so a walk
+    /// that broke partway is never read as a process whose threads have all been
+    /// seen.
+    fn next_thread(&self, cursor: HANDLE) -> Result<Option<HANDLE>, FreezeRefusal> {
+        let mut handle: HANDLE = core::ptr::null_mut();
+        let status = unsafe {
+            (self.next)(self.process, cursor, MAXIMUM_ALLOWED, 0, 0, &mut handle)
+        };
+        if status == 0 {
+            return Ok(Some(handle));
+        }
+        if walk_stop_is_end_of_list(status) {
+            return Ok(None);
+        }
+        Err(FreezeRefusal::Enumeration(status as u32))
+    }
+
+    /// What the kernel GRANTED on `handle`.
+    ///
+    /// FAIL CLOSED, and in TWO DISTINGUISHABLE WAYS, because they send an
+    /// operator to different places. A query that fails is
+    /// [`FreezeRefusal::ThreadRightsUnreadable`] carrying its NTSTATUS -- the
+    /// mask is unknown, not zero. A query that succeeds returns the mask the
+    /// kernel actually granted, and a shortfall in it is
+    /// [`FreezeRefusal::ThreadRights`], which is a statement about the THREAD.
+    /// Folding the first into the second by answering zero would report a
+    /// locked-down thread when what happened was a failed syscall.
+    fn granted_access(&self, handle: HANDLE) -> Result<u32, FreezeRefusal> {
+        let mut information: ObjectBasicInformation = unsafe { core::mem::zeroed() };
+        let mut written = 0u32;
+        let status = unsafe {
+            (self.query)(
+                handle,
+                OBJECT_BASIC_INFORMATION,
+                (&mut information) as *mut ObjectBasicInformation as *mut c_void,
+                core::mem::size_of::<ObjectBasicInformation>() as u32,
+                &mut written,
+            )
+        };
+        if status != 0 {
+            return Err(FreezeRefusal::ThreadRightsUnreadable {
+                status: status as u32,
+            });
+        }
+        Ok(information.granted_access)
+    }
+
+    /// How many threads this process has, right now.
+    ///
+    /// Taken BEFORE the first suspension, and its only product is the count the
+    /// handle table's bound is derived from. Deliberately not counted as a pass:
+    /// it happens outside the frozen window, where a walk costs the game nothing.
+    /// How many bytes the roster needs RIGHT NOW, asked with no buffer at all.
+    ///
+    /// Runs before the first suspension, because what it sizes is allocated
+    /// there. The answer grows and shrinks with the machine's process table, so
+    /// the reservation built on it carries slack and the read inside the window
+    /// REFUSES rather than growing.
+    fn roster_bytes_needed(&self) -> Result<usize, FreezeRefusal> {
+        let mut needed = 0u32;
+        let status = unsafe {
+            (self.roster)(
+                SYSTEM_PROCESS_INFORMATION,
+                core::ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        if status != STATUS_INFO_LENGTH_MISMATCH && status < 0 {
+            return Err(FreezeRefusal::RosterUnavailable { status });
+        }
+        Ok(needed as usize)
+    }
+
+    /// Fill `buffer` with the system's process-and-thread roster.
+    ///
+    /// ALLOCATES NOTHING: the buffer is the caller's, reserved before anything
+    /// was suspended. A buffer that is now too small is a REFUSAL, not a
+    /// reallocation -- growing it here would call the global allocator with
+    /// every other thread stopped.
+    fn read_roster(&self, buffer: &mut [u8]) -> Result<usize, FreezeRefusal> {
+        let mut written = 0u32;
+        let status = unsafe {
+            (self.roster)(
+                SYSTEM_PROCESS_INFORMATION,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut written,
+            )
+        };
+        if status < 0 {
+            return Err(FreezeRefusal::RosterUnavailable { status });
+        }
+        // NOT CLAMPED. A length longer than the buffer we handed over is not a
+        // roster with some extra on the end; it is an answer this module does
+        // not understand, and clamping it would hand the parser a truncated
+        // buffer to CONFIRM a freeze from.
+        let written = written as usize;
+        if written > buffer.len() {
+            return Err(FreezeRefusal::RosterUnreadable);
+        }
+        Ok(written)
+    }
+
+    fn thread_count(&self) -> Result<usize, FreezeRefusal> {
+        let mut count = 0usize;
+        let mut cursor: HANDLE = core::ptr::null_mut();
+        loop {
+            let next = self.next_thread(cursor);
+            if !cursor.is_null() {
+                unsafe { CloseHandle(cursor) };
+            }
+            match next? {
+                None => return Ok(count),
+                Some(handle) => {
+                    count = count.saturating_add(1);
+                    cursor = handle;
+                }
+            }
         }
     }
 }
 
-/// Is `thread_id` still attached to THIS process, right now?
+/// Does the roster list a thread of `our_process_id` that `is_held` denies?
 ///
-/// The evidence [`classify_unopenable_thread`] runs on, and the reason it is a
-/// separate function is that the ordering is the proof: every caller must take
-/// this AFTER the `OpenThread` it is explaining, never before.
+/// PURE, and the whole of the roster's reading. Returns the first such thread's
+/// id, or `None` when every thread listed for this process is either held or is
+/// the caller itself.
 ///
-/// It ALLOCATES NOTHING, and answers from the snapshot as it walks rather than
-/// calling [`enumerate_thread_ids`] to materialise a list. That is not a
-/// micro-optimisation: this runs inside the frozen window, and a `Vec` that
-/// outgrows a reservation there takes the Rust global allocator's lock, which
-/// a suspended thread may be holding -- the hang the module header describes.
-/// A reservation could only ever be a bound on the thread count, and the churn
-/// this exists to survive is precisely a process whose thread count is moving.
-/// Not materialising the list removes the question instead of bounding it.
+/// # It refuses rather than confirming when the bytes are not what it expects
 ///
-/// It does still take a `CreateToolhelp32Snapshot` inside the frozen window,
-/// and that is unavoidable: fresh evidence is the whole point. Whether that
-/// call allocates from the process default heap is undetermined, exactly as
-/// the module header already records for the per-pass enumerations.
-///
-/// FAIL CLOSED: a snapshot that cannot be taken, or an enumeration that stops
-/// partway, propagates as a refusal rather than answering "not ours". A
-/// truncated list is a list of threads we did not see, and reading one as
-/// proof that a thread left the process is exactly backwards. A POSITIVE match
-/// is conclusive on its own and returns early, because finding the thread does
-/// not depend on having seen the rest of the list.
-fn id_is_still_in_this_process(thread_id: u32) -> Result<bool, FreezeRefusal> {
-    if thread_id == unsafe { GetCurrentThreadId() } {
-        // Cannot arise from the freeze loop, whose enumeration excludes this
-        // thread, but answering "not in this process" about the thread doing
-        // the asking would be absurd for any future caller.
-        return Ok(true);
-    }
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(FreezeRefusal::Snapshot(unsafe { GetLastError() }));
-    }
-    let process_id = unsafe { GetCurrentProcessId() };
-    let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
-    entry.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
-    if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
-        let code = unsafe { GetLastError() };
-        unsafe { CloseHandle(snapshot) };
-        return Err(FreezeRefusal::Enumeration(code));
-    }
+/// The layout is checked on EVERY call by the one thread whose presence is not
+/// in question -- the running one. A misread roster that reported an empty
+/// process would otherwise CONFIRM every freeze it was asked about, which is the
+/// worst failure this function has, so not finding `current_thread_id` is a
+/// refusal.
+fn roster_names_an_unheld_thread(
+    roster: &[u8],
+    our_process_id: usize,
+    current_thread_id: u32,
+    is_held: impl Fn(u32) -> bool,
+) -> Result<Option<u32>, FreezeRefusal> {
+    // TRAVERSED WHOLE, and every entry checked, not just ours. Stopping at the
+    // first match let a FOREIGN entry claim threads that run past its own end --
+    // whose bytes the walk would then read as the next process entry -- and let
+    // a second entry for this process, or malformed bytes after the first, pass
+    // unlooked-at (adversarial review, round 21). The answer is recorded when
+    // the target entry is found and returned only after the list ends.
+    let mut answer: Option<Option<u32>> = None;
+    let mut at = 0usize;
     loop {
-        if entry.th32OwnerProcessID == process_id && entry.th32ThreadID == thread_id {
-            unsafe { CloseHandle(snapshot) };
-            return Ok(true);
+        if at.saturating_add(ROSTER_PROCESS_ENTRY_BYTES) > roster.len() {
+            return Err(FreezeRefusal::RosterUnreadable);
         }
-        if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
-            let code = unsafe { GetLastError() };
-            unsafe { CloseHandle(snapshot) };
-            // Only a list that ran to its documented end can support "absent".
-            // Absence from a TRUNCATED list is not absence, and excusing an
-            // unopenable id on it would excuse a live thread of ours.
-            return if enumeration_stop_is_end_of_list(code) {
-                Ok(false)
-            } else {
-                Err(FreezeRefusal::Enumeration(code))
-            };
+        let process_id = read_usize(roster, at + ROSTER_PROCESS_ID_OFFSET);
+        let next = read_u32(roster, at + ROSTER_NEXT_ENTRY_OFFSET) as usize;
+        // EVERY LINK IS CHECKED BEFORE IT IS FOLLOWED, and the reason is not
+        // tidiness: a nonzero offset smaller than one entry, or one that is not
+        // pointer-aligned, walks the SAME bytes again at a shifted position,
+        // where a thread id can be read out of the middle of some other field.
+        // A roster that can be re-read at arbitrary shifts can eventually
+        // satisfy the running-thread check and CONFIRM a freeze from nonsense
+        // (adversarial review, round 20).
+        if next != 0
+            && (next < ROSTER_PROCESS_ENTRY_BYTES
+                || next % core::mem::size_of::<usize>() != 0
+                || at.saturating_add(next) > roster.len())
+        {
+            return Err(FreezeRefusal::RosterUnreadable);
         }
+        // BOUNDED BY ITS OWN ENTRY, for EVERY entry. `NextEntryOffset` is where
+        // this process's bytes stop; a declared thread array that runs past it
+        // overlaps the next entry, and a walk that then follows `NextEntryOffset`
+        // reads thread bytes as a process header.
+        let listed = read_u32(roster, at + ROSTER_THREAD_COUNT_OFFSET) as usize;
+        let threads = at + ROSTER_PROCESS_ENTRY_BYTES;
+        let entry_end = if next == 0 {
+            roster.len()
+        } else {
+            at.saturating_add(next)
+        };
+        if threads.saturating_add(listed.saturating_mul(ROSTER_THREAD_ENTRY_BYTES)) > entry_end {
+            return Err(FreezeRefusal::RosterUnreadable);
+        }
+        // EVERY RECORD IN EVERY ENTRY SAYS WHOSE IT IS, and it must say its own
+        // entry's. Checking only inside the target branch left a FOREIGN entry
+        // free to carry records attributed to anyone, and a roster that
+        // inconsistent is not one this module can confirm from -- the target
+        // entry appended after it would otherwise answer for the whole buffer
+        // (adversarial review, round 23).
+        for index in 0..listed {
+            let record = threads + index * ROSTER_THREAD_ENTRY_BYTES;
+            if read_usize(roster, record + ROSTER_THREAD_PROCESS_OFFSET) != process_id {
+                return Err(FreezeRefusal::RosterUnreadable);
+            }
+            // AND CONVERTS LOSSLESSLY, everywhere, not only where it is compared:
+            // a value this module cannot represent is a roster it is not reading
+            // correctly.
+            let id = read_usize(roster, record + ROSTER_THREAD_ID_OFFSET);
+            if u32::try_from(id).is_err() {
+                return Err(FreezeRefusal::RosterUnreadable);
+            }
+            // AND IS UNIQUE WITHIN ITS ENTRY, in EVERY entry, with ONE exemption
+            // that was measured rather than assumed.
+            //
+            // The exemption: the IDLE PROCESS. Pid 0 lists one record per
+            // processor and every one of them carries `ClientId {0, 0}` -- 48 of
+            // them on this machine, MEASURED
+            // (`runs/ix_batch_freeze/enumeration_cost_measured.txt`). A blanket
+            // "identities do not repeat" rule was implemented first and refused
+            // EVERY freeze on this machine because of it.
+            //
+            // Everywhere else a repeat is a roster not describing the system,
+            // and it refuses -- including for a foreign process, whose records
+            // this answer does not read but whose inconsistency says the buffer
+            // is not what this module thinks it is (adversarial review, rounds
+            // 25 and 26).
+            let idle_processors = process_id == 0 && id == 0;
+            if !idle_processors {
+                for earlier in 0..index {
+                    let seen = threads + earlier * ROSTER_THREAD_ENTRY_BYTES;
+                    if read_usize(roster, seen + ROSTER_THREAD_ID_OFFSET) == id {
+                        return Err(FreezeRefusal::RosterUnreadable);
+                    }
+                }
+            }
+        }
+        if process_id == our_process_id {
+            if answer.is_some() {
+                // Two entries for one process id. One of them is not what this
+                // module thinks it is, and there is no rule for choosing.
+                return Err(FreezeRefusal::RosterUnreadable);
+            }
+            let mut lists_this_thread = false;
+            let mut unheld = None;
+            // Both halves of every `CLIENT_ID` here were checked by the loop
+            // above, for this entry and every other.
+            for index in 0..listed {
+                let entry = threads + index * ROSTER_THREAD_ENTRY_BYTES;
+                let Ok(id) = u32::try_from(read_usize(roster, entry + ROSTER_THREAD_ID_OFFSET))
+                else {
+                    return Err(FreezeRefusal::RosterUnreadable);
+                };
+                // Uniqueness, attribution and lossless conversion were all
+                // established for this entry -- and every other -- by the loop
+                // above. This process is not the Idle process, so no exemption
+                // applies to the ids this answer is computed from.
+                if id == current_thread_id {
+                    lists_this_thread = true;
+                    continue;
+                }
+                if unheld.is_none() && !is_held(id) {
+                    unheld = Some(id);
+                }
+            }
+            if !lists_this_thread {
+                return Err(FreezeRefusal::RosterUnreadable);
+            }
+            answer = Some(unheld);
+        }
+        if next == 0 {
+            break;
+        }
+        at = at.saturating_add(next);
     }
+    // Not in the roster at all is equally a buffer this cannot answer from.
+    answer.ok_or(FreezeRefusal::RosterUnreadable)
 }
+
+/// A little-endian `u32` out of the roster, by offset.
+fn read_u32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+/// A little-endian pointer-sized value out of the roster, by offset.
+fn read_usize(bytes: &[u8], at: usize) -> usize {
+    let mut raw = [0u8; core::mem::size_of::<usize>()];
+    raw.copy_from_slice(&bytes[at..at + core::mem::size_of::<usize>()]);
+    usize::from_ne_bytes(raw)
+}
+
+/// Quiet passes the materialised roster REFUSED to confirm.
+///
+/// Zero on every ordinary freeze. A non-zero value is the live walk having
+/// missed a thread the roster listed -- the hole the confirmation exists to
+/// close -- or a thread this process cannot open at all.
+pub(crate) static ROSTER_CONFIRMATIONS_REFUSED: AtomicU64 = AtomicU64::new(0);
 
 /// Has this thread terminated, RIGHT NOW?
 ///
@@ -1190,7 +1889,10 @@ pub fn freeze_process() -> Result<ProcessFreeze, FreezeRefusal> {
     freeze_other_threads()
 }
 
-/// Suspend every other thread in this process, or refuse.
+/// Suspend every other live thread of this process THE ROSTER LISTS, or refuse.
+/// What widens that beyond "every one the walk returned" is the roster
+/// confirmation in [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`];
+/// how far it is from "every thread there is" is that method's own residual.
 ///
 /// FAIL CLOSED: on `Err` nothing is suspended (any thread stopped on the way
 /// to the failure has been resumed) and the caller must not patch.
@@ -1211,6 +1913,36 @@ pub(crate) fn freeze_other_threads() -> Result<ProcessFreeze, FreezeRefusal> {
     }
 }
 
+/// Record a thread this freeze has accounted for, or REFUSE.
+///
+/// The one place the accounted table grows, and it never grows: pushing past the
+/// reservation taken before the first suspension would call the Rust global
+/// allocator with every other thread in the process stopped, and the allocator's
+/// lock may be held by one of them. The reservation is a BOUND, and this is
+/// where it is enforced.
+///
+/// The caller keeps `handle`'s custody until this returns `Ok`, because a
+/// refusal here means the table did not take it.
+fn account_for(
+    freeze: &mut ProcessFreeze,
+    id: u32,
+    handle: HANDLE,
+    suspended: bool,
+) -> Result<(), FreezeRefusal> {
+    if freeze.accounted.len() == freeze.accounted.capacity() {
+        return Err(FreezeRefusal::CapacityExceeded {
+            buffer: "accounted thread table",
+            capacity: freeze.accounted.capacity(),
+        });
+    }
+    freeze.accounted.push(AccountedThread {
+        id,
+        handle,
+        suspended,
+    });
+    Ok(())
+}
+
 fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
     // Taken before the first enumeration: a competing freezer must be either
     // entirely before us or entirely after us, never interleaved.
@@ -1218,55 +1950,64 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let mut ids: Vec<u32> = Vec::new();
-    // Pass 1 is THIS enumeration -- the loop below skips its own for `pass == 1`
-    // and reads what this leaves -- so it is counted here rather than there. The
-    // difference only shows on the paths that return before the loop ever runs:
-    // a refused snapshot, a truncated enumeration, or a reservation that could
-    // not be satisfied all spend a system-wide thread walk, and counting them at
-    // the top of the loop would report those costs as zero.
-    FREEZE_PASSES_SPENT.fetch_add(1, Ordering::AcqRel);
-    // Growth::Allowed is correct HERE and nowhere else in this function:
-    // nothing is suspended yet, so taking the allocator's lock is ordinary. It
-    // is also the only place it may appear, and the source pin in the tests
-    // counts the occurrences -- over code with comments stripped, so that this
-    // very comment does not break the build it exists to explain.
-    enumerate_thread_ids(&mut ids, Growth::Allowed)?;
+    // Resolved HERE, before anything is suspended: `GetProcAddress` takes the
+    // loader lock, and a suspended thread may hold it.
+    let walk = ThreadWalk::resolve()?;
 
-    // Reserve before the first suspension. Every later pass reuses this
-    // capacity, so the frozen window does not allocate -- enforced from here
-    // on by `Growth::Forbidden` and the capacity check before each push, not
-    // left to the reservation being big enough.
+    // The sizing walk. Its only product is the count the handle table's bound is
+    // derived from, it runs with nothing suspended, and it is deliberately not
+    // counted as a pass -- see `FREEZE_PASSES_SPENT`.
+    let thread_count = walk.thread_count()?;
+
+    // Reserve before the first suspension. Every pass reuses this capacity, so
+    // the frozen window does not allocate -- enforced from here on by the
+    // capacity check before each push, not left to the reservation being big
+    // enough.
     //
     // `try_reserve`, not `reserve`: an allocation that cannot be satisfied is
     // a refusal, not an abort, and refusing here costs nothing because nothing
     // is suspended yet.
-    let bound = frozen_window_buffer_bound(ids.len());
-    if ids.try_reserve(bound.saturating_sub(ids.len())).is_err() {
+    let bound = frozen_window_buffer_bound(thread_count);
+    let mut accounted: Vec<AccountedThread> = Vec::new();
+    if accounted.try_reserve(bound).is_err() {
         return Err(FreezeRefusal::CapacityExceeded {
-            buffer: "thread enumeration",
-            capacity: ids.capacity(),
+            buffer: "accounted thread table",
+            capacity: accounted.capacity(),
         });
     }
-    // The suspended-handle table gets the SAME bound, from the same function.
-    // It used to get the headroom alone while the enumeration got the headroom
-    // PLUS the threads already counted, so a burst could fit in the list of
-    // ids and not in the list of their handles -- and the handle table is the
-    // one whose overflow happens with a thread already suspended.
-    let mut frozen: Vec<(u32, HANDLE)> = Vec::new();
-    if frozen.try_reserve(bound).is_err() {
+    // AND THE ROSTER BUFFER, for the same reason and in the same place: the
+    // confirmation that closes the fixed point runs INSIDE the frozen window and
+    // must not allocate there. Its size is asked of the system now, with nothing
+    // suspended, and carries HALF AGAIN plus a megabyte of slack because the
+    // machine's process table grows between this question and the answer. A
+    // buffer that is still too small when it is used REFUSES; it is never grown
+    // inside the window.
+    //
+    // ASKED ONCE. Sizing it from two separate calls would be two answers about
+    // two different moments, and the slack would then be measured against
+    // whichever of them happened to be smaller.
+    let roster_needed = walk.roster_bytes_needed()?;
+    let roster_bytes = roster_needed
+        .saturating_add(roster_needed / 2)
+        .saturating_add(1024 * 1024);
+    let mut roster: Vec<u8> = Vec::new();
+    if roster.try_reserve(roster_bytes).is_err() {
         return Err(FreezeRefusal::CapacityExceeded {
-            buffer: "suspended handle table",
-            capacity: frozen.capacity(),
+            buffer: "system thread roster",
+            capacity: roster.capacity(),
         });
     }
+    roster.resize(roster_bytes, 0);
+
     let mut freeze = ProcessFreeze {
-        frozen,
-        enumeration: ids,
+        accounted,
+        roster,
         _serialisation: serialisation,
         passes: 0,
     };
 
+    let current_thread_id = unsafe { GetCurrentThreadId() };
+    let our_process_id = unsafe { GetCurrentProcessId() } as usize;
     // The last thread this pass could not settle, and the OS error its suspend
     // reported. Reset at the top of every pass, so what survives the loop
     // describes the FINAL pass and nothing earlier: a thread that was mid-exit
@@ -1274,98 +2015,116 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
     // out. Two `u32`s in a `Copy` `Option`, written inside the frozen window and
     // allocating nothing.
     let mut unsettled_suspend: Option<(u32, u32)> = None;
-    // The pass a run of unsettled probes started on. Cleared by any pass that
-    // settled everything it saw, so the allowance is CONSECUTIVE passes and does
-    // not accumulate across a freeze that kept making progress in between.
-    let mut unsettled_since: Option<u32> = None;
+    // How many threads the last pass had to account for that it was not already
+    // holding. Read only by the `NotQuiescent` refusal, and re-derived per pass
+    // so it describes the pass that ran the budget out rather than any earlier
+    // one.
+    let mut unaccounted = 0u32;
+    // The thread the roster named on the last quiet-looking pass that it refused
+    // to confirm. Named by the refusal below rather than folded into a count:
+    // an operator told only that the process never went quiet would go looking
+    // for the wrong thing.
+    let mut roster_unheld: Option<u32> = None;
+    // EVERY WALK BEGINS WITH EVERY HELD SUSPENSION ALREADY COMPLETE, and that is
+    // what makes a quiet pass mean anything.
+    //
+    // `SuspendThread` returns before the kernel has stopped the thread, so a
+    // thread suspended on an earlier pass can still be inside `NtCreateThreadEx`,
+    // and the child it is creating can join this process's thread list AFTER a
+    // walk has passed the point where it would appear. A pass that walked while
+    // any held suspension was still in flight would prove nothing about the set
+    // being closed -- it could miss a thread that did not exist yet and does a
+    // moment later.
+    //
+    // The invariant holds by CONSTRUCTION rather than by a flag, and the three
+    // clauses are all that is needed:
+    //
+    //  * pass 1 begins holding nothing, so it begins settled vacuously;
+    //  * a pass that suspends is never quiet -- `pass_is_quiet` requires
+    //    `newly_suspended == 0` -- so it cannot return, and it settles below
+    //    before the loop turns;
+    //  * a pass that suspends NOTHING adds no incomplete suspension, so whatever
+    //    was complete when it began is still complete when it ends.
+    //
+    // A tracked "were they complete?" flag was written first and then deleted: it
+    // could never be observed false at the top of a pass, because the only way to
+    // reach the next pass after suspending is through the settle that restores
+    // it. State that cannot take its second value is not a state machine, and a
+    // test asserting its transitions asserts nothing.
     for pass in 1..=MAX_PASSES {
         freeze.passes = pass;
         unsettled_suspend = None;
-        if pass > 1 {
-            // Counted here and not at the top of the loop: pass 1's enumeration
-            // was taken before the loop and is already counted there.
-            FREEZE_PASSES_SPENT.fetch_add(1, Ordering::AcqRel);
-            // A verification pass, inside the frozen window: reuse only, never
-            // Growth::Allowed.
-            /* Every comment shape appears here on purpose, because the source
-               scan that enforces this rule is what reads this function and must
-               not be satisfiable -- or breakable -- by prose naming the thing it
-               counts. A `//` inside a block comment, as in a URL like
-               https://example, once truncated this comment at that point and
-               destroyed the closing delimiter below. /* And these nest. */ */
-            enumerate_thread_ids(&mut freeze.enumeration, Growth::Forbidden)?;
-        }
+        FREEZE_PASSES_SPENT.fetch_add(1, Ordering::AcqRel);
+        // CLEARED AT THE TOP OF EVERY PASS, like `unsettled_suspend` and for the
+        // same reason: a thread the roster named on pass 3 and that pass 4 then
+        // suspended must not be what pass 16 blames (adversarial review, round
+        // 20). What survives the loop describes the FINAL pass.
+        roster_unheld = None;
         let mut newly_suspended = 0u32;
         let mut vanished = 0u32;
         let mut unsettled = 0u32;
-        // Indexed rather than iterated: the body needs `&mut freeze.frozen`
-        // while reading `freeze.enumeration`, and every refusal below returns
-        // `freeze` out of the function.
-        for index in 0..freeze.enumeration.len() {
-            let thread_id = freeze.enumeration[index];
-            if freeze.frozen.iter().any(|(id, _)| *id == thread_id) {
-                continue;
+        // The walk's cursor, and whether this freeze now owns it.
+        //
+        // THE CURSOR IS ALWAYS AN OPEN HANDLE ACROSS THE CALL THAT STEPS PAST
+        // IT, and that ordering is what makes the walk untruncatable rather than
+        // merely tidy. The kernel finds the next thread FROM this handle, so if
+        // the thread behind it could be reaped mid-walk the walk would end early
+        // and the pass would declare a set it never closed. It cannot: an open
+        // handle keeps the thread object alive, and a thread object that is
+        // alive is still in this process's thread list -- which is not a
+        // hopeful reading, it is the same kernel behaviour that MADE
+        // [`AccountedThread`] necessary and was measured doing it.
+        //
+        // So a handle this pass does not keep is closed only AFTER the following
+        // step has been taken, and never before.
+        let mut cursor: HANDLE = core::ptr::null_mut();
+        let mut cursor_is_kept = false;
+        loop {
+            let stepped = walk.next_thread(cursor);
+            if !cursor.is_null() && !cursor_is_kept {
+                unsafe { CloseHandle(cursor) };
             }
-            // Not already suspended by us: either it is new, or its id is
-            // stale, or its id was recycled onto a live thread. All three are
-            // decided from scratch, right now.
-            let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id) };
-            if handle.is_null() {
-                let os_error = unsafe { GetLastError() };
-                let disposition = match classify_open_failure(os_error) {
-                    // The kernel has no thread with this id at all.
-                    OpenFailure::NoSuchThreadId => ThreadDisposition::Gone,
-                    // The kernel has one and would not open it for us. Ids are
-                    // system-wide, so ask whether it is still OURS -- and ask
-                    // AFTER the failed open, which is what makes the answer
-                    // proof rather than a guess.
-                    OpenFailure::Unopenable => {
-                        let still_ours = id_is_still_in_this_process(thread_id)?;
-                        if !still_ours {
-                            OPEN_FAILURES_EXCUSED_AS_NO_LONGER_OURS.fetch_add(1, Ordering::AcqRel);
-                        }
-                        classify_unopenable_thread(still_ours)
-                    }
-                };
-                match disposition {
-                    ThreadDisposition::Gone => {
-                        vanished += 1;
-                        continue;
-                    }
-                    ThreadDisposition::Refuse => {
-                        return Err(FreezeRefusal::ThreadOpen {
-                            thread: thread_id,
-                            os_error,
-                        })
-                    }
+            cursor = core::ptr::null_mut();
+            cursor_is_kept = false;
+            let Some(handle) = stepped? else { break };
+            cursor = handle;
+            // The thread is OURS BY CONSTRUCTION -- the walk is scoped by this
+            // process's own handle -- so what is left to establish is whether
+            // the kernel granted enough to stop it, and which thread it is.
+            //
+            // THE RIGHTS COME FIRST, and the order is load-bearing: a handle
+            // short of the freeze's access may also be short of what
+            // `GetThreadId` needs, and answering "unidentifiable" about a thread
+            // whose real problem is its access would send an operator looking
+            // for the wrong fault. Both refuse either way.
+            let granted = match walk.granted_access(handle) {
+                Ok(granted) => granted,
+                Err(refusal) => {
+                    unsafe { CloseHandle(handle) };
+                    return Err(refusal);
                 }
+            };
+            if !granted_access_covers_the_freeze(granted) {
+                let thread = unsafe { GetThreadId(handle) };
+                unsafe { CloseHandle(handle) };
+                return Err(FreezeRefusal::ThreadRights { thread, granted });
             }
-            // The handle is real; whose thread is on the other end is a
-            // SEPARATE question, and the one the enumeration cannot answer. An
-            // id recycled onto another process's thread opens without error
-            // when that process is the same user's, and suspending it here is
-            // this recorder stopping a stranger's threads.
-            let owner = unsafe { GetProcessIdOfThread(handle) };
-            if owner == 0 {
+            let thread_id = unsafe { GetThreadId(handle) };
+            if thread_id == 0 {
                 let os_error = unsafe { GetLastError() };
                 unsafe { CloseHandle(handle) };
-                return Err(FreezeRefusal::ThreadOwner {
-                    thread: thread_id,
-                    os_error,
-                });
+                return Err(FreezeRefusal::ThreadIdentity { os_error });
             }
-            if classify_opened_thread_owner(owner, unsafe { GetCurrentProcessId() })
-                == OpenedThread::AnotherProcesses
-            {
-                unsafe { CloseHandle(handle) };
-                OPEN_SUCCESSES_EXCUSED_AS_ANOTHER_PROCESSES.fetch_add(1, Ordering::AcqRel);
-                vanished += 1;
+            if thread_id == current_thread_id {
                 continue;
             }
+            if freeze.accounted.iter().any(|entry| entry.id == thread_id) {
+                continue;
+            }
+            // Not yet accounted for by this freeze: either it is new, or it is
+            // on its way out. Both are decided from scratch, right now.
             let previous_count = unsafe { SuspendThread(handle) };
-            if previous_count != u32::MAX
-                && !leaves_room_for_minhooks_suspension(previous_count)
-            {
+            if previous_count != u32::MAX && !leaves_room_for_minhooks_suspension(previous_count) {
                 // Our suspension succeeded and MinHook's would not. Undo ours
                 // and refuse: proceeding would hand MinHook its fail-open
                 // branch on a thread that is provably still live.
@@ -1381,10 +2140,21 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             if previous_count == u32::MAX {
                 let os_error = unsafe { GetLastError() };
                 let disposition = classify_suspend_failure(thread_has_terminated(handle));
-                unsafe { CloseHandle(handle) };
                 match disposition {
                     ThreadDisposition::Gone => {
                         SUSPEND_FAILURES_EXCUSED_AS_TERMINATED.fetch_add(1, Ordering::AcqRel);
+                        // RECORDED, not merely counted, and its handle is kept.
+                        // The kernel's thread list holds a terminated thread
+                        // until it is reaped, so a pass that decided it afresh
+                        // would count it again on every later pass and the fixed
+                        // point would never be reached; the handle is what stops
+                        // its id being recycled onto a new thread that this
+                        // record would then skip. See [`AccountedThread`].
+                        if let Err(refusal) = account_for(&mut freeze, thread_id, handle, false) {
+                            unsafe { CloseHandle(handle) };
+                            return Err(refusal);
+                        }
+                        cursor_is_kept = true;
                         vanished += 1;
                         continue;
                     }
@@ -1394,10 +2164,10 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
                         // suspend failed and the thread object was not
                         // signalled at that instant. Recording it as unsettled
                         // stops this pass being the last one and re-derives the
-                        // id from scratch next pass, which is what a mid-exit
-                        // thread needs and what a 50 ms wait used to buy. A
-                        // streak of passes that keeps ending here refuses below,
-                        // by name, when either budget runs out.
+                        // thread from scratch next pass, which is what a
+                        // mid-exit thread needs and what a 50 ms wait used to
+                        // buy. A streak of passes that keeps ending here refuses
+                        // below, by name, when the pass budget runs out.
                         SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS.fetch_add(1, Ordering::AcqRel);
                         unsettled_suspend = Some((thread_id, os_error));
                         unsettled += 1;
@@ -1407,71 +2177,104 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             }
             // The suspension has happened and is not yet owned by anything
             // that would undo it, so a push that reallocates here is the one
-            // allocator call with no safe outcome. Undo this thread's
-            // suspension and refuse; `freeze` resumes the rest on the way out.
-            if freeze.frozen.len() == freeze.frozen.capacity() {
+            // allocator call with no safe outcome. `account_for` refuses instead
+            // of growing; undo this thread's suspension first, because the
+            // refusal path resumes only what the table already holds.
+            if let Err(refusal) = account_for(&mut freeze, thread_id, handle, true) {
                 unsafe {
                     ResumeThread(handle);
                     CloseHandle(handle);
                 }
-                return Err(FreezeRefusal::CapacityExceeded {
-                    buffer: "suspended handle table",
-                    capacity: freeze.frozen.capacity(),
-                });
+                return Err(refusal);
             }
-            freeze.frozen.push((thread_id, handle));
+            cursor_is_kept = true;
             newly_suspended += 1;
         }
+        // Everything this pass had to decide about. NOT "threads left running":
+        // a thread it suspended is held and a thread it proved terminated is
+        // accounted for, and neither is running. But a pass that had to do
+        // either did not find the set closed, which is exactly what the refusal
+        // below reports.
+        unaccounted = newly_suspended
+            .saturating_add(vanished)
+            .saturating_add(unsettled);
         if pass_is_quiet(newly_suspended, vanished, unsettled) {
-            // A whole pass found nothing outside the suspended set. Only this
-            // thread runs now, and it starts no threads, so the set is closed.
-            return Ok(freeze);
-        }
-        // How many re-derivations this run of unsettled probes has had. `first`
-        // is the pass that SAW the probe, so `pass - first` is the number of
-        // further passes that have re-derived it -- the quantity
-        // MAX_UNSETTLED_REDERIVATIONS is named for. A pass that settled
-        // everything it saw clears the run: the allowance is for a thread
-        // finishing its exit, not a standing budget carried across a freeze that
-        // kept making progress.
-        match (unsettled_suspend, unsettled_since) {
-            (None, _) => unsettled_since = None,
-            (Some(_), None) => unsettled_since = Some(pass),
-            (Some((thread, os_error)), Some(first)) => {
-                if pass.saturating_sub(first) >= MAX_UNSETTLED_REDERIVATIONS {
-                    // This freeze has now spent its whole allowance of
-                    // consecutive unsettled passes -- whole system-wide thread
-                    // walks, with the process held -- and the set has still not
-                    // closed. Deliberately NOT a claim about the thread named
-                    // below: the streak is the freeze's, and this id may have
-                    // been probed once. What is decided here is that the next
-                    // pass is not worth the game's time.
-                    return Err(FreezeRefusal::ThreadSuspend { thread, os_error });
+            // A whole pass found nothing outside the accounted set. It also
+            // suspended nothing -- that is what `pass_is_quiet` requires -- so it
+            // walked with every held suspension already complete.
+            //
+            // THAT IS NOT YET A PROOF, and this is where the live walk has to
+            // buy back what the old snapshot gave away: a walk is a CURSOR and
+            // holds no list at all, so a thread created behind it by one that
+            // then exits and is reaped ahead of it is invisible to all three
+            // counts. The roster is a list, which is what makes the comparison
+            // below possible at all -- see
+            // [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`].
+            // WHAT THIS `Ok` RESTS ON, said where it is returned rather than
+            // only in the header: the roster named nothing this freeze does not
+            // hold, so every thread of this process THE ROSTER LISTED was
+            // suspended or proven gone. That the buffer is a CONSISTENT view of
+            // the thread list at one moment -- rather than itself the product of
+            // a live traversal -- is NOT established here and cannot be from
+            // user mode (adversarial review, rounds 20-25). It is the module's
+            // one open technical residual, the step that would settle it is
+            // named in the header, and no user-mode enumerator this module could
+            // use instead has been shown to avoid it.
+            match freeze.what_the_roster_names_that_we_do_not_hold(&walk, current_thread_id, our_process_id)? {
+                None => return Ok(freeze),
+                Some(thread) => {
+                    // The walk did not return it and the roster does. Either it
+                    // appeared behind the cursor, or this process cannot open it
+                    // at all. Both mean this pass was NOT the last one; go round
+                    // again, where the walk gets another chance to reach it and
+                    // the pass budget bounds how long that can go on.
+                    ROSTER_CONFIRMATIONS_REFUSED.fetch_add(1, Ordering::AcqRel);
+                    unsettled_suspend = None;
+                    unaccounted = 1;
+                    roster_unheld = Some(thread);
                 }
             }
+        }
+        // Force them to complete before the next walk. A thread finishing a
+        // create inside the kernel finishes it here, and its child is in the
+        // list the next walk reads rather than appearing after this freeze has
+        // declared itself closed.
+        //
+        // ONLY WHEN THERE IS SOMETHING TO COMPLETE, and only when a next walk is
+        // coming. A pass that suspended nothing added no incomplete suspension,
+        // so re-reading every context would be a syscall per held thread that
+        // decides nothing -- and on the LAST pass it would be worse than free: a
+        // context that could not be read would refuse with `ThreadContext` over
+        // the top of the `ThreadSuspend` or `NotQuiescent` answer this freeze
+        // had already arrived at, naming the wrong cause.
+        //
+        // FAIL CLOSED where it does run: a context that cannot be read refuses,
+        // and `freeze` resumes everything it holds on the way out.
+        if newly_suspended > 0 && pass < MAX_PASSES {
+            freeze.settle_suspensions()?;
         }
     }
 
     // The pass budget is gone. If the LAST pass still could not settle a
     // suspend, that thread is the cause and is named as one -- an operator
-    // reading "N threads were still starting" about a single thread that would
-    // not suspend is being told the wrong thing to go and look at. Otherwise
-    // the process genuinely never went quiet.
+    // reading a bare count about a single thread that would not suspend is
+    // being told the wrong thing to go and look at. Otherwise the process
+    // genuinely never went quiet.
     if let Some((thread, os_error)) = unsettled_suspend {
         return Err(FreezeRefusal::ThreadSuspend { thread, os_error });
     }
-    let still_running = {
-        let mut count = 0u32;
-        for &thread_id in &freeze.enumeration {
-            if !freeze.frozen.iter().any(|(id, _)| *id == thread_id) {
-                count += 1;
-            }
-        }
-        count
-    };
+    // A thread the ROSTER named and the walk never returned outranks a bare
+    // count for the same reason: it is a specific thread, and which of its two
+    // configurations it is can be established from its id.
+    if let Some(thread) = roster_unheld {
+        return Err(FreezeRefusal::RosterUnheld {
+            thread,
+            passes: MAX_PASSES,
+        });
+    }
     Err(FreezeRefusal::NotQuiescent {
         passes: MAX_PASSES,
-        still_running,
+        unaccounted,
     })
 }
 
@@ -1484,11 +2287,12 @@ mod tests {
     /// Falsifiable: fails if the mask this module opens threads with ever stops
     /// covering everything MinHook will ask for.
     ///
-    /// The superset relation is load-bearing, not cosmetic. It is the only
-    /// reason a successful freeze permits the claim that MinHook's own
-    /// `OpenThread` cannot fail; drop `THREAD_SET_CONTEXT` from our mask and
-    /// MinHook could still be refused a handle for a thread we suspended,
-    /// putting its fail-open branch back in reach.
+    /// The superset relation is load-bearing, not cosmetic. It is what lets a
+    /// successful freeze claim MinHook's own `OpenThread` will be granted what
+    /// it asks for -- conditional on no intervening security-descriptor change,
+    /// per the module header -- and dropping `THREAD_SET_CONTEXT` from our mask
+    /// makes MinHook refusable for a thread we suspended with no condition at
+    /// all, putting its fail-open branch back in reach.
     #[test]
     fn the_freeze_access_mask_covers_everything_minhook_asks_for() {
         assert_eq!(
@@ -1501,7 +2305,7 @@ mod tests {
             0,
             "SYNCHRONIZE is required for the termination proof"
         );
-        // NO separate assertion for the ownership check's query right. It would
+        // NO separate assertion for a query right of its own. It would
         // be vacuous: MINHOOK_THREAD_ACCESS already contains
         // THREAD_QUERY_INFORMATION, so the superset assertion above cannot pass
         // unless FREEZE_THREAD_ACCESS carries a query right, and any mutation
@@ -1512,192 +2316,329 @@ mod tests {
         // it is already held here by the line above.
     }
 
-    /// Falsifiable: fails if an `OpenThread` error code is ever taken as a
-    /// disposition in its own right.
+    /// Falsifiable: fails if a handle short of what the freeze needs is ever
+    /// treated as good enough.
     ///
-    /// Only `ERROR_INVALID_PARAMETER` settles anything by itself, and what it
-    /// settles is that no thread anywhere has the id. Every other code --
-    /// `ERROR_ACCESS_DENIED` above all -- means the kernel HAS a thread with
-    /// this id and refused us a handle, which says nothing about whose thread
-    /// it is, so it must arrive at [`classify_unopenable_thread`] undecided.
+    /// kills: relaxing the check to "some access was granted", or to a subset
+    /// test in the wrong direction.
+    ///
+    /// The walk asks for `MAXIMUM_ALLOWED`, so what comes back is whatever the
+    /// thread's own security allows. A handle without `THREAD_SUSPEND_RESUME`
+    /// cannot be suspended; without `THREAD_GET_CONTEXT` its instruction pointer
+    /// cannot be read; without `SYNCHRONIZE` the termination proof cannot be
+    /// taken. Any of those is a thread this module cannot account for, which is
+    /// the one thing it must never proceed past.
     #[test]
-    fn only_a_missing_thread_id_is_settled_by_the_open_error_code_alone() {
-        assert_eq!(
-            classify_open_failure(ERROR_INVALID_PARAMETER),
-            OpenFailure::NoSuchThreadId
-        );
-        for os_error in [0u32, 5, 6, 8, 87 + 1, 1450] {
-            assert_eq!(
-                classify_open_failure(os_error),
-                OpenFailure::Unopenable,
-                "os error {os_error} cannot be settled by its code alone"
+    fn a_handle_short_of_the_freeze_access_is_never_good_enough() {
+        assert!(granted_access_covers_the_freeze(FREEZE_THREAD_ACCESS));
+        assert!(granted_access_covers_the_freeze(0xFFFF_FFFF));
+        assert!(!granted_access_covers_the_freeze(0));
+        // The shape MEASURED on a thread with an empty DACL: READ_CONTROL |
+        // WRITE_DAC, the owner rights, and nothing this module can use.
+        assert!(!granted_access_covers_the_freeze(0x0006_0000));
+        for missing in [
+            THREAD_SUSPEND_RESUME,
+            THREAD_GET_CONTEXT,
+            THREAD_QUERY_INFORMATION,
+            THREAD_SET_CONTEXT,
+            SYNCHRONIZE,
+        ] {
+            assert!(
+                !granted_access_covers_the_freeze(FREEZE_THREAD_ACCESS & !missing),
+                "dropping {missing:#010x} from the granted access must not still \
+                 count as covering the freeze"
             );
         }
     }
 
-    /// Falsifiable, and the guard on the whole recycled-id disposition: fails
-    /// if an unopenable id is ever excused while it is still this process's
-    /// own.
+    /// Falsifiable: fails if a walk that broke partway is ever read as one that
+    /// reached the end of the thread list.
     ///
-    /// The excusal is sound only because it rests on the ENUMERATION, not on
-    /// the error code: an id absent from a snapshot of this process taken
-    /// after the failed open belongs to no thread of ours that was alive at
-    /// that open. Invert this and a live thread of ours that we could not stop
-    /// is waved through, which is the MinHook fail-open the module exists to
-    /// close, reintroduced one step earlier.
+    /// A truncated walk is a list of threads that were never suspended, and
+    /// every later step -- the fixed point, the claim that MinHook's own
+    /// suspension cannot fail -- is stated over the threads the walk returned.
+    /// Accepting a truncation quietly makes all of it false.
+    ///
+    /// 0xC0000061 is not hypothetical: it is `STATUS_PRIVILEGE_NOT_HELD`, which
+    /// is what the walk MEASURABLY returns when it cannot open a thread at the
+    /// access it was asked for
+    /// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`).
     #[test]
-    fn an_unopenable_id_is_excused_only_when_it_has_left_this_process() {
-        assert_eq!(
-            classify_unopenable_thread(true),
-            ThreadDisposition::Refuse,
-            "an id that is still ours is a live thread we could not stop"
-        );
-        assert_eq!(
-            classify_unopenable_thread(false),
-            ThreadDisposition::Gone,
-            "an id that has left this process cannot name a running thread of ours"
-        );
+    fn only_the_end_of_the_thread_list_ends_a_walk() {
+        assert!(walk_stop_is_end_of_list(STATUS_NO_MORE_ENTRIES));
+        for status in [
+            0i32,
+            0xC000_0061u32 as i32,
+            0xC000_0022u32 as i32,
+            0xC000_000Du32 as i32,
+            0x8000_001Bu32 as i32,
+            1,
+        ] {
+            assert!(
+                !walk_stop_is_end_of_list(status),
+                "status {status:#010x} is a broken walk, not the end of one"
+            );
+        }
     }
 
-    /// Falsifiable, and the one that observes the real OS behind
-    /// [`classify_unopenable_thread`]: fails if
-    /// [`id_is_still_in_this_process`] stops distinguishing this process's
-    /// threads from everyone else's.
+    /// Falsifiable, and THE guard on the enumeration this module replaced its
+    /// system-wide snapshot with: fails if the kernel walk stops seeing a thread
+    /// that `CreateToolhelp32Snapshot` can see.
     ///
-    /// Three shapes, and all three are needed. A live thread of ours must read
-    /// TRUE -- a predicate stuck on `false` would excuse every unopenable id,
-    /// which is the fail-open. A thread of ANOTHER process must read FALSE:
-    /// that is the recycled-id case the fix turns on, and it is what a
-    /// predicate stuck on `true` (or one that forgot the owner-pid filter and
-    /// walked the whole system list) fails. An id that belongs to nobody must
-    /// read FALSE too.
+    /// kills: narrowing the walk's `MAXIMUM_ALLOWED` back to
+    /// `FREEZE_THREAD_ACCESS`, which MEASURABLY skips a thread it cannot open
+    /// and still reports a clean end -- the fail-open this module exists to
+    /// close, reintroduced in its own enumeration. It also kills a walk that
+    /// stops early for any other reason, and a walk that loses this process's
+    /// own threads.
     ///
-    /// The foreign id is taken from a live system-wide snapshot rather than
-    /// invented, because the point is that such ids are indistinguishable from
-    /// ours by value alone.
+    /// The snapshot is the INDEPENDENT authority here and is deliberately kept
+    /// as test-only code: it is an independent thread-id authority for this
+    /// process -- independent, NOT the only one, since
+    /// `NtQuerySystemInformation(SystemProcessInformation)` is another and is
+    /// measured in this module's header. A cross-check between two enumerations
+    /// is worth 70 ms in a test even though it was not worth 70 ms in a freeze.
     ///
-    /// None of the three answers can be vacuous: a snapshot that could not be
-    /// taken, or an enumeration that stopped early, is an `Err`, and every
-    /// assertion here is against an `Ok`.
+    /// # Why it is taken under a held freeze
+    ///
+    /// Because otherwise it is a race, and it flaked as one: the two
+    /// enumerations are 70 ms apart, this binary runs its tests in parallel, and
+    /// a thread created in between is in the second answer and not the first.
+    /// Under the freeze nothing else runs, so both answers describe one instant.
+    /// Both buffers are reserved BEFORE the freeze and filled without growing,
+    /// for the reason production does the same: growing inside the window takes
+    /// the allocator's lock a suspended thread may hold.
+    ///
+    /// # The comparison is one-directional, and that is not a weakening
+    ///
+    /// SNAPSHOT ⊆ WALK is the property that matters -- a thread the walk cannot
+    /// see is a thread the freeze cannot stop. The converse does NOT hold and
+    /// must not be asserted: the kernel's thread list keeps a terminated thread
+    /// until it is reaped, and this freeze is itself holding handles that
+    /// prevent exactly that, while a toolhelp snapshot drops such threads at
+    /// once. The walk legitimately lists MORE.
     #[test]
-    fn an_id_is_this_processs_own_only_while_the_thread_is() {
+    fn the_kernel_walk_lists_every_thread_the_system_snapshot_lists() {
+        // Comfortably more than this binary's thread count; asserted below
+        // rather than assumed, because a buffer that filled to capacity would
+        // silently make the comparison partial.
+        const ROOM: usize = 4096;
+
+        let _serialised = os_suspend_state_guard();
+        let stop = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicU32::new(0));
+        let workers: Vec<_> = (0..3)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                let started = Arc::clone(&started);
+                std::thread::spawn(move || {
+                    started.fetch_add(1, Ordering::AcqRel);
+                    while !stop.load(Ordering::Acquire) {
+                        std::hint::spin_loop();
+                    }
+                })
+            })
+            .collect();
+        while started.load(Ordering::Acquire) < 3 {
+            std::thread::yield_now();
+        }
+
+        let mut walked: Vec<u32> = Vec::with_capacity(ROOM);
+        let mut snapshotted: Vec<u32> = Vec::with_capacity(ROOM);
+        // Resolved BEFORE the freeze: `GetProcAddress` takes the loader lock.
+        let resolved = ThreadWalk::resolve();
+        let outcome = match resolved {
+            Err(_) => None,
+            Ok(walker) => {
+            let freeze = freeze_other_threads();
+            match freeze {
+                Ok(freeze) => {
+                    let walk = fill_with_walked_thread_ids(&walker, &mut walked);
+                    let snapshot = fill_with_snapshotted_thread_ids(&mut snapshotted);
+                    drop(freeze);
+                    Some((walk, snapshot))
+                }
+                // The refusal is reported after the workers are joined, not
+                // here: a panic with three spinning threads still running would
+                // make every later test in this binary measure a busier machine.
+                Err(_) => None,
+            }
+            }
+        };
+
+        stop.store(true, Ordering::Release);
+        for worker in workers {
+            worker.join().expect("worker joins");
+        }
+
+        let (walk, snapshot) =
+            outcome.expect("a test process must be freezable for this comparison");
+        walk.expect("the kernel walk answers");
+        assert!(snapshot, "the system snapshot answers");
+        assert!(
+            walked.len() < ROOM && snapshotted.len() < ROOM,
+            "one of the enumerations filled its buffer ({} walked, {} \
+             snapshotted, room for {ROOM}), so the comparison below is partial",
+            walked.len(),
+            snapshotted.len()
+        );
+        assert!(
+            snapshotted.len() > 1,
+            "this process has one thread, so the comparison below would prove \
+             nothing"
+        );
+        for id in &snapshotted {
+            assert!(
+                walked.contains(id),
+                "thread {id} is in this process's system snapshot and NOT in the \
+                 kernel walk; the walk skips threads it cannot open at the \
+                 access it asks for, so a narrowed mask hides exactly the thread \
+                 the freeze cannot stop"
+            );
+        }
+    }
+
+    /// Falsifiable, and the fail-closed half of the walk: fails if a thread this
+    /// process cannot open at the freeze's access is skipped instead of refused.
+    ///
+    /// kills: dropping the granted-access check from the freeze loop, or moving
+    /// it after the suspend. Either one turns a thread the freeze demonstrably
+    /// cannot stop into a thread it never noticed, and the patch then lands
+    /// while that thread runs.
+    ///
+    /// The inaccessible thread is MANUFACTURED rather than waited for: an empty
+    /// DACL (present, zero ACEs) denies everyone everything, so only the owner
+    /// rights `READ_CONTROL | WRITE_DAC` survive -- which is exactly the
+    /// 0x60000 the harness measured, and is short of every right this module
+    /// needs.
+    ///
+    /// It cleans up by ending the thread. The DACL is not restored, and does not
+    /// need to be: the thread exits, leaves this process's thread list, and no
+    /// later freeze can reach it.
+    #[test]
+    fn a_thread_this_process_cannot_open_at_the_freeze_rights_refuses_by_name() {
+        use std::os::windows::io::AsRawHandle;
         let _serialised = os_suspend_state_guard();
 
         let stop = Arc::new(AtomicBool::new(false));
-        let ours = Arc::new(AtomicU64::new(0));
+        let denied = Arc::new(AtomicU32::new(0));
         let worker = {
             let stop = Arc::clone(&stop);
-            let ours = Arc::clone(&ours);
+            let denied = Arc::clone(&denied);
             std::thread::spawn(move || {
-                ours.store(
-                    u64::from(unsafe { GetCurrentThreadId() }),
-                    Ordering::Release,
-                );
+                denied.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
                 while !stop.load(Ordering::Acquire) {
                     std::hint::spin_loop();
                 }
             })
         };
-        while ours.load(Ordering::Acquire) == 0 {
+        while denied.load(Ordering::Acquire) == 0 {
             std::thread::yield_now();
         }
-        let our_worker = ours.load(Ordering::Acquire) as u32;
-        assert_eq!(
-            id_is_still_in_this_process(our_worker),
-            Ok(true),
-            "a live thread of this process must read as ours"
-        );
+        let denied_id = denied.load(Ordering::Acquire);
 
-        let foreign = a_thread_id_belonging_to_another_process()
-            .expect("some other process on this machine has a thread");
-        assert_ne!(foreign, our_worker);
-        assert_eq!(
-            id_is_still_in_this_process(foreign),
-            Ok(false),
-            "a thread of another process must not read as ours merely because \
-             thread ids are drawn from one system-wide space"
-        );
-
-        // Ids are allocated in multiples of four, so an odd one names nothing.
-        assert_eq!(id_is_still_in_this_process(u32::MAX), Ok(false));
+        let set = deny_every_access_to(worker.as_raw_handle() as HANDLE);
+        let outcome = if set == 0 {
+            Some(freeze_other_threads().map(|freeze| freeze.frozen_thread_count()))
+        } else {
+            None
+        };
 
         stop.store(true, Ordering::Release);
         worker.join().expect("worker joins");
-    }
 
-    /// Falsifiable: fails if the recycled-id predicate starts building a list.
-    ///
-    /// It runs with every other thread in the process suspended. Materialising
-    /// a `Vec` there means the Rust global allocator, and a reservation cannot
-    /// bound it -- the thread count is exactly what is moving in the churn
-    /// this path exists for. If one of the suspended threads holds the heap
-    /// lock, the process HANGS rather than crashing, which is the one failure
-    /// mode this module cannot detect at runtime. Text, because "did not
-    /// allocate" is not observable from a test.
-    ///
-    /// It also pins the truncation rule for the second enumeration walk in
-    /// this module, which the `enumerate_thread_ids` clause above does not
-    /// reach: reading a broken walk as "absent" would excuse a live thread.
-    ///
-    /// WHAT THIS IS NOT, stated because the gap is invisible otherwise: it is
-    /// a lexical guard over a named list of allocating constructs, not a proof
-    /// of allocation freedom. A future body that allocates by calling some
-    /// helper of ours that allocates internally passes this test. The list
-    /// below is therefore the shapes a future edit is LIKELY to reach for, and
-    /// its job is to make the invariant visible at the point of edit.
-    ///
-    /// Nothing available here proves the stronger property either. The closest
-    /// is a `#[global_allocator]` shim that ABORTS when it is entered while a
-    /// freeze is held -- abort and not panic, because unwinding out of a
-    /// `GlobalAlloc` method is undefined behaviour -- run in a dedicated
-    /// process so the abort cannot take the shared test binary down. Even that
-    /// would only catch the paths a run actually exercises, so it is a
-    /// detector and not a proof. This crate has neither.
-    #[test]
-    fn the_recycled_id_predicate_builds_no_list_while_the_process_is_frozen() {
-        let production = production_code();
-        let predicate = production
-            .split_once("fn id_is_still_in_this_process(")
-            .expect("id_is_still_in_this_process is declared in production")
-            .1
-            .split_once("\n}\n")
-            .expect("id_is_still_in_this_process has a closing brace")
-            .0;
-        for allocating in [
-            "Vec", "push(", "to_vec", "collect", "String", "to_string", "format!", "vec!",
-            "Box::", "Rc::", "Arc::", "HashSet", "HashMap", "to_owned",
-        ] {
-            assert!(
-                !predicate.contains(allocating),
-                "id_is_still_in_this_process must not `{allocating}`; it runs \
-                 with every other thread suspended and the allocator's lock \
-                 may be held by one of them"
-            );
+        let outcome = outcome.unwrap_or_else(|| {
+            panic!("NtSetSecurityObject refused the empty DACL ({set:#010x}), so \
+                    this test could not manufacture the thread it exists to test")
+        });
+        match outcome {
+            Err(FreezeRefusal::ThreadRights { thread, granted }) => {
+                // The id is reported when it can be read and 0 when it cannot,
+                // and here it CANNOT: `GetThreadId` needs a query right, and the
+                // empty DACL took that away with everything else. Asserting the
+                // id outright would assert a property this refusal does not
+                // have; what it must never do is name some OTHER thread.
+                assert!(
+                    thread == denied_id || thread == 0,
+                    "the refusal named thread {thread}, which is neither the \
+                     thread whose access was denied ({denied_id}) nor the 0 that \
+                     means its id could not be read either"
+                );
+                assert!(
+                    !granted_access_covers_the_freeze(granted),
+                    "the refusal reported granted access {granted:#010x}, which \
+                     DOES cover the freeze, so it refused for some other reason"
+                );
+            }
+            Err(other) => panic!(
+                "a thread this process cannot open at the freeze's access must \
+                 refuse as ThreadRights, not as {other:?}"
+            ),
+            Ok(held) => panic!(
+                "the freeze SUCCEEDED holding {held} thread(s) while thread \
+                 {denied_id} could not be opened at the access needed to suspend \
+                 it; that thread was still running when the patch would have \
+                 landed"
+            ),
         }
-        assert!(
-            predicate.contains("enumeration_stop_is_end_of_list(code)"),
-            "the predicate's own walk must classify its stop code; reading a \
-             truncated list as `absent` excuses a live thread of ours"
-        );
     }
 
-    /// A thread id owned by some process other than this one, from a live
-    /// system-wide snapshot. `None` only if this machine is running nothing
-    /// else, which it is not.
-    fn a_thread_id_belonging_to_another_process() -> Option<u32> {
+    /// Fill `out` with every thread id the kernel walk returns for this
+    /// process, WITHOUT growing it.
+    ///
+    /// Called with the process frozen, so it must not allocate: it stops
+    /// pushing at capacity and the caller asserts the buffer was never filled.
+    ///
+    /// The walk is RESOLVED BY THE CALLER and passed in, because resolving it
+    /// calls `GetProcAddress`, which takes the loader lock -- and a thread this
+    /// freeze suspended may be holding it. Production resolves before its first
+    /// suspension for the same reason; a test helper that did it inside the
+    /// window would be the one place in this module that could hang.
+    fn fill_with_walked_thread_ids(
+        walk: &ThreadWalk,
+        out: &mut Vec<u32>,
+    ) -> Result<(), FreezeRefusal> {
+        let mut cursor: HANDLE = core::ptr::null_mut();
+        loop {
+            let stepped = walk.next_thread(cursor);
+            if !cursor.is_null() {
+                unsafe { CloseHandle(cursor) };
+            }
+            match stepped? {
+                None => return Ok(()),
+                Some(handle) => {
+                    if out.len() < out.capacity() {
+                        out.push(unsafe { GetThreadId(handle) });
+                    }
+                    cursor = handle;
+                }
+            }
+        }
+    }
+
+    /// Fill `out` with every thread id `CreateToolhelp32Snapshot` attributes to
+    /// this process -- the independent authority the walk is checked against,
+    /// and the ONLY use of the system-wide snapshot left in this crate.
+    ///
+    /// Also called with the process frozen, and under the same no-growth rule.
+    fn fill_with_snapshotted_thread_ids(out: &mut Vec<u32>) -> bool {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
         let process_id = unsafe { GetCurrentProcessId() };
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
-            return None;
+            return false;
         }
         let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
         entry.dwSize = core::mem::size_of::<THREADENTRY32>() as u32;
-        let mut found = None;
         if unsafe { Thread32First(snapshot, &mut entry) } != 0 {
             loop {
-                if entry.th32OwnerProcessID != process_id && entry.th32OwnerProcessID != 0 {
-                    found = Some(entry.th32ThreadID);
-                    break;
+                if entry.th32OwnerProcessID == process_id && out.len() < out.capacity() {
+                    out.push(entry.th32ThreadID);
                 }
                 if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
                     break;
@@ -1705,7 +2646,75 @@ mod tests {
             }
         }
         unsafe { CloseHandle(snapshot) };
-        found
+        true
+    }
+
+    /// Give `thread` an EMPTY DACL, so every access to it is denied to everyone
+    /// and only the owner rights remain. Returns the NTSTATUS.
+    ///
+    /// Hand-built rather than taken from `windows-sys`: the security structures
+    /// live behind a feature this crate does not otherwise need, and this is the
+    /// only place in it that has ever wanted them.
+    fn deny_every_access_to(thread: HANDLE) -> i32 {
+        #[repr(C)]
+        struct AclHeader {
+            revision: u8,
+            sbz1: u8,
+            size: u16,
+            count: u16,
+            sbz2: u16,
+        }
+        #[repr(C)]
+        struct AbsoluteSecurityDescriptor {
+            revision: u8,
+            sbz1: u8,
+            control: u16,
+            owner: *mut c_void,
+            group: *mut c_void,
+            sacl: *mut c_void,
+            dacl: *mut c_void,
+        }
+        /// `DACL_SECURITY_INFORMATION`.
+        const DACL_SECURITY_INFORMATION: u32 = 4;
+        /// `SE_DACL_PRESENT`. A descriptor with the flag and an ACL of zero ACEs
+        /// denies everything; a descriptor WITHOUT the flag grants everything,
+        /// which is the mistake that would make this test vacuous.
+        const SE_DACL_PRESENT: u16 = 0x0004;
+        type NtSetSecurityObjectFn = unsafe extern "system" fn(HANDLE, u32, *const c_void) -> i32;
+
+        let mut empty_dacl = AclHeader {
+            revision: 2,
+            sbz1: 0,
+            size: core::mem::size_of::<AclHeader>() as u16,
+            count: 0,
+            sbz2: 0,
+        };
+        let descriptor = AbsoluteSecurityDescriptor {
+            revision: 1,
+            sbz1: 0,
+            control: SE_DACL_PRESENT,
+            owner: core::ptr::null_mut(),
+            group: core::ptr::null_mut(),
+            sacl: core::ptr::null_mut(),
+            dacl: (&mut empty_dacl) as *mut AclHeader as *mut c_void,
+        };
+        let ntdll: [u16; 10] = [
+            b'n' as u16, b't' as u16, b'd' as u16, b'l' as u16, b'l' as u16, b'.' as u16,
+            b'd' as u16, b'l' as u16, b'l' as u16, 0,
+        ];
+        let module = unsafe { GetModuleHandleW(ntdll.as_ptr()) };
+        let set = unsafe { GetProcAddress(module, c"NtSetSecurityObject".as_ptr().cast()) }
+            .expect("ntdll exports NtSetSecurityObject");
+        let set: NtSetSecurityObjectFn = unsafe {
+            core::mem::transmute::<unsafe extern "system" fn() -> isize, NtSetSecurityObjectFn>(set)
+        };
+        unsafe {
+            set(
+                thread,
+                DACL_SECURITY_INFORMATION,
+                (&descriptor) as *const AbsoluteSecurityDescriptor as *const c_void,
+            )
+        }
     }
 
     /// Falsifiable: fails if a suspend failure is ever excused by anything
@@ -1779,9 +2788,9 @@ mod tests {
                 }
             })
         };
-        // Its own id, published by the thread itself: `JoinHandle` does not
-        // expose the OS id on stable, and guessing one would be a different
-        // thread's.
+        // Its own id, published by the thread itself, and read back off the
+        // handle: the two must agree, or the probe below is timing some other
+        // thread.
         let mut thread_id = 0u32;
         while thread_id == 0 {
             thread_id = live_thread_id.load(Ordering::Acquire);
@@ -1792,24 +2801,24 @@ mod tests {
         // every later test would then be measuring a busier machine than it
         // meant to -- one red test reported as several.
         const PROBES: u32 = 8;
-        let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id) };
-        let opened = !handle.is_null();
+        let handle = {
+            use std::os::windows::io::AsRawHandle;
+            worker.as_raw_handle() as HANDLE
+        };
+        let identified = unsafe { GetThreadId(handle) } == thread_id;
         let mut verdict = true;
         let mut elapsed = std::time::Duration::MAX;
-        if opened {
-            for _ in 0..PROBES {
-                let started = std::time::Instant::now();
-                verdict = thread_has_terminated(handle);
-                elapsed = elapsed.min(started.elapsed());
-            }
-            unsafe { CloseHandle(handle) };
+        for _ in 0..PROBES {
+            let started = std::time::Instant::now();
+            verdict = thread_has_terminated(handle);
+            elapsed = elapsed.min(started.elapsed());
         }
         stop.store(true, Ordering::Release);
         worker.join().expect("worker joins");
 
         assert!(
-            opened,
-            "a live thread of this process must be openable at the freeze mask"
+            identified,
+            "the handle probed must be the worker thread's own"
         );
         assert!(
             !verdict,
@@ -1839,9 +2848,15 @@ mod tests {
     /// WHAT IT DOES NOT DO, said plainly because the previous name for it
     /// ("no blocking call survives") claimed otherwise and was wrong twice over.
     /// It is a ROSTER: it cannot see a helper that blocks inside itself, or an
-    /// aliased call, and no substring pass can. And this module DOES block, in
-    /// exactly one place -- [`FREEZE_LOCK`] is a mutex and a second freezer
-    /// parks on it. That is not a hole: the lock is taken before anything is
+    /// aliased call, and no substring pass can.
+    ///
+    /// WHAT IT IS ABOUT IS USER-MODE BLOCKING -- a lock, a sleep, a spin, a timed
+    /// wait -- and NOT synchronous kernel completion. `GetThreadContext` blocks
+    /// in the kernel until the target's suspension takes effect, deliberately
+    /// and by design (module header), and its presence is not a violation
+    /// because it is not what this scans for. Of the user-mode kind this module
+    /// has exactly one, and it is named rather than banned: [`FREEZE_LOCK`] is a
+    /// mutex and a second freezer parks on it. That is not a hole: the lock is taken before anything is
     /// suspended, the thread that parks is another freezer rather than a thread
     /// of the game, and no game thread ever calls into this module. So the lock
     /// is asserted to be present and singular instead of being banned, which is
@@ -1922,127 +2937,29 @@ mod tests {
         }
     }
 
-    /// Falsifiable: fails if a successfully opened handle is suspended without
-    /// establishing whose thread it is.
-    ///
-    /// kills: inverting the ownership rule -- treating a foreign owner as ours,
-    /// or our own as foreign.
-    ///
-    /// It does NOT kill DELETING the production `GetProcessIdOfThread` read;
-    /// this test only exercises the classifier. That deletion is killed by the
-    /// open -> owner -> suspend ordering pin in
-    /// [`the_fail_open_decisions_are_taken_only_through_their_classifiers`].
-    ///
-    /// Ids are system-wide and `OpenThread` succeeds against another process
-    /// running as this user, so "the open worked" says nothing about ownership.
-    /// A thread that is not ours is `AnotherProcesses` -- our thread with that
-    /// id has ended -- and must never be suspended.
-    #[test]
-    fn an_opened_handle_is_only_ours_when_the_kernel_says_the_owner_is_us() {
-        let ours = unsafe { GetCurrentProcessId() };
-        assert_eq!(classify_opened_thread_owner(ours, ours), OpenedThread::Ours);
-        assert_eq!(
-            classify_opened_thread_owner(ours.wrapping_add(4), ours),
-            OpenedThread::AnotherProcesses
-        );
-        // 0 is `GetProcessIdOfThread`'s failure return and the freeze loop
-        // REFUSES on it before reaching this classifier -- an owner that could
-        // not be read is not evidence of anything. The classifier is still
-        // total, so that a future caller which does reach it with 0 cannot be
-        // told the thread is ours.
-        assert_eq!(
-            classify_opened_thread_owner(0, ours),
-            OpenedThread::AnotherProcesses
-        );
-    }
-
-    /// Falsifiable: fails if an enumeration taken inside the frozen window can
-    /// grow its buffer.
-    ///
-    /// kills: dropping the `Growth::Forbidden` capacity check itself.
-    ///
-    /// It does NOT kill passing `Growth::Allowed` from the verification pass --
-    /// this test calls `enumerate_thread_ids` directly, so the production call
-    /// site is invisible to it. That mutation is killed at the call site by
-    /// [`the_fail_open_decisions_are_taken_only_through_their_classifiers`],
-    /// which also bounds how many enumerations the frozen window may contain.
-    ///
-    /// Growing there is a call into the Rust global allocator with every other
-    /// thread suspended, which is the one failure this module cannot recover
-    /// from: whoever owns that lock is stopped and there is nobody left to
-    /// release it. Refusing is the only safe answer, and it is the answer the
-    /// reservation was previously only hoping to avoid needing.
-    #[test]
-    fn a_frozen_window_enumeration_refuses_rather_than_growing_its_buffer() {
-        let _serialised = os_suspend_state_guard();
-
-        // Not vacuous: this process really does have another thread to list,
-        // so the zero-capacity call below MUST reach the capacity check.
-        let mut outside: Vec<u32> = Vec::new();
-        enumerate_thread_ids(&mut outside, Growth::Allowed)
-            .expect("a test process enumerates its own threads");
-        assert!(
-            !outside.is_empty(),
-            "the enumeration found no other thread, so the refusal below would prove nothing"
-        );
-
-        let mut inside: Vec<u32> = Vec::new();
-        assert_eq!(
-            enumerate_thread_ids(&mut inside, Growth::Forbidden),
-            Err(FreezeRefusal::CapacityExceeded {
-                buffer: "thread enumeration",
-                capacity: 0,
-            })
-        );
-        assert_eq!(
-            inside.capacity(),
-            0,
-            "the buffer was grown inside a window that may not allocate"
-        );
-    }
-
-    /// Falsifiable: fails if the two frozen-window buffers can be sized
-    /// differently again.
+    /// Falsifiable: fails if the frozen-window handle table can be sized
+    /// without room for a burst.
     ///
     /// kills: a bound that does not leave room for a burst, or that wraps on an
     /// absurd thread count instead of saturating.
     ///
-    /// It does NOT kill reserving the headroom alone for the suspended-handle
-    /// table -- that is a CALL-SITE property, invisible to a test of the
+    /// It does NOT kill deriving the reservation from something other than this
+    /// function -- that is a CALL-SITE property, invisible to a test of the
     /// function, and it is pinned as one in
-    /// [`the_fail_open_decisions_are_taken_only_through_their_classifiers`],
-    /// which requires both reservations to be taken from this bound.
+    /// [`the_fail_open_decisions_are_taken_only_through_their_classifiers`].
     #[test]
-    fn both_frozen_window_buffers_take_the_same_bound() {
+    fn the_frozen_window_handle_table_leaves_room_for_a_burst() {
         for count in [0usize, 1, 9, 69, 1_024] {
             let bound = frozen_window_buffer_bound(count);
             assert!(
                 bound >= count,
-                "the bound must at least hold the threads already enumerated"
+                "the bound must at least hold the threads already walked"
             );
             assert!(bound > count, "and leave room for a burst racing the first pass");
         }
         // Saturating, so an absurd count refuses on `try_reserve` rather than
         // wrapping to a small bound that would then be silently exceeded.
         assert_eq!(frozen_window_buffer_bound(usize::MAX), usize::MAX);
-    }
-
-    /// Falsifiable: fails if a broken thread enumeration is ever read as a
-    /// complete one.
-    ///
-    /// A truncated list is a list of threads that were never suspended, and
-    /// every later step -- the fixed point, the claim that MinHook's own
-    /// suspension cannot fail -- is stated over the threads this enumeration
-    /// returned. Accepting a truncation quietly makes all of it false.
-    #[test]
-    fn only_the_documented_end_of_list_ends_an_enumeration() {
-        assert!(enumeration_stop_is_end_of_list(ERROR_NO_MORE_FILES));
-        for os_error in [0u32, 5, 6, 8, 87, 24, 1450] {
-            assert!(
-                !enumeration_stop_is_end_of_list(os_error),
-                "os error {os_error} is a broken enumeration, not the end of one"
-            );
-        }
     }
 
     /// The production text of this module, up to its test module.
@@ -2065,10 +2982,52 @@ mod tests {
     /// Whitespace is collapsed to single spaces, so every `contains` below is
     /// written as one line and matches however the formatter wrapped it.
     ///
-    /// HONEST LIMIT: a `//` or `/*` inside a STRING LITERAL is treated as the
-    /// start of a comment. The functions scanned here contain no such literal;
-    /// a scanner that had to be sound about that would need the lexer, not a
-    /// substring pass.
+    /// WHERE THIS SCAN STOPS, stated once rather than re-derived each round.
+    ///
+    /// Comments and literals are handled. MACRO TOKEN TREES ARE NOT: the shapes
+    /// below are what the COMPILER would see as tokens, and
+    /// `stringify![if a { b() }]` is real tokens that execute nothing. A pin
+    /// built on this scan therefore cannot tell a statement from the same
+    /// statement inside an inert macro (adversarial review, round 25), and no
+    /// amount of further lexing changes that -- it needs the parsed AST.
+    ///
+    /// THAT IS ACCEPTED HERE, deliberately, and the reason is what these pins are
+    /// FOR. They exist to catch a future edit that DELETES or MOVES something
+    /// load-bearing, which is an accident shape: a deletion does not leave the
+    /// deleted text behind wrapped in `stringify!`. They do not exist to defeat
+    /// someone deliberately writing code that reads as other code. Where a
+    /// property could be tested at RUNTIME instead, it is -- the roster parse,
+    /// the churn accounting, the freeze itself and the access measurement are
+    /// all runtime tests, and the source pins cover only what no runtime test in
+    /// this process can reach.
+    ///
+    /// How many characters of raw-string PREFIX start at `index`, if one does.
+    ///
+    /// All three of Rust's spellings, because recognising only the bare `r` let
+    /// `br#"..{..".."}.."#` put braces the compiler never sees in front of
+    /// `block_body` (adversarial review, round 23). The `r` must not be the last
+    /// character of an identifier -- `for`, `ptr` -- which is what the previous
+    /// emitted character settles.
+    fn raw_string_prefix(characters: &[char], index: usize, code: &str) -> Option<usize> {
+        if code
+            .chars()
+            .next_back()
+            .is_some_and(|previous| previous.is_alphanumeric() || previous == '_')
+        {
+            return None;
+        }
+        let prefix = match characters.get(index) {
+            Some('r') => 1usize,
+            Some('b') | Some('c') if characters.get(index + 1) == Some(&'r') => 2usize,
+            _ => return None,
+        };
+        let mut at = index + prefix;
+        while characters.get(at) == Some(&'#') {
+            at += 1;
+        }
+        (characters.get(at) == Some(&'"')).then_some(prefix)
+    }
+
     fn code_only(source: &str) -> String {
         // ONE pass, three states. Two separate passes could not be made
         // correct in either order, and both orders were tried and shipped:
@@ -2127,6 +3086,72 @@ mod tests {
                 index += 2;
                 continue;
             }
+            // STRING LITERALS ARE EMPTIED, and this is not tidiness. Every
+            // structural pin below matches code SHAPES, and a literal can spell
+            // any shape: deleting the settling guard and adding
+            // `let _escape = "if newly_suspended > 0 && .. { .. }";` in its
+            // place satisfied `block_body` and every `contains` while removing
+            // the operation they exist to enforce (adversarial review, round
+            // 21). The quotes are KEPT so the token structure survives; only
+            // what is between them goes.
+            //
+            // Raw strings are handled by their own hash count, because `\"`
+            // does not end one.
+            //
+            // CHAR LITERALS ARE EMPTIED TOO, in their two unambiguous shapes.
+            // Leaving them was justified by "no needle fits in one", which
+            // missed that the pins also COUNT BRACES: moving
+            // `freeze.settle_suspensions()?` out of its guard and putting
+            // `let _ = '{';` inside made `block_body` swallow the unconditional
+            // call and the pin passed (adversarial review, round 22). `'` also
+            // opens a LIFETIME, which carries no brace, so only `'x'` and
+            // `'\x'` are treated as literals and a lifetime is left as text.
+            if current == '\''
+                && (characters.get(index + 2) == Some(&'\'')
+                    || (characters.get(index + 1) == Some(&'\\')
+                        && characters.get(index + 3) == Some(&'\'')))
+            {
+                code.push('\'');
+                code.push('\'');
+                index += if characters.get(index + 2) == Some(&'\'') { 3 } else { 4 };
+                continue;
+            }
+            let raw_prefix = raw_string_prefix(&characters, index, &code);
+            if current == '"' || raw_prefix.is_some() {
+                let prefix = raw_prefix.unwrap_or(0);
+                let hashes = if prefix > 0 {
+                    let mut count = 0usize;
+                    while characters.get(index + prefix + count) == Some(&'#') {
+                        count += 1;
+                    }
+                    count
+                } else {
+                    0
+                };
+                let raw = prefix > 0;
+                code.push('"');
+                index += if raw { prefix + hashes + 1 } else { 1 };
+                loop {
+                    let Some(&character) = characters.get(index) else {
+                        break;
+                    };
+                    if !raw && character == '\\' {
+                        index += 2;
+                        continue;
+                    }
+                    if character == '"' {
+                        let closed = (0..hashes)
+                            .all(|offset| characters.get(index + 1 + offset) == Some(&'#'));
+                        if closed {
+                            index += 1 + hashes;
+                            break;
+                        }
+                    }
+                    index += 1;
+                }
+                code.push('"');
+                continue;
+            }
             code.push(current);
             index += 1;
         }
@@ -2173,50 +3198,61 @@ mod tests {
     /// Falsifiable, and the reason the classifiers above are not decorative:
     /// fails if a fail-open decision is taken anywhere but through them.
     ///
-    /// A mutation battery found both classifier tests survive a reversion at
-    /// the CALL SITE -- put `break` back in `enumerate_thread_ids`, or
-    /// `newly_suspended == 0` back in the fixed point, and the classifiers
-    /// stay green while the freeze fails open again. Neither decision can be
-    /// driven from a test: `Thread32Next` cannot be made to fail on demand,
-    /// and the vanish-with-a-successor interleaving is not schedulable. So the
-    /// call sites are pinned by text rather than left unguarded.
+    /// A mutation battery found the classifier tests survive a reversion at the
+    /// CALL SITE -- put `newly_suspended == 0` back in the fixed point, or drop
+    /// the granted-access check from the loop, and the classifiers stay green
+    /// while the freeze fails open again. Neither decision can be driven from a
+    /// test in every one of its forms: the vanish-with-a-successor interleaving
+    /// is not schedulable, and a walk cannot be made to break on demand. So the
+    /// call sites are pinned by text as well.
     ///
-    /// The recycled-id arm is pinned the same way and for a sharper reason:
-    /// its soundness is entirely an ORDERING claim -- the re-enumeration has
-    /// to happen after the failed open, in the same iteration, and its result
-    /// has to be the thing the disposition is taken from. A mutation that
-    /// hoists the re-enumeration, or that maps `Unopenable` straight to
-    /// `Gone`, leaves both classifier tests green.
+    /// The ACCESS arm is pinned here for the sharpest reason of the three, and
+    /// it is a MEASURED one. The walk skips a thread it cannot open at the
+    /// access it asks for and still reports a clean end
+    /// (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), so two properties
+    /// have to hold together and neither implies the other: the walk asks for
+    /// `MAXIMUM_ALLOWED`, and what it was actually granted is checked before the
+    /// thread is suspended. `a_thread_this_process_cannot_open_at_the_freeze_
+    /// rights_refuses_by_name` drives the pair end to end; this pins the shape
+    /// so a refactor cannot keep the test green by accident.
     #[test]
     fn the_fail_open_decisions_are_taken_only_through_their_classifiers() {
         let production = production_code();
-        let enumerate = production
-            .split_once("fn enumerate_thread_ids(")
-            .expect("enumerate_thread_ids is declared in production")
+        let walk = production
+            .split_once("fn next_thread(")
+            .expect("next_thread is declared in production")
             .1
-            // To the closing brace at column 0, and no further. Ending at the
-            // next `\nfn ` swept in the FOLLOWING item's doc comment, and this
-            // guard then went red because a neighbouring comment used the word
-            // `break` in prose.
-            .split_once("\n}\n")
-            .expect("enumerate_thread_ids has a closing brace")
+            // To the closing brace at column 4 (it is a method), and no further.
+            .split_once("\n    }\n")
+            .expect("next_thread has a closing brace")
             .0;
-        // Through the same filter as everything else. Bounding the extent fixed
-        // the NEIGHBOURING comment; a comment INSIDE the function still broke
-        // it, and `// Do not break on an arbitrary Thread32Next error` is
-        // exactly the comment this code invites. The positive assertion had the
-        // mirror-image hole: prose quoting the classifier satisfied it.
-        let enumerate = code_only(enumerate);
-        let enumerate = enumerate.as_str();
+        let walk = code_only(walk);
+        let walk = walk.as_str();
         assert!(
-            enumerate.contains("enumeration_stop_is_end_of_list(code)"),
-            "enumerate_thread_ids must classify the Thread32Next stop code; \
-             ending the walk on any stop certifies a TRUNCATED thread list"
+            walk.contains("MAXIMUM_ALLOWED"),
+            "the walk must ask for MAXIMUM_ALLOWED; asking for the access this \
+             module happens to need makes the kernel SKIP a thread it cannot \
+             open at that access and still report a clean end, which hides \
+             exactly the thread the freeze cannot stop"
         );
         assert!(
-            !enumerate.contains("break"),
-            "a bare `break` in enumerate_thread_ids is the truncation fail-open"
+            !walk.contains("FREEZE_THREAD_ACCESS"),
+            "the walk asks for FREEZE_THREAD_ACCESS; a thread that cannot be \
+             opened at it is then silently absent from the enumeration instead \
+             of refusing"
         );
+        assert!(
+            walk.contains("walk_stop_is_end_of_list(status)"),
+            "next_thread must classify the status it stopped on; ending the walk \
+             on any stop certifies a TRUNCATED thread list"
+        );
+        assert!(
+            !walk.contains("Ok(None)")
+                || walk.find("walk_stop_is_end_of_list(status)")
+                    < walk.find("Ok(None)"),
+            "next_thread answers `end of list` before it has classified the stop"
+        );
+
         // The function BODY, and its CODE. Both narrowings are load-bearing for
         // the counting assertions further down, and neither was there when they
         // were written:
@@ -2225,7 +3261,7 @@ mod tests {
         //    count of "how many times does this function do X" was really a
         //    count over every function after it as well;
         //  * uncommented, a count includes prose. A comment that merely NAMES
-        //    `Growth::Allowed` -- exactly the comment a careful maintainer
+        //    the thing being counted -- exactly the comment a careful maintainer
         //    writes next to it -- would have failed a correct build. A gate that
         //    punishes documenting the thing it guards does not survive contact
         //    with maintenance.
@@ -2238,6 +3274,19 @@ mod tests {
             .0;
         let inner = code_only(inner_body);
         let inner = inner.as_str();
+        // THE SCAN EMPTIES STRING LITERALS, and that is what every structural
+        // pin below rests on: a literal can spell any code shape, so without it
+        // the settling guard could be DELETED and re-spelled inside a `let _ =
+        // "..";` that satisfies `block_body` and every `contains` here
+        // (adversarial review, round 21). Proven on this file rather than
+        // asserted: the production text contains string literals, and none of
+        // their contents survive into what is scanned.
+        assert!(
+            code_only(&production_code()).contains("buffer: \"\""),
+            "the scan must EMPTY string literals; `CapacityExceeded` names its \
+             buffer with one, and if that text survives then so does any code \
+             shape a literal is made to spell"
+        );
         assert!(
             inner.contains("if pass_is_quiet(newly_suspended, vanished, unsettled) {"),
             "the fixed point must ask pass_is_quiet with ALL THREE counts; \
@@ -2246,12 +3295,154 @@ mod tests {
              could not settle a suspend failure be the last one -- which is the \
              fail-open the bounded wait was covering for"
         );
+        // The completion itself, at the only place that can delete it. It must
+        // be a NAMED call, it must sit INSIDE the pass loop, and it must sit
+        // after the quiet-return check.
+        //
+        // The loop BODY is extracted by MATCHING BRACES rather than by taking
+        // everything after the `for` line. The suffix form passed while the
+        // settle sat AFTER the loop -- which is precisely the defect this pins:
+        // suspensions completed once, after the fixed point had already been
+        // declared.
+        // The BODY of the block introduced by `header`, brace-matched. A
+        // substring pin that takes "everything after the header" cannot tell a
+        // statement inside the block from one after it, which is exactly the
+        // difference every assertion below is about.
+        /// The text AFTER the block `header` opens, past its closing brace.
+        fn after_block<'a>(source: &'a str, header: &str) -> &'a str {
+            let start = source
+                .find(header)
+                .unwrap_or_else(|| panic!("the freeze must contain `{header}`"))
+                + header.len();
+            let mut depth = 1usize;
+            for (offset, character) in source[start..].char_indices() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &source[start + offset + 1..];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("`{header}` has no closing brace");
+        }
+
+        fn block_body<'a>(source: &'a str, header: &str) -> &'a str {
+            let start = source
+                .find(header)
+                .unwrap_or_else(|| panic!("the freeze must contain `{header}`"))
+                + header.len();
+            let mut depth = 1usize;
+            for (offset, character) in source[start..].char_indices() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &source[start..start + offset];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("`{header}` has no closing brace");
+        }
+
+        let loop_body = block_body(inner, "for pass in 1..=MAX_PASSES {");
+        let settle = loop_body.find("freeze.settle_suspensions()?;").expect(
+            "every pass that suspends must force those suspensions to COMPLETE \
+             INSIDE the loop, before the next walk; SuspendThread returns before \
+             the kernel has stopped the thread, and a walk taken in that window \
+             can miss a thread that did not exist yet",
+        );
+        // A QUIET WALK IS NOT A CLOSED SET, and the confirmation that makes it
+        // one is pinned here because deleting it restores a fail-open no
+        // counter can see: an unaccounted thread creates a successor BEHIND the
+        // cursor and is then reaped AHEAD of it, so the walk returns neither and
+        // all three counts stay zero (adversarial review, round 19). Only the
+        // materialised roster has an instant at which the whole list is known.
+        let quiet_body = block_body(
+            loop_body,
+            "if pass_is_quiet(newly_suspended, vanished, unsettled) {",
+        );
+        assert!(
+            quiet_body.contains(
+                "match freeze.what_the_roster_names_that_we_do_not_hold(&walk, current_thread_id, our_process_id)? {"
+            ),
+            "a quiet pass must be CONFIRMED against the materialised roster \
+             before it returns; a walk alone has no instant at which it knew the \
+             whole thread list, so a thread created behind its cursor by one \
+             reaped ahead of it is invisible to every count it keeps"
+        );
+        assert!(
+            quiet_body.contains("None => return Ok(freeze),"),
+            "the freeze may be returned only on the roster's `None` -- the \
+             answer that says it listed nothing this freeze does not hold"
+        );
+        assert_eq!(
+            inner.matches("return Ok(freeze)").count(),
+            1,
+            "there is more than one way out of this function with a freeze in \
+             hand; whichever one is not the confirmed quiet pass returns an \
+             unproven set"
+        );
+        assert_eq!(
+            inner.matches("what_the_roster_names_that_we_do_not_hold(").count(),
+            1,
+            "the confirmation must be reached from exactly one place, or one of \
+             them is a path that skips it"
+        );
+        let quiet_return = loop_body
+            .find("None => return Ok(freeze),")
+            .expect("the quiet pass must return the freeze");
+        assert!(
+            quiet_return < settle,
+            "the settle must come AFTER the quiet-return check; a pass that \
+             settles and then returns on the walk it took BEFORE settling proves \
+             nothing about the set being closed"
+        );
+        // THE INVARIANT, which is carried by two facts and no state:
+        //
+        //  1. `pass_is_quiet` requires `newly_suspended == 0`, so a pass that
+        //     suspended anything cannot be the one that returns;
+        //  2. a pass that suspended anything settles before the loop turns.
+        //
+        // Together those give every walk a process whose held suspensions have
+        // all completed, which is the property the missed-child race needs. A
+        // tracked flag was written for this first and deleted: it could never be
+        // observed false at the top of a pass, so a test asserting its
+        // transitions asserted nothing.
+        //
+        // (1) is `pass_is_quiet`'s own contract and is pinned by its unit test.
+        // (2) is a CALL-SITE property and is pinned here: the settle inside the
+        // suspend guard, and the guard's condition.
+        let settle_guard = block_body(loop_body, "if newly_suspended > 0 && pass < MAX_PASSES {");
+        assert!(
+            settle_guard.contains("freeze.settle_suspensions()?;"),
+            "the settle must sit INSIDE the `newly_suspended > 0 && pass < \
+             MAX_PASSES` guard: inside, because a pass that suspended must \
+             complete those suspensions before the next walk; conditional, \
+             because making it unconditional spends a context read per held \
+             thread on passes that added nothing, and on the LAST pass it can \
+             refuse with ThreadContext over the answer the freeze had already \
+             reached"
+        );
+        let walk = loop_body
+            .find("let stepped = walk.next_thread(cursor);")
+            .expect("the pass must walk this process's thread list");
+        assert!(
+            walk < settle,
+            "the settle must follow the walk whose suspensions it completes, and \
+             so precede the next one"
+        );
         assert_eq!(
             inner.matches("vanished += 1;").count(),
-            3,
-            "all three accounted-for-but-not-suspended arms must record the \
-             vanish: the unopenable id, the refused suspend, and the handle \
-             that opened onto another process's thread"
+            1,
+            "the one accounted-for-but-not-suspended arm must record the vanish: \
+             a suspend refused by a thread that is PROVEN terminated"
         );
         assert!(
             inner.contains("!leaves_room_for_minhooks_suspension(previous_count)"),
@@ -2259,33 +3450,43 @@ mod tests {
              suspension is the one that then fails, and MinHook patches anyway"
         );
 
-        // The recycled-id arm, in the one order that makes it a proof: the
-        // failed `OpenThread`, then the re-enumeration, then the disposition
-        // taken from it. Matched on fragments that survive rustfmt rewrapping.
-        let opened = inner
-            .find("OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id)")
-            .expect("the freeze loop must open each enumerated thread");
-        let arm = inner
-            .find("OpenFailure::Unopenable => {")
-            .expect("the freeze loop must handle an unopenable id explicitly");
-        let reenumerates = inner.find("id_is_still_in_this_process(thread_id").expect(
-            "an unopenable id must be settled by re-enumerating THIS process; \
-             the error code cannot say whose thread it is",
-        );
-        let classifies = inner
-            .find("classify_unopenable_thread(still_ours)")
-            .expect("the re-enumeration's answer must be the disposition");
+        // The access arm, in the one order that makes it a guard: what the
+        // kernel granted, then the classifier, then the suspend. A mutation that
+        // moves the check after the `SuspendThread` -- or deletes it -- leaves
+        // `granted_access_covers_the_freeze`'s own test green while the walk
+        // goes back to hiding the thread it could not open.
+        let granted = inner
+            .find("walk.granted_access(handle)")
+            .expect("every walked thread must be asked what it was granted");
+        let classified = inner
+            .find("!granted_access_covers_the_freeze(granted)")
+            .expect("the granted access must be the disposition");
+        let suspended = inner
+            .find("SuspendThread(handle)")
+            .expect("the freeze loop must suspend the threads it walked");
         assert!(
-            opened < arm && arm < reenumerates && reenumerates < classifies,
-            "the re-enumeration must run after the OpenThread it explains and \
-             before the disposition is taken from it; any other order proves \
-             nothing about whether the id is still ours"
+            granted < classified && classified < suspended,
+            "the granted access must be read and classified BEFORE the suspend; \
+             a thread short of the freeze's rights is one this module cannot \
+             account for, and suspending first has already acted on it"
         );
-        let arm_body = &inner[arm..classifies];
+        // The arm ENDS where the identity read begins. Taking it all the way to
+        // the suspend would sweep in the self-and-already-accounted skips, whose
+        // `continue` is correct and is none of this arm's business.
+        let arm_end = inner
+            .find("let thread_id = unsafe { GetThreadId(handle) };")
+            .expect("the freeze loop must read each walked thread's id");
+        let arm_body = &inner[granted..arm_end];
         assert!(
-            !arm_body.contains("ThreadDisposition::Gone"),
-            "the Unopenable arm must not reach Gone without the enumeration; \
-             excusing an unopenable id on its error code is the fail-open"
+            arm_body.contains("return Err(FreezeRefusal::ThreadRights"),
+            "a granted-access shortfall must REFUSE and name the thread; \
+             skipping it is what asking the walk for a narrower mask does by \
+             itself, and it is the fail-open this arm exists to close"
+        );
+        assert!(
+            !arm_body.contains("continue"),
+            "the granted-access arm continues past a thread it could not \
+             establish it can stop"
         );
 
         // The suspend-failure arm. This used to be held by a churn test that
@@ -2299,8 +3500,8 @@ mod tests {
             .find("if previous_count == u32::MAX {")
             .expect("the freeze loop must handle a failed suspend explicitly");
         let suspend_arm_end = inner[suspend_failed..]
-            .find("freeze.frozen.len() == freeze.frozen.capacity()")
-            .expect("the failed-suspend arm is followed by the capacity guard")
+            .find("account_for(&mut freeze, thread_id, handle, true)")
+            .expect("the failed-suspend arm is followed by the suspended record")
             + suspend_failed;
         let suspend_arm = &inner[suspend_failed..suspend_arm_end];
         // The classifier's result must BE the disposition, not merely be
@@ -2359,7 +3560,7 @@ mod tests {
         // The wait's replacement, pinned at the only call site that can undo it.
         // A `Refuse` disposition here means NOTHING was settled, not that the
         // thread is live: the freeze must record it as unsettled and let the
-        // next pass re-derive the id. Returning from this arm is the historical
+        // next pass re-derive it. Returning from this arm is the historical
         // shape -- it is what refused an entire installation on an ordinary
         // thread exit before the thread-object proof existed, and it is what
         // deleting the 50 ms wait would restore if the deferral went with it.
@@ -2375,22 +3576,36 @@ mod tests {
              end of the pass budget; a refusal that cannot name the thread it \
              could not settle sends an operator to the wrong place"
         );
+        // Asked of the UNSETTLED half alone. The other half -- a thread proven
+        // terminated -- legitimately refuses when the accounted table is full,
+        // and forbidding `return Err` across the whole arm would ban that too.
+        let unsettled_arm = &suspend_arm[suspend_arm
+            .find("ThreadDisposition::Refuse =>")
+            .expect("the failed-suspend arm must handle the unsettled probe")..];
         assert!(
-            !suspend_arm.contains("return Err"),
-            "the failed-suspend arm refuses immediately; a probe that settled \
-             nothing has to be deferred to the next pass, and only the exhausted \
-             deferral allowance may turn it into a refusal"
+            !unsettled_arm.contains("return Err"),
+            "the unsettled half of the failed-suspend arm refuses immediately; a \
+             probe that settled nothing has to be deferred to the next pass, and \
+             only the exhausted deferral allowance may turn it into a refusal"
         );
-        // And the allowance must be the thing that ends it. A deferral with no
-        // ceiling is not free: each extra pass is a system-wide thread-list walk
-        // taken with the process suspended, so an id allowed to run MAX_PASSES
-        // out trades the 50 ms wait for a measured 994 ms to 1.22 s of frozen
-        // game.
+        // And the PASS BUDGET must be the thing that ends it. A deferral with no
+        // ceiling at all is not free: each extra pass is another thread-list
+        // walk taken with the process suspended, so the loop must be bounded and
+        // the exhausted bound must refuse.
         assert!(
-            inner.contains("pass.saturating_sub(first) >= MAX_UNSETTLED_REDERIVATIONS"),
-            "the pass loop must bound how long an id may stay unsettled; without \
-             it a thread that will never suspend holds the whole process for the \
-             full MAX_PASSES budget"
+            inner.contains("for pass in 1..=MAX_PASSES {"),
+            "the pass loop must be bounded; without a bound a thread that will \
+             never settle holds the process forever rather than refusing"
+        );
+        // And the unsettled thread must be carried OUT of the loop, because that
+        // is now the only thing that turns an exhausted budget into a refusal
+        // that can name it. Losing this leaves `NotQuiescent`, which sends an
+        // operator looking for threads that were still starting when the cause
+        // was one thread that would not suspend.
+        assert!(
+            inner.contains("if let Some((thread, os_error)) = unsettled_suspend {"),
+            "the exhausted pass budget must refuse by NAME when the last pass was \
+             still unsettled"
         );
         // Every mention of a disposition in this arm is a match PATTERN. One
         // CONSTRUCTED here would be a second source of truth beside the
@@ -2408,46 +3623,11 @@ mod tests {
             }
         }
 
-        // The verification pass must forbid buffer growth. This is a call-site
-        // property and nothing else can see it: the growth test drives
-        // enumerate_thread_ids directly, so flipping this one argument to
-        // `Growth::Allowed` leaves the whole suite green while a real thread
-        // burst reallocates with every other thread suspended -- the exact hang
-        // the argument exists to prevent.
-        // The CALL, not the `?`. Pinning the propagation operator too rejected
-        // an equivalent fail-closed `match` that returns the same Err, which is
-        // a correct refactor and none of this test's business.
-        assert!(
-            inner.contains("enumerate_thread_ids(&mut freeze.enumeration, Growth::Forbidden)"),
-            "the per-pass enumeration inside the frozen window must be taken \
-             with Growth::Forbidden"
-        );
-        // And it must be the ONLY enumeration in the window, which is asked of
-        // the WINDOW rather than of the whole function. Counting over the whole
-        // body also forbade a second enumeration BEFORE the first suspension,
-        // where growing a buffer is ordinary and harmless -- a gate has no
-        // business refusing that, and the property it exists to protect is
-        // about the frozen region alone.
-        let frozen_region = inner
-            .split_once("for pass in 1..=MAX_PASSES {")
-            .expect("the freeze iterates to a fixed point")
-            .1;
-        assert_eq!(
-            frozen_region.matches("enumerate_thread_ids(").count(),
-            1,
-            "the frozen window enumerates more than once; every extra call is \
-             another chance to allocate with every other thread suspended"
-        );
-        assert!(
-            !frozen_region.contains("Growth::Allowed"),
-            "the frozen window takes an enumeration that may GROW its buffer; \
-             growing it there takes the allocator's lock, which a suspended \
-             thread may hold, and there is nobody left to release it"
-        );
-        // Naming three constructs was never "no allocation" -- it was a list of
-        // the three that had gone wrong. A refactor collecting `still_running`
-        // into a Vec, or a `format!` added for a diagnostic, allocates in the
-        // window and passed every pin.
+        // Nothing in the frozen window may allocate or block. Naming three
+        // constructs was never "no allocation" -- it was a list of the three that
+        // had gone wrong. A refactor collecting the walk into a Vec, or a
+        // `format!` added for a diagnostic, allocates in the window and passed
+        // every pin.
         // Fragments, not full call spellings: `.collect()` missed
         // `collect::<Vec<_>>()`, and `Vec::with_capacity` missed
         // `String::with_capacity`. A roster of exact calls is a list of the
@@ -2460,7 +3640,7 @@ mod tests {
         // occurrence of this defect the crate has actually had.
         //
         // `push` is deliberately ABSENT and its absence is the rule, not an
-        // omission: the window's whole design is buffers reserved before the
+        // omission: the window's whole design is one buffer reserved before the
         // first suspension and pushed into afterwards, so a push into reserved
         // capacity is the CORRECT shape here and the capacity guard beside it
         // is what keeps it from growing. `Vec::new` and `reserve(` are banned
@@ -2470,6 +3650,10 @@ mod tests {
         // shorter exact-spelling list of its own. The two are NOT shared, and
         // this comment does not claim they are: adding a construct here does
         // not protect lib.rs's windows, and vice versa.
+        let frozen_region = inner
+            .split_once("for pass in 1..=MAX_PASSES {")
+            .expect("the freeze iterates to a fixed point")
+            .1;
         for allocating in [
             concat!("Vec::", "new"),
             concat!("Default::", "default"),
@@ -2496,57 +3680,73 @@ mod tests {
                  left to release it"
             );
         }
-        // Counting CALLS only works if the name is always a call. Binding the
-        // function as a value -- `let alias = enumerate_thread_ids;` -- and
-        // calling the alias inside the window would keep the count right while
-        // adding an enumeration.
-        for occurrence in inner.match_indices("enumerate_thread_ids") {
-            let tail = &inner[occurrence.0 + "enumerate_thread_ids".len()..];
-            assert!(
-                tail.starts_with('('),
-                "enumerate_thread_ids is used as a value rather than called, so \
-                 the enumerations in this function can no longer be counted"
-            );
-        }
-
-        // Both frozen-window buffers must be sized from the SAME bound. The
-        // bound's own test can only say the function is sensible; that both
-        // reservations call it is a call-site property, and reserving the
-        // headroom alone for the handle table is the shape that let a burst fit
-        // in the id list and overflow the list of their handles.
+        // The walk is resolved OUTSIDE the window, and that is not cosmetic:
+        // `GetProcAddress` takes the loader lock, which a suspended thread may
+        // hold. It must appear before the loop and never inside it.
         assert!(
-            inner.contains("let bound = frozen_window_buffer_bound(ids.len());"),
+            !frozen_region.contains("ThreadWalk::resolve"),
+            "the frozen window resolves the walk's entry points; GetProcAddress \
+             takes the loader lock and a suspended thread may hold it"
+        );
+        assert!(
+            inner.contains("let walk = ThreadWalk::resolve()?;"),
+            "the walk must be resolved once, before the first suspension"
+        );
+
+        // The handle table must be sized from the shared bound. The bound's own
+        // test can only say the function is sensible; that the reservation calls
+        // it is a call-site property, and reserving the headroom alone is the
+        // shape that let a burst overflow the table while a thread was already
+        // suspended.
+        assert!(
+            inner.contains("let bound = frozen_window_buffer_bound(thread_count);"),
             "the frozen-window bound must be derived once, from the thread count \
              seen before the first suspension"
         );
-        // Once, and never shadowed. `let bound = bound.saturating_sub(..)`
-        // between the two reservations satisfies every substring below while
-        // recreating exactly the headroom-only handle table this replaced.
+        // Once, and never shadowed. `let bound = bound.saturating_sub(..)` after
+        // it satisfies every substring below while recreating exactly the
+        // headroom-only table this replaced.
         assert_eq!(
             inner.matches("let bound").count(),
             1,
-            "the frozen-window bound is rebound; the two reservations then take \
-             different values while still naming `bound`"
+            "the frozen-window bound is rebound, so the reservation may take a \
+             different value while still naming `bound`"
         );
         assert!(
-            inner.contains("ids.try_reserve(bound.saturating_sub(ids.len()))"),
-            "the enumeration buffer must be reserved to the shared bound"
+            inner.contains("accounted.try_reserve(bound)"),
+            "the accounted thread table must be reserved to the shared bound, \
+             not to the headroom alone"
+        );
+        // Both dispositions must be RECORDED, and the terminated one is why the
+        // fixed point is reachable at all: the kernel's thread list keeps a
+        // terminated thread until it is reaped, so a pass that decided it afresh
+        // every time would never be quiet.
+        assert!(
+            inner.contains("account_for(&mut freeze, thread_id, handle, false)"),
+            "a thread proven terminated must be RECORDED as accounted for; \
+             counting it afresh on every pass makes the fixed point unreachable \
+             for as long as any handle to it is open"
         );
         assert!(
-            inner.contains("frozen.try_reserve(bound)"),
-            "the suspended-handle table must be reserved to the SAME shared \
-             bound, not to the headroom alone"
+            inner.contains("account_for(&mut freeze, thread_id, handle, true)"),
+            "a thread this freeze suspended must be recorded as suspended, or it \
+             is never resumed"
         );
         // Reserving it correctly and then REPLACING it is the same defect with
-        // an extra line: `frozen = Vec::with_capacity(bound - ids.len());` after
-        // the reservation keeps every substring above and restores the historic
-        // headroom-only table. There is exactly one `frozen` binding here and it
-        // is never reassigned, and no capacity is ever chosen by any means but
-        // the shared bound.
+        // an extra line: `accounted = Vec::with_capacity(..)` after the
+        // reservation keeps every substring above and restores an unbounded
+        // table. There is exactly one `accounted` binding here and it is never
+        // reassigned.
+        //
+        // The LEADING SPACE is load-bearing and was bought with a red build:
+        // this function also binds `unaccounted`, and `"accounted = "` is a
+        // suffix of `"unaccounted = "`. `code_only` collapses whitespace to
+        // single spaces, so a real reassignment always carries the space and the
+        // other binding never does.
         assert_eq!(
-            inner.matches("frozen = ").count(),
+            inner.matches(" accounted = ").count(),
             0,
-            "the suspended-handle table is reassigned after it was reserved; \
+            "the accounted thread table is reassigned after it was reserved; \
              whatever replaces it did not come from the shared bound"
         );
         // WHAT THIS PAIR OF PINS DOES NOT ESTABLISH, said plainly rather than
@@ -2558,29 +3758,83 @@ mod tests {
         // close that; establishing it needs the borrow checker's own view of
         // which value moved where. What this DOES catch is every accidental
         // shape: the reservation deleted, sized from something other than the
-        // shared bound, or the bound shadowed between the two calls.
+        // shared bound, or the bound shadowed before it.
 
-        // The ownership arm, pinned for the same reason and in the same way:
-        // its soundness is an ORDERING claim too. `GetProcessIdOfThread` has to
-        // be asked about the handle we just opened, and answered, BEFORE that
-        // handle is suspended. A mutation that moves the check after the
-        // `SuspendThread`, or that suspends first and closes later, leaves
-        // `classify_opened_thread_owner`'s own test green while the freeze goes
-        // back to stopping another process's threads.
-        let owner_read = inner
-            .find("GetProcessIdOfThread(handle)")
-            .expect("every opened handle must be asked which process owns it");
-        let owner_classified = inner
-            .find("classify_opened_thread_owner(owner,")
-            .expect("the owner the kernel reported must be the disposition");
-        let suspended = inner
-            .find("SuspendThread(handle)")
-            .expect("the freeze loop must suspend the threads it opened");
+        // And the walk's cursor must be closed rather than leaked. Every pass
+        // opens one handle per thread; a pass that forgets to close the ones it
+        // does not keep leaks a handle per thread per pass, and a freeze is
+        // taken once per hook.
+        //
+        // AND THE GUARD MUST CLOSE IT. Asserting the guard exists leaves
+        // `CloseHandle(cursor)` deletable from inside it -- every substring
+        // above survives, and the leak is one handle per unkept thread per
+        // pass. The BODY is brace-matched and the close required in it.
+        let cursor_close = block_body(inner, "if !cursor.is_null() && !cursor_is_kept {");
         assert!(
-            opened < owner_read && owner_read < owner_classified && owner_classified < suspended,
-            "ownership must be established between the open and the suspend; \
-             suspending first and asking afterwards has already stopped a \
-             thread that may not be ours"
+            cursor_close.contains("CloseHandle(cursor)"),
+            "the pass must CLOSE the cursor handles it did not keep, not merely \
+             test for them; a handle per thread per pass is leaked otherwise, \
+             and an exhausted handle table is exactly what makes MinHook's \
+             second open fail into its fail-open branch"
+        );
+        // AND THE OTHER HALF: a handle HANDED TO THE TABLE must be marked kept,
+        // or the very next step of the walk closes a handle the table still
+        // holds. Both `account_for` arms are checked, and the `false` arm --
+        // the proven-terminated one -- matters most: `AccountedThread` keeps
+        // that handle precisely so the id cannot be recycled onto a new thread
+        // the id-keyed skip would then wave through, and closing it restores
+        // exactly that hole while every deterministic test stays green
+        // (adversarial review, round 17).
+        for suspended in ["false", "true"] {
+            let header = format!(
+                "if let Err(refusal) = account_for(&mut freeze, thread_id, handle, {suspended}) {{"
+            );
+            let after = after_block(inner, &header).trim_start();
+            assert!(
+                after.starts_with("cursor_is_kept = true;"),
+                "the `{suspended}` transfer to the accounted table is not \
+                 followed by `cursor_is_kept = true;` -- the table owns that \
+                 handle now, and the next step of the walk closes it"
+            );
+            // AND THE ARM MUST NOT CLOSE IT EITHER. Marking the handle kept and
+            // then closing it two lines later passes every assertion here while
+            // destroying exactly what `AccountedThread` retains it for: an open
+            // handle is what stops the thread object being deleted and its id
+            // recycled onto a new thread the id-keyed skip would wave through
+            // (adversarial review, round 19). The arm runs to its `continue` or
+            // to the end of the step, and neither may close this handle.
+            let arm = after
+                .split_once("let stepped = walk.next_thread(cursor);")
+                .map(|(before, _)| before)
+                .unwrap_or(after);
+            let arm = arm.split_once("continue; }").map(|(a, _)| a).unwrap_or(arm);
+            assert!(
+                !arm.contains("CloseHandle(handle)"),
+                "the `{suspended}` transfer hands the handle to the accounted \
+                 table and then closes it; the table is left holding a closed \
+                 handle, the thread object can be deleted, and its id can come \
+                 back on a different thread that this freeze would then skip"
+            );
+        }
+        // AND NOTHING MAY WRITE IT AGAIN. Being the FIRST statement after the
+        // transfer is not enough: a `cursor_is_kept = false;` on the line below
+        // it passes the two assertions above and hands the same handle back to
+        // the next step's close (adversarial review, round 18). The writes are
+        // therefore counted exhaustively -- the declaration, the per-step reset,
+        // and one per transfer -- so a fifth fails whatever it says.
+        assert_eq!(
+            inner.matches("cursor_is_kept =").count(),
+            4,
+            "the walk's kept-handle flag is written {} times, not four (declared, \
+             reset once per step, set once per transfer); an extra write can \
+             only be undoing one of them",
+            inner.matches("cursor_is_kept =").count()
+        );
+        assert_eq!(
+            inner.matches("cursor_is_kept = true;").count(),
+            2,
+            "the kept-handle flag is set true somewhere other than the two \
+             transfers to the accounted table"
         );
     }
 
@@ -2593,6 +3847,413 @@ mod tests {
     /// ceiling is one MinHook cannot suspend -- and MinHook's response to that
     /// is to strike the thread off, skip `ProcessThreadIPs`, and rewrite the
     /// bytes regardless. Ours succeeding is not the question.
+    /// Falsifiable: fails if the roster stops naming a live thread of this
+    /// process that the freeze is not holding.
+    ///
+    /// This is the ONE thing the fast walk cannot do for itself, so it is tested
+    /// against the real bytes the OS returns. NO FREEZE IS TAKEN: the roster is
+    /// read with nothing suspended and the parse is run twice over the same
+    /// bytes, once with everything held and once with a single named live thread
+    /// withheld -- which is exactly the state the missed-child race produces, a
+    /// live thread of this process the freeze does not hold.
+    ///
+    /// THE THREAD IT LOOKS FOR HAS HAD EVERY ACCESS DENIED TO IT FIRST, by the
+    /// same empty DACL that makes the WALK refuse in
+    /// `a_thread_this_process_cannot_open_at_the_freeze_rights_refuses_by_name`.
+    /// That is the measurement behind "the roster does not filter by access",
+    /// which was previously only an argument from the fact that it opens
+    /// nothing. What it establishes is that a DACL denying this process
+    /// everything does not remove the row; it does NOT establish the same for
+    /// every security shape, and the module header says so.
+    ///
+    /// kills: reading `ClientId` at the wrong offset or the thread array at the
+    /// wrong stride (the withheld thread becomes unfindable and every
+    /// confirmation vacuous); matching the process entry on the wrong field;
+    /// walking the entry list by anything other than `NextEntryOffset`;
+    /// ignoring the held set; returning `None` unconditionally; and a roster
+    /// that drops rows this process cannot open. It also pins the LAYOUT CHECK: the parse refuses unless
+    /// the roster lists the running thread.
+    #[test]
+    fn the_roster_names_a_live_thread_the_walk_did_not_account_for() {
+        use std::os::windows::io::AsRawHandle;
+        // SERIALISED WITH EVERY OTHER TEST THAT TOUCHES OS SUSPEND STATE, for
+        // the same reason the empty-DACL walk test is: between denying this
+        // thread its access and joining it, any freeze another test takes would
+        // meet it and refuse by `ThreadRights` -- which is that test's own
+        // subject, arriving in the wrong test.
+        let _serialised = os_suspend_state_guard();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_id = Arc::new(AtomicU32::new(0));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            let worker_id = Arc::clone(&worker_id);
+            std::thread::spawn(move || {
+                worker_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+                while !stop.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        while worker_id.load(Ordering::Acquire) == 0 {
+            std::hint::spin_loop();
+        }
+        let worker_thread_id = worker_id.load(Ordering::Acquire);
+        // AND ITS ACCESS IS TAKEN AWAY BEFORE THE ROSTER IS READ. "The roster
+        // does not open threads, so access cannot hide one" was an ARGUMENT,
+        // and an argument is not evidence that the kernel does not filter rows
+        // by the thread's security state (adversarial review, round 22). So the
+        // thread this test looks for is one this process has been denied every
+        // access to. If the roster filtered on that, the assertions below fail.
+        let denied = deny_every_access_to(worker.as_raw_handle() as HANDLE);
+
+        let walk = ThreadWalk::resolve().expect("the walk resolves on this OS");
+        let current_thread_id = unsafe { GetCurrentThreadId() };
+        let our_process_id = unsafe { GetCurrentProcessId() } as usize;
+
+        let mut buffer = vec![0u8; walk.roster_bytes_needed().expect("the roster sizes") * 2];
+        let filled = walk.read_roster(&mut buffer).expect("the roster reads");
+
+        // THE HELD SET IS STATED RATHER THAN ENUMERATED, and that is what makes
+        // this test churn-proof: taking it from a walk would make every thread
+        // any OTHER test in this binary spawns between the walk and the read a
+        // spurious name. Held = everything, and held = everything but one named
+        // live thread, are the two states the confirmation has to tell apart.
+        let everything_held =
+            roster_names_an_unheld_thread(&buffer[..filled], our_process_id, current_thread_id, |_| {
+                true
+            })
+            .expect("the roster lists this process and its running thread");
+        let one_withheld = roster_names_an_unheld_thread(
+            &buffer[..filled],
+            our_process_id,
+            current_thread_id,
+            |id| id != worker_thread_id,
+        )
+        .expect("the roster lists this process and its running thread");
+
+        stop.store(true, Ordering::Release);
+        worker.join().expect("the spinning thread joins");
+
+        assert_eq!(
+            denied, 0,
+            "the empty DACL was refused ({denied:#010x}), so this test could not \
+             manufacture the thread it exists to look for"
+        );
+        assert_eq!(
+            everything_held, None,
+            "with every thread held, nothing may be named; a name here is the \
+             confirmation refusing sets that are in fact closed"
+        );
+        assert_eq!(
+            one_withheld,
+            Some(worker_thread_id),
+            "thread {worker_thread_id} is live in this process and is the ONE \
+             thread the held set denies, so the roster must name it and name \
+             nothing else; a parse that cannot see it cannot see the thread a \
+             walk missed either"
+        );
+    }
+
+    /// Falsifiable: fails if a roster this module cannot make sense of is read
+    /// as a CONFIRMATION rather than as a refusal.
+    ///
+    /// Every case here is a synthetic buffer, because the OS does not produce
+    /// these on demand and the failure they describe is the worst one this
+    /// module has: a confirmed freeze from bytes that mean nothing.
+    ///
+    /// kills: bounding the thread array against the whole buffer instead of the
+    /// entry's own `NextEntryOffset` (case 3 then reads the NEXT process's entry
+    /// as this one's threads); following a `NextEntryOffset` smaller than an
+    /// entry or not pointer-aligned (case 4 then re-reads the same bytes at a
+    /// shift, where a thread id can be assembled out of the middle of another
+    /// field); dropping the running-thread presence check (case 2 then confirms
+    /// a process this module cannot see itself in); and treating a truncated
+    /// buffer as a short roster (case 1).
+    #[test]
+    fn a_roster_that_makes_no_sense_refuses_instead_of_confirming() {
+        const OUR_PID: usize = 0x1234;
+        const OUR_TID: u32 = 0x5678;
+
+        fn entry(next: u32, threads: u32, pid: usize) -> Vec<u8> {
+            let mut bytes = vec![0u8; ROSTER_PROCESS_ENTRY_BYTES];
+            bytes[ROSTER_NEXT_ENTRY_OFFSET..ROSTER_NEXT_ENTRY_OFFSET + 4]
+                .copy_from_slice(&next.to_ne_bytes());
+            bytes[ROSTER_THREAD_COUNT_OFFSET..ROSTER_THREAD_COUNT_OFFSET + 4]
+                .copy_from_slice(&threads.to_ne_bytes());
+            bytes[ROSTER_PROCESS_ID_OFFSET..ROSTER_PROCESS_ID_OFFSET + 8]
+                .copy_from_slice(&pid.to_ne_bytes());
+            bytes
+        }
+        fn thread_of(pid: usize, id: u32) -> Vec<u8> {
+            let mut bytes = vec![0u8; ROSTER_THREAD_ENTRY_BYTES];
+            bytes[ROSTER_THREAD_PROCESS_OFFSET..ROSTER_THREAD_PROCESS_OFFSET + 8]
+                .copy_from_slice(&pid.to_ne_bytes());
+            bytes[ROSTER_THREAD_ID_OFFSET..ROSTER_THREAD_ID_OFFSET + 8]
+                .copy_from_slice(&(id as usize).to_ne_bytes());
+            bytes
+        }
+        let thread = |id: u32| thread_of(OUR_PID, id);
+        let held_everything = |_: u32| true;
+
+        // 0. THE WELL-FORMED CASE, so the cases below are known to be refused
+        //    for their own reason and not because nothing ever confirms.
+        let mut good = entry(0, 1, OUR_PID);
+        good.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&good, OUR_PID, OUR_TID, held_everything),
+            Ok(None),
+            "a well-formed roster listing only the running thread must confirm"
+        );
+
+        // 1. TRUNCATED: the entry claims a thread the buffer does not carry.
+        let short = entry(0, 1, OUR_PID);
+        assert_eq!(
+            roster_names_an_unheld_thread(&short, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "an entry whose thread array runs past the buffer must refuse"
+        );
+
+        // 2. WITHOUT US IN IT: the running thread is not listed, so the bytes
+        //    are not being read the way this module believes.
+        let mut stranger = entry(0, 1, OUR_PID);
+        stranger.extend(thread(OUR_TID.wrapping_add(1)));
+        assert_eq!(
+            roster_names_an_unheld_thread(&stranger, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a roster that does not list this process's own running thread must \
+             refuse; confirming there would confirm from a misread buffer"
+        );
+
+        // 3. THREADS PAST THE ENTRY'S OWN END: `NextEntryOffset` says this
+        //    entry stops before the array it claims, so the array would be read
+        //    out of the following process's entry.
+        let mut overrun = entry(ROSTER_PROCESS_ENTRY_BYTES as u32, 1, OUR_PID);
+        overrun.extend(entry(0, 1, OUR_PID + 1));
+        overrun.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&overrun, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a thread array that runs past its own entry must refuse; the bytes \
+             it would read belong to another process's entry"
+        );
+
+        // 4. A LINK THAT SHIFTS RATHER THAN ADVANCES: smaller than an entry,
+        //    and not pointer-aligned. Following it re-reads the same bytes at an
+        //    offset, which is how nonsense becomes a thread id.
+        let mut shifted = entry(1, 0, OUR_PID + 1);
+        shifted.extend(vec![0u8; ROSTER_PROCESS_ENTRY_BYTES]);
+        assert_eq!(
+            roster_names_an_unheld_thread(&shifted, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a next-entry offset shorter than an entry, or unaligned, must \
+             refuse rather than be followed"
+        );
+
+        // 5. NOT LISTED AT ALL: the roster is well-formed and this process is
+        //    simply not in it, which is equally a buffer this module cannot
+        //    answer from.
+        let absent = entry(0, 0, OUR_PID + 1);
+        assert_eq!(
+            roster_names_an_unheld_thread(&absent, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a roster without this process in it must refuse"
+        );
+
+        // 6. A FOREIGN ENTRY THAT OVERRUNS ITS OWN END. Validating only the
+        //    target entry let this through: the walk followed `NextEntryOffset`
+        //    into the middle of the thread bytes it had just claimed, and read
+        //    them as a process header.
+        let mut foreign_overrun = entry(ROSTER_PROCESS_ENTRY_BYTES as u32, 1, OUR_PID + 1);
+        foreign_overrun.extend(entry(0, 1, OUR_PID));
+        foreign_overrun.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&foreign_overrun, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a FOREIGN entry whose thread array runs past its own end must \
+             refuse; the bytes after it are read as the next entry"
+        );
+
+        // 7. THIS PROCESS TWICE. One of the two is not what this module thinks
+        //    it is, and there is no rule for choosing between them.
+        let listed_twice = (ROSTER_PROCESS_ENTRY_BYTES + ROSTER_THREAD_ENTRY_BYTES) as u32;
+        let mut duplicated = entry(listed_twice, 1, OUR_PID);
+        duplicated.extend(thread(OUR_TID));
+        duplicated.extend(entry(0, 1, OUR_PID));
+        duplicated.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&duplicated, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "two entries for this process id must refuse rather than answering \
+             from whichever came first"
+        );
+
+        // 8. A RECORD THAT SAYS IT BELONGS TO SOMEONE ELSE. Reading only the
+        //    thread half of `CLIENT_ID` let an entry labelled with our pid carry
+        //    foreign records whose low 32 bits matched ids this freeze holds.
+        let mut foreign_record = entry(0, 2, OUR_PID);
+        foreign_record.extend(thread(OUR_TID));
+        foreign_record.extend(thread_of(OUR_PID + 1, OUR_TID.wrapping_add(9)));
+        assert_eq!(
+            roster_names_an_unheld_thread(&foreign_record, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a thread record naming another process inside this process's entry              must refuse; its id means nothing here"
+        );
+
+        // 9. A FOREIGN ENTRY CARRYING MISATTRIBUTED RECORDS, with a perfectly
+        //    good target entry after it. Checking `UniqueProcess` only inside
+        //    the target branch accepted this and answered from the second entry.
+        let mut foreign_entry_lies = entry(
+            (ROSTER_PROCESS_ENTRY_BYTES + ROSTER_THREAD_ENTRY_BYTES) as u32,
+            1,
+            OUR_PID + 1,
+        );
+        foreign_entry_lies.extend(thread_of(OUR_PID + 2, OUR_TID.wrapping_add(4)));
+        foreign_entry_lies.extend(entry(0, 1, OUR_PID));
+        foreign_entry_lies.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&foreign_entry_lies, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a FOREIGN entry whose records name a third process must refuse; a \
+             roster that inconsistent cannot be confirmed from, whatever the \
+             target entry after it says"
+        );
+
+        // 10. THE SAME THREAD TWICE. Two records carrying the running thread
+        //     satisfied the presence check twice and confirmed; a repeated HELD
+        //     id could hide an unheld one behind it.
+        let mut repeated = entry(0, 2, OUR_PID);
+        repeated.extend(thread(OUR_TID));
+        repeated.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&repeated, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a roster listing the same thread id twice for one process must              refuse; identities are unique and these bytes are not describing              this process"
+        );
+        let mut repeated_held = entry(0, 3, OUR_PID);
+        repeated_held.extend(thread(OUR_TID));
+        repeated_held.extend(thread(OUR_TID.wrapping_add(3)));
+        repeated_held.extend(thread(OUR_TID.wrapping_add(3)));
+        assert_eq!(
+            roster_names_an_unheld_thread(&repeated_held, OUR_PID, OUR_TID, |id| id
+                == OUR_TID.wrapping_add(3)),
+            Err(FreezeRefusal::RosterUnreadable),
+            "a repeated HELD id must refuse too; one of the two records could be              carrying an unheld thread's real identity"
+        );
+
+        // 11. THE IDLE PROCESS, which is the one place a repeated id is real:
+        //     pid 0 carries one record per processor and every one of them is
+        //     `ClientId {0, 0}` (48 of them, MEASURED). A blanket uniqueness
+        //     rule refused every freeze on this machine because of it, so this
+        //     case is the exemption's own regression.
+        let idle_span = (ROSTER_PROCESS_ENTRY_BYTES + 2 * ROSTER_THREAD_ENTRY_BYTES) as u32;
+        let mut idle = entry(idle_span, 2, 0);
+        idle.extend(thread_of(0, 0));
+        idle.extend(thread_of(0, 0));
+        idle.extend(entry(0, 1, OUR_PID));
+        idle.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&idle, OUR_PID, OUR_TID, held_everything),
+            Ok(None),
+            "pid 0's repeated zero ids are the Idle process's real shape and must \
+             be exempt; refusing them refuses every freeze on this machine"
+        );
+
+        // 12. AND THE EXEMPTION IS THAT NARROW. An ORDINARY foreign process
+        //     repeating an id is a roster not describing the system, whatever
+        //     entry the answer is taken from.
+        let mut foreign_duplicate = entry(idle_span, 2, OUR_PID + 1);
+        foreign_duplicate.extend(thread_of(OUR_PID + 1, 77));
+        foreign_duplicate.extend(thread_of(OUR_PID + 1, 77));
+        foreign_duplicate.extend(entry(0, 1, OUR_PID));
+        foreign_duplicate.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&foreign_duplicate, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "an ordinary foreign process repeating a thread id must refuse; the \
+             exemption is pid 0's zero ids and nothing else"
+        );
+        // AND A NONZERO REPEAT INSIDE PID 0 IS NOT EXEMPT EITHER.
+        let mut idle_nonzero = entry(idle_span, 2, 0);
+        idle_nonzero.extend(thread_of(0, 5));
+        idle_nonzero.extend(thread_of(0, 5));
+        idle_nonzero.extend(entry(0, 1, OUR_PID));
+        idle_nonzero.extend(thread(OUR_TID));
+        assert_eq!(
+            roster_names_an_unheld_thread(&idle_nonzero, OUR_PID, OUR_TID, held_everything),
+            Err(FreezeRefusal::RosterUnreadable),
+            "the exemption covers pid 0's ZERO ids; a repeated nonzero id there \
+             is as impossible as anywhere else"
+        );
+
+        // 13. AND THE HELD SET IS STILL WHAT DECIDES, on a well-formed roster.
+        let mut two = entry(0, 2, OUR_PID);
+        two.extend(thread(OUR_TID));
+        two.extend(thread(OUR_TID.wrapping_add(9)));
+        assert_eq!(
+            roster_names_an_unheld_thread(&two, OUR_PID, OUR_TID, |id| id != OUR_TID
+                .wrapping_add(9)),
+            Ok(Some(OUR_TID.wrapping_add(9))),
+            "the one listed thread the held set denies must be named"
+        );
+    }
+
+    /// Falsifiable: fails if the source scan can be fed braces or code shapes
+    /// the compiler never sees.
+    ///
+    /// Every structural pin in this file matches shapes and counts braces over
+    /// `code_only`'s output, so a literal that survives it is a way to write
+    /// code that is not code. Each case here is a mutation an adversarial review
+    /// actually proposed against a specific pin.
+    ///
+    /// kills: leaving string literals intact (case 1, which re-spells a whole
+    /// guard); leaving char literals intact (case 2, which moves a brace);
+    /// recognising only bare `r` raw strings (cases 3 and 4, which is how `br`
+    /// and `cr` smuggle braces past `block_body`).
+    #[test]
+    fn the_source_scan_shows_the_compiler_braces_and_no_others() {
+        let braces = |source: &str| -> usize {
+            code_only(source)
+                .chars()
+                .filter(|character| *character == '{' || *character == '}')
+                .count()
+        };
+        assert_eq!(
+            braces("fn f() { let _ = \"if x { y } else { z }\"; }"),
+            2,
+            "a string literal spelling a whole guard must contribute no braces; \
+             with it intact, a deleted guard can be re-spelled where a pin looks"
+        );
+        assert_eq!(
+            braces("fn f() { let _ = '{'; }"),
+            2,
+            "a char literal holding a brace must contribute none; with it \
+             intact, a call can be moved out of a guard and the guard's body \
+             made to look as if it still held it"
+        );
+        assert_eq!(
+            braces("fn f() { let _ = br#\"}\"#; }"),
+            2,
+            "a raw BYTE string must contribute no braces"
+        );
+        assert_eq!(
+            braces("fn f() { let _ = cr#\"{\"#; }"),
+            2,
+            "a raw C string must contribute no braces"
+        );
+        assert_eq!(
+            braces("fn f() { let _ = \"\\\"}\"; }"),
+            2,
+            "an escaped quote must not end the literal early and let the rest of \
+             it back into the scan"
+        );
+        // AND REAL CODE IS UNTOUCHED, or the pins would be matching nothing.
+        assert_eq!(
+            braces("fn f() { if a { b() } }"),
+            4,
+            "the scan must keep every brace the compiler sees"
+        );
+    }
+
     #[test]
     fn a_suspension_must_leave_minhook_a_slot_of_its_own() {
         assert!(leaves_room_for_minhooks_suspension(0));
@@ -2630,7 +4291,7 @@ mod tests {
     // WHAT IS COVERED OFFLINE AGAIN, and what still is not. That a real freeze
     // in a real process refuses rather than certifying a thread it could not
     // suspend IS covered, by
-    // `a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance`,
+    // `a_thread_that_cannot_be_suspended_refuses_by_name_when_the_passes_run_out`,
     // which reaches the same OS state one suspend count higher -- where ours
     // fails outright rather than landing on the ceiling -- and which undoes its
     // setup before its first assertion so a red run cannot wedge the binary the
@@ -2644,13 +4305,19 @@ mod tests {
     /// Falsifiable: fails if a pass that saw a thread vanish is ever allowed
     /// to be the last one.
     ///
-    /// This is the subtle half of the fixed point. A thread whose id went
-    /// stale during the pass WAS running when the snapshot was taken, so it
-    /// had the opportunity to start a successor that the snapshot cannot
-    /// contain. Concluding "quiet" on that pass returns a freeze with a live
-    /// thread in the process -- the exact fail-open this module exists to
-    /// close, reintroduced one level up. Only a pass that saw nothing at all
-    /// outside the suspended set proves the set is closed.
+    /// This is the subtle half of the fixed point. A thread this pass NEWLY
+    /// proved terminated was running recently enough to still be in the kernel's
+    /// list, so it had the opportunity to start a successor. Concluding "quiet"
+    /// on that pass could return a freeze with a live thread in the process --
+    /// the exact fail-open this module exists to close, reintroduced one level
+    /// up. Only a pass that had nothing to account for outside the set it
+    /// already held proves the set is closed.
+    ///
+    /// NEWLY is the word that carries it, and it is why the disposition is
+    /// RECORDED rather than re-derived: the kernel keeps a terminated thread in
+    /// the list until it is reaped, so a count taken afresh every pass would
+    /// never fall to zero and no pass could ever be quiet. See
+    /// [`AccountedThread`].
     #[test]
     fn a_pass_that_saw_a_thread_vanish_is_never_the_last_one() {
         assert!(
@@ -2659,7 +4326,7 @@ mod tests {
         );
         assert!(
             !pass_is_quiet(0, 1, 0),
-            "a vanished thread may have started a successor the snapshot cannot show"
+            "a thread newly proved terminated may have started a successor this              pass has not walked"
         );
         assert!(
             !pass_is_quiet(1, 0, 0),
@@ -2687,10 +4354,9 @@ mod tests {
     /// unsettled probe, so the counter would move exactly once); letting an
     /// unsettled probe end the loop (the freeze would return `Ok` holding a
     /// thread short of the set it claims is closed); dropping the named thread
-    /// from the refusal (it would come back as `NotQuiescent`); and letting the
-    /// deferral run the whole [`MAX_PASSES`] budget out instead of
-    /// [`MAX_UNSETTLED_REDERIVATIONS`], which measured at 994 ms to 1.22 s of
-    /// frozen process -- twenty to twenty-five times the wait this lane deleted.
+    /// from the refusal (it would come back as `NotQuiescent`); and bounding the
+    /// deferral anywhere short of the [`MAX_PASSES`] budget, which is what the
+    /// pass-count assertion below pins.
     ///
     /// What it does NOT kill is a wait of the deleted length put back into the
     /// probe. [`the_termination_proof_answers_without_waiting`] kills that by
@@ -2744,7 +4410,7 @@ mod tests {
     /// hazard means a dedicated single-test process, which is a change to how
     /// this crate is tested rather than to this test.
     #[test]
-    fn a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance() {
+    fn a_thread_that_cannot_be_suspended_refuses_by_name_when_the_passes_run_out() {
         let _serialised = os_suspend_state_guard();
         let stop = Arc::new(AtomicBool::new(false));
         let live_thread_id = Arc::new(AtomicU32::new(0));
@@ -2763,36 +4429,36 @@ mod tests {
             worker_id = live_thread_id.load(Ordering::Acquire);
             std::thread::yield_now();
         }
-        // NOTHING PANICS FROM HERE UNTIL THE PROCESS IS PUT BACK, deliberately
-        // and including the open itself. An assertion in this stretch would
-        // unwind with the worker still spinning, suspended some unknown number
-        // of times, and its handle leaked; every later test in this binary would
-        // then meet a thread it cannot suspend, and one red test would be
-        // reported as a suite full of them.
-        let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, worker_id) };
-        let opened = !handle.is_null();
+        // NOTHING PANICS FROM HERE UNTIL THE PROCESS IS PUT BACK, deliberately.
+        // An assertion in this stretch would unwind with the worker still
+        // spinning and suspended some unknown number of times; every later test
+        // in this binary would then meet a thread it cannot suspend, and one red
+        // test would be reported as a suite full of them.
+        //
+        // The worker's OWN handle, not one opened by id: `std` created it with
+        // `CreateThread` and it carries full access. It belongs to the
+        // `JoinHandle` and is therefore never closed here.
+        let handle = {
+            use std::os::windows::io::AsRawHandle;
+            worker.as_raw_handle() as HANDLE
+        };
+        let identified = unsafe { GetThreadId(handle) } == worker_id;
 
         // Up to the ceiling exactly. The next suspension -- the freeze's own --
         // is the one that fails.
         let mut raised = 0u32;
         let mut previous_counts_were_sequential = true;
-        if opened {
-            while raised < MAXIMUM_SUSPEND_COUNT {
-                let previous = unsafe { SuspendThread(handle) };
-                previous_counts_were_sequential &= previous == raised;
-                raised += 1;
-            }
+        while raised < MAXIMUM_SUSPEND_COUNT {
+            let previous = unsafe { SuspendThread(handle) };
+            previous_counts_were_sequential &= previous == raised;
+            raised += 1;
         }
 
         let deferred_before = suspend_failures_deferred_to_a_later_pass();
         let passes_before = freeze_passes_spent();
         let refusals_before = freeze_refusals();
         let started = std::time::Instant::now();
-        let outcome = if opened {
-            Some(freeze_other_threads())
-        } else {
-            None
-        };
+        let outcome = freeze_other_threads();
         let elapsed = started.elapsed();
         let deferred = suspend_failures_deferred_to_a_later_pass() - deferred_before;
         let passes = freeze_passes_spent() - passes_before;
@@ -2803,21 +4469,18 @@ mod tests {
             unsafe { ResumeThread(handle) };
             raised -= 1;
         }
-        if opened {
-            unsafe { CloseHandle(handle) };
-        }
         stop.store(true, Ordering::Release);
         worker.join().expect("worker joins");
 
         assert!(
-            opened,
-            "a live thread of this process must be openable at the freeze mask"
+            identified,
+            "the handle suspended must be the worker thread's own"
         );
         assert!(
             previous_counts_were_sequential,
             "SuspendThread returns the PREVIOUS count and the setup did not see              0, 1, 2, ...; something else is suspending this thread, so it was              never raised to exactly MAXIMUM_SUSPEND_COUNT and the branch under              test may not have been the one taken"
         );
-        match outcome.expect("the freeze runs whenever the handle opened") {
+        match outcome {
             Ok(freeze) => {
                 let held = freeze.frozen_thread_count();
                 drop(freeze);
@@ -2859,26 +4522,32 @@ mod tests {
         // this binary caught mid-exit adds deferrals without adding passes, so
         // the bound flakes; and deriving a tolerance from
         // `suspend_failures_excused_as_terminated` does not repair that, because
-        // a deferred mid-exit thread often does NOT go on to be excused -- it is
-        // simply absent from the next snapshot, or its `OpenThread` fails with
-        // ERROR_INVALID_PARAMETER, and both of those are vanishes that move no
-        // excusal counter at all.
+        // a deferred mid-exit thread need not go on to be excused -- it may
+        // simply suspend on the next pass, which moves no excusal counter at
+        // all.
         //
         // Passes are exact. A stray deferral rides along inside a pass this
-        // freeze was already spending, so it cannot add one, and the streak
-        // refuses on the same pass whichever id ends it. MEASURED
-        // (`runs/ir_waitfree_freeze/pass_cost.txt` and
-        // `pass_cost_unbounded_mutation.txt`): 3 passes and 278-330 ms here,
-        // against 16 passes and 994 ms-1.22 s with the allowance removed.
+        // freeze was already spending, so it cannot add one, and the budget runs
+        // out on the same pass whichever thread was the last to be unsettled.
+        //
+        // THE BOUND IS `MAX_PASSES`, and it is the only one. A smaller allowance
+        // on the unsettled streak specifically used to refuse first, sized when
+        // a pass cost 95-110 ms (`runs/ir_waitfree_freeze/pass_cost.txt`) and
+        // running the full budget was measured at 994 ms-1.22 s of held process
+        // (`pass_cost_unbounded_mutation.txt`). A pass now costs microseconds
+        // (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), the full budget
+        // was observed at 0.4-5.0 ms over four samples, and refusing before it
+        // spends is a hook that does
+        // not install -- so the smaller allowance was deleted and this asserts
+        // what actually bounds the refusal.
         assert_eq!(
             passes,
-            u64::from(MAX_UNSETTLED_REDERIVATIONS) + 1,
-            "the refusal spent {passes} pass(es), not the pass that first saw \
-             the unsettled probe plus its {MAX_UNSETTLED_REDERIVATIONS} \
-             re-derivation(s); every pass is a system-wide thread-list walk \
-             taken with the rest of the process suspended, and letting the \
-             streak run the MAX_PASSES budget out was measured at 994 ms to \
-             1.22 s of frozen process"
+            u64::from(MAX_PASSES),
+            "the refusal spent {passes} pass(es) rather than the full \
+             {MAX_PASSES}-pass budget; every pass is a walk of this process's \
+             thread list taken with the rest of the process suspended, and a \
+             thread that will never settle must be given all of them before it \
+             is refused"
         );
         // A backstop, not the discriminator: it catches a deferral that is not a
         // bounded loop at all, and says what the run cost when something above
@@ -2984,7 +4653,7 @@ mod tests {
     ///    probe spends nothing, and
     ///    [`only_the_freeze_lock_blocks_in_this_module`] that nothing else in the
     ///    module blocks;
-    ///  * [`a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance`]
+    ///  * [`a_thread_that_cannot_be_suspended_refuses_by_name_when_the_passes_run_out`]
     ///    drives a REAL unsettled suspend failure deterministically, through the
     ///    suspend-count ceiling, and pins both halves of the deferral: the pass
     ///    loop absorbs it, and running the passes out still refuses by name;
@@ -3037,7 +4706,6 @@ mod tests {
         const MAX_ROUNDS: u32 = 20_000;
         let excused_before = suspend_failures_excused_as_terminated();
         let deferred_before = suspend_failures_deferred_to_a_later_pass();
-        let recycled_before = open_failures_excused_as_no_longer_ours();
         let mut rounds = 0u32;
         let outcome = loop {
             rounds += 1;
@@ -3057,13 +4725,10 @@ mod tests {
         };
         stop.store(true, Ordering::Release);
         churn.join().expect("churn thread joins");
-        let recycled = open_failures_excused_as_no_longer_ours() - recycled_before;
         match outcome {
             Err((round, refusal)) => panic!(
                 "round {round}: a thread exiting mid-suspend must be deferred to \
-                 the next pass, not refuse the freeze: {refusal} \
-                 ({recycled} open failure(s) had already been excused as \
-                 no-longer-ours during this run)"
+                 the next pass, not refuse the freeze: {refusal}"
             ),
             Ok((rounds, 0)) => panic!(
                 "{rounds} freezes under churn never hit both shapes of a thread \
@@ -3159,8 +4824,6 @@ mod tests {
         let budget = std::time::Duration::from_secs(30);
         let deadline = std::time::Instant::now() + budget;
         let excused_before = suspend_failures_excused_as_terminated();
-        let foreign_before = open_successes_excused_as_another_processes();
-        let recycled_before = open_failures_excused_as_no_longer_ours();
         let mut rounds = 0u32;
         let outcome = loop {
             rounds += 1;
@@ -3183,14 +4846,10 @@ mod tests {
         // "the recycled-id paths are broken" from "they were never reached" is
         // otherwise guesswork, and they are the paths most likely to explain an
         // unexpected refusal shape.
-        let recycled = open_failures_excused_as_no_longer_ours() - recycled_before;
-        let foreign = open_successes_excused_as_another_processes() - foreign_before;
         match outcome {
             Err((round, refusal)) => panic!(
                 "round {round}: a thread exiting mid-enumeration must not refuse \
-                 the freeze: {refusal} ({recycled} open failure(s) and {foreign} \
-                 opened handle(s) had already been excused as no-longer-ours \
-                 during this run)"
+                 the freeze: {refusal}"
             ),
             Ok((rounds, 0)) => panic!(
                 "{rounds} freezes under churn in {budget:?} never caught a thread \
@@ -3257,23 +4916,63 @@ mod tests {
         worker.join().expect("worker joins");
     }
 
-    /// Falsifiable: fails if threads that come and go are ever left running by
+    /// Falsifiable: fails if threads that come and go are ever left RUNNING by
     /// a freeze that declared success.
     ///
     /// This is the racing case the loop exists for, and the one the "flake" in
     /// `fired_event_popups_live` is made of: threads starting and exiting while
     /// the enumeration runs. Every worker must be either suspended or gone --
     /// never running -- by the time the freeze is held.
+    ///
+    /// # It now OBSERVES that, instead of inferring it
+    ///
+    /// The earlier form asserted only that the freeze returned `Ok` and that its
+    /// pass count was bounded, which a fixed-point regression that skipped a
+    /// newly created thread would satisfy: the freeze would succeed, the bound
+    /// would hold, and the skipped thread would keep running. So the churn
+    /// publishes a PROGRESS COUNTER, and the freeze is asked what it does to it.
+    ///
+    /// Held: the counter must not move. Dropped: it must move again. The first
+    /// is the property -- a thread the freeze missed advances it while the
+    /// process is supposed to be stopped -- and the second is what stops the
+    /// first from passing vacuously against a churn that had already died.
+    ///
+    /// BOTH OBSERVATIONS ARE WINDOWS, not instants, and that is the difference
+    /// between a test and a coincidence. Two adjacent atomic loads would give a
+    /// missed thread no opportunity to be scheduled between them, and a fixed
+    /// spin count after the drop can expire before resumed workers get CPU on a
+    /// loaded or single-core machine -- one direction misses the regression, the
+    /// other fails a correct build. So the held observation samples across a
+    /// bounded wall-clock window, and the resumption is waited for against a
+    /// generous deadline rather than an iteration count.
+    ///
+    /// The held window is 2 ms, which is 2 ms of test process stopped. That is
+    /// the cost of asking the question at all, it is bounded, and it is paid by
+    /// a test rather than by a game.
     #[test]
     fn threads_churning_during_the_freeze_are_all_accounted_for() {
         let _serialised = os_suspend_state_guard();
         let stop = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(AtomicU64::new(0));
         let churn = {
             let stop = Arc::clone(&stop);
+            let progress = Arc::clone(&progress);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
                     let handles: Vec<_> = (0..8)
-                        .map(|_| std::thread::spawn(|| std::thread::yield_now()))
+                        .map(|_| {
+                            let progress = Arc::clone(&progress);
+                            std::thread::spawn(move || {
+                                // Long enough that a worker the freeze failed to
+                                // stop is overwhelmingly likely to tick at least
+                                // once inside the held window, and short enough
+                                // that the churn keeps turning over.
+                                for _ in 0..2_048 {
+                                    progress.fetch_add(1, Ordering::AcqRel);
+                                    std::hint::spin_loop();
+                                }
+                            })
+                        })
                         .collect();
                     for handle in handles {
                         let _ = handle.join();
@@ -3282,16 +4981,99 @@ mod tests {
             })
         };
 
-        for _ in 0..25 {
-            let freeze = freeze_other_threads()
-                .expect("threads exiting mid-enumeration must not refuse the freeze");
-            assert!(
-                freeze.passes() <= MAX_PASSES,
-                "the pass bound must hold on success"
-            );
-            drop(freeze);
+        // Not vacuous: the churn must actually be running before anything is
+        // asserted about what freezing it does.
+        let started = progress.load(Ordering::Acquire);
+        while progress.load(Ordering::Acquire) == started {
+            std::hint::spin_loop();
         }
+
+        // NOTHING PANICS UNTIL THE CHURN IS STOPPED AND JOINED. A panic with 8
+        // workers spinning would leave them running for the rest of this
+        // binary's life and every later test would measure a busier machine.
+        let mut failure: Option<String> = None;
+        for round in 0..25 {
+            match freeze_other_threads() {
+                Err(refusal) => {
+                    failure = Some(format!(
+                        "round {round}: threads exiting mid-enumeration must not                          refuse the freeze: {refusal}"
+                    ));
+                    break;
+                }
+                Ok(freeze) => {
+                    // FORCE THE SUSPENSIONS TO COMPLETE FIRST. `SuspendThread`
+                    // is asynchronous and a thread already in user mode can
+                    // retire further instructions before the kernel stops it --
+                    // this test observed exactly that, one increment after the
+                    // freeze was held, before this line existed.
+                    //
+                    // The freeze settles between its own passes now, so by the
+                    // time it returns this is belt and braces. It is kept because
+                    // it is what a caller that writes bytes does, and this test
+                    // stands in for one.
+                    if let Err(refusal) = freeze.settle_suspensions() {
+                        failure = Some(format!(
+                            "round {round}: a held thread's context could not be                              read, so the suspensions could not be completed:                              {refusal}"
+                        ));
+                        drop(freeze);
+                        break;
+                    }
+                    // SAMPLED ACROSS A WINDOW. A thread the freeze failed to
+                    // stop needs to be scheduled to move the counter, and two
+                    // adjacent loads give it no chance to be.
+                    let held_at_start = progress.load(Ordering::Acquire);
+                    let held_until = std::time::Instant::now()
+                        + std::time::Duration::from_millis(2);
+                    let mut held_at_end = held_at_start;
+                    while std::time::Instant::now() < held_until {
+                        held_at_end = progress.load(Ordering::Acquire);
+                        if held_at_end != held_at_start {
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
+                    let passes = freeze.passes();
+                    drop(freeze);
+                    if held_at_end != held_at_start {
+                        failure = Some(format!(
+                            "round {round}: the progress counter advanced from                              {held_at_start} to {held_at_end} while the freeze was                              HELD, so at least one churn thread was still running                              in a process this module had declared stopped"
+                        ));
+                        break;
+                    }
+                    if passes > MAX_PASSES {
+                        failure = Some(format!(
+                            "round {round}: the freeze reported {passes} passes,                              over the {MAX_PASSES} bound"
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        // And the counter must be able to move again, or the checks above were
+        // measuring a churn that had already stopped. Waited for against a
+        // DEADLINE, not an iteration count: on a loaded or single-core machine
+        // the resumed workers may not be scheduled for a while, and a spin count
+        // that expires first would fail a correct implementation.
+        let after = progress.load(Ordering::Acquire);
+        let resume_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut resumed = false;
+        while std::time::Instant::now() < resume_deadline {
+            if progress.load(Ordering::Acquire) != after {
+                resumed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+
         stop.store(true, Ordering::Release);
         churn.join().expect("churn thread joins");
+
+        if let Some(failure) = failure {
+            panic!("{failure}");
+        }
+        assert!(
+            resumed,
+            "the churn never advanced again after the freezes were dropped, so              the held-window observation above proved nothing"
+        );
     }
 }

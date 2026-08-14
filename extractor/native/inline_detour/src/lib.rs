@@ -279,7 +279,12 @@ mod windows_impl {
     /// rewrites the bytes regardless; a thread executing inside those bytes
     /// then resumes into a half-old, half-new instruction stream. Holding the
     /// freeze across the MinHook call is what makes MinHook's suspension
-    /// succeed rather than be skipped.
+    /// EXPECTED to succeed rather than be skipped -- it NARROWS that fail-open,
+    /// it does not remove it. What is left, and why, is documented on
+    /// [`freeze`]: MinHook's own second `OpenThread` can still fail. A thread
+    /// this process cannot open AT ALL is no longer part of that list -- the
+    /// freeze's roster confirmation names it without opening it and REFUSES --
+    /// but a thread another process inserts after the last pass still is.
     ///
     /// # Safety
     ///
@@ -500,10 +505,30 @@ mod windows_impl {
     ///
     /// # Why this exists
     ///
-    /// [`enable`] freezes the whole process per call, and a freeze is two
-    /// system-wide thread-list walks plus a suspend/resume of every other
-    /// thread, followed by MinHook's own third walk. The shipped roster is every
-    /// non-`bootstrap.` entry of
+    /// [`enable`] freezes the whole process per call, and a freeze is at least
+    /// two walks of this process's thread list plus a suspend/resume of every
+    /// other thread, followed by MinHook's own system-wide snapshot.
+    ///
+    /// THE PER-FREEZE COST HAS FALLEN and the reason this exists has not. When
+    /// it was written a freeze was 129-258 ms, because each pass was a
+    /// `CreateToolhelp32Snapshot` over every thread on the machine; the freeze
+    /// now enumerates with `NtGetNextThread` and confirms the fixed point once
+    /// against a materialised roster, and a clean freeze was OBSERVED at
+    /// 15.4-25.1 ms over eight debug samples on one machine holding seven
+    /// threads (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), of which
+    /// the walking is 114-334 us. That is a sample and not a bound, and the two
+    /// halves scale differently: the walk, the granted-access query, the suspend
+    /// and the context read are PER THREAD and hoi4.exe holds far more than
+    /// seven, while the roster is per FREEZE and is paid once however many
+    /// threads there are. Batching therefore buys back real milliseconds again
+    /// -- one roster instead of one per detour -- and it buys ATOMICITY ON TOP
+    /// OF THEM, which is the reason it was written when the milliseconds had
+    /// gone: the whole set becomes live inside ONE window, so no game thread
+    /// runs between one detour being patched and the next -- see "Atomic in EFFECT" below -- and MinHook's own
+    /// snapshot, which this module cannot make cheaper, is taken once instead of
+    /// once per target.
+    ///
+    /// The shipped roster is every non-`bootstrap.` entry of
     /// `compact_contract::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1` (the
     /// two bootstrap hooks are IAT stores, not detours) -- it was 55 when this
     /// was written and moves whenever a domain is scheduled or descheduled --
@@ -1184,9 +1209,8 @@ pub use release_ledger::{
 #[cfg(windows)]
 pub use freeze::{
     freeze_attempts, freeze_attempts_on_this_thread, freeze_passes_spent, freeze_process,
-    freeze_refusals, open_failures_excused_as_no_longer_ours,
-    suspend_failures_deferred_to_a_later_pass, suspend_failures_excused_as_terminated,
-    FreezeRefusal, ProcessFreeze,
+    freeze_refusals, suspend_failures_deferred_to_a_later_pass,
+    suspend_failures_excused_as_terminated, FreezeRefusal, ProcessFreeze,
 };
 
 #[cfg(windows)]
@@ -1299,11 +1323,19 @@ fn scan_source_for_direct_enable(text: &str) -> Vec<usize> {
 /// `recorder_host` resumes the main thread of a process it created suspended,
 /// and enumerates PROCESSES, and neither reaches a thread of the collector's own
 /// process. What is banned is the ability to enumerate this process's threads
-/// and stop them -- without `Thread32First`/`Thread32Next` there is no thread
-/// list to walk, and without `SuspendThread` there is nothing to stop it with.
+/// and stop them -- without a thread walk there is no list to walk, and without
+/// `SuspendThread` there is nothing to stop it with.
 ///
-/// NOT COVERED, in those words: `NtGetNextThread`, a raw syscall, a suspender
-/// written in a `.c` file, or a fourth-party crate. Each needs an edit that is
+/// `NtGetNextThread` IS covered, and used not to be. The note here said it was
+/// out of scope because reaching for an undocumented ntdll export was an edit a
+/// reviewer would see -- which was true while nothing in the tree did it. The
+/// shared freeze now enumerates with exactly that call, so the pattern is
+/// demonstrated in-tree and copying it is no longer an unusual thing for a lane
+/// to write. A ban list that omits the primitive its own crate uses is the one
+/// shape this scan cannot afford.
+///
+/// STILL NOT COVERED, in those words: a raw `syscall` instruction, a suspender
+/// written in a `.c` file, and a fourth-party crate. Each needs an edit that is
 /// visible in review, which is the same bar the MinHook ban above sets.
 ///
 /// Kept as separate fragments and joined at runtime so this list does not
@@ -1318,6 +1350,8 @@ const BANNED_SUSPENDER_FRAGMENTS: &[(&str, &str)] = &[
     ("Thread32", "First("),
     ("Thread32", "Next("),
     ("GetThread", "Context("),
+    ("NtGetNext", "Thread("),
+    ("ZwGetNext", "Thread("),
 ];
 
 /// Strip `//` line comments so a prose reference to a banned name is not a
@@ -1898,6 +1932,14 @@ mod tests {
     /// the same shape as the pin-ordering test above.
     #[test]
     fn every_patching_wrapper_freezes_the_process_before_it_calls_minhook() {
+        // The release LEDGER first, then the suspend state -- the order every
+        // other test in this crate takes them in. `disable` and `remove` below
+        // record release attempts into a process-global ledger whose capacity
+        // test asserts an exact dropped count under this lock, so a writer that
+        // skipped it could land inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Process-global suspend state: serialise with every other test
         // that freezes or arranges suspend counts.
         let _serialised = crate::freeze::os_suspend_state_guard();
@@ -1969,7 +2011,7 @@ mod tests {
     fn an_enable_refused_by_the_freeze_is_not_a_minhook_status() {
         let refusal = InlineDetourEnableError::FreezeRefused(FreezeRefusal::NotQuiescent {
             passes: 16,
-            still_running: 3,
+            unaccounted: 3,
         });
         assert!(refusal.minhook_status().is_none());
         assert!(refusal.freeze_refusal().is_some());
@@ -2130,6 +2172,15 @@ mod batch_tests {
     #[test]
     fn one_refused_hook_in_a_batch_is_named_and_the_others_are_not_blamed() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let real = create_victims(2);
         let batch = [real[0], ("absent.hook", ABSENT_TARGET), real[1]];
@@ -2191,8 +2242,8 @@ mod batch_tests {
     /// against the same process in the same state rather than against a
     /// remembered number. `freeze_attempts_on_this_thread` is the counter the
     /// freeze module already keeps and is incremented once per
-    /// `freeze_other_threads` call, which is one system-wide thread walk plus
-    /// at least one verification walk each.
+    /// `freeze_other_threads` call, which is one sizing walk of this process's
+    /// thread list plus at least two fixed-point walks each.
     ///
     /// What production change would make this fail? Implementing
     /// `enable_batch` as a loop over `enable`; calling `apply_queued` once per
@@ -2205,6 +2256,15 @@ mod batch_tests {
     #[test]
     fn a_batch_of_four_takes_one_freeze_where_four_singles_take_four() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_victims(4);
 
@@ -2278,9 +2338,9 @@ mod batch_tests {
     /// Falsifiable: fails if an empty batch freezes the process, or if a
     /// batch whose targets are all absent freezes more than once.
     ///
-    /// The empty case is the one that must cost nothing: a freeze is a
-    /// system-wide thread walk and a suspend of every game thread, and paying
-    /// it for a batch with no work is pure loss. The all-absent case is the
+    /// The empty case is the one that must cost nothing: a freeze walks this
+    /// process's thread list and suspends every game thread, and paying that for
+    /// a batch with no work is pure loss. The all-absent case is the
     /// deliberate price of putting the queue calls inside the freeze, and it
     /// is bounded here so that price stays one freeze and not one per target.
     ///
@@ -2290,6 +2350,15 @@ mod batch_tests {
     #[test]
     fn an_empty_batch_never_freezes_and_a_broken_roster_freezes_at_most_once() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
 
         let empty = unsafe { enable_batch(&[]) };
@@ -2333,6 +2402,15 @@ mod batch_tests {
     #[test]
     fn the_batch_counts_every_target_it_enabled_and_no_target_it_refused() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_victims(3);
 
@@ -2386,6 +2464,15 @@ mod batch_tests {
     #[test]
     fn a_batch_that_lists_the_same_target_twice_is_refused_outright() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_victims(2);
 
@@ -2489,10 +2576,10 @@ mod batch_tests {
     /// D45 installs twelve detours in one unit. This stages twelve real
     /// MinHook hooks and measures both paths in the same process, in the same
     /// state, back to back: the per-hook path costs one freeze per hook and
-    /// the batch costs one for the whole unit. Each freeze is a system-wide
-    /// thread-list enumeration plus a suspend and resume of every other thread
-    /// in the process, and it is the count -- not a wall time taken on a
-    /// machine running five other build lanes -- that this API exists to move.
+    /// the batch costs one for the whole unit. Each freeze walks this process's
+    /// thread list and suspends and resumes every other thread in it, and it is
+    /// the COUNT -- not a wall time taken on a machine running five other build
+    /// lanes -- that this API exists to move.
     ///
     /// The numbers are ASSERTED as a law, not recorded: `singles == twelve`
     /// and `batch == 1` for any twelve targets, so the evidence does not go
@@ -2510,6 +2597,15 @@ mod batch_tests {
     #[test]
     fn twelve_hooks_cost_twelve_freezes_one_at_a_time_and_one_as_a_batch() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_roster_victims();
         assert_eq!(targets.len(), 12, "the staged roster is D45-sized");
@@ -2626,6 +2722,15 @@ mod batch_tests {
     #[test]
     fn a_batched_removal_frees_every_trampoline_under_one_freeze() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_victims(4);
         let installed = unsafe { enable_batch(&targets) };
@@ -2705,6 +2810,15 @@ mod batch_tests {
     #[test]
     fn a_release_batch_reports_nothing_to_do_as_success_and_still_names_it() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
 
         let disabled = unsafe { disable_batch(&[("absent.disable", ABSENT_TARGET)]) };
@@ -2812,6 +2926,15 @@ mod batch_tests {
     #[test]
     fn a_batched_release_restores_every_target_it_was_given() {
         let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The release LEDGER is process-global and every one of these
+        // tests writes into it -- `create_victims` removes any prior
+        // instance, and the batch releases below record every attempt.
+        // `release_ledger`'s own capacity test asserts an exact dropped
+        // count under this same lock, so a batch test that skipped it
+        // could add an entry inside that assertion's window.
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _suspend = crate::freeze::os_suspend_state_guard();
         let targets = create_victims(3);
 

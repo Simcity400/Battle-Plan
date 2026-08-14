@@ -18,6 +18,15 @@ pub const XUI08_EXECUTABLE_SHA256: &str =
 // cannot authorize themselves by supplying arbitrary syntax-shaped hashes.
 pub const XUI08_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
     "2d54f7ee3610af7f8aff97268c0c56e71674e408329daaaa6f6132e523a1f08c";
+// THE LF DIGEST, and the distinction is the whole of a defect this pin already
+// had once. `include_bytes!` reads the file as it sits in the working tree, and
+// `.gitattributes` marks this manifest `text eol=lf`, so what the compiler
+// embeds is LF on every platform and every checkout. The value here was briefly
+// the CRLF digest of the same bytes
+// (36e3797eb90b6adb48e5206c5577e60201cfee6ff1778c28291dc8d869cbd06d), which no
+// checkout of this repository can produce -- it made
+// `committed_manifests_are_compile_time_bound_to_admission_constants` red on
+// every tree, and no committed version of the manifest has ever hashed to it.
 pub const XUI08_EVIDENCE_MANIFEST_SHA256: &str =
     "c531145bd016c548bf1641f68cc542300fbaa333c2bdec174ccfd380078f7253";
 
