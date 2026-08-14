@@ -753,36 +753,88 @@ fn fx_weather_sweep(seed: u64) -> Scenario {
 }
 
 fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
+    // The exact domain-24 `weather_live` carrier: raw fixed-point snow
+    // accumulators (denominator 100000, the producer states it) and the
+    // engine's own mud byte, per province. No 0..255 level and no fade block
+    // is invented here, because no producer emits either.
     let s = scenario(
         seed,
         "fx_snow_mud_accumulator",
-        "Accumulated SnowMudData levels and fade phase evolve independently from weather kind.",
+        "Per-province engine snow accumulators and mud booleans evolve independently from region weather kind.",
         &["requirements:6", "plan:A2:snow_mud_accumulator"],
         &["clock", "country_identity", "weather"],
         &["No Step Back"],
         "english",
         |tick, snap| {
-            let snow = (tick as i64 * 21).min(180);
-            let mud = if tick < 5 {
-                tick as i64 * 9
-            } else {
-                45 - ((tick as i64 - 5) * 5)
-            }
-            .max(0);
+            // Rising snow in fixed point, and mud that appears with the thaw
+            // and dries again — the two are independent per province.
+            let snow_raw = (tick as i64 * 700_000).min(6_000_000);
+            let muddy = (5..9).contains(&tick);
             snap["weather"]["regions"] = json!({
                 "201": {"region_id": 201, "phenom": if tick < 6 { 3 } else { 0 }, "phenom_name": if tick < 6 { "snow" } else { "clear" }, "temp_c": if tick < 6 { -5.0 } else { 4.0 }, "active": true}
             });
-            snap["weather"]["snow_mud"] = json!({
-                "texture": [
-                    {"province_id": 1000, "region_id": 201, "snow_level_0_255": snow, "mud_level_0_255": mud},
-                    {"province_id": 1001, "region_id": 201, "snow_level_0_255": (snow + 18).min(220), "mud_level_0_255": (mud / 2)}
-                ],
-                "fade": {
-                    "phase": (tick as f64) / ((SNAPSHOT_COUNT - 1) as f64),
-                    "fade_0_hour": snap["hour_index"].as_i64().unwrap_or(0) - 1,
-                    "fade_1_hour": snap["hour_index"].as_i64().unwrap_or(0)
-                },
-                "addressing": "south_origin_y_flip"
+            // The engine's own province array is dense and its size is stated,
+            // so the carrier declares it and every row is measured: this is the
+            // HEALTHY shape. The unmeasured shapes are unit-tested rather than
+            // frozen into a positive fixture.
+            // A real domain-24 record carries the whole strategic-region census
+            // beside the province rows, and replay's region view requires it
+            // complete, so the fixture carries it rather than a province-only
+            // half-carrier that would make every frame emit a coverage warning.
+            let mut regions = Map::new();
+            for region_id in 0..305u32 {
+                regions.insert(
+                    region_id.to_string(),
+                    json!({
+                        "region_id": region_id,
+                        "temperature": 0.0,
+                        "temperature_raw": 0,
+                        "phenomenon": 0,
+                        "weather_kind": "no_phenomenon",
+                        "next_weather_change_raw": 0,
+                        "active_modifier_count": 0,
+                        "intensity": 0,
+                        "rain_light": false,
+                        "rain_heavy": false,
+                        "snow": false,
+                        "blizzard": false,
+                        "arctic_water": false,
+                        "active_signal": false,
+                        "phenomenon_active": false,
+                        "sandstorm": false
+                    }),
+                );
+            }
+            snap["map"]["_r2_weather_live"] = json!({
+                "source": "weather_live",
+                "scale_raw": 100000,
+                "observed_region_rows": 305,
+                "active_region_count": 0,
+                "regions": Value::Object(regions),
+                "observed_province_rows": 3,
+                "provinces": {
+                    "0": {
+                        "province_id": 0,
+                        "snow_raw": snow_raw,
+                        "snow": (snow_raw as f64) / 100000.0,
+                        "mud_present": true,
+                        "mud_active": muddy
+                    },
+                    "1": {
+                        "province_id": 1,
+                        "snow_raw": (snow_raw + 1_800_000).min(9_000_000),
+                        "snow": ((snow_raw + 1_800_000).min(9_000_000) as f64) / 100000.0,
+                        "mud_present": true,
+                        "mud_active": false
+                    },
+                    "2": {
+                        "province_id": 2,
+                        "snow_raw": 0,
+                        "snow": 0.0,
+                        "mud_present": true,
+                        "mud_active": !muddy
+                    }
+                }
             });
             snap["weather"]["source"] = json!("M");
         },
@@ -792,9 +844,9 @@ fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
         s,
         Probe::new(
             h8,
-            &["weather", "snow_mud", "texture", "0", "snow_level_0_255"],
-            json!(168),
-            "snow accumulator at hour 8",
+            &["map", "_r2_weather_live", "provinces", "0", "snow_raw"],
+            json!(5_600_000),
+            "province snow accumulator at hour 8",
         ),
     )
 }

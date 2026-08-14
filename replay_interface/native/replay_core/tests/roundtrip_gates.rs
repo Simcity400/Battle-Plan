@@ -314,47 +314,48 @@ fn rt_weather_sweep() {
     }
 }
 
+/// Every province cell round-trips the recorded carrier byte for byte: the
+/// engine's raw fixed-point snow accumulator and its mud byte, with the
+/// producer-declared denominator on the view.
+///
+/// kills: quantising, rescaling or rounding `snow_raw` anywhere between the
+/// recorded carrier and the view; substituting `mud_present` for the mud
+/// value; and dropping `scale_raw`.
 #[test]
 fn rt_snow_mud_accumulator() {
     let t = open_fixture("fx_snow_mud_accumulator");
     for f in frames(&t) {
         let view = f.snow_mud();
         assert_eq!(view.status, ViewStatus::Present, "snow_mud present");
-        // Each texture cell round-trips per province.
-        let texture = raw(&f, &["weather", "snow_mud", "texture"])
-            .and_then(Value::as_array)
-            .expect("texture array");
-        for cell in texture {
-            let pid = u32::try_from(cell["province_id"].as_u64().unwrap()).unwrap();
-            let got: &SnowMudCell = view.by_province.get(&pid).expect("province cell");
-            assert_eq!(
-                got.snow_level_0_255,
-                exp_u32(cell.get("snow_level_0_255")),
-                "snow p{pid} @ {}",
-                f.hour_index()
-            );
-            assert_eq!(
-                got.mud_level_0_255,
-                exp_u32(cell.get("mud_level_0_255")),
-                "mud p{pid} @ {}",
-                f.hour_index()
-            );
-            assert_eq!(got.region_id, exp_u32(cell.get("region_id")));
-        }
+        assert_eq!(view.by_province_status, ViewStatus::Present);
         assert_eq!(
-            view.fade_phase,
-            exp_f64(raw(&f, &["weather", "snow_mud", "fade", "phase"])),
-            "fade phase @ {}",
+            view.scale_raw,
+            exp_u32(raw(&f, &["map", "_r2_weather_live", "scale_raw"])),
+            "declared scale @ {}",
             f.hour_index()
         );
-        assert_eq!(
-            view.fade_0_hour,
-            exp_i64(raw(&f, &["weather", "snow_mud", "fade", "fade_0_hour"]))
-        );
-        assert_eq!(
-            view.fade_1_hour,
-            exp_i64(raw(&f, &["weather", "snow_mud", "fade", "fade_1_hour"]))
-        );
+        let provinces = raw(&f, &["map", "_r2_weather_live", "provinces"])
+            .and_then(Value::as_object)
+            .expect("province carrier");
+        assert!(!provinces.is_empty(), "carrier rows @ {}", f.hour_index());
+        for (key, row) in provinces {
+            let pid = key.parse::<u32>().expect("numeric province key");
+            let got: &SnowMudCell = view.by_province.get(&pid).expect("province cell");
+            assert_eq!(
+                got.snow_raw,
+                exp_i64(row.get("snow_raw")),
+                "snow_raw p{pid} @ {}",
+                f.hour_index()
+            );
+            // An unmeasured mud byte stays unmeasured; a measured one arrives
+            // as the boolean the engine holds.
+            let expected_mud = if row.get("mud_present") == Some(&Value::Bool(true)) {
+                exp_bool(row.get("mud_active"))
+            } else {
+                Leaf::Unobtained
+            };
+            assert_eq!(got.mud, expected_mud, "mud p{pid} @ {}", f.hour_index());
+        }
     }
 }
 

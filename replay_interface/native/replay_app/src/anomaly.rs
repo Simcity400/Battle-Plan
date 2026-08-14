@@ -158,11 +158,10 @@ const MONITORED_DOMAINS: &[&str] = &[
     "countries",
     "weather",
     "snow_mud",
-    // The province ground-cover texture carries its own availability, split
-    // from the snow_mud view status (which also covers the fade partition):
-    // the texture can go absent/unobtained/wrong-typed mid-stream while the
-    // view stays Present, and that downgrade must surface, not read as an
-    // empty measured texture.
+    // The per-province collection carries its own availability, split from the
+    // snow_mud view status: rows can go unreadable mid-stream while the
+    // carrier itself stays admitted, and that downgrade must surface, not read
+    // as an empty measured census.
     "snow_mud.by_province",
     "visibility",
     "buildings",
@@ -177,13 +176,17 @@ const TYPE_FLIP_FIELDS: &[&str] = &["political_power", "fuel_current"];
 
 /// The raw JSON value backing a monitored domain, used only to remember the
 /// last-good hour for the hold marker. Most monitors are top-level raw keys;
-/// the snow_mud pair lives nested under `weather` (and the texture partition
-/// one level deeper), so a plain top-level lookup would never record a last
-/// good value and the hold would claim the FAILING hour as its `since_hour`.
+/// the snow_mud pair reads the domain-24 carrier under `map` (and its province
+/// collection one level deeper), so a plain top-level lookup would never record
+/// a last good value and the hold would claim the FAILING hour as its
+/// `since_hour`.
 fn monitored_domain_value<'a>(frame: &'a WorldFrame, domain: &str) -> Option<&'a Value> {
     match domain {
-        "snow_mud" => frame.domain("weather")?.get("snow_mud"),
-        "snow_mud.by_province" => frame.domain("weather")?.get("snow_mud")?.get("texture"),
+        "snow_mud" => frame.domain("map")?.get("_r2_weather_live"),
+        "snow_mud.by_province" => frame
+            .domain("map")?
+            .get("_r2_weather_live")?
+            .get("provinces"),
         _ => frame.domain(domain),
     }
 }
@@ -1010,29 +1013,46 @@ mod tests {
         assert!(held[0].marker.contains("HELD"));
     }
 
-    /// FW1 status consumer: the per-province snow/mud semantic collection has
+    /// FW1 status consumer: the per-province snow/mud collection has its own
     /// availability (`SnowMudView::by_province_status`), split from the view
-    /// status that also covers the fade partition. A mid-stream collection
-    /// downgrade under a still-`Present` snow_mud view must surface as a
-    /// MissingDomain hold on the legacy-key monitor — not read as an empty
-    /// measured semantic census, and not fire the whole-view monitor.
+    /// status. A mid-stream collection downgrade under a still-`Present`
+    /// snow_mud view must surface as a MissingDomain hold on the collection
+    /// monitor — not read as an empty measured census, and not fire the
+    /// whole-view monitor.
+    ///
+    /// kills: routing the `snow_mud.by_province` monitor to the root view
+    /// status in `view_status`; pointing `monitored_domain_value` at a
+    /// top-level key instead of the domain-24 carrier (the hold then names the
+    /// FAILING hour rather than hour 0); and letting a carrier whose rows went
+    /// unreadable keep reporting a complete census.
     #[test]
     fn snow_mud_texture_downgrade_surfaces_under_present_view() {
         let textured = serde_json::json!({
-            "weather": { "snow_mud": {
-                "texture": [
-                    { "province_id": 1000, "region_id": 1,
-                      "snow_level_0_255": 40, "mud_level_0_255": 0 }
-                ],
-                "fade": { "phase": 0.5, "fade_0_hour": 1, "fade_1_hour": 2 }
+            "map": { "_r2_weather_live": {
+                "source": "weather_live",
+                "scale_raw": 100000,
+                "observed_province_rows": 2,
+                "provinces": {
+                    "0": { "province_id": 0, "snow_raw": 4_000_000,
+                           "mud_present": true, "mud_active": false },
+                    "1": { "province_id": 1, "snow_raw": 250_000,
+                           "mud_present": true, "mud_active": true }
+                }
             } }
         });
-        // The view stays Present (the snow_mud object and fade partition are
-        // still there) while the texture partition goes explicitly unobtained.
+        // The carrier is still admitted (source and scale intact) while one
+        // province row stops being readable, so the view root stays Present
+        // and the collection alone goes unavailable.
         let texture_lost = serde_json::json!({
-            "weather": { "snow_mud": {
-                "texture": null,
-                "fade": { "phase": 0.5, "fade_0_hour": 1, "fade_1_hour": 2 }
+            "map": { "_r2_weather_live": {
+                "source": "weather_live",
+                "scale_raw": 100000,
+                "observed_province_rows": 2,
+                "provinces": {
+                    "0": 7,
+                    "1": { "province_id": 1, "snow_raw": 250_000,
+                           "mud_present": true, "mud_active": true }
+                }
             } }
         });
         let source = MemorySource {

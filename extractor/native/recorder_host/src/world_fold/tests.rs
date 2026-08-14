@@ -3221,6 +3221,75 @@ fn chunk3_weather_payload(extra_status: u32) -> Vec<u8> {
     out
 }
 
+/// A full weather snapshot carrying province rows: four provinces whose snow
+/// accumulators and mud bytes are what GP-U12's seam publishes - three with a
+/// measured mud byte and one whose mud byte the collector never read.
+fn chunk3_weather_payload_with_provinces() -> Vec<u8> {
+    let mut out = chunk3_weather_payload(0);
+    let provinces: [(u32, u32, i32); 4] = [
+        // (province_id, flags, snow_raw)
+        (
+            0,
+            WEATHER_PROVINCE_WATER_PRESENT
+                | WEATHER_PROVINCE_SNOW_PRESENT
+                | WEATHER_PROVINCE_MUD_PRESENT
+                | WEATHER_PROVINCE_MUD_ACTIVE
+                | WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT
+                | WEATHER_PROVINCE_STRUCT_VALIDATED
+                | WEATHER_PROVINCE_MAP_RECOLOR
+                | WEATHER_PROVINCE_DYNAMIC_LUT,
+            4_200_000,
+        ),
+        (
+            1,
+            WEATHER_PROVINCE_WATER_PRESENT
+                | WEATHER_PROVINCE_SNOW_PRESENT
+                | WEATHER_PROVINCE_MUD_PRESENT
+                | WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT
+                | WEATHER_PROVINCE_STRUCT_VALIDATED
+                | WEATHER_PROVINCE_MAP_RECOLOR
+                | WEATHER_PROVINCE_DYNAMIC_LUT,
+            0,
+        ),
+        (
+            2,
+            WEATHER_PROVINCE_WATER_PRESENT
+                | WEATHER_PROVINCE_SNOW_PRESENT
+                | WEATHER_PROVINCE_MUD_PRESENT
+                | WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT
+                | WEATHER_PROVINCE_STRUCT_VALIDATED
+                | WEATHER_PROVINCE_MAP_RECOLOR
+                | WEATHER_PROVINCE_DYNAMIC_LUT,
+            100_000_000,
+        ),
+        // A province whose mud byte was never read: no MUD_PRESENT bit, so the
+        // carrier must say so rather than publish a boolean for it.
+        (
+            3,
+            WEATHER_PROVINCE_WATER_PRESENT
+                | WEATHER_PROVINCE_SNOW_PRESENT
+                | WEATHER_PROVINCE_CUSTOM_MODIFIER_COUNT_PRESENT
+                | WEATHER_PROVINCE_STRUCT_VALIDATED
+                | WEATHER_PROVINCE_MAP_RECOLOR
+                | WEATHER_PROVINCE_DYNAMIC_LUT,
+            250_000,
+        ),
+    ];
+    put_u32_at(&mut out, 20, provinces.len() as u32);
+    put_u32_at(&mut out, 28, provinces.len() as u32);
+    for (province_id, flags, snow_raw) in provinces {
+        push_u32(&mut out, province_id);
+        push_u32(&mut out, flags);
+        push_i32(&mut out, 0);
+        push_i32(&mut out, 0);
+        push_i32(&mut out, 0);
+        push_i32(&mut out, snow_raw);
+        push_u32(&mut out, 0);
+        push_u32(&mut out, 0);
+    }
+    out
+}
+
 fn chunk3_weather_delta_activating_region(region_id: u32) -> Vec<u8> {
     let mut out = vec![0u8; WEATHER_HEADER_LEN];
     put_u64_at(&mut out, 0, 11);
@@ -5741,6 +5810,59 @@ fn chunk3_scripted_payload(status: u32, rows: &[Chunk3ScriptedRow]) -> Vec<u8> {
     out.extend_from_slice(&encoded_rows);
     out.extend_from_slice(&key_table);
     out
+}
+
+/// GP-U12: the fold publishes each province's snow accumulator as the exact
+/// engine integer with the producer's denominator beside it, and the engine's
+/// mud byte as `mud_active` under the `mud_present` measurement flag. This is
+/// the producer half of replay's per-province snow/mud seam; the consumer half admits
+/// exactly these keys
+/// (`replay_core::world::gpu12_snow_mud_carries_engine_snow_raw_and_mud_bool`).
+///
+/// kills: quantising `snow_raw` onto any 0..255 level or other scale in
+/// `WeatherProvinceState::to_json`; dropping `scale_raw` from the carrier;
+/// swapping the `mud_present`/`mud_active` bits (province 1 has one bit set and
+/// the other clear, so a swap changes its published mud); and emitting a
+/// boolean `mud_active` for province 3, whose mud byte was never read; and
+/// dropping or renaming `observed_province_rows`, the witness replay's census
+/// membership check rests on.
+#[test]
+fn chunk3_d24_province_snow_and_mud_are_published_in_engine_encodings() {
+    let snapshot =
+        snapshot_for_domain_records(vec![(24, chunk3_weather_payload_with_provinces())]);
+    let weather = &snapshot["map"]["_r2_weather_live"];
+
+    // The denominator the seam needs to interpret the integers.
+    assert_eq!(weather["source"], json!("weather_live"));
+    assert_eq!(weather["scale_raw"], json!(100_000));
+    // The membership witness the consumer's census rests on: without it every
+    // replay census is unavailable, however good the rows are.
+    assert_eq!(weather["observed_province_rows"], json!(4));
+
+    // Snow rides as the engine's own fixed-point integer, unrounded and
+    // unscaled, for a mid-range value, a measured zero, and the ceiling.
+    let provinces = &weather["provinces"];
+    assert_eq!(provinces["0"]["snow_raw"], json!(4_200_000));
+    assert_eq!(provinces["1"]["snow_raw"], json!(0));
+    assert_eq!(provinces["2"]["snow_raw"], json!(100_000_000));
+
+    // Mud rides as the engine's boolean: measured true, measured false, and
+    // the same measured-false for a province with no accumulation.
+    assert_eq!(provinces["0"]["mud_present"], json!(true));
+    assert_eq!(provinces["0"]["mud_active"], json!(true));
+    assert_eq!(provinces["1"]["mud_present"], json!(true));
+    assert_eq!(provinces["1"]["mud_active"], json!(false));
+
+    // The mud byte this row never read is published as unmeasured, not as a
+    // measured `false` — the two are different facts.
+    assert_eq!(provinces["3"]["mud_present"], json!(false));
+    assert_eq!(provinces["3"]["mud_active"], Value::Null);
+    assert_eq!(provinces["3"]["snow_raw"], json!(250_000));
+
+    // The province row authenticates its own identity, which is what lets the
+    // consumer key by the object key.
+    assert_eq!(provinces["0"]["province_id"], json!(0));
+    assert_eq!(provinces["2"]["province_id"], json!(2));
 }
 
 #[test]

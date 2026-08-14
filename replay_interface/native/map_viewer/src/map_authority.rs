@@ -1182,7 +1182,7 @@ pub fn map_authority_requirement_metadata(
             "the recording carries no complete measured D18 country roster for this hour"
         }
         "terrain.snow_mud_semantic" => {
-            "this semantic accumulator remains independently unavailable and cannot substitute for XMAP07's exact passive global dense texture/fade carrier"
+            "this per-province accumulator is measured (domain 24 snow_raw + mud byte, engine encodings) but is not owner-proven as a map-authority input, and cannot substitute for XMAP07's exact passive global dense texture/fade carrier"
         }
         // XMAP07 has proved this row; its blocker names the hour's missing or
         // incomplete measurement rather than a pending proof.
