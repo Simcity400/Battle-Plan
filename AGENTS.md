@@ -59,9 +59,13 @@ printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_poli
   defect class, an out-of-scope list, raw evidence paths, and "this job is
   read-only — do not modify files". Feed it via stdin with a trailing `-`.
   Forbid it from consulting any machine-wide memory store.
-- Wait in-turn for the call — ending your turn kills the child. One fix round
-  per review; if the re-review still finds defects, fix the rest yourself.
-  Any commit after an APPROVE needs one more confirmation round.
+- Any long call (battery, Codex, capture) runs as ONE tracked background task
+  via the shell tool's background option — the harness wakes you when it
+  finishes. Never detach with `&`, never sleep-poll in a loop, and never end
+  your turn "waiting" for anything that is not a tracked background task:
+  untracked children die the instant your turn ends, and no result ever comes.
+- One fix round per review; if the re-review still finds defects, fix the rest
+  yourself. Any commit after an APPROVE needs one more confirmation round.
 
 ## Orchestration
 
