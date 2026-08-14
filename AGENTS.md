@@ -13,6 +13,9 @@ A bad hour costs that hour, with a named reason — never the recording.
 - Attach-and-play: find data by RE and read it passively; else derive at
   replay or refuse it, named.
 - Fail closed. No hardcoded game content. Mods must work.
+- Derive authored content and all presentation at replay from the certified
+  installed content and recorded state; extract only what changes during play — and
+  where an authored value can change, extract the divergence, not a copy.
 - Assume max game speed on a modest 4-core machine.
 - No backwards compat: delete replaced code in the same change, prove it dead.
 - Fix what you find. Leave open only what needs the owner, a live game, or
