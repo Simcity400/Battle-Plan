@@ -1,9 +1,9 @@
 //! d94 `pov_province_visibility_live` — the observing country's fog-of-war level
 //! for every province, as one complete engine byte vector per hour.
 //!
-//! Derived from `world_fold.rs:13688`-`:13749`
+//! Derived from `world_fold.rs:14056`-`:14117`
 //! (`fold_pov_province_visibility`, dispatched at `:4745`, its error arm at
-// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=13688-13749 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=f55685b32df6976e95472e5148bc9d5b088b14464ea975baa89a3493a13512be
+// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=14056-14117 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=f67e2758387ad72b4f18a9575864fab4c1971d5a393336e6adf4fd80e38c11bc
 //! `:4917`-`:4925`, its hour reset at `world_fold.rs::reset_hour_state`) and from the payload codec
 //! the domain already owns, `compact_contract/src/pov_visibility.rs` (recipe
 //! authority 2). There is no `extractor/documents/domains/d94_*.md`, which is
