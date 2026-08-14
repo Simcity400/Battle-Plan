@@ -22,7 +22,10 @@ A bad hour costs that hour, with a named reason — never the recording.
   someone else's active work.
 - One child agent only: the Codex reviewer below, after the work. Re-review
   every fix until it approves clean.
-- Report once, numbers first. Reviewers get raw evidence, not summaries.
+- Report once, numbers first, when EVERYTHING is finished. Reviewers get raw
+  evidence, not summaries. While a tracked task is still running, end your
+  turn with a single line ("WIP: waiting on <task>") and nothing else — no
+  status summaries, no partial findings; they bloat the orchestrator.
 - Clean up your worktree, branch, build output, temp files. Never stash.
 - Generated runtime inputs are not debris: prove regeneration before purging.
 - Hash-pinned committed files need `.gitattributes` `text eol=lf`.
