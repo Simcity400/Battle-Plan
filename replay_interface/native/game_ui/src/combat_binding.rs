@@ -23,7 +23,7 @@
 //! bombardment/air-superiority selectors, leaders, effective modifier stacks,
 //! and terminal result/loss joins remain external and fail closed.
 
-use replay_core::{CombatRow, LandCombatSideDetail, Leaf, ViewStatus, WorldFrame};
+use replay_core::{CombatRow, LandCombatSideDetail, Leaf, ViewStatus};
 
 /// One active-combat row bound from a [`CombatRow`]. Producer-owned typed
 /// values are populated; only genuinely external selectors remain `None`.
@@ -126,24 +126,6 @@ fn combat_row(row: &CombatRow) -> CombatPanelRow {
 /// was `Absent`/`Unobtained`.
 fn measured_ids(leaf: &Leaf<Vec<i64>>) -> Option<Vec<i64>> {
     leaf.measured().cloned()
-}
-
-/// Build the read-only combat-detail panel binding for one world frame (U1).
-/// Availability comes from [`WorldFrame::combats_status`], never from vector
-/// non-emptiness: a non-`Present` collection binds no rows even if the frame
-/// retained state.
-pub fn combat_panel_from_frame(frame: &WorldFrame) -> CombatPanelBinding {
-    let combats_status = frame.combats_status();
-    let combats: Vec<CombatPanelRow> = if combats_status == ViewStatus::Present {
-        frame.combats().iter().map(combat_row).collect()
-    } else {
-        Vec::new()
-    };
-    CombatPanelBinding {
-        available: combats_status == ViewStatus::Present && !combats.is_empty(),
-        combats_status,
-        combats,
-    }
 }
 
 #[cfg(test)]

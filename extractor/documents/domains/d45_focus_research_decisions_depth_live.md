@@ -146,6 +146,5 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/scripts/c0_pass2_spans.py`
 - `replay_interface/native/game_ui/src/national_focus.rs`
-- `replay_interface/native/game_ui/tests/xui18_power_balance.rs`
 - `replay_interface/native/replay_core/src/frd_depth.rs`
 - `replay_interface/native/replay_core/src/world.rs`

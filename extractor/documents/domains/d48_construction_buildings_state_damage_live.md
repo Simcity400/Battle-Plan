@@ -170,7 +170,6 @@ row fail closed.
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
 - `portable_replay/native/render_stream/src/lib.rs`
-- `replay_interface/native/game_ui/src/d48_production.rs`
 - `replay_interface/native/map_viewer/src/production_d3d.rs`
 - `replay_interface/native/map_viewer/src/rail_files.rs`
 - `replay_interface/native/replay_app/src/app.rs`

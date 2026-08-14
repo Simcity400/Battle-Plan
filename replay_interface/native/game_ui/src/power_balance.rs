@@ -12,10 +12,6 @@ use crate::decision_chrome::{
     decision_card_binding, DecisionAvailability, DecisionCardBinding, DecisionSet,
     DecisionStateEntry,
 };
-use crate::gui_runtime_law::{
-    advance_position_animation, PositionAnimationError, PositionAnimationSample,
-    PositionAnimationState, PositionAxis,
-};
 use replay_core::{
     PowerBalanceStateExactView, PowerBalanceStateRecordExact, RuntimeTextIdentitySource,
     ViewStatus, A729_POWER_BALANCE_ALL_COUNTRY_PRESENTATION_MANIFEST_SHA256,
@@ -24,10 +20,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
-
-pub const PANEL_SHOWN_POSITION: [i32; 2] = [45, 0];
-pub const PANEL_HIDDEN_POSITION: [i32; 2] = [545, 0];
-pub const PANEL_ANIMATION_DURATION: f64 = 300.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Threshold {
@@ -1291,45 +1283,6 @@ pub fn apply_power_balance_launcher_to_compose_options(
             .hidden_elements
             .insert("show_power_balance_glow".to_string());
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelTransition {
-    Show,
-    Hide,
-}
-
-/// Sample the authored 300-unit BOP panel transition through the frozen UI03
-/// updater. Show is decelerated from x=545 to x=45; hide is accelerated in the
-/// reverse direction and defers logical hide until strict completion.
-pub fn sample_panel_transition(
-    transition: PanelTransition,
-    elapsed: f64,
-    dt: f64,
-) -> Result<PositionAnimationSample, PositionAnimationError> {
-    let (runtime_code, target, current, deferred_hide) = match transition {
-        PanelTransition::Show => (2, PANEL_SHOWN_POSITION, PANEL_HIDDEN_POSITION, false),
-        PanelTransition::Hide => (1, PANEL_HIDDEN_POSITION, PANEL_SHOWN_POSITION, true),
-    };
-    advance_position_animation(
-        PositionAnimationState {
-            runtime_code,
-            elapsed,
-            duration: PANEL_ANIMATION_DURATION,
-            axes: [
-                PositionAxis {
-                    target: target[0],
-                    delta: target[0] - current[0],
-                },
-                PositionAxis {
-                    target: target[1],
-                    delta: target[1] - current[1],
-                },
-            ],
-            deferred_hide,
-        },
-        dt,
-    )
 }
 
 #[cfg(test)]

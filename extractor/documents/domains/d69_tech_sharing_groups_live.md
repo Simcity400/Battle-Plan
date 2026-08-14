@@ -100,7 +100,6 @@ See also d47, d53, and d60.
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/save_oracle/parse_world.py`
 - `replay_interface/native/game_ui/src/static_research.rs`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/tech_sharing.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`

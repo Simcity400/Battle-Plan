@@ -85,7 +85,6 @@ d81, and d87.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/tests/xui18_power_balance.rs`
 - `replay_interface/native/replay_app/src/power_balance_runtime.rs`
 - `replay_interface/native/replay_app/src/recorded_ui_owner.rs`
 - `replay_interface/native/replay_core/src/world.rs`

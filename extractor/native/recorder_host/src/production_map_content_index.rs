@@ -848,7 +848,6 @@ mod tests {
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
             s1_shadow: None,
-            effect_lifecycle_events: Vec::new(),
             particles: Vec::new(),
             entity_presentations: Vec::new(),
             particle_packet_set_sha256: "e".repeat(64),
@@ -859,7 +858,6 @@ mod tests {
                 .map(|operation_ordinal| RenderExecutionRef::Static { operation_ordinal })
                 .collect(),
             direct_visuals: Vec::new(),
-            light_lifecycle_events: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),

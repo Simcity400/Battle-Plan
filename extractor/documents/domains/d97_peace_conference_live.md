@@ -141,6 +141,5 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/save_oracle/parse_market.py`
 - `extractor/save_oracle/test_parse_intel_peace.py`
 - `replay_interface/game_assets/extract.py`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_fixture_gen/src/main.rs`

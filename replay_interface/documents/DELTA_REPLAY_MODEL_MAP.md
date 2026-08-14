@@ -47,10 +47,23 @@ that frame ships the whole history. FRD is the motivating instance:
   == index+1, `hook_rva` matches `kind`, phase/bits invariants, `event_hour_raw` in
   `[0, expected_hour]` and non-decreasing. `MAX_TRANSITIONS = 1_000_000` (:19358): a history
   longer than the cap makes the WHOLE view `DomainUnavailable` — the long-campaign data loss.
-- Consumer: `replay_app/src/selected_pov_runtime.rs:766`
-  (`admit_direct_transition_history_view`) reads `frame.frd_direct_transition_history()` and
-  expects the FULL history (counts every row by kind). So whatever `seek`/`state_at` returns
-  MUST carry the full history — the WorldFrame external contract cannot change.
+- Consumer: **none, since lane JL (2026-08-15).** This bullet used to name
+  `admit_direct_transition_history_view` in `replay_app/src/selected_pov_runtime.rs` as the
+  consumer that reads `frame.frd_direct_transition_history()` and expects the FULL history
+  (counting every row by kind), and concluded that whatever `seek`/`state_at` returns MUST
+  carry the full history because the WorldFrame external contract could not change. That
+  consumer no longer exists: the whole `selected_pov_runtime` module was deleted with the
+  legacy selected-Present reconstruction path, which owned its only instance
+  (`extractor/native/runs/jl_render_purge/`). The view is still **built and stored** by
+  `replay_core` (`world.rs::build_frd_direct_transition_history`, field at `:3693`), so the
+  producer half is intact. What is gone is the **production presentation consumer** — no
+  shipping code reads the view today. The contract itself is NOT unpinned: `replay_core`'s own
+  tests still read it and assert full history explicitly, including exact accumulated lengths
+  across a seek/play/refold cache boundary
+  (`world.rs::frd_delta_seek_equals_play_to_byte_identical_across_cache_boundary`, which asserts
+  `view.transitions.len() == (h + 1) * 2` per frame). So `seek`/`state_at` must still carry the
+  full history to keep those gates green; what changed is only that the requirement is now held
+  by replay_core's contract tests rather than by a downstream UI consumer.
 
 ### Producer (recorder_host/src/world_fold.rs)
 

@@ -1,11 +1,10 @@
 use game_ui::assets::AssetResolver;
 use game_ui::production_renderer::{
-    admit_authenticated_product_hud_route, ProductionUiRejection, ProductionUiRenderer,
+    admit_authenticated_product_hud_route, ProductionUiRenderer,
     OMITTED_AUTHORITY_BLOCKED_PACKETS, OMITTED_EXTENSION_PACKETS, OMITTED_PIXEL_CANVAS_ROUTES,
     PRODUCTION_UI_HEIGHT, PRODUCTION_UI_WIDTH, PROMOTED_EXTENSION_PACKETS,
     PROMOTED_EXTERNAL_DEPENDENCY_PACKETS, PROMOTED_XUI_PACKETS, REQUIRED_AUTHORED_HUD_SOURCES,
 };
-use game_ui::variant_admission::InputVariant;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -692,15 +691,16 @@ fn product_packet_partition_is_exact_and_authority_blocked_surfaces_have_no_rend
 #[test]
 fn retired_ui_carriers_have_no_replay_app_product_callers() {
     let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../replay_app/src");
-    let selected_pov = std::fs::read_to_string(app_root.join("selected_pov_runtime.rs")).unwrap();
+    // Lane JL: the three `selected_pov` assertions that used to live here read
+    // `selected_pov_runtime.rs`. That whole module was deleted with the legacy
+    // selected-Present path that owned its only instance, so the retired carriers
+    // it was checked against can no longer have a caller there at all - the
+    // strongest form of the property this test asserts.
     let ui_runtime = std::fs::read_to_string(app_root.join("ui_runtime.rs")).unwrap();
     let character_runtime = std::fs::read_to_string(app_root.join("character_runtime.rs")).unwrap();
-    assert!(!selected_pov.contains("admit_exact_national_focus_presentation("));
-    assert!(!selected_pov.contains("national_focus_presentation_exact()"));
-    assert!(!selected_pov.contains("technology_canvas_request_from_replay("));
+    assert!(!app_root.join("selected_pov_runtime.rs").exists());
     assert!(!ui_runtime.contains(".admit_xui09_selected_present_route("));
     assert!(ui_runtime.contains("observer_research_from_complete_frame("));
-    assert!(selected_pov.contains("admit_observer_national_focus_presentation("));
     assert!(character_runtime.contains("admit_country_observer_character_ui("));
 }
 
@@ -782,8 +782,6 @@ fn production_app_routes_observer_state_and_quarantines_selected_present() {
     assert!(text.contains("ProductObserverUiRuntime::from_playback_content"));
     assert!(text.contains("product_observer_ui.execute("));
     assert!(text.contains("outcome.promoted_extension_packets"));
-    assert!(!text.contains("ProductSelectedPresentRuntime::new"));
-    assert!(!text.contains("LegacySelectedPresentReconstructionRuntime::new"));
     assert!(!text.contains("recorded_ui_owner("));
     assert!(ui_runtime.contains("struct ProductObserverUiRuntime"));
     assert!(ui_runtime.contains(
@@ -811,7 +809,7 @@ fn production_app_routes_observer_state_and_quarantines_selected_present() {
         .find(".validate_composed_roots(&authored_source_windows)?")
         .expect("shipping XUI01 source/root gate");
     let hud_upload = ui_runtime[xui01_gate..]
-        .find("self.image.set_rgba")
+        .find(".set_rgba(gfx, &framebuffer)")
         .map(|offset| xui01_gate + offset)
         .expect("shipping HUD upload");
     assert!(xui01_gate < hud_upload);
@@ -819,9 +817,9 @@ fn production_app_routes_observer_state_and_quarantines_selected_present() {
         .find("impl ProductObserverUiRuntime {")
         .expect("observer runtime");
     let observer_end = ui_runtime[observer_start..]
-        .find("/// Exact selected-Present UI-pass adapter")
+        .find("pub(crate) struct ProductSelectedPresentPerformanceRuntime")
         .map(|offset| observer_start + offset)
-        .expect("legacy reconstruction boundary");
+        .expect("post-observer runtime boundary");
     let observer = &ui_runtime[observer_start..observer_end];
     for forbidden in [
         "AuthenticatedUiPass",
@@ -864,6 +862,11 @@ fn production_app_routes_observer_state_and_quarantines_selected_present() {
 
 #[test]
 fn authenticated_product_hud_reads_only_the_four_controller_bound_roots() {
+    // Lane JL: this test used to slice `compose_authenticated_hud` out of hud.rs and
+    // assert what that body did NOT read. That compositor was the legacy whole-HUD
+    // reconstruction entry point, it lost its last caller with the rest of that path,
+    // and it is deleted. What survives here is the part whose subject still exists:
+    // the always-on authored-root closure `ProductionUiRenderer::new` enforces.
     assert_eq!(
         REQUIRED_AUTHORED_HUD_SOURCES,
         [
@@ -873,51 +876,12 @@ fn authenticated_product_hud_reads_only_the_four_controller_bound_roots() {
             "interface/theatreselector.gui",
         ]
     );
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let renderer =
-        std::fs::read_to_string(manifest_dir.join("src/production_renderer.rs")).unwrap();
-    assert!(renderer.contains("compose_authenticated_hud("));
-    assert!(!renderer.contains("compose_hud("));
-
     // `interface/core.gui` is deliberately NOT here. These four are required
     // unconditionally at `ProductionUiRenderer::new`, so a recording missing
     // any of them cannot build a renderer at all. The tooltip root is not part
     // of this always-on closure: XUI05 admits its own tooltip-shell dependency
     // from the replay-owned authenticated surface.
     assert!(!REQUIRED_AUTHORED_HUD_SOURCES.contains(&"interface/core.gui"));
-
-    let hud = std::fs::read_to_string(manifest_dir.join("src/hud.rs")).unwrap();
-    let product = hud
-        .split_once("pub fn compose_authenticated_hud(")
-        .unwrap()
-        .1
-        .split_once("pub fn compose_hud(")
-        .unwrap()
-        .0;
-    for unbound in [
-        "MENUBAR_GUI",
-        "zoom_in",
-        "zoom_out",
-        "outliner_row",
-        "draw_outliner_rows",
-    ] {
-        assert!(
-            !product.contains(unbound),
-            "authenticated product HUD still reads controller-unbound fragment {unbound}"
-        );
-    }
-    // The reusable compositor still supports a legacy oracle binding for the
-    // tooltip root, but shipping observer playback supplies no such binding.
-    // The historical path must never use the probe draw. `compose_tooltip_into` invents a border
-    // default, a font fallback, a line-height floor and a per-line "header"
-    // colour, and re-wraps a blob that is already post-layout -- every one of
-    // which d72 forbids replay from doing.
-    assert!(
-        !product.contains("compose_tooltip_into"),
-        "legacy tooltip reconstruction must not use the probe draw"
-    );
-    assert!(product.contains("compose_authenticated_tooltip_into"));
-    assert!(product.contains("if let Some(tooltip) = &binding.tooltip"));
 }
 
 #[test]
@@ -1335,147 +1299,4 @@ fn xui12_shipping_consumer_requires_the_detached_passive_all_country_carrier() {
     assert!(!OMITTED_AUTHORITY_BLOCKED_PACKETS
         .iter()
         .any(|(packet, _)| *packet == "XUI12"));
-}
-
-#[test]
-#[cfg_attr(
-    not(gate_hoi4_install),
-    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
-)]
-fn unsupported_physical_viewport_rejects_before_any_pixel_resampling() {
-    let root = installed_game_root();
-    let renderer = production_renderer(root);
-    assert_eq!(
-        renderer.compose_legacy_reconstruction_hud_frame(None, None, 0, 1280, 720),
-        Err(ProductionUiRejection::UnsupportedDisplayVariant {
-            width: 1280,
-            height: 720,
-        })
-    );
-}
-
-#[test]
-#[cfg_attr(
-    not(gate_hoi4_install),
-    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
-)]
-fn installed_a729_ui_rejects_without_the_portable_xui25_carrier() {
-    let root = installed_game_root();
-    let renderer = production_renderer(root);
-    assert_eq!(
-        renderer.compose_legacy_reconstruction_hud_frame(
-            None,
-            None,
-            0,
-            PRODUCTION_UI_WIDTH,
-            PRODUCTION_UI_HEIGHT,
-        ),
-        Err(ProductionUiRejection::MissingDisplayVariantCarrier(
-            "WorldFrame"
-        ))
-    );
-}
-
-#[test]
-#[cfg_attr(
-    not(gate_hoi4_install),
-    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
-)]
-fn recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access() {
-    let root = installed_game_root();
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("fixtures")
-        .join("positive")
-        .join("fx_topbar_scalars_sweep.battleplan");
-    let source = replay_core::open_recording(&fixture).unwrap();
-    let timeline = replay_core::WorldTimeline::open(source).unwrap();
-    let frame = timeline.state_at(timeline.first_hour()).unwrap();
-    let pov = frame
-        .topbar_scalars_by_country()
-        .keys()
-        .next()
-        .expect("fixture has a measured topbar country")
-        .clone();
-    let renderer = production_renderer(root);
-    let first = renderer
-        .compose_legacy_reconstruction_hud_frame_for_input(
-            Some(&frame),
-            Some(&pov),
-            2,
-            Some(InputVariant::MouseKeyboard),
-            PRODUCTION_UI_WIDTH,
-            PRODUCTION_UI_HEIGHT,
-        )
-        .unwrap();
-    let second = renderer
-        .compose_legacy_reconstruction_hud_frame_for_input(
-            Some(&frame),
-            Some(&pov),
-            2,
-            Some(InputVariant::MouseKeyboard),
-            PRODUCTION_UI_WIDTH,
-            PRODUCTION_UI_HEIGHT,
-        )
-        .unwrap();
-    assert_eq!(first.image, second.image);
-    assert_eq!(first.report, second.report);
-    assert_eq!(first.report.pov_tag.as_deref(), Some(pov.as_str()));
-
-    // Recorder panel-open state is not a product dependency. This historical
-    // fixture still predates d79, but the production report no longer treats
-    // that fact as observer-panel authority.
-    assert_eq!(
-        frame.hud_surface_activation_status(),
-        replay_core::ViewStatus::DomainAbsent,
-        "a fixture gained d79; the Present branch is now reachable end-to-end and wants review"
-    );
-}
-
-#[test]
-#[cfg_attr(
-    not(gate_hoi4_install),
-    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
-)]
-fn relocated_portable_replay_file_still_drives_the_same_production_pixels() {
-    let root = installed_game_root();
-    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("fixtures")
-        .join("positive")
-        .join("fx_topbar_scalars_sweep.battleplan");
-    let relocated = std::env::temp_dir().join(format!(
-        "battle-plan-production-ui-relocated-{}.battleplan",
-        std::process::id()
-    ));
-    std::fs::copy(&source_path, &relocated).unwrap();
-    let renderer = production_renderer(root);
-    let render = |path: &std::path::Path| {
-        let source = replay_core::open_recording(path).unwrap();
-        let timeline = replay_core::WorldTimeline::open(source).unwrap();
-        let frame = timeline.state_at(timeline.first_hour()).unwrap();
-        let pov = frame
-            .topbar_scalars_by_country()
-            .keys()
-            .next()
-            .unwrap()
-            .clone();
-        renderer
-            .compose_legacy_reconstruction_hud_frame_for_input(
-                Some(&frame),
-                Some(&pov),
-                2,
-                Some(InputVariant::MouseKeyboard),
-                PRODUCTION_UI_WIDTH,
-                PRODUCTION_UI_HEIGHT,
-            )
-            .unwrap()
-    };
-    let canonical = render(&source_path);
-    let moved = render(&relocated);
-    std::fs::remove_file(&relocated).unwrap();
-    assert_eq!(canonical.image, moved.image);
-    assert_eq!(canonical.report, moved.report);
 }

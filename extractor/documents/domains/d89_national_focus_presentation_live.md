@@ -76,5 +76,4 @@ See also d51.
 - `replay_interface/native/game_ui/src/static_focus_defs.rs`
 - `replay_interface/native/game_ui/tests/xui10_national_focus.rs`
 - `replay_interface/native/replay_app/src/recorded_ui_owner.rs`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`

@@ -101,6 +101,5 @@ See also d42, d49, d50, d57, and d90.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/combat_detail_losses.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

@@ -46,9 +46,9 @@
 //! 4. **A DRAW PATH THAT INVENTS NOTHING, AND A COMPLETENESS GATE.**  Every
 //!    quantity is read from the carrier or from the authored file.  No
 //!    default, no fallback, no magic constant, no re-derivation of a value the
-//!    engine already computed.  The result then passes `validate_complete_hud`
-//!    or `validate_complete_compose_report`, which turn a missing sprite,
-//!    font, glyph or unresolved string into a refusal instead of a hole.
+//!    engine already computed.  The result then passes
+//!    `validate_complete_compose_report`, which turns a missing sprite, font,
+//!    glyph or unresolved string into a refusal instead of a hole.
 //!
 //! # Shipping boundary
 //!
@@ -92,7 +92,7 @@
 
 use crate::assets::AssetResolver;
 use crate::binding::{
-    apply_clock, clock_binding_from_frame, outliner_binding_from_frame, topbar_binding_from_frame,
+    apply_clock, clock_binding_from_frame, topbar_binding_from_frame,
     topbar_binding_from_observer_frame,
 };
 use crate::combat_detail_canvas::{
@@ -109,9 +109,9 @@ use crate::decision_replay::DecisionStaticCatalog;
 use crate::gfx::SpriteRegistry;
 use crate::gui::GuiElement;
 use crate::hud::{
-    compose_authenticated_hud, compose_prepared_tooltip_layer, prepare_composed_tooltip,
-    ComposedTooltipPlacementInput, HudBinding, HudSpriteStats, MinimapBinding,
-    PreparedComposedTooltip, TooltipBinding,
+    compose_prepared_tooltip_layer, prepare_composed_tooltip,
+    ComposedTooltipPlacementInput, HudBinding, MinimapBinding, PreparedComposedTooltip,
+    TooltipBinding,
 };
 use crate::loc::Localisation;
 use crate::research_canvas::{admit_technology_canvas_render_route, TechnologyCanvasRenderRoute};
@@ -122,14 +122,14 @@ use crate::tooltip_compositor::{
     HoverCandidate, PlacementEvidence, TooltipAnchor, TooltipFamilyFacts, TooltipLifecycle,
     TooltipOwner,
 };
-use crate::trade_state::{admit_trade_screen, render_trade_screen, AdmittedTradeScreen, TradeData};
+use crate::trade_state::{admit_trade_screen, AdmittedTradeScreen};
 use crate::variant_admission::{
     DisplayMode, DisplayVariantKey, ExactKeyVariantContract, InputVariant, PixelExtent,
 };
 use crate::widget_layout::gridbox_layout;
 use crate::{GameUiError, Result};
 use replay_core::{
-    Leaf, MapmodeProvenance, RecordedInputVariant, ValidatedContentAdmission, WorldFrame,
+    Leaf, ValidatedContentAdmission, WorldFrame,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -5422,142 +5422,6 @@ impl ProductionUiRenderer {
         .map_err(|error| error.to_string())
     }
 
-    /// Retained recorder-lifecycle XUI15 oracle route. Shipping observer
-    /// playback uses `compose_xui15_trade_surface` and viewer-owned activation.
-    pub fn compose_xui15_frame(
-        &self,
-        frame: &WorldFrame,
-        pov_tag: Option<&str>,
-        viewport_width: usize,
-        viewport_height: usize,
-    ) -> std::result::Result<Option<ProductionUiOutput>, ProductionUiRejection> {
-        if viewport_width != PRODUCTION_UI_WIDTH || viewport_height != PRODUCTION_UI_HEIGHT {
-            return Err(ProductionUiRejection::UnsupportedDisplayVariant {
-                width: viewport_width,
-                height: viewport_height,
-            });
-        }
-        let session = frame.session_metadata();
-        let display = session.display_variant.measured().ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier("session.display_variant"),
-        )?;
-        let language = session.localisation_language.measured().ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier("session.localisation_language"),
-        )?;
-        let input_variant = frame
-            .production_render()
-            .and_then(|render| render.authority.recorded_input_variant)
-            .map(|variant| match variant {
-                RecordedInputVariant::MouseKeyboard => InputVariant::MouseKeyboard,
-                RecordedInputVariant::Keyboard => InputVariant::Keyboard,
-                RecordedInputVariant::Controller => InputVariant::Controller,
-            })
-            .ok_or(ProductionUiRejection::MissingDisplayVariantCarrier(
-                "session.input_variant",
-            ))?;
-        if input_variant != InputVariant::MouseKeyboard {
-            return Err(ProductionUiRejection::UnsupportedInputVariant(
-                input_variant,
-            ));
-        }
-        let key = DisplayVariantKey::from_session_metadata(display, language, input_variant)
-            .map_err(|_| {
-                ProductionUiRejection::MissingDisplayVariantCarrier("invalid exact key")
-            })?;
-        ExactKeyVariantContract::admit(production_ui_variant_key())
-            .map_err(|_| {
-                ProductionUiRejection::MissingDisplayVariantCarrier(
-                    "invalid product exact-key contract",
-                )
-            })?
-            .select(&key)
-            .map_err(|_| ProductionUiRejection::UnsupportedExactDisplayVariant(key))?;
-
-        let activation_view = frame.market_trade_activation();
-        if activation_view.status != replay_core::ViewStatus::Present {
-            return Err(ProductionUiRejection::MissingDisplayVariantCarrier(
-                "_r2_market_trade_activation_live",
-            ));
-        }
-        let activation = activation_view.activation.as_ref().ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier(
-                "_r2_market_trade_activation_live.activation",
-            ),
-        )?;
-        if !activation.active {
-            return Ok(None);
-        }
-        let pov_tag = pov_tag.ok_or_else(|| {
-            ProductionUiRejection::IncompleteComposition(
-                "XUI15 active trade root has no selected POV".into(),
-            )
-        })?;
-        if activation.country.as_deref() != Some(pov_tag) {
-            return Err(ProductionUiRejection::IncompleteComposition(format!(
-                "XUI15 active country {:?} does not match selected POV {pov_tag:?}",
-                activation.country
-            )));
-        }
-        self.content_admission
-            .require_used_content("interface/countrytradeview.gui")
-            .map_err(ProductionUiRejection::Asset)?;
-        let screen = admit_trade_screen(frame.trade_status(), pov_tag, frame.trade(pov_tag));
-        let AdmittedTradeScreen::Visible(presentation) = &screen else {
-            return Err(ProductionUiRejection::IncompleteComposition(
-                "XUI15 active lifecycle has no complete selected-country semantic trade view"
-                    .into(),
-            ));
-        };
-        if !matches!(&presentation.resource_pools, TradeData::Available(_))
-            || !matches!(&presentation.resource_cards, TradeData::Available(_))
-            || !matches!(&presentation.deals, TradeData::Available(_))
-            || !matches!(&presentation.factories, TradeData::Available(_))
-        {
-            return Err(ProductionUiRejection::IncompleteComposition(
-                "XUI15 active lifecycle has incomplete classic resource-trade inputs".into(),
-            ));
-        }
-        let composed = render_trade_screen(
-            &self.resolver,
-            &self.registry,
-            &screen,
-            viewport_width,
-            viewport_height,
-        )
-        .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&composed.report)
-            .map_err(ProductionUiRejection::IncompleteComposition)?;
-        Ok(Some(ProductionUiOutput {
-            image: composed.image,
-            report: ProductionUiReport {
-                viewport: [viewport_width, viewport_height],
-                pov_tag: Some(pov_tag.to_string()),
-                promoted_packets: PROMOTED_XUI_PACKETS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                promoted_extension_packets: PROMOTED_EXTENSION_PACKETS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                omitted_authority_blocked_packets: OMITTED_AUTHORITY_BLOCKED_PACKETS
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                omitted_pixel_canvas_packets: OMITTED_PIXEL_CANVAS_ROUTES
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                omitted_extension_packets: OMITTED_EXTENSION_PACKETS
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                drawn_elements: composed.report.drawn_elements,
-                sprite_count: self.registry.len(),
-            },
-        }))
-    }
-
     pub fn prepare_xui23_ability_route(
         &self,
         frame: &WorldFrame,
@@ -6916,214 +6780,6 @@ impl ProductionUiRenderer {
         })
     }
 
-    /// Compose the always-on, proven replay HUD.  Country-dependent content is
-    /// present only for an explicit POV and measured WorldFrame values.  The
-    /// topbar compositor owns the exact absent/unobtained omission law; this
-    /// entry point does not insert zeros or sample values.
-    pub fn compose_legacy_reconstruction_hud_frame(
-        &self,
-        frame: Option<&WorldFrame>,
-        pov_tag: Option<&str>,
-        playback_speed_step: usize,
-        viewport_width: usize,
-        viewport_height: usize,
-    ) -> std::result::Result<ProductionUiOutput, ProductionUiRejection> {
-        let input_variant = frame
-            .and_then(WorldFrame::production_render)
-            .and_then(|render| render.authority.recorded_input_variant)
-            .map(|variant| match variant {
-                RecordedInputVariant::MouseKeyboard => InputVariant::MouseKeyboard,
-                RecordedInputVariant::Keyboard => InputVariant::Keyboard,
-                RecordedInputVariant::Controller => InputVariant::Controller,
-            });
-        self.compose_legacy_reconstruction_hud_frame_for_input(
-            frame,
-            pov_tag,
-            playback_speed_step,
-            input_variant,
-            viewport_width,
-            viewport_height,
-        )
-    }
-
-    /// Variant-explicit legacy reconstruction entry point. Shipping playback
-    /// has no caller; tests retain it for selected-Present oracle comparison.
-    pub fn compose_legacy_reconstruction_hud_frame_for_input(
-        &self,
-        frame: Option<&WorldFrame>,
-        pov_tag: Option<&str>,
-        playback_speed_step: usize,
-        input_variant: Option<InputVariant>,
-        viewport_width: usize,
-        viewport_height: usize,
-    ) -> std::result::Result<ProductionUiOutput, ProductionUiRejection> {
-        if viewport_width != PRODUCTION_UI_WIDTH || viewport_height != PRODUCTION_UI_HEIGHT {
-            return Err(ProductionUiRejection::UnsupportedDisplayVariant {
-                width: viewport_width,
-                height: viewport_height,
-            });
-        }
-        let frame = frame.ok_or(ProductionUiRejection::MissingDisplayVariantCarrier(
-            "WorldFrame",
-        ))?;
-        let session = frame.session_metadata();
-        let display = session.display_variant.measured().ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier("session.display_variant"),
-        )?;
-        let language = session.localisation_language.measured().ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier("session.localisation_language"),
-        )?;
-        let input_variant = input_variant.ok_or(
-            ProductionUiRejection::MissingDisplayVariantCarrier("session.input_variant"),
-        )?;
-        if input_variant != InputVariant::MouseKeyboard {
-            return Err(ProductionUiRejection::UnsupportedInputVariant(
-                input_variant,
-            ));
-        }
-        let key = DisplayVariantKey::from_session_metadata(display, language, input_variant)
-            .map_err(|_| {
-                ProductionUiRejection::MissingDisplayVariantCarrier("invalid exact key")
-            })?;
-        let contract =
-            ExactKeyVariantContract::admit(production_ui_variant_key()).map_err(|_| {
-                ProductionUiRejection::MissingDisplayVariantCarrier(
-                    "invalid product exact-key contract",
-                )
-            })?;
-        contract
-            .select(&key)
-            .map_err(|_| ProductionUiRejection::UnsupportedExactDisplayVariant(key.clone()))?;
-
-        let mut binding = HudBinding {
-            minimap: MinimapBinding::default(),
-            ..HudBinding::default()
-        };
-        binding.mapmode = self.mapmode_binding(frame)?;
-        if let Some(pov_tag) = pov_tag {
-            binding.topbar = topbar_binding_from_frame(frame, pov_tag);
-            apply_clock(
-                &mut binding.topbar,
-                &clock_binding_from_frame(frame, playback_speed_step, &self.localisation),
-            );
-            binding.outliner = outliner_binding_from_frame(frame, pov_tag);
-        } else {
-            // Clock is global replay state and remains valid in omniscient
-            // observer mode. Country fields remain absent.
-            apply_clock(
-                &mut binding.topbar,
-                &clock_binding_from_frame(frame, playback_speed_step, &self.localisation),
-            );
-        }
-        // Legacy reconstruction only: d72/selected-Present remains an oracle
-        // comparison and is never reached by shipping observer playback.
-        binding.tooltip =
-            self.admit_xui05_tooltip_route(frame, pov_tag, viewport_width, viewport_height)?;
-
-        // A poisoned lock only means a previous compose panicked after fully
-        // inserted cache entries; the cache itself stays coherent.
-        let mut asset_cache = self
-            .asset_cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let composed = compose_authenticated_hud(
-            &self.resolver,
-            &self.registry,
-            &binding,
-            &self.localisation,
-            &mut asset_cache,
-            viewport_width,
-            viewport_height,
-        )
-        .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        drop(asset_cache);
-        validate_complete_hud(&composed.sprite_stats, &composed.output.report)
-            .map_err(ProductionUiRejection::IncompleteComposition)?;
-
-        Ok(ProductionUiOutput {
-            image: composed.output.image,
-            report: ProductionUiReport {
-                viewport: [viewport_width, viewport_height],
-                pov_tag: pov_tag.map(str::to_string),
-                promoted_packets: PROMOTED_XUI_PACKETS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                promoted_extension_packets: PROMOTED_EXTENSION_PACKETS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect(),
-                omitted_authority_blocked_packets: OMITTED_AUTHORITY_BLOCKED_PACKETS
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                omitted_pixel_canvas_packets: OMITTED_PIXEL_CANVAS_ROUTES
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                omitted_extension_packets: OMITTED_EXTENSION_PACKETS
-                    .iter()
-                    .map(|(packet, _)| (*packet).to_string())
-                    .collect(),
-                drawn_elements: composed.output.report.drawn_elements,
-                sprite_count: self.registry.len(),
-            },
-        })
-    }
-
-    fn mapmode_binding(
-        &self,
-        frame: &WorldFrame,
-    ) -> std::result::Result<crate::hud::MapmodeBinding, ProductionUiRejection> {
-        let Some(state) = frame
-            .production_render()
-            .and_then(|render| render.authenticated_ui_pass.as_ref())
-            .and_then(|ui_pass| ui_pass.active_mapmode_state.as_ref())
-        else {
-            return Ok(crate::hud::MapmodeBinding::default());
-        };
-        let selected_button = u8::try_from(state.button_ordinal)
-            .ok()
-            .filter(|button| (1..=11).contains(button))
-            .ok_or_else(|| {
-                ProductionUiRejection::IncompleteComposition(
-                    "active mapmode button ordinal is outside exact-a729 controller slots 1..=11"
-                        .into(),
-                )
-            })?;
-        let expected_button_identity = format!("mapmode_button_{selected_button}");
-        if state.authored_button_identity != expected_button_identity {
-            return Err(ProductionUiRejection::IncompleteComposition(format!(
-                "active mapmode button identity {:?} does not match ordinal {selected_button}",
-                state.authored_button_identity
-            )));
-        }
-        let use_four_button_layout = match state.layout_root_token.as_str() {
-            "3_button_mapmode" => Some(false),
-            "4_button_mapmode" => Some(true),
-            other => {
-                return Err(ProductionUiRejection::IncompleteComposition(format!(
-                    "unsupported active mapmode layout root {other:?}"
-                )))
-            }
-        };
-        if let MapmodeProvenance::EffectiveVfs { content } = &state.provenance {
-            let admitted = self
-                .content_admission
-                .require_used_content(&content.normalized_game_relative_path)
-                .map_err(ProductionUiRejection::Asset)?;
-            if admitted != content {
-                return Err(ProductionUiRejection::Asset(
-                    "active mapmode effective-VFS provenance differs from playback admission"
-                        .into(),
-                ));
-            }
-        }
-        Ok(crate::hud::MapmodeBinding {
-            selected_button,
-            use_four_button_layout,
-        })
-    }
 }
 
 fn require_xui10_composable_scene(
@@ -7160,42 +6816,6 @@ fn execute_xui10_compositor_route<T>(
         return Ok(None);
     };
     compose(scene)
-}
-
-fn validate_complete_hud(
-    stats: &HudSpriteStats,
-    report: &crate::compose::ComposeReport,
-) -> std::result::Result<(), String> {
-    if !stats.missing.is_empty()
-        || !stats.undecodable.is_empty()
-        || !report.missing_sprites.is_empty()
-        || !report.undecodable_sprites.is_empty()
-        || !report.missing_fonts.is_empty()
-        || !report.missing_glyphs.is_empty()
-        || !report.unresolved_loc_keys.is_empty()
-        || !report.unresolved_text_inputs.is_empty()
-    {
-        return Err(format!(
-            "production HUD is incomplete: stats_missing={} stats_undecodable={} missing_sprites={} undecodable_sprites={} missing_fonts={} missing_glyph_sets={} unresolved_loc={} unresolved_runtime_text={}; stats_missing_items={:?}; stats_undecodable_items={:?}; missing_sprite_items={:?}; undecodable_sprite_items={:?}; missing_font_items={:?}; missing_glyph_items={:?}; unresolved_loc_items={:?}; unresolved_runtime_text_items={:?}",
-            stats.missing.len(),
-            stats.undecodable.len(),
-            report.missing_sprites.len(),
-            report.undecodable_sprites.len(),
-            report.missing_fonts.len(),
-            report.missing_glyphs.len(),
-            report.unresolved_loc_keys.len(),
-            report.unresolved_text_inputs.len(),
-            stats.missing,
-            stats.undecodable,
-            report.missing_sprites,
-            report.undecodable_sprites,
-            report.missing_fonts,
-            report.missing_glyphs,
-            report.unresolved_loc_keys,
-            report.unresolved_text_inputs,
-        ));
-    }
-    Ok(())
 }
 
 fn validate_xui17_leader_skill_effect_language(
@@ -7667,12 +7287,11 @@ mod tests {
             .find("    pub fn prepare_observer_semantic_frame(\n")
             .expect("pixel-free observer semantic boundary");
         let end = source[start..]
-            .find("    pub fn compose_legacy_reconstruction_hud_frame(\n")
+            .find("\nfn require_xui10_composable_scene(")
             .map(|offset| start + offset)
-            .expect("legacy compatibility compositor boundary");
+            .expect("post-observer private helper boundary");
         let semantic = &source[start..end];
         for forbidden in [
-            "compose_authenticated_hud(",
             "HudAuthoredGeometryRoot",
             "HudSourceWindow",
             "ComposeOutput",
@@ -7692,9 +7311,9 @@ mod tests {
             .find("    pub fn prepare_observer_semantic_frame(\n")
             .expect("shipping observer semantic boundary");
         let end = source[start..]
-            .find("    pub fn compose_legacy_reconstruction_hud_frame(\n")
+            .find("\nfn require_xui10_composable_scene(")
             .map(|offset| start + offset)
-            .expect("legacy compositor boundary");
+            .expect("post-observer private helper boundary");
         let observer = source[start..end]
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))

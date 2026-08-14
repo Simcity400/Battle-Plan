@@ -218,58 +218,6 @@ impl NativeM02OverlayExecutor {
         Ok(receipt)
     }
 
-    /// Preflight one authenticated non-M02 exact UI pipeline draw without
-    /// writing pixels. The caller runs this for the complete UI-pass stream
-    /// before executing its first operation.
-    pub unsafe fn preflight_exact_ui_draw(
-        &self,
-        resolver: &GameFileResolver,
-        rtv: *mut ID3D11RenderTargetView,
-        draw: &replay_core::StaticMapDraw,
-        ordered_used_content: &[UsedContentKey],
-    ) -> Result<()> {
-        if !resolver.has_content_admission() {
-            return Err("exact UI draw requires validated effective-VFS admission".into());
-        }
-        for content in ordered_used_content {
-            resolver.read_admitted_used_content(content)?;
-        }
-        validate_static_draw_content_membership(draw, ordered_used_content, "exact UI draw")?;
-        let target = swapchain_target(rtv)?;
-        validate_overlay_output(
-            &draw.output_state,
-            draw.pipeline.rasterizer.scissor_enabled,
-            &target,
-        )
-    }
-
-    /// Execute one already-preflighted exact UI pipeline draw at its global
-    /// selected-Present ordinal. Interpreted segments and M02 own their own
-    /// operations; this method never reorders or batches D3D submissions.
-    pub unsafe fn execute_exact_ui_draw(
-        &mut self,
-        resolver: &GameFileResolver,
-        rtv: *mut ID3D11RenderTargetView,
-        draw: &replay_core::StaticMapDraw,
-    ) -> Result<()> {
-        let target = swapchain_target(rtv)?;
-        validate_overlay_output(
-            &draw.output_state,
-            draw.pipeline.rasterizer.scissor_enabled,
-            &target,
-        )?;
-        execute_static_exact_used_draw(
-            &self.gfx,
-            resolver,
-            &[],
-            draw,
-            &[],
-            &[],
-            &[] as &[PreparedTargetTexture],
-            &target,
-            &mut self.stream_output,
-        )
-    }
 }
 
 fn validate_overlay_draw_target(

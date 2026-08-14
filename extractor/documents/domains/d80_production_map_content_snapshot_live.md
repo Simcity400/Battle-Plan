@@ -108,7 +108,6 @@ See also d48.
 - `extractor/native/scripts/c0_domain_census.py`
 - `portable_replay/native/render_stream/src/c07_trees.rs`
 - `portable_replay/native/render_stream/src/lib.rs`
-- `replay_interface/native/game_ui/src/d48_production.rs`
 - `replay_interface/native/map_viewer/src/pass_graph.rs`
 - `replay_interface/native/map_viewer/src/production_d3d.rs`
 - `replay_interface/native/map_viewer/src/production_map_renderer.rs`

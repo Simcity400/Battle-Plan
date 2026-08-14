@@ -105,6 +105,4 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/strategic_air_details.rs`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`

@@ -82,7 +82,6 @@ D18’s durable role in the listed cross-domain sources is the unique numeric `t
 - `extractor/native/scripts/c0_domain_census.py`
 - `replay_interface/native/game_ui/src/binding.rs`
 - `replay_interface/native/game_ui/tests/topbar_binding.rs`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_core/src/world.rs`
 - `replay_interface/native/replay_core/tests/roundtrip_gates.rs`
 - `replay_interface/native/replay_core/tests/world_timeline.rs`

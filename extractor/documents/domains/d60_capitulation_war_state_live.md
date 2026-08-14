@@ -112,7 +112,6 @@ See also d43, d45, d47, d48, d49, d50, d51, d53, d54, and d65.
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
 - `extractor/native/scripts/c0_pass2_spans.py`
-- `replay_interface/native/game_ui/src/combat_detail_losses.rs`
 - `replay_interface/native/game_ui/src/waroverview_binding.rs`
 - `replay_interface/native/game_ui/src/world_tension.rs`
 - `replay_interface/native/replay_core/src/world.rs`

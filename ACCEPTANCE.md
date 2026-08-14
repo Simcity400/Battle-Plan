@@ -1,5 +1,13 @@
 # COMBAT1 acceptance spec — XUI20 combat detail and losses
 
+> **SUPERSEDED — lane JL, 2026-08-15.** The two modules this spec is written against,
+> `game_ui/src/combat_detail_losses.rs` and `game_ui/tests/xui20_replay_admission.rs`, were
+> DELETED under the owner's ruling on the twelve `game_ui` module islands (ruthless debloat;
+> git history is the archive — see `extractor/native/runs/jl_render_purge/`). Nothing here is
+> actionable as written: every file:line below pointed into deleted source, and the two
+> citations the integrity gate flagged have been reduced to prose for that reason. If XUI20
+> combat detail is rebuilt, this spec is a starting point to re-derive, not a checklist to run.
+
 Written BEFORE any implementation, per INVERTED LANE PROTOCOL section 2.
 Reviewer: the lane agent (Opus). Implementer: Codex.
 
@@ -24,12 +32,11 @@ object, and parsed replay-side into a typed `LandCombatTerminalRecord`. Evidence
 with file:line is in section A of
 `extractor\native\runs\replay_production\composition\combat1_ledger.txt`.
 
-The single true defect is replay-side: `combat_detail_losses::land_panel`
-(`combat_detail_losses.rs:1580-1674`) does not copy `terminal_record` /
-`terminal_record_status` out of `row.detail`, `validate_ended_land`
-(`:251-276`) ignores both leaves on ended rows where they actually live, and
-`admit_xui20_replay` (`:1554-1578`) sets `land_terminal` to a hard-coded
-`ExternalInputRequired` computed from no input at all.
+The single true defect was replay-side, in the now-deleted combat-detail module: its
+`land_panel` did not copy `terminal_record` / `terminal_record_status` out of `row.detail`, its
+`validate_ended_land` ignored both leaves on ended rows where they actually live, and its
+`admit_xui20_replay` set `land_terminal` to a hard-coded `ExternalInputRequired` computed from
+no input at all. (Line references removed by lane JL: the file no longer exists.)
 
 ---
 
@@ -209,8 +216,8 @@ vacuous and is a finding, not coverage.
 
 Two specific traps in this lane:
 
-* `xui20_replay_admission.rs:311-314` and `:387-390` currently assert
-  `matches!(admission.land_terminal, ExternalInputRequired { .. })`. Those keep
+* The deleted XUI20 replay-admission tests asserted
+  `matches!(admission.land_terminal, ExternalInputRequired { .. })`. Those kept
   passing when the constant becomes computed, because the fixture has no
   terminal record. They are NOT evidence that Job 1 landed. A **positive arm is
   mandatory**: a fixture ended row carrying a complete, join-consistent

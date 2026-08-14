@@ -30,8 +30,6 @@ not (
       | overlay_font_uses_real_hoi18mbs_when_resolver_exists
       | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
       | real_bundle_verdict_is_low_gfx_created_but_unused
-      | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
-      | relocated_portable_replay_file_still_drives_the_same_production_pixels
       | resolver_decode_byte_equals_captured_payload_from_assets
       | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
       | shipped_border_textures_match_documented_profiles
@@ -39,7 +37,6 @@ not (
       | terrain_id_map_orphan_palette_set_is_narrow
       | terrain_texture_table_matches_vanilla_atlas_order_when_available
       | topbar_rects_follow_engine_layout_law
-      | unsupported_physical_viewport_rejects_before_any_pixel_resampling
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
       | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
@@ -100,8 +97,6 @@ not (
       | overlay_font_uses_real_hoi18mbs_when_resolver_exists
       | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
       | real_bundle_verdict_is_low_gfx_created_but_unused
-      | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
-      | relocated_portable_replay_file_still_drives_the_same_production_pixels
       | resolver_decode_byte_equals_captured_payload_from_assets
       | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
       | shipped_border_textures_match_documented_profiles
@@ -109,7 +104,6 @@ not (
       | terrain_id_map_orphan_palette_set_is_narrow
       | terrain_texture_table_matches_vanilla_atlas_order_when_available
       | topbar_rects_follow_engine_layout_law
-      | unsupported_physical_viewport_rejects_before_any_pixel_resampling
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
       | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
@@ -179,8 +173,6 @@ binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_preced
     | overlay_font_uses_real_hoi18mbs_when_resolver_exists
     | product_resolver_adapter_uses_effective_namespace_without_frozen_counts
     | real_bundle_verdict_is_low_gfx_created_but_unused
-    | recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access
-    | relocated_portable_replay_file_still_drives_the_same_production_pixels
     | resolver_decode_byte_equals_captured_payload_from_assets
     | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
     | shipped_border_textures_match_documented_profiles
@@ -188,7 +180,6 @@ binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_preced
     | terrain_id_map_orphan_palette_set_is_narrow
     | terrain_texture_table_matches_vanilla_atlas_order_when_available
     | topbar_rects_follow_engine_layout_law
-    | unsupported_physical_viewport_rejects_before_any_pixel_resampling
     | vanilla_admission_matches_all_frozen_o05_semantics
     | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
     | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer

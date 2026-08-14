@@ -99,5 +99,4 @@ See also d45.
 - `replay_interface/native/game_ui/src/alerts.rs`
 - `replay_interface/native/game_ui/src/binding.rs`
 - `replay_interface/native/game_ui/src/decision_replay.rs`
-- `replay_interface/native/replay_app/src/selected_pov_runtime.rs`
 - `replay_interface/native/replay_app/src/ui_runtime.rs`

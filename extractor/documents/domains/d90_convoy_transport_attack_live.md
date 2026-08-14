@@ -63,5 +63,4 @@ promote an inferred value or descriptive screenshot.
 - `extractor/native/recorder_host/src/domain_data_authority.rs`
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/combat_detail_losses.rs`
 - `replay_interface/native/replay_core/src/world.rs`

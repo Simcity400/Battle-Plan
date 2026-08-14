@@ -58,7 +58,7 @@ aggregate-bonus findings.
 
 ## Files about this domain
 
-54 tracked files name this domain.
+53 tracked files name this domain.
 
 ### Pinned evidence (4) — byte-exact, do not merge
 
@@ -97,7 +97,7 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (28)
+### Code (27)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -123,7 +123,6 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/dynamic_collection.rs`
 - `replay_interface/native/game_ui/src/production_renderer.rs`
 - `replay_interface/native/game_ui/tests/production_renderer.rs`
 - `replay_interface/native/replay_core/src/world.rs`

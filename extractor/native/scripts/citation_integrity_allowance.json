@@ -3967,11 +3967,6 @@
     "replay_interface/documents/WEATHER_LAW.md": {
       "color_lut.rs:128-130": 1
     },
-    "replay_interface/native/game_ui/src/combat_detail_losses.rs": {
-      "extractor/native/recorder_host/src/world_fold.rs:6689-6691": 1,
-      "replay_core/src/world.rs:4496-4504": 1,
-      "world_fold.rs:6798-6803": 1
-    },
     "replay_interface/native/game_ui/src/production_lines.rs": {
       "extractor/native/collector/src/attach_log.rs:85263-85275": 1,
       "hud_role_index.rs:148-168": 1,

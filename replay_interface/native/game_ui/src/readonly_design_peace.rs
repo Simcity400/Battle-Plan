@@ -4,11 +4,11 @@
 //! displayed number and lifecycle result below must be producer-resolved.
 
 use crate::design_catalog::{
-    admit_design_catalog, AdmittedDesignCatalog, DesignCatalogRejection, DesignKind,
+    AdmittedDesignCatalog, DesignKind,
 };
 use replay_core::world::ViewStatus;
 use replay_core::{
-    DesignCatalogJoinError, DesignRecord, PeaceConferenceObservationExact,
+    DesignRecord, PeaceConferenceObservationExact,
     PeaceConferencePresentationObservationExact, PeaceParticipantRoleExact,
     SelectedDesignerFamilyExact, SelectedDesignerIdentityExactView, SelectedDesignerOwnerExact,
     StableDesignIdentityExact, WorldFrame,
@@ -432,13 +432,6 @@ pub struct AdmittedSelectedDesignerIdentity {
     selected_index: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CurrentSelectedDesignerAdmissionError {
-    PortableJoin(DesignCatalogJoinError),
-    Catalog(DesignCatalogRejection),
-    Selection(Xui08Rejection),
-}
-
 impl AdmittedSelectedDesignerIdentity {
     pub fn source_record_identity(&self) -> &str {
         &self.source_record_identity
@@ -592,20 +585,6 @@ pub fn admit_exact_selected_designer_identity(
         ordered,
         selected_index,
     })
-}
-
-/// Production handoff from a replay frame. Both d59 catalog completeness and
-/// d85 exact selection authority must succeed in the same frame.
-pub fn admit_current_selected_designer_identity(
-    frame: &WorldFrame,
-) -> Result<AdmittedSelectedDesignerIdentity, CurrentSelectedDesignerAdmissionError> {
-    let current = frame
-        .current_design_catalog()
-        .map_err(CurrentSelectedDesignerAdmissionError::PortableJoin)?;
-    let catalog = admit_design_catalog(&current.records, &current.display_order)
-        .map_err(CurrentSelectedDesignerAdmissionError::Catalog)?;
-    admit_exact_selected_designer_identity(&catalog, frame.selected_designer_identity_exact())
-        .map_err(CurrentSelectedDesignerAdmissionError::Selection)
 }
 
 fn unique_nonempty(mut values: impl Iterator<Item = String>) -> bool {
