@@ -19,7 +19,7 @@ pub const XUI08_EXECUTABLE_SHA256: &str =
 pub const XUI08_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
     "2d54f7ee3610af7f8aff97268c0c56e71674e408329daaaa6f6132e523a1f08c";
 pub const XUI08_EVIDENCE_MANIFEST_SHA256: &str =
-    "c531145bd016c548bf1641f68cc542300fbaa333c2bdec174ccfd380078f7253";
+    "36e3797eb90b6adb48e5206c5577e60201cfee6ff1778c28291dc8d869cbd06d";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
