@@ -86,3 +86,5 @@ portable_replay/native/render_stream/src/c07_tree_content_library.bin -text
 extractor/native/lanes/map_passive_carriers_live/fixtures/*.json text eol=lf
 extractor/native/runs/hy_map_producers/*.json text eol=lf
 replay_interface/fixtures/xmap17_faction_joint_certification.json text eol=lf
+extractor/native/lanes/production_render_submit_live/fixtures/*.json text eol=lf
+replay_interface/fixtures/xmap19_weather_visual_lifecycle_joint_certification.json text eol=lf

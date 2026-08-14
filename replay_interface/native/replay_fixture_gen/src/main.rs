@@ -2663,9 +2663,17 @@ mod tests {
         // `replay_core::xmap17_player_labels::lane_hy_joint_certification_fixture_is_admitted`,
         // which also panics when the file is absent. Nothing may be added here
         // without that second pin.
+        //
+        // The XMAP19 visual-lifecycle fixture is the same shape and carries the
+        // same second pin: the recorder mints its bytes
+        // (`extractor/native/lanes/production_render_submit_live/tests/joint_certification_xmap19.rs`)
+        // and the copy committed here is SHA-256 pinned by
+        // `replay_core::world::world_xmap19_tests::lane_in_joint_certification_fixture_is_admitted`,
+        // which panics when it is absent.
         const EXTERNAL_FIXTURES: &[&str] = &[
             "positive/fx_naval_invasion_paradrop_orders.battleplan",
             "xmap17_faction_joint_certification.json",
+            "xmap19_weather_visual_lifecycle_joint_certification.json",
         ];
         let mut differences = Vec::new();
         for path in expected.keys().chain(actual.keys()) {

@@ -7382,6 +7382,20 @@ mod tests {
 
     fn classified_non_loader_site(module: &str, line: &str) -> bool {
         match module {
+            // Test-only module: `world.rs` includes it under `#[cfg(test)]`, so
+            // none of this compiles into a shipping build. The audit walks
+            // `src/` by filename and cannot see that, so the four lines of the
+            // XMAP19 joint-certification fixture read are named here. They open
+            // ONE committed evidence file by a fixed name under the repo's own
+            // `replay_interface/fixtures`, never a path from a recording, and
+            // nothing about a replay input is selected from them.
+            "replay_core/world_xmap19_tests.rs" => matches!(
+                line,
+                "let path = std::path::PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"))"
+                    | ".join(\"../../fixtures\")"
+                    | ".join(\"xmap19_weather_visual_lifecycle_joint_certification.json\");"
+                    | "let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {"
+            ),
             "snapshot/bin/container_codec_bench.rs" => matches!(
                 line,
                 "use std::fs::File;"

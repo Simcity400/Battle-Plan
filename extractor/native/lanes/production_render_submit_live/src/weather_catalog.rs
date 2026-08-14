@@ -90,7 +90,10 @@ pub struct WeatherResourceCatalogProvenance {
 pub struct AuthenticatedWeatherCatalog {
     provenance: WeatherResourceCatalogProvenance,
     codes: BTreeMap<u8, WeatherCodeResourceEntry>,
-    positions_by_region: BTreeMap<u32, Vec<WeatherCatalogPosition>>,
+    /// Authored positions per region, each paired with its ONE-BASED place in
+    /// the whole authored file. The pairing is made once, where the whole file
+    /// is still visible.
+    positions_by_region: BTreeMap<u32, Vec<(u32, WeatherCatalogPosition)>>,
 }
 
 impl AuthenticatedWeatherCatalog {
@@ -327,12 +330,20 @@ impl AuthenticatedWeatherCatalog {
             .cloned()
             .map(|row| (row.airborne_runtime_code, row))
             .collect();
-        let mut positions_by_region = BTreeMap::<u32, Vec<WeatherCatalogPosition>>::new();
-        for position in &provenance.ordered_positions {
+        // The file ordinal is taken HERE, while the whole authored file is still
+        // in one list, and travels with the row. Recovering it later from the
+        // per-region split is not equivalent: a position whose region has no
+        // engine record never reaches a membership row, yet it still occupies
+        // its place in the file that the consumer counts.
+        let mut positions_by_region = BTreeMap::<u32, Vec<(u32, WeatherCatalogPosition)>>::new();
+        for (index, position) in provenance.ordered_positions.iter().enumerate() {
+            let Ok(file_source_ordinal) = u32::try_from(index + 1) else {
+                return Err("map/weatherpositions.txt exceeds u32 positions".into());
+            };
             positions_by_region
                 .entry(position.strategic_region_id)
                 .or_default()
-                .push(position.clone());
+                .push((file_source_ordinal, position.clone()));
         }
         Ok(Self {
             provenance,
@@ -368,7 +379,7 @@ impl AuthenticatedWeatherCatalog {
                 })
             });
 
-        for (ordinal, position) in positions.iter().enumerate() {
+        for (ordinal, (file_source_ordinal, position)) in positions.iter().enumerate() {
             let selected_class = portable_render_stream::weather_selected_variant_class(
                 position.class,
                 code.ordered_variants
@@ -387,7 +398,11 @@ impl AuthenticatedWeatherCatalog {
                     .map(|index| candidates[index])
             };
             let Some(selected) = selected else {
-                resolved_positions.push(explicit_empty_position(ordinal, position)?);
+                resolved_positions.push(explicit_empty_position(
+                    ordinal,
+                    *file_source_ordinal,
+                    position,
+                )?);
                 continue;
             };
 
@@ -412,6 +427,7 @@ impl AuthenticatedWeatherCatalog {
             }
             resolved_positions.push(WeatherPosition {
                 position_ordinal: ordinal as u16,
+                file_source_ordinal: *file_source_ordinal,
                 source_line: position.source_line,
                 position_xyz_f32_bits: position.position_xyz_f32_bits,
                 class: position.class,
@@ -857,10 +873,12 @@ fn variant_token(weather: &str, index: u16, class: WeatherPositionClass) -> Stri
 
 fn explicit_empty_position(
     ordinal: usize,
+    file_source_ordinal: u32,
     source: &WeatherCatalogPosition,
 ) -> Option<WeatherPosition> {
     Some(WeatherPosition {
         position_ordinal: u16::try_from(ordinal).ok()?,
+        file_source_ordinal,
         source_line: source.source_line,
         position_xyz_f32_bits: source.position_xyz_f32_bits,
         class: source.class,
@@ -1725,4 +1743,162 @@ fn balanced_body(source: &str, brace: usize) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod file_ordinal_tests {
+    use super::*;
+
+    /// The authored file this test parses. Its FIRST line belongs to region
+    /// 900, which no engine census below has a record for — a modded
+    /// `map/weatherpositions.txt` can carry exactly that, and the consumer
+    /// still counts the emitter when it numbers producer sources.
+    const POSITIONS: &str = concat!(
+        "900;1.0;2.0;3.0;big\n",
+        "3;4.0;5.0;6.0;small\n",
+        "7;7.0;8.0;9.0;big\n",
+        "3;1.0;1.0;1.0;small\n",
+    );
+
+    fn authority() -> String {
+        "1".repeat(64)
+    }
+
+    fn content(path: &str) -> UsedContentKey {
+        UsedContentKey {
+            effective_vfs_manifest_sha256: authority(),
+            normalized_game_relative_path: path.into(),
+            winning_layer_ordinal: 0,
+            layer_kind: portable_content_manifest::ContentLayerKind::Base,
+            layer_id: "base".into(),
+            source_sha256: "2".repeat(64),
+            payload_sha256: "3".repeat(64),
+            payload_bytes: 64,
+        }
+    }
+
+    fn entity(token: &str) -> WeatherEntityContentJoin {
+        WeatherEntityContentJoin {
+            entity_token: token.into(),
+            // The closure the validator requires of any authored variant: the
+            // weather definition source and the entity asset that names it.
+            ordered_content: vec![
+                content(WEATHER_SOURCE),
+                content(WEATHER_ENTITIES_SOURCE),
+                content(PARTICLE_REGISTRATIONS_SOURCE),
+                content(PARTICLE_SHADER_SOURCE),
+            ],
+        }
+    }
+
+    /// The real catalog, built through the real parse and the real
+    /// `from_provenance` — the function that assigns the file ordinals.
+    fn catalog() -> AuthenticatedWeatherCatalog {
+        let ordered_positions = parse_weather_positions(POSITIONS).expect("authored file parses");
+        assert_eq!(ordered_positions.len(), 4);
+        let weather_codes = [0u8, 2, 3, 4, 5, 7]
+            .into_iter()
+            .map(|code| {
+                let token = weather_token(code);
+                WeatherCodeResourceEntry {
+                    airborne_runtime_code: code,
+                    weather_effect_token: token.map(str::to_string),
+                    ordered_variants: token
+                        .map(|token| {
+                            vec![WeatherVariantContentJoin {
+                                authored_effect_index: 0,
+                                class: WeatherPositionClass::Small,
+                                resolved_variant_token: variant_token(
+                                    token,
+                                    0,
+                                    WeatherPositionClass::Small,
+                                ),
+                                primary: entity("primary"),
+                                fading: None,
+                            }]
+                        })
+                        .unwrap_or_default(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let position_source = content(WEATHER_POSITIONS_SOURCE);
+        let catalog_sha256 = catalog_sha256(
+            &authority(),
+            &position_source,
+            &weather_codes,
+            &ordered_positions,
+        )
+        .expect("catalog digest");
+        AuthenticatedWeatherCatalog::from_provenance(WeatherResourceCatalogProvenance {
+            schema: WEATHER_RESOURCE_CATALOG_SCHEMA.into(),
+            authority_manifest_sha256: authority(),
+            weather_position_source_content: position_source,
+            weather_codes,
+            ordered_positions,
+            catalog_sha256,
+        })
+        .expect("the provenance is well formed")
+    }
+
+    fn clear_observation(strategic_region_id: u32) -> RawWeatherObservation {
+        RawWeatherObservation {
+            observation_index: 1,
+            sequence: 1,
+            update_index: 1,
+            owner: crate::RawWeatherUpdateOwner::NormalStrategicRegionUpdate,
+            initial_observation: true,
+            checkpoint_observation: false,
+            strategic_region_id,
+            rain_light_active: false,
+            rain_heavy_active: false,
+            snow_active: false,
+            blizzard_active: false,
+            sandstorm_active: false,
+            arctic_water_active: false,
+            region_value_i64_fixed_1e5: 0,
+            transition_expiry_game_hour_i32: 0,
+            previous_airborne_runtime_code: 0,
+            airborne_runtime_code: 0,
+            selection_seed_words: None,
+            ordered_factory_attempts: Vec::new(),
+            ordered_live_pairs: Vec::new(),
+        }
+    }
+
+    /// kills: numbering authored positions from anything but their place in the
+    /// WHOLE parsed file — `index + 2`, a per-region counter, or a count that
+    /// skips emitters whose region the engine has no record for. Every one of
+    /// those still produces a self-consistent recording whose envelope hashes
+    /// its own mistake; the disagreement surfaces only in `map_viewer`'s
+    /// re-derivation, one tree away, where it costs the whole frame. This test
+    /// drives the production `from_provenance`, so it fails on the assignment
+    /// itself rather than on a value a fixture handed it.
+    #[test]
+    fn the_file_ordinal_is_the_positions_place_in_the_whole_authored_file() {
+        let catalog = catalog();
+        let region_three = catalog
+            .resolve_exact(&clear_observation(3))
+            .expect("a clear region resolves its authored positions");
+        assert_eq!(
+            region_three
+                .ordered_positions
+                .iter()
+                .map(|position| (position.position_ordinal, position.file_source_ordinal))
+                .collect::<Vec<_>>(),
+            vec![(0, 2), (1, 4)],
+            "region 3's positions are the 2nd and 4th emitters in the file; a per-region ordinal \
+             would say 1 and 2, and dropping the region-900 emitter would say 1 and 3"
+        );
+        let region_seven = catalog
+            .resolve_exact(&clear_observation(7))
+            .expect("the other engine region resolves too");
+        assert_eq!(
+            region_seven
+                .ordered_positions
+                .iter()
+                .map(|position| position.file_source_ordinal)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
 }

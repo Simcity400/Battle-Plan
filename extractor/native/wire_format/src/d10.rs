@@ -1,8 +1,8 @@
 //! d10 `fuel_live` — per-country fuel status.
 //!
-//! Derived from `world_fold.rs:11698`-`:11743`
+//! Derived from `world_fold.rs:11711`-`:11756`
 //! (`fold_fuel`), its scale constant at `:152`, the collector read that produces
-// @world-fold-authority domain=10 functions=fold_fuel lines=11698-11743 sha256=1ab92f138878297dc602291e5fb10a29e3aed69972c37219c70f824f979c3aee closure=98a95632262f1b0f631294875ff27f9f12423ea045848b009c645ef35e42650c
+// @world-fold-authority domain=10 functions=fold_fuel lines=11711-11756 sha256=1ab92f138878297dc602291e5fb10a29e3aed69972c37219c70f824f979c3aee closure=611a5105ef5db7a008bd0a7daced08c41ac386b97ecca68012149e6c1b50ffed
 //! the rows (`extractor/native/collector/src/attach_log.rs:83846`-`:83885`), the
 //! collector's payload encoder (`:67976`-`:67999`), and the recorder's own
 //! structural decoder for this payload

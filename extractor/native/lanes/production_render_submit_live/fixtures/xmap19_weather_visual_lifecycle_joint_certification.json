@@ -1,0 +1,3507 @@
+{
+  "_comment": "Lane IN (GP-U16) XMAP19 joint-certification fixture. Producer half: extractor/native/lanes/production_render_submit_live/tests/joint_certification_xmap19.rs. Consumer half: replay_interface/native/replay_core/src/world_xmap19_tests.rs. Regenerate with IN_WRITE_XMAP19_FIXTURE=1.",
+  "_r2_weather_visual_lifecycle": {
+    "cadence": "initial_baseline_and_airborne_code_change",
+    "complete_region_count": 305,
+    "epochs": {
+      "0": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 0,
+        "transition_expiry_game_hour": 60763459
+      },
+      "1": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r1:e2:c2:p2:primary",
+          "xmap19.weather:r1:e2:c2:p2:fading"
+        ],
+        "selection_seed_words": [
+          8,
+          15
+        ],
+        "strategic_region_id": 1,
+        "transition_expiry_game_hour": 60763460
+      },
+      "10": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r10:e1:c4:p11:primary",
+          "xmap19.weather:r10:e1:c4:p11:fading"
+        ],
+        "selection_seed_words": [
+          71,
+          132
+        ],
+        "strategic_region_id": 10,
+        "transition_expiry_game_hour": 60763469
+      },
+      "100": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 100,
+        "transition_expiry_game_hour": 60763559
+      },
+      "101": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r101:e2:c4:p102:primary",
+          "xmap19.weather:r101:e2:c4:p102:fading"
+        ],
+        "selection_seed_words": [
+          708,
+          1315
+        ],
+        "strategic_region_id": 101,
+        "transition_expiry_game_hour": 60763560
+      },
+      "102": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 102,
+        "transition_expiry_game_hour": 60763561
+      },
+      "103": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r103:e4:c7:p104:primary"
+        ],
+        "selection_seed_words": [
+          722,
+          1341
+        ],
+        "strategic_region_id": 103,
+        "transition_expiry_game_hour": 60763562
+      },
+      "104": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 104,
+        "transition_expiry_game_hour": 60763563
+      },
+      "105": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 105,
+        "transition_expiry_game_hour": 60763564
+      },
+      "106": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r106:e2:c2:p107:primary",
+          "xmap19.weather:r106:e2:c2:p107:fading"
+        ],
+        "selection_seed_words": [
+          743,
+          1380
+        ],
+        "strategic_region_id": 106,
+        "transition_expiry_game_hour": 60763565
+      },
+      "107": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 107,
+        "transition_expiry_game_hour": 60763566
+      },
+      "108": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r108:e4:c4:p109:primary",
+          "xmap19.weather:r108:e4:c4:p109:fading"
+        ],
+        "selection_seed_words": [
+          757,
+          1406
+        ],
+        "strategic_region_id": 108,
+        "transition_expiry_game_hour": 60763567
+      },
+      "109": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 109,
+        "transition_expiry_game_hour": 60763568
+      },
+      "11": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 11,
+        "transition_expiry_game_hour": 60763470
+      },
+      "110": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r110:e1:c7:p111:primary"
+        ],
+        "selection_seed_words": [
+          771,
+          1432
+        ],
+        "strategic_region_id": 110,
+        "transition_expiry_game_hour": 60763569
+      },
+      "111": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 111,
+        "transition_expiry_game_hour": 60763570
+      },
+      "112": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 112,
+        "transition_expiry_game_hour": 60763571
+      },
+      "113": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r113:e4:c2:p114:primary",
+          "xmap19.weather:r113:e4:c2:p114:fading"
+        ],
+        "selection_seed_words": [
+          792,
+          1471
+        ],
+        "strategic_region_id": 113,
+        "transition_expiry_game_hour": 60763572
+      },
+      "114": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 114,
+        "transition_expiry_game_hour": 60763573
+      },
+      "115": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r115:e1:c4:p116:primary",
+          "xmap19.weather:r115:e1:c4:p116:fading"
+        ],
+        "selection_seed_words": [
+          806,
+          1497
+        ],
+        "strategic_region_id": 115,
+        "transition_expiry_game_hour": 60763574
+      },
+      "116": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 116,
+        "transition_expiry_game_hour": 60763575
+      },
+      "117": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r117:e3:c7:p118:primary"
+        ],
+        "selection_seed_words": [
+          820,
+          1523
+        ],
+        "strategic_region_id": 117,
+        "transition_expiry_game_hour": 60763576
+      },
+      "118": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 118,
+        "transition_expiry_game_hour": 60763577
+      },
+      "119": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 119,
+        "transition_expiry_game_hour": 60763578
+      },
+      "12": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r12:e3:c7:p13:primary"
+        ],
+        "selection_seed_words": [
+          85,
+          158
+        ],
+        "strategic_region_id": 12,
+        "transition_expiry_game_hour": 60763471
+      },
+      "120": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r120:e1:c2:p121:primary",
+          "xmap19.weather:r120:e1:c2:p121:fading"
+        ],
+        "selection_seed_words": [
+          841,
+          1562
+        ],
+        "strategic_region_id": 120,
+        "transition_expiry_game_hour": 60763579
+      },
+      "121": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 121,
+        "transition_expiry_game_hour": 60763580
+      },
+      "122": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r122:e3:c4:p123:primary",
+          "xmap19.weather:r122:e3:c4:p123:fading"
+        ],
+        "selection_seed_words": [
+          855,
+          1588
+        ],
+        "strategic_region_id": 122,
+        "transition_expiry_game_hour": 60763581
+      },
+      "123": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 123,
+        "transition_expiry_game_hour": 60763582
+      },
+      "124": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r124:e5:c7:p125:primary"
+        ],
+        "selection_seed_words": [
+          869,
+          1614
+        ],
+        "strategic_region_id": 124,
+        "transition_expiry_game_hour": 60763583
+      },
+      "125": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 125,
+        "transition_expiry_game_hour": 60763584
+      },
+      "126": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 126,
+        "transition_expiry_game_hour": 60763585
+      },
+      "127": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r127:e3:c2:p128:primary",
+          "xmap19.weather:r127:e3:c2:p128:fading"
+        ],
+        "selection_seed_words": [
+          890,
+          1653
+        ],
+        "strategic_region_id": 127,
+        "transition_expiry_game_hour": 60763586
+      },
+      "128": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 128,
+        "transition_expiry_game_hour": 60763587
+      },
+      "129": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r129:e5:c4:p130:primary",
+          "xmap19.weather:r129:e5:c4:p130:fading"
+        ],
+        "selection_seed_words": [
+          904,
+          1679
+        ],
+        "strategic_region_id": 129,
+        "transition_expiry_game_hour": 60763588
+      },
+      "13": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 13,
+        "transition_expiry_game_hour": 60763472
+      },
+      "130": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 130,
+        "transition_expiry_game_hour": 60763589
+      },
+      "131": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r131:e2:c7:p132:primary"
+        ],
+        "selection_seed_words": [
+          918,
+          1705
+        ],
+        "strategic_region_id": 131,
+        "transition_expiry_game_hour": 60763590
+      },
+      "132": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 132,
+        "transition_expiry_game_hour": 60763591
+      },
+      "133": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 133,
+        "transition_expiry_game_hour": 60763592
+      },
+      "134": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r134:e5:c2:p135:primary",
+          "xmap19.weather:r134:e5:c2:p135:fading"
+        ],
+        "selection_seed_words": [
+          939,
+          1744
+        ],
+        "strategic_region_id": 134,
+        "transition_expiry_game_hour": 60763593
+      },
+      "135": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 135,
+        "transition_expiry_game_hour": 60763594
+      },
+      "136": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r136:e2:c4:p137:primary",
+          "xmap19.weather:r136:e2:c4:p137:fading"
+        ],
+        "selection_seed_words": [
+          953,
+          1770
+        ],
+        "strategic_region_id": 136,
+        "transition_expiry_game_hour": 60763595
+      },
+      "137": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 137,
+        "transition_expiry_game_hour": 60763596
+      },
+      "138": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r138:e4:c7:p139:primary"
+        ],
+        "selection_seed_words": [
+          967,
+          1796
+        ],
+        "strategic_region_id": 138,
+        "transition_expiry_game_hour": 60763597
+      },
+      "139": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 139,
+        "transition_expiry_game_hour": 60763598
+      },
+      "14": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 14,
+        "transition_expiry_game_hour": 60763473
+      },
+      "140": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 140,
+        "transition_expiry_game_hour": 60763599
+      },
+      "141": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r141:e2:c2:p142:primary",
+          "xmap19.weather:r141:e2:c2:p142:fading"
+        ],
+        "selection_seed_words": [
+          988,
+          1835
+        ],
+        "strategic_region_id": 141,
+        "transition_expiry_game_hour": 60763600
+      },
+      "142": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 142,
+        "transition_expiry_game_hour": 60763601
+      },
+      "143": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r143:e4:c4:p144:primary",
+          "xmap19.weather:r143:e4:c4:p144:fading"
+        ],
+        "selection_seed_words": [
+          1002,
+          1861
+        ],
+        "strategic_region_id": 143,
+        "transition_expiry_game_hour": 60763602
+      },
+      "144": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 144,
+        "transition_expiry_game_hour": 60763603
+      },
+      "145": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r145:e1:c7:p146:primary"
+        ],
+        "selection_seed_words": [
+          1016,
+          1887
+        ],
+        "strategic_region_id": 145,
+        "transition_expiry_game_hour": 60763604
+      },
+      "146": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 146,
+        "transition_expiry_game_hour": 60763605
+      },
+      "147": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 147,
+        "transition_expiry_game_hour": 60763606
+      },
+      "148": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r148:e4:c2:p149:primary",
+          "xmap19.weather:r148:e4:c2:p149:fading"
+        ],
+        "selection_seed_words": [
+          1037,
+          1926
+        ],
+        "strategic_region_id": 148,
+        "transition_expiry_game_hour": 60763607
+      },
+      "149": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 149,
+        "transition_expiry_game_hour": 60763608
+      },
+      "15": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r15:e1:c2:p16:primary",
+          "xmap19.weather:r15:e1:c2:p16:fading"
+        ],
+        "selection_seed_words": [
+          106,
+          197
+        ],
+        "strategic_region_id": 15,
+        "transition_expiry_game_hour": 60763474
+      },
+      "150": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r150:e1:c4:p151:primary",
+          "xmap19.weather:r150:e1:c4:p151:fading"
+        ],
+        "selection_seed_words": [
+          1051,
+          1952
+        ],
+        "strategic_region_id": 150,
+        "transition_expiry_game_hour": 60763609
+      },
+      "151": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 151,
+        "transition_expiry_game_hour": 60763610
+      },
+      "152": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r152:e3:c7:p153:primary"
+        ],
+        "selection_seed_words": [
+          1065,
+          1978
+        ],
+        "strategic_region_id": 152,
+        "transition_expiry_game_hour": 60763611
+      },
+      "153": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 153,
+        "transition_expiry_game_hour": 60763612
+      },
+      "154": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 154,
+        "transition_expiry_game_hour": 60763613
+      },
+      "155": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r155:e1:c2:p156:primary",
+          "xmap19.weather:r155:e1:c2:p156:fading"
+        ],
+        "selection_seed_words": [
+          1086,
+          2017
+        ],
+        "strategic_region_id": 155,
+        "transition_expiry_game_hour": 60763614
+      },
+      "156": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 156,
+        "transition_expiry_game_hour": 60763615
+      },
+      "157": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r157:e3:c4:p158:primary",
+          "xmap19.weather:r157:e3:c4:p158:fading"
+        ],
+        "selection_seed_words": [
+          1100,
+          2043
+        ],
+        "strategic_region_id": 157,
+        "transition_expiry_game_hour": 60763616
+      },
+      "158": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 158,
+        "transition_expiry_game_hour": 60763617
+      },
+      "159": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r159:e5:c7:p160:primary"
+        ],
+        "selection_seed_words": [
+          1114,
+          2069
+        ],
+        "strategic_region_id": 159,
+        "transition_expiry_game_hour": 60763618
+      },
+      "16": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 16,
+        "transition_expiry_game_hour": 60763475
+      },
+      "160": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 160,
+        "transition_expiry_game_hour": 60763619
+      },
+      "161": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 161,
+        "transition_expiry_game_hour": 60763620
+      },
+      "162": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r162:e3:c2:p163:primary",
+          "xmap19.weather:r162:e3:c2:p163:fading"
+        ],
+        "selection_seed_words": [
+          1135,
+          2108
+        ],
+        "strategic_region_id": 162,
+        "transition_expiry_game_hour": 60763621
+      },
+      "163": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 163,
+        "transition_expiry_game_hour": 60763622
+      },
+      "164": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r164:e5:c4:p165:primary",
+          "xmap19.weather:r164:e5:c4:p165:fading"
+        ],
+        "selection_seed_words": [
+          1149,
+          2134
+        ],
+        "strategic_region_id": 164,
+        "transition_expiry_game_hour": 60763623
+      },
+      "165": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 165,
+        "transition_expiry_game_hour": 60763624
+      },
+      "166": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r166:e2:c7:p167:primary"
+        ],
+        "selection_seed_words": [
+          1163,
+          2160
+        ],
+        "strategic_region_id": 166,
+        "transition_expiry_game_hour": 60763625
+      },
+      "167": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 167,
+        "transition_expiry_game_hour": 60763626
+      },
+      "168": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 168,
+        "transition_expiry_game_hour": 60763627
+      },
+      "169": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r169:e5:c2:p170:primary",
+          "xmap19.weather:r169:e5:c2:p170:fading"
+        ],
+        "selection_seed_words": [
+          1184,
+          2199
+        ],
+        "strategic_region_id": 169,
+        "transition_expiry_game_hour": 60763628
+      },
+      "17": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r17:e3:c4:p18:primary",
+          "xmap19.weather:r17:e3:c4:p18:fading"
+        ],
+        "selection_seed_words": [
+          120,
+          223
+        ],
+        "strategic_region_id": 17,
+        "transition_expiry_game_hour": 60763476
+      },
+      "170": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 170,
+        "transition_expiry_game_hour": 60763629
+      },
+      "171": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r171:e2:c4:p172:primary",
+          "xmap19.weather:r171:e2:c4:p172:fading"
+        ],
+        "selection_seed_words": [
+          1198,
+          2225
+        ],
+        "strategic_region_id": 171,
+        "transition_expiry_game_hour": 60763630
+      },
+      "172": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 172,
+        "transition_expiry_game_hour": 60763631
+      },
+      "173": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r173:e4:c7:p174:primary"
+        ],
+        "selection_seed_words": [
+          1212,
+          2251
+        ],
+        "strategic_region_id": 173,
+        "transition_expiry_game_hour": 60763632
+      },
+      "174": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 174,
+        "transition_expiry_game_hour": 60763633
+      },
+      "175": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 175,
+        "transition_expiry_game_hour": 60763634
+      },
+      "176": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r176:e2:c2:p177:primary",
+          "xmap19.weather:r176:e2:c2:p177:fading"
+        ],
+        "selection_seed_words": [
+          1233,
+          2290
+        ],
+        "strategic_region_id": 176,
+        "transition_expiry_game_hour": 60763635
+      },
+      "177": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 177,
+        "transition_expiry_game_hour": 60763636
+      },
+      "178": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r178:e4:c4:p179:primary",
+          "xmap19.weather:r178:e4:c4:p179:fading"
+        ],
+        "selection_seed_words": [
+          1247,
+          2316
+        ],
+        "strategic_region_id": 178,
+        "transition_expiry_game_hour": 60763637
+      },
+      "179": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 179,
+        "transition_expiry_game_hour": 60763638
+      },
+      "18": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 18,
+        "transition_expiry_game_hour": 60763477
+      },
+      "180": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r180:e1:c7:p181:primary"
+        ],
+        "selection_seed_words": [
+          1261,
+          2342
+        ],
+        "strategic_region_id": 180,
+        "transition_expiry_game_hour": 60763639
+      },
+      "181": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 181,
+        "transition_expiry_game_hour": 60763640
+      },
+      "182": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 182,
+        "transition_expiry_game_hour": 60763641
+      },
+      "183": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r183:e4:c2:p184:primary",
+          "xmap19.weather:r183:e4:c2:p184:fading"
+        ],
+        "selection_seed_words": [
+          1282,
+          2381
+        ],
+        "strategic_region_id": 183,
+        "transition_expiry_game_hour": 60763642
+      },
+      "184": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 184,
+        "transition_expiry_game_hour": 60763643
+      },
+      "185": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r185:e1:c4:p186:primary",
+          "xmap19.weather:r185:e1:c4:p186:fading"
+        ],
+        "selection_seed_words": [
+          1296,
+          2407
+        ],
+        "strategic_region_id": 185,
+        "transition_expiry_game_hour": 60763644
+      },
+      "186": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 186,
+        "transition_expiry_game_hour": 60763645
+      },
+      "187": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r187:e3:c7:p188:primary"
+        ],
+        "selection_seed_words": [
+          1310,
+          2433
+        ],
+        "strategic_region_id": 187,
+        "transition_expiry_game_hour": 60763646
+      },
+      "188": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 188,
+        "transition_expiry_game_hour": 60763647
+      },
+      "189": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 189,
+        "transition_expiry_game_hour": 60763648
+      },
+      "19": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r19:e5:c7:p20:primary"
+        ],
+        "selection_seed_words": [
+          134,
+          249
+        ],
+        "strategic_region_id": 19,
+        "transition_expiry_game_hour": 60763478
+      },
+      "190": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r190:e1:c2:p191:primary",
+          "xmap19.weather:r190:e1:c2:p191:fading"
+        ],
+        "selection_seed_words": [
+          1331,
+          2472
+        ],
+        "strategic_region_id": 190,
+        "transition_expiry_game_hour": 60763649
+      },
+      "191": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 191,
+        "transition_expiry_game_hour": 60763650
+      },
+      "192": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r192:e3:c4:p193:primary",
+          "xmap19.weather:r192:e3:c4:p193:fading"
+        ],
+        "selection_seed_words": [
+          1345,
+          2498
+        ],
+        "strategic_region_id": 192,
+        "transition_expiry_game_hour": 60763651
+      },
+      "193": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 193,
+        "transition_expiry_game_hour": 60763652
+      },
+      "194": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r194:e5:c7:p195:primary"
+        ],
+        "selection_seed_words": [
+          1359,
+          2524
+        ],
+        "strategic_region_id": 194,
+        "transition_expiry_game_hour": 60763653
+      },
+      "195": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 195,
+        "transition_expiry_game_hour": 60763654
+      },
+      "196": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 196,
+        "transition_expiry_game_hour": 60763655
+      },
+      "197": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r197:e3:c2:p198:primary",
+          "xmap19.weather:r197:e3:c2:p198:fading"
+        ],
+        "selection_seed_words": [
+          1380,
+          2563
+        ],
+        "strategic_region_id": 197,
+        "transition_expiry_game_hour": 60763656
+      },
+      "198": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 198,
+        "transition_expiry_game_hour": 60763657
+      },
+      "199": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r199:e5:c4:p200:primary",
+          "xmap19.weather:r199:e5:c4:p200:fading"
+        ],
+        "selection_seed_words": [
+          1394,
+          2589
+        ],
+        "strategic_region_id": 199,
+        "transition_expiry_game_hour": 60763658
+      },
+      "2": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 2,
+        "transition_expiry_game_hour": 60763461
+      },
+      "20": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 20,
+        "transition_expiry_game_hour": 60763479
+      },
+      "200": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 200,
+        "transition_expiry_game_hour": 60763659
+      },
+      "201": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r201:e2:c7:p202:primary"
+        ],
+        "selection_seed_words": [
+          1408,
+          2615
+        ],
+        "strategic_region_id": 201,
+        "transition_expiry_game_hour": 60763660
+      },
+      "202": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 202,
+        "transition_expiry_game_hour": 60763661
+      },
+      "203": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 203,
+        "transition_expiry_game_hour": 60763662
+      },
+      "204": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r204:e5:c2:p205:primary",
+          "xmap19.weather:r204:e5:c2:p205:fading"
+        ],
+        "selection_seed_words": [
+          1429,
+          2654
+        ],
+        "strategic_region_id": 204,
+        "transition_expiry_game_hour": 60763663
+      },
+      "205": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 205,
+        "transition_expiry_game_hour": 60763664
+      },
+      "206": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r206:e2:c4:p207:primary",
+          "xmap19.weather:r206:e2:c4:p207:fading"
+        ],
+        "selection_seed_words": [
+          1443,
+          2680
+        ],
+        "strategic_region_id": 206,
+        "transition_expiry_game_hour": 60763665
+      },
+      "207": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 207,
+        "transition_expiry_game_hour": 60763666
+      },
+      "208": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r208:e4:c7:p209:primary"
+        ],
+        "selection_seed_words": [
+          1457,
+          2706
+        ],
+        "strategic_region_id": 208,
+        "transition_expiry_game_hour": 60763667
+      },
+      "209": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 209,
+        "transition_expiry_game_hour": 60763668
+      },
+      "21": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 21,
+        "transition_expiry_game_hour": 60763480
+      },
+      "210": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 210,
+        "transition_expiry_game_hour": 60763669
+      },
+      "211": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r211:e2:c2:p212:primary",
+          "xmap19.weather:r211:e2:c2:p212:fading"
+        ],
+        "selection_seed_words": [
+          1478,
+          2745
+        ],
+        "strategic_region_id": 211,
+        "transition_expiry_game_hour": 60763670
+      },
+      "212": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 212,
+        "transition_expiry_game_hour": 60763671
+      },
+      "213": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r213:e4:c4:p214:primary",
+          "xmap19.weather:r213:e4:c4:p214:fading"
+        ],
+        "selection_seed_words": [
+          1492,
+          2771
+        ],
+        "strategic_region_id": 213,
+        "transition_expiry_game_hour": 60763672
+      },
+      "214": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 214,
+        "transition_expiry_game_hour": 60763673
+      },
+      "215": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r215:e1:c7:p216:primary"
+        ],
+        "selection_seed_words": [
+          1506,
+          2797
+        ],
+        "strategic_region_id": 215,
+        "transition_expiry_game_hour": 60763674
+      },
+      "216": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 216,
+        "transition_expiry_game_hour": 60763675
+      },
+      "217": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 217,
+        "transition_expiry_game_hour": 60763676
+      },
+      "218": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r218:e4:c2:p219:primary",
+          "xmap19.weather:r218:e4:c2:p219:fading"
+        ],
+        "selection_seed_words": [
+          1527,
+          2836
+        ],
+        "strategic_region_id": 218,
+        "transition_expiry_game_hour": 60763677
+      },
+      "219": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 219,
+        "transition_expiry_game_hour": 60763678
+      },
+      "22": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r22:e3:c2:p23:primary",
+          "xmap19.weather:r22:e3:c2:p23:fading"
+        ],
+        "selection_seed_words": [
+          155,
+          288
+        ],
+        "strategic_region_id": 22,
+        "transition_expiry_game_hour": 60763481
+      },
+      "220": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r220:e1:c4:p221:primary",
+          "xmap19.weather:r220:e1:c4:p221:fading"
+        ],
+        "selection_seed_words": [
+          1541,
+          2862
+        ],
+        "strategic_region_id": 220,
+        "transition_expiry_game_hour": 60763679
+      },
+      "221": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 221,
+        "transition_expiry_game_hour": 60763680
+      },
+      "222": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r222:e3:c7:p223:primary"
+        ],
+        "selection_seed_words": [
+          1555,
+          2888
+        ],
+        "strategic_region_id": 222,
+        "transition_expiry_game_hour": 60763681
+      },
+      "223": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 223,
+        "transition_expiry_game_hour": 60763682
+      },
+      "224": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 224,
+        "transition_expiry_game_hour": 60763683
+      },
+      "225": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r225:e1:c2:p226:primary",
+          "xmap19.weather:r225:e1:c2:p226:fading"
+        ],
+        "selection_seed_words": [
+          1576,
+          2927
+        ],
+        "strategic_region_id": 225,
+        "transition_expiry_game_hour": 60763684
+      },
+      "226": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 226,
+        "transition_expiry_game_hour": 60763685
+      },
+      "227": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r227:e3:c4:p228:primary",
+          "xmap19.weather:r227:e3:c4:p228:fading"
+        ],
+        "selection_seed_words": [
+          1590,
+          2953
+        ],
+        "strategic_region_id": 227,
+        "transition_expiry_game_hour": 60763686
+      },
+      "228": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 228,
+        "transition_expiry_game_hour": 60763687
+      },
+      "229": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r229:e5:c7:p230:primary"
+        ],
+        "selection_seed_words": [
+          1604,
+          2979
+        ],
+        "strategic_region_id": 229,
+        "transition_expiry_game_hour": 60763688
+      },
+      "23": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 23,
+        "transition_expiry_game_hour": 60763482
+      },
+      "230": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 230,
+        "transition_expiry_game_hour": 60763689
+      },
+      "231": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 231,
+        "transition_expiry_game_hour": 60763690
+      },
+      "232": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r232:e3:c2:p233:primary",
+          "xmap19.weather:r232:e3:c2:p233:fading"
+        ],
+        "selection_seed_words": [
+          1625,
+          3018
+        ],
+        "strategic_region_id": 232,
+        "transition_expiry_game_hour": 60763691
+      },
+      "233": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 233,
+        "transition_expiry_game_hour": 60763692
+      },
+      "234": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r234:e5:c4:p235:primary",
+          "xmap19.weather:r234:e5:c4:p235:fading"
+        ],
+        "selection_seed_words": [
+          1639,
+          3044
+        ],
+        "strategic_region_id": 234,
+        "transition_expiry_game_hour": 60763693
+      },
+      "235": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 235,
+        "transition_expiry_game_hour": 60763694
+      },
+      "236": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r236:e2:c7:p237:primary"
+        ],
+        "selection_seed_words": [
+          1653,
+          3070
+        ],
+        "strategic_region_id": 236,
+        "transition_expiry_game_hour": 60763695
+      },
+      "237": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 237,
+        "transition_expiry_game_hour": 60763696
+      },
+      "238": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 238,
+        "transition_expiry_game_hour": 60763697
+      },
+      "239": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r239:e5:c2:p240:primary",
+          "xmap19.weather:r239:e5:c2:p240:fading"
+        ],
+        "selection_seed_words": [
+          1674,
+          3109
+        ],
+        "strategic_region_id": 239,
+        "transition_expiry_game_hour": 60763698
+      },
+      "24": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r24:e5:c4:p25:primary",
+          "xmap19.weather:r24:e5:c4:p25:fading"
+        ],
+        "selection_seed_words": [
+          169,
+          314
+        ],
+        "strategic_region_id": 24,
+        "transition_expiry_game_hour": 60763483
+      },
+      "240": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 240,
+        "transition_expiry_game_hour": 60763699
+      },
+      "241": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r241:e2:c4:p242:primary",
+          "xmap19.weather:r241:e2:c4:p242:fading"
+        ],
+        "selection_seed_words": [
+          1688,
+          3135
+        ],
+        "strategic_region_id": 241,
+        "transition_expiry_game_hour": 60763700
+      },
+      "242": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 242,
+        "transition_expiry_game_hour": 60763701
+      },
+      "243": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r243:e4:c7:p244:primary"
+        ],
+        "selection_seed_words": [
+          1702,
+          3161
+        ],
+        "strategic_region_id": 243,
+        "transition_expiry_game_hour": 60763702
+      },
+      "244": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 244,
+        "transition_expiry_game_hour": 60763703
+      },
+      "245": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 245,
+        "transition_expiry_game_hour": 60763704
+      },
+      "246": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r246:e2:c2:p247:primary",
+          "xmap19.weather:r246:e2:c2:p247:fading"
+        ],
+        "selection_seed_words": [
+          1723,
+          3200
+        ],
+        "strategic_region_id": 246,
+        "transition_expiry_game_hour": 60763705
+      },
+      "247": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 247,
+        "transition_expiry_game_hour": 60763706
+      },
+      "248": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r248:e4:c4:p249:primary",
+          "xmap19.weather:r248:e4:c4:p249:fading"
+        ],
+        "selection_seed_words": [
+          1737,
+          3226
+        ],
+        "strategic_region_id": 248,
+        "transition_expiry_game_hour": 60763707
+      },
+      "249": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 249,
+        "transition_expiry_game_hour": 60763708
+      },
+      "25": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 25,
+        "transition_expiry_game_hour": 60763484
+      },
+      "250": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r250:e1:c7:p251:primary"
+        ],
+        "selection_seed_words": [
+          1751,
+          3252
+        ],
+        "strategic_region_id": 250,
+        "transition_expiry_game_hour": 60763709
+      },
+      "251": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 251,
+        "transition_expiry_game_hour": 60763710
+      },
+      "252": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 252,
+        "transition_expiry_game_hour": 60763711
+      },
+      "253": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r253:e4:c2:p254:primary",
+          "xmap19.weather:r253:e4:c2:p254:fading"
+        ],
+        "selection_seed_words": [
+          1772,
+          3291
+        ],
+        "strategic_region_id": 253,
+        "transition_expiry_game_hour": 60763712
+      },
+      "254": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 254,
+        "transition_expiry_game_hour": 60763713
+      },
+      "255": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r255:e1:c4:p256:primary",
+          "xmap19.weather:r255:e1:c4:p256:fading"
+        ],
+        "selection_seed_words": [
+          1786,
+          3317
+        ],
+        "strategic_region_id": 255,
+        "transition_expiry_game_hour": 60763714
+      },
+      "256": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 256,
+        "transition_expiry_game_hour": 60763715
+      },
+      "257": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r257:e3:c7:p258:primary"
+        ],
+        "selection_seed_words": [
+          1800,
+          3343
+        ],
+        "strategic_region_id": 257,
+        "transition_expiry_game_hour": 60763716
+      },
+      "258": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 258,
+        "transition_expiry_game_hour": 60763717
+      },
+      "259": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 259,
+        "transition_expiry_game_hour": 60763718
+      },
+      "26": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r26:e2:c7:p27:primary"
+        ],
+        "selection_seed_words": [
+          183,
+          340
+        ],
+        "strategic_region_id": 26,
+        "transition_expiry_game_hour": 60763485
+      },
+      "260": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r260:e1:c2:p261:primary",
+          "xmap19.weather:r260:e1:c2:p261:fading"
+        ],
+        "selection_seed_words": [
+          1821,
+          3382
+        ],
+        "strategic_region_id": 260,
+        "transition_expiry_game_hour": 60763719
+      },
+      "261": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 261,
+        "transition_expiry_game_hour": 60763720
+      },
+      "262": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r262:e3:c4:p263:primary",
+          "xmap19.weather:r262:e3:c4:p263:fading"
+        ],
+        "selection_seed_words": [
+          1835,
+          3408
+        ],
+        "strategic_region_id": 262,
+        "transition_expiry_game_hour": 60763721
+      },
+      "263": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 263,
+        "transition_expiry_game_hour": 60763722
+      },
+      "264": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r264:e5:c7:p265:primary"
+        ],
+        "selection_seed_words": [
+          1849,
+          3434
+        ],
+        "strategic_region_id": 264,
+        "transition_expiry_game_hour": 60763723
+      },
+      "265": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 265,
+        "transition_expiry_game_hour": 60763724
+      },
+      "266": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 266,
+        "transition_expiry_game_hour": 60763725
+      },
+      "267": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r267:e3:c2:p268:primary",
+          "xmap19.weather:r267:e3:c2:p268:fading"
+        ],
+        "selection_seed_words": [
+          1870,
+          3473
+        ],
+        "strategic_region_id": 267,
+        "transition_expiry_game_hour": 60763726
+      },
+      "268": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 268,
+        "transition_expiry_game_hour": 60763727
+      },
+      "269": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r269:e5:c4:p270:primary",
+          "xmap19.weather:r269:e5:c4:p270:fading"
+        ],
+        "selection_seed_words": [
+          1884,
+          3499
+        ],
+        "strategic_region_id": 269,
+        "transition_expiry_game_hour": 60763728
+      },
+      "27": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 27,
+        "transition_expiry_game_hour": 60763486
+      },
+      "270": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 270,
+        "transition_expiry_game_hour": 60763729
+      },
+      "271": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r271:e2:c7:p272:primary"
+        ],
+        "selection_seed_words": [
+          1898,
+          3525
+        ],
+        "strategic_region_id": 271,
+        "transition_expiry_game_hour": 60763730
+      },
+      "272": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 272,
+        "transition_expiry_game_hour": 60763731
+      },
+      "273": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 273,
+        "transition_expiry_game_hour": 60763732
+      },
+      "274": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r274:e5:c2:p275:primary",
+          "xmap19.weather:r274:e5:c2:p275:fading"
+        ],
+        "selection_seed_words": [
+          1919,
+          3564
+        ],
+        "strategic_region_id": 274,
+        "transition_expiry_game_hour": 60763733
+      },
+      "275": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 275,
+        "transition_expiry_game_hour": 60763734
+      },
+      "276": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r276:e2:c4:p277:primary",
+          "xmap19.weather:r276:e2:c4:p277:fading"
+        ],
+        "selection_seed_words": [
+          1933,
+          3590
+        ],
+        "strategic_region_id": 276,
+        "transition_expiry_game_hour": 60763735
+      },
+      "277": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 277,
+        "transition_expiry_game_hour": 60763736
+      },
+      "278": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r278:e4:c7:p279:primary"
+        ],
+        "selection_seed_words": [
+          1947,
+          3616
+        ],
+        "strategic_region_id": 278,
+        "transition_expiry_game_hour": 60763737
+      },
+      "279": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 279,
+        "transition_expiry_game_hour": 60763738
+      },
+      "28": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 28,
+        "transition_expiry_game_hour": 60763487
+      },
+      "280": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 280,
+        "transition_expiry_game_hour": 60763739
+      },
+      "281": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r281:e2:c2:p282:primary",
+          "xmap19.weather:r281:e2:c2:p282:fading"
+        ],
+        "selection_seed_words": [
+          1968,
+          3655
+        ],
+        "strategic_region_id": 281,
+        "transition_expiry_game_hour": 60763740
+      },
+      "282": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 282,
+        "transition_expiry_game_hour": 60763741
+      },
+      "283": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r283:e4:c4:p284:primary",
+          "xmap19.weather:r283:e4:c4:p284:fading"
+        ],
+        "selection_seed_words": [
+          1982,
+          3681
+        ],
+        "strategic_region_id": 283,
+        "transition_expiry_game_hour": 60763742
+      },
+      "284": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 284,
+        "transition_expiry_game_hour": 60763743
+      },
+      "285": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r285:e1:c7:p286:primary"
+        ],
+        "selection_seed_words": [
+          1996,
+          3707
+        ],
+        "strategic_region_id": 285,
+        "transition_expiry_game_hour": 60763744
+      },
+      "286": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 286,
+        "transition_expiry_game_hour": 60763745
+      },
+      "287": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 287,
+        "transition_expiry_game_hour": 60763746
+      },
+      "288": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r288:e4:c2:p289:primary",
+          "xmap19.weather:r288:e4:c2:p289:fading"
+        ],
+        "selection_seed_words": [
+          2017,
+          3746
+        ],
+        "strategic_region_id": 288,
+        "transition_expiry_game_hour": 60763747
+      },
+      "289": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 289,
+        "transition_expiry_game_hour": 60763748
+      },
+      "29": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r29:e5:c2:p30:primary",
+          "xmap19.weather:r29:e5:c2:p30:fading"
+        ],
+        "selection_seed_words": [
+          204,
+          379
+        ],
+        "strategic_region_id": 29,
+        "transition_expiry_game_hour": 60763488
+      },
+      "290": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r290:e1:c4:p291:primary",
+          "xmap19.weather:r290:e1:c4:p291:fading"
+        ],
+        "selection_seed_words": [
+          2031,
+          3772
+        ],
+        "strategic_region_id": 290,
+        "transition_expiry_game_hour": 60763749
+      },
+      "291": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 291,
+        "transition_expiry_game_hour": 60763750
+      },
+      "292": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r292:e3:c7:p293:primary"
+        ],
+        "selection_seed_words": [
+          2045,
+          3798
+        ],
+        "strategic_region_id": 292,
+        "transition_expiry_game_hour": 60763751
+      },
+      "293": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 293,
+        "transition_expiry_game_hour": 60763752
+      },
+      "294": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 294,
+        "transition_expiry_game_hour": 60763753
+      },
+      "295": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r295:e1:c2:p296:primary",
+          "xmap19.weather:r295:e1:c2:p296:fading"
+        ],
+        "selection_seed_words": [
+          2066,
+          3837
+        ],
+        "strategic_region_id": 295,
+        "transition_expiry_game_hour": 60763754
+      },
+      "296": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 296,
+        "transition_expiry_game_hour": 60763755
+      },
+      "297": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r297:e3:c4:p298:primary",
+          "xmap19.weather:r297:e3:c4:p298:fading"
+        ],
+        "selection_seed_words": [
+          2080,
+          3863
+        ],
+        "strategic_region_id": 297,
+        "transition_expiry_game_hour": 60763756
+      },
+      "298": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 298,
+        "transition_expiry_game_hour": 60763757
+      },
+      "299": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r299:e5:c7:p300:primary"
+        ],
+        "selection_seed_words": [
+          2094,
+          3889
+        ],
+        "strategic_region_id": 299,
+        "transition_expiry_game_hour": 60763758
+      },
+      "3": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r3:e4:c4:p4:primary",
+          "xmap19.weather:r3:e4:c4:p4:fading"
+        ],
+        "selection_seed_words": [
+          22,
+          41
+        ],
+        "strategic_region_id": 3,
+        "transition_expiry_game_hour": 60763462
+      },
+      "30": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 30,
+        "transition_expiry_game_hour": 60763489
+      },
+      "300": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 300,
+        "transition_expiry_game_hour": 60763759
+      },
+      "301": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 301,
+        "transition_expiry_game_hour": 60763760
+      },
+      "302": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r302:e3:c2:p303:primary",
+          "xmap19.weather:r302:e3:c2:p303:fading"
+        ],
+        "selection_seed_words": [
+          2115,
+          3928
+        ],
+        "strategic_region_id": 302,
+        "transition_expiry_game_hour": 60763761
+      },
+      "303": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 303,
+        "transition_expiry_game_hour": 60763762
+      },
+      "304": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r304:e5:c4:p305:primary",
+          "xmap19.weather:r304:e5:c4:p305:fading"
+        ],
+        "selection_seed_words": [
+          2129,
+          3954
+        ],
+        "strategic_region_id": 304,
+        "transition_expiry_game_hour": 60763763
+      },
+      "31": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r31:e2:c4:p32:primary",
+          "xmap19.weather:r31:e2:c4:p32:fading"
+        ],
+        "selection_seed_words": [
+          218,
+          405
+        ],
+        "strategic_region_id": 31,
+        "transition_expiry_game_hour": 60763490
+      },
+      "32": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 32,
+        "transition_expiry_game_hour": 60763491
+      },
+      "33": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r33:e4:c7:p34:primary"
+        ],
+        "selection_seed_words": [
+          232,
+          431
+        ],
+        "strategic_region_id": 33,
+        "transition_expiry_game_hour": 60763492
+      },
+      "34": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 34,
+        "transition_expiry_game_hour": 60763493
+      },
+      "35": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 35,
+        "transition_expiry_game_hour": 60763494
+      },
+      "36": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r36:e2:c2:p37:primary",
+          "xmap19.weather:r36:e2:c2:p37:fading"
+        ],
+        "selection_seed_words": [
+          253,
+          470
+        ],
+        "strategic_region_id": 36,
+        "transition_expiry_game_hour": 60763495
+      },
+      "37": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 37,
+        "transition_expiry_game_hour": 60763496
+      },
+      "38": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r38:e4:c4:p39:primary",
+          "xmap19.weather:r38:e4:c4:p39:fading"
+        ],
+        "selection_seed_words": [
+          267,
+          496
+        ],
+        "strategic_region_id": 38,
+        "transition_expiry_game_hour": 60763497
+      },
+      "39": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 39,
+        "transition_expiry_game_hour": 60763498
+      },
+      "4": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 4,
+        "transition_expiry_game_hour": 60763463
+      },
+      "40": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r40:e1:c7:p41:primary"
+        ],
+        "selection_seed_words": [
+          281,
+          522
+        ],
+        "strategic_region_id": 40,
+        "transition_expiry_game_hour": 60763499
+      },
+      "41": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 41,
+        "transition_expiry_game_hour": 60763500
+      },
+      "42": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 42,
+        "transition_expiry_game_hour": 60763501
+      },
+      "43": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r43:e4:c2:p44:primary",
+          "xmap19.weather:r43:e4:c2:p44:fading"
+        ],
+        "selection_seed_words": [
+          302,
+          561
+        ],
+        "strategic_region_id": 43,
+        "transition_expiry_game_hour": 60763502
+      },
+      "44": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 44,
+        "transition_expiry_game_hour": 60763503
+      },
+      "45": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r45:e1:c4:p46:primary",
+          "xmap19.weather:r45:e1:c4:p46:fading"
+        ],
+        "selection_seed_words": [
+          316,
+          587
+        ],
+        "strategic_region_id": 45,
+        "transition_expiry_game_hour": 60763504
+      },
+      "46": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 46,
+        "transition_expiry_game_hour": 60763505
+      },
+      "47": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r47:e3:c7:p48:primary"
+        ],
+        "selection_seed_words": [
+          330,
+          613
+        ],
+        "strategic_region_id": 47,
+        "transition_expiry_game_hour": 60763506
+      },
+      "48": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 48,
+        "transition_expiry_game_hour": 60763507
+      },
+      "49": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 49,
+        "transition_expiry_game_hour": 60763508
+      },
+      "5": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r5:e1:c7:p6:primary"
+        ],
+        "selection_seed_words": [
+          36,
+          67
+        ],
+        "strategic_region_id": 5,
+        "transition_expiry_game_hour": 60763464
+      },
+      "50": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r50:e1:c2:p51:primary",
+          "xmap19.weather:r50:e1:c2:p51:fading"
+        ],
+        "selection_seed_words": [
+          351,
+          652
+        ],
+        "strategic_region_id": 50,
+        "transition_expiry_game_hour": 60763509
+      },
+      "51": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 51,
+        "transition_expiry_game_hour": 60763510
+      },
+      "52": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r52:e3:c4:p53:primary",
+          "xmap19.weather:r52:e3:c4:p53:fading"
+        ],
+        "selection_seed_words": [
+          365,
+          678
+        ],
+        "strategic_region_id": 52,
+        "transition_expiry_game_hour": 60763511
+      },
+      "53": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 53,
+        "transition_expiry_game_hour": 60763512
+      },
+      "54": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r54:e5:c7:p55:primary"
+        ],
+        "selection_seed_words": [
+          379,
+          704
+        ],
+        "strategic_region_id": 54,
+        "transition_expiry_game_hour": 60763513
+      },
+      "55": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 55,
+        "transition_expiry_game_hour": 60763514
+      },
+      "56": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 56,
+        "transition_expiry_game_hour": 60763515
+      },
+      "57": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r57:e3:c2:p58:primary",
+          "xmap19.weather:r57:e3:c2:p58:fading"
+        ],
+        "selection_seed_words": [
+          400,
+          743
+        ],
+        "strategic_region_id": 57,
+        "transition_expiry_game_hour": 60763516
+      },
+      "58": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 58,
+        "transition_expiry_game_hour": 60763517
+      },
+      "59": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r59:e5:c4:p60:primary",
+          "xmap19.weather:r59:e5:c4:p60:fading"
+        ],
+        "selection_seed_words": [
+          414,
+          769
+        ],
+        "strategic_region_id": 59,
+        "transition_expiry_game_hour": 60763518
+      },
+      "6": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 6,
+        "transition_expiry_game_hour": 60763465
+      },
+      "60": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 60,
+        "transition_expiry_game_hour": 60763519
+      },
+      "61": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r61:e2:c7:p62:primary"
+        ],
+        "selection_seed_words": [
+          428,
+          795
+        ],
+        "strategic_region_id": 61,
+        "transition_expiry_game_hour": 60763520
+      },
+      "62": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 62,
+        "transition_expiry_game_hour": 60763521
+      },
+      "63": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 63,
+        "transition_expiry_game_hour": 60763522
+      },
+      "64": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r64:e5:c2:p65:primary",
+          "xmap19.weather:r64:e5:c2:p65:fading"
+        ],
+        "selection_seed_words": [
+          449,
+          834
+        ],
+        "strategic_region_id": 64,
+        "transition_expiry_game_hour": 60763523
+      },
+      "65": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 65,
+        "transition_expiry_game_hour": 60763524
+      },
+      "66": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r66:e2:c4:p67:primary",
+          "xmap19.weather:r66:e2:c4:p67:fading"
+        ],
+        "selection_seed_words": [
+          463,
+          860
+        ],
+        "strategic_region_id": 66,
+        "transition_expiry_game_hour": 60763525
+      },
+      "67": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 67,
+        "transition_expiry_game_hour": 60763526
+      },
+      "68": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r68:e4:c7:p69:primary"
+        ],
+        "selection_seed_words": [
+          477,
+          886
+        ],
+        "strategic_region_id": 68,
+        "transition_expiry_game_hour": 60763527
+      },
+      "69": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 69,
+        "transition_expiry_game_hour": 60763528
+      },
+      "7": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 7,
+        "transition_expiry_game_hour": 60763466
+      },
+      "70": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 70,
+        "transition_expiry_game_hour": 60763529
+      },
+      "71": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r71:e2:c2:p72:primary",
+          "xmap19.weather:r71:e2:c2:p72:fading"
+        ],
+        "selection_seed_words": [
+          498,
+          925
+        ],
+        "strategic_region_id": 71,
+        "transition_expiry_game_hour": 60763530
+      },
+      "72": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 72,
+        "transition_expiry_game_hour": 60763531
+      },
+      "73": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r73:e4:c4:p74:primary",
+          "xmap19.weather:r73:e4:c4:p74:fading"
+        ],
+        "selection_seed_words": [
+          512,
+          951
+        ],
+        "strategic_region_id": 73,
+        "transition_expiry_game_hour": 60763532
+      },
+      "74": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 74,
+        "transition_expiry_game_hour": 60763533
+      },
+      "75": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r75:e1:c7:p76:primary"
+        ],
+        "selection_seed_words": [
+          526,
+          977
+        ],
+        "strategic_region_id": 75,
+        "transition_expiry_game_hour": 60763534
+      },
+      "76": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 76,
+        "transition_expiry_game_hour": 60763535
+      },
+      "77": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 77,
+        "transition_expiry_game_hour": 60763536
+      },
+      "78": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r78:e4:c2:p79:primary",
+          "xmap19.weather:r78:e4:c2:p79:fading"
+        ],
+        "selection_seed_words": [
+          547,
+          1016
+        ],
+        "strategic_region_id": 78,
+        "transition_expiry_game_hour": 60763537
+      },
+      "79": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 79,
+        "transition_expiry_game_hour": 60763538
+      },
+      "8": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [
+          "xmap19.weather:r8:e4:c2:p9:primary",
+          "xmap19.weather:r8:e4:c2:p9:fading"
+        ],
+        "selection_seed_words": [
+          57,
+          106
+        ],
+        "strategic_region_id": 8,
+        "transition_expiry_game_hour": 60763467
+      },
+      "80": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r80:e1:c4:p81:primary",
+          "xmap19.weather:r80:e1:c4:p81:fading"
+        ],
+        "selection_seed_words": [
+          561,
+          1042
+        ],
+        "strategic_region_id": 80,
+        "transition_expiry_game_hour": 60763539
+      },
+      "81": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 81,
+        "transition_expiry_game_hour": 60763540
+      },
+      "82": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r82:e3:c7:p83:primary"
+        ],
+        "selection_seed_words": [
+          575,
+          1068
+        ],
+        "strategic_region_id": 82,
+        "transition_expiry_game_hour": 60763541
+      },
+      "83": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 83,
+        "transition_expiry_game_hour": 60763542
+      },
+      "84": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 84,
+        "transition_expiry_game_hour": 60763543
+      },
+      "85": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [
+          "xmap19.weather:r85:e1:c2:p86:primary",
+          "xmap19.weather:r85:e1:c2:p86:fading"
+        ],
+        "selection_seed_words": [
+          596,
+          1107
+        ],
+        "strategic_region_id": 85,
+        "transition_expiry_game_hour": 60763544
+      },
+      "86": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 86,
+        "transition_expiry_game_hour": 60763545
+      },
+      "87": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r87:e3:c4:p88:primary",
+          "xmap19.weather:r87:e3:c4:p88:fading"
+        ],
+        "selection_seed_words": [
+          610,
+          1133
+        ],
+        "strategic_region_id": 87,
+        "transition_expiry_game_hour": 60763546
+      },
+      "88": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 88,
+        "transition_expiry_game_hour": 60763547
+      },
+      "89": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962361,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r89:e5:c7:p90:primary"
+        ],
+        "selection_seed_words": [
+          624,
+          1159
+        ],
+        "strategic_region_id": 89,
+        "transition_expiry_game_hour": 60763548
+      },
+      "9": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 9,
+        "transition_expiry_game_hour": 60763468
+      },
+      "90": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962362,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 90,
+        "transition_expiry_game_hour": 60763549
+      },
+      "91": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962363,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 91,
+        "transition_expiry_game_hour": 60763550
+      },
+      "92": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962364,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [
+          "xmap19.weather:r92:e3:c2:p93:primary",
+          "xmap19.weather:r92:e3:c2:p93:fading"
+        ],
+        "selection_seed_words": [
+          645,
+          1198
+        ],
+        "strategic_region_id": 92,
+        "transition_expiry_game_hour": 60763551
+      },
+      "93": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962365,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 93,
+        "transition_expiry_game_hour": 60763552
+      },
+      "94": {
+        "airborne_runtime_code": 4,
+        "epoch_game_hour": 16962366,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r94:e5:c4:p95:primary",
+          "xmap19.weather:r94:e5:c4:p95:fading"
+        ],
+        "selection_seed_words": [
+          659,
+          1224
+        ],
+        "strategic_region_id": 94,
+        "transition_expiry_game_hour": 60763553
+      },
+      "95": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962367,
+        "epoch_ordinal": 1,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 95,
+        "transition_expiry_game_hour": 60763554
+      },
+      "96": {
+        "airborne_runtime_code": 7,
+        "epoch_game_hour": 16962368,
+        "epoch_ordinal": 2,
+        "producer_instance_ids": [
+          "xmap19.weather:r96:e2:c7:p97:primary"
+        ],
+        "selection_seed_words": [
+          673,
+          1250
+        ],
+        "strategic_region_id": 96,
+        "transition_expiry_game_hour": 60763555
+      },
+      "97": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962369,
+        "epoch_ordinal": 3,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 97,
+        "transition_expiry_game_hour": 60763556
+      },
+      "98": {
+        "airborne_runtime_code": 0,
+        "epoch_game_hour": 16962370,
+        "epoch_ordinal": 4,
+        "producer_instance_ids": [],
+        "selection_seed_words": null,
+        "strategic_region_id": 98,
+        "transition_expiry_game_hour": 60763557
+      },
+      "99": {
+        "airborne_runtime_code": 2,
+        "epoch_game_hour": 16962360,
+        "epoch_ordinal": 5,
+        "producer_instance_ids": [
+          "xmap19.weather:r99:e5:c2:p100:primary",
+          "xmap19.weather:r99:e5:c2:p100:fading"
+        ],
+        "selection_seed_words": [
+          694,
+          1289
+        ],
+        "strategic_region_id": 99,
+        "transition_expiry_game_hour": 60763558
+      }
+    },
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "frame_hour": 16963360,
+    "payload_sha256": "37ba8444ca34322e47bc67eb907987cec34e5f9d1793c8e13a21f9519f244cff",
+    "presentation_independent": true,
+    "producer_rva": "0x0166ec50",
+    "schema": "hoi4.weather-visual-lifecycle.a729.v1",
+    "schema_version": 1,
+    "selected_present_authority": false,
+    "source_sequence": 1304
+  },
+  "frame_hour": 16963360
+}

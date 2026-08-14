@@ -221,6 +221,17 @@ pub(crate) struct Wave2Feed {
     pub(crate) xui12_production_lines: Option<(Value, Value)>,
     /// Atomic pair: both halves or neither.
     pub(crate) xui15_trade_catalogue: Option<(Value, Value)>,
+    /// Per-hour, per-carrier reasons a producer that EXISTS had nothing to
+    /// publish this hour.
+    ///
+    /// Deliberately not the carriers' static declarations — those are identical
+    /// in hour 1 and hour 700 and were removed from the wire for exactly that
+    /// reason (see the module docs). A landed producer's absence is different:
+    /// its cause varies hour to hour, and "the census had 41 regions whose
+    /// visual epoch this recorder never witnessed" is not derivable from any
+    /// static string. A `fill` that pushes here is saying something only this
+    /// hour knows.
+    pub(crate) dynamic_refusals: Vec<String>,
 }
 
 impl Wave2Feed {
@@ -278,11 +289,11 @@ pub(crate) struct Wave2Batch {
     pub(crate) root: Vec<(String, Value)>,
     /// Keys destined for the snapshot's `map` object.
     pub(crate) map: Vec<(String, Value)>,
-    /// KEY COLLISIONS only — a scaffold entry that would have overwritten a
-    /// value the fold already emitted. Not the carriers' static declarations:
-    /// see the module docs for why those never reach the per-hour wire.
-    /// Empty on every healthy hour, which is what makes a non-empty one worth
-    /// reading.
+    /// Key collisions — a scaffold entry that would have overwritten a value
+    /// the fold already emitted — plus the per-hour reasons carriers put in
+    /// [`Wave2Feed::dynamic_refusals`]. Still NOT the carriers' static
+    /// declarations: see the module docs for why those never reach the per-hour
+    /// wire.
     pub(crate) refusals: Vec<String>,
 }
 
@@ -293,6 +304,10 @@ pub(crate) struct Wave2Batch {
 /// runs through it.
 pub(crate) fn build_wave2_sidecars(feed: &Wave2Feed) -> Wave2Batch {
     let mut batch = Wave2Batch::default();
+    // Carried straight through: `fill` already decided this hour owes a reason,
+    // and the reasons ride the same vector the key-collision refusals do, which
+    // `merge_root_into_snapshot` files into `provenance.notes`.
+    batch.refusals.extend(feed.dynamic_refusals.iter().cloned());
     for carrier in carriers() {
         let entries: Vec<(String, Value)> = match (carrier.emit)(feed) {
             SidecarEmission::NoKey => Vec::new(),
