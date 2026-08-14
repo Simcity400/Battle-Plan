@@ -2670,10 +2670,20 @@ mod tests {
         // and the copy committed here is SHA-256 pinned by
         // `replay_core::world::world_xmap19_tests::lane_in_joint_certification_fixture_is_admitted`,
         // which panics when it is absent.
+        //
+        // The XUI09 research fixture is the third of that shape. The recorder
+        // mints its bytes by driving the real D13 encoder through the real fold
+        // (`collector/src/attach_log/xui09_joint_certification_tests.rs`, which
+        // fails unless the committed bytes are exactly what the producer
+        // emits), and the copy committed here is SHA-256 pinned by
+        // `game_ui::research_observer`'s
+        // `lane_jo_joint_certification_fixture_is_admitted`, which panics when
+        // it is absent.
         const EXTERNAL_FIXTURES: &[&str] = &[
             "positive/fx_naval_invasion_paradrop_orders.battleplan",
             "xmap17_faction_joint_certification.json",
             "xmap19_weather_visual_lifecycle_joint_certification.json",
+            "xui09_research_joint_certification.json",
         ];
         let mut differences = Vec::new();
         for path in expected.keys().chain(actual.keys()) {

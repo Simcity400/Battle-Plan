@@ -108,3 +108,15 @@ compact_contract = { path = "../compact_contract", features = ["test-support"] }
 # `test-support` mints the matched installed/released receipt pair that
 # `validate_released_standard_receipts` is exercised with. Tests only.
 production_hook_receipt = { path = "../lanes/production_hook_receipt", features = ["test-support"] }
+# Lane JO / gap-map row G4-X9S1: the D13 XUI09 witness crosses the encoder in
+# THIS crate, the fold in `recorder_host` and the read law in
+# `focus_research_decisions_depth_live`, and the collector's test build is the
+# only place all three are visible at once — the lane crate cannot see the
+# encoder (this crate depends on IT) and `recorder_host` cannot see the law
+# (the law's crate depends on IT). A joint certification that used anything but
+# the real encoder or the real fold would certify a transcription.
+#
+# TESTS ONLY, and it introduces no cycle Cargo did not already accept:
+# `recorder_host` dev-depends on this crate, so the edge back is a dev edge,
+# exactly as it already is through `focus_research_decisions_depth_live`.
+recorder_host = { path = "../recorder_host" }

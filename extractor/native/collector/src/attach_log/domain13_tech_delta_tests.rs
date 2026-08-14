@@ -164,7 +164,7 @@ fn research_slot(slot_index: u32, progress_raw: u32, named: bool) -> CountryRese
 /// A bare country row. Local rather than borrowed from the sibling `tests`
 /// module: its constructor is private to that module, and widening it would
 /// couple this file to a file every other lane also edits.
-fn bare_country_row(tag_db_id: u32) -> CountryObjectRow {
+pub(crate) fn bare_country_row(tag_db_id: u32) -> CountryObjectRow {
     CountryObjectRow {
         tag: format!("C{tag_db_id}"),
         tag_db_id,
@@ -194,17 +194,58 @@ fn bare_country_row(tag_db_id: u32) -> CountryObjectRow {
     }
 }
 
+/// The XUI09 witness `tech_row` carries, as a function of the same seed.
+///
+/// Deterministic and DENSE: definition indices `0..n`, classifier states
+/// cycling `1..=6`, and completed membership exactly the state-4 subset. One
+/// seed in seven carries a refusal instead, so both arms of the tail — measured
+/// countries and named refusals — are exercised by every test that builds rows.
+fn tech_witness(seed: u32) -> Result<Arc<CountryTechnologyWitness>, Xui09RefusalReason> {
+    if seed % 7 == 0 {
+        return Err(Xui09RefusalReason::ClassifierEnumOutOfRange);
+    }
+    let count = 1 + seed % 5;
+    let states: Vec<(u32, u8)> = (0..count)
+        .map(|index| (index, 1 + ((seed + index) % 6) as u8))
+        .collect();
+    let completed: Vec<u32> = states
+        .iter()
+        .filter(|(_, state)| *state == 4)
+        .map(|(def_index, _)| *def_index)
+        .collect();
+    Ok(Arc::new(CountryTechnologyWitness { states, completed }))
+}
+
+/// `research.tech_count` for that same seed. The consumer compares it against
+/// the G4 row count, so a row whose witness publishes must agree with it.
+fn tech_witness_completed_count(seed: u32) -> Option<u32> {
+    match tech_witness(seed) {
+        Ok(witness) => Some(witness.completed.len() as u32),
+        Err(_) => (seed % 5 != 0).then_some(seed),
+    }
+}
+
+/// A dictionary covering every definition index `tech_witness` can produce.
+fn test_technology_dictionary() -> TechnologyIdDictionary {
+    TechnologyIdDictionary {
+        by_definition_index: (0..8u32)
+            .map(|index| (index, (0usize, format!("tech_{index}"))))
+            .collect(),
+    }
+}
+
 /// One country whose research block is a deterministic function of `seed`.
 fn tech_row(tag_db_id: u32, seed: u32) -> CountryObjectRow {
     let mut row = bare_country_row(tag_db_id);
     row.research = Some(CountryResearchRow {
-        completed_tech_count: (seed % 5 != 0).then_some(seed),
+        completed_tech_count: tech_witness_completed_count(seed),
         research_slot_count: Some(1 + seed % 3),
         active_research: (seed % 4 != 0).then(|| {
             (0..(seed % 3))
                 .map(|index| research_slot(index, seed * 17 + index, seed % 2 == 0))
                 .collect()
         }),
+        technology_witness: tech_witness(seed),
     });
     row
 }
@@ -278,8 +319,58 @@ fn decode_tech_payload(payload: &[u8]) -> BTreeMap<u32, DecodedBlock> {
             .active_rows
             .push(payload[start..cursor].to_vec());
     }
+    cursor = skip_xui09_tail(payload, cursor);
     assert_eq!(cursor, payload.len(), "the payload has trailing bytes");
     live
+}
+
+/// This file's own decoder for the XUI09 tail, walked field by field so the
+/// trailing-byte assertion above keeps meaning what it meant: that every byte
+/// D13 emits is a byte some section claims. A tail skipped by a length word
+/// would satisfy that assertion while hiding a mis-sized section inside it, so
+/// nothing here reads a length it did not compute from the counts.
+fn skip_xui09_tail(payload: &[u8], mut cursor: usize) -> usize {
+    if cursor == payload.len() {
+        return cursor;
+    }
+    let read_u32 = |at: usize| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
+    assert_eq!(
+        read_u32(cursor),
+        COMPACT_TECH_XUI09_TAIL_MAGIC,
+        "trailing bytes that are not an XUI09 tail"
+    );
+    let flags = read_u32(cursor + 4);
+    assert_eq!(
+        flags & !COMPACT_TECH_XUI09_KNOWN_FLAGS,
+        0,
+        "the XUI09 tail carries an unassigned flag"
+    );
+    let dictionary_count = read_u32(cursor + 8) as usize;
+    let measured_count = read_u32(cursor + 12) as usize;
+    let refused_count = read_u32(cursor + 16) as usize;
+    let vector_count = read_u32(cursor + 20) as usize;
+    cursor += 24;
+    for _ in 0..dictionary_count {
+        cursor += 4;
+        let len = u16::from_le_bytes(payload[cursor..cursor + 2].try_into().unwrap()) as usize;
+        assert!(len > 0, "an XUI09 dictionary entry carries an empty id");
+        cursor += 2 + len;
+    }
+    cursor += measured_count * 4;
+    cursor += refused_count * 8;
+    for _ in 0..vector_count {
+        let country_flags = read_u32(cursor + 4);
+        assert_eq!(
+            country_flags & !COMPACT_TECH_XUI09_COUNTRY_KNOWN_FLAGS,
+            0,
+            "an XUI09 country vector carries an unassigned flag"
+        );
+        let state_count = read_u32(cursor + 8) as usize;
+        let completed_count = read_u32(cursor + 12) as usize;
+        let dense = country_flags & COMPACT_TECH_XUI09_COUNTRY_FLAG_DENSE != 0;
+        cursor += 16 + state_count * if dense { 1 } else { 5 } + completed_count * 4;
+    }
+    cursor
 }
 
 // ---------------------------------------------------------------------
@@ -291,6 +382,15 @@ fn decode_tech_payload(payload: &[u8]) -> BTreeMap<u32, DecodedBlock> {
 /// `append_compact_tech_active_slot_row` or
 /// `compact_tech_payload_from_blocks`. The frozen copy above is what those
 /// three have to keep agreeing with.
+///
+/// The XUI09 tail is asserted as a SUFFIX rather than merged into the frozen
+/// copy, and that is the point of the shape: the frozen builder is the old code
+/// and nothing may edit it, so the claim it still supports is the exact one it
+/// always made — every byte of the country and active sections is where it was
+/// — while the second assertion says the only thing after them is a
+/// well-formed XUI09 tail that ends where the payload does. A tail that
+/// displaced or padded an existing section fails the first; anything else
+/// appended fails the second.
 #[test]
 fn the_block_serialiser_is_byte_identical_to_the_payload_builder_it_replaced() {
     for frame in 0..40u32 {
@@ -304,10 +404,18 @@ fn the_block_serialiser_is_byte_identical_to_the_payload_builder_it_replaced() {
             })
             .collect();
         let status = if frame % 3 == 0 { 0 } else { 1 << 20 };
+        let produced =
+            compact_tech_data_payload(&rows, frame as u64, status, &test_technology_dictionary());
+        let frozen = frozen_tech_data_payload(&rows, frame as u64, status);
         assert_eq!(
-            compact_tech_data_payload(&rows, frame as u64, status),
-            frozen_tech_data_payload(&rows, frame as u64, status),
+            &produced[..frozen.len()],
+            &frozen[..],
             "frame {frame}: the block serialiser and the builder it replaced disagree"
+        );
+        assert_eq!(
+            skip_xui09_tail(&produced, frozen.len()),
+            produced.len(),
+            "frame {frame}: the bytes after the frozen sections are not exactly an XUI09 tail"
         );
     }
 }
@@ -381,8 +489,8 @@ fn a_patch_folds_to_the_same_world_as_the_whole_payload_every_frame() {
             let seed = if roll < 60 { tag } else { tag + frame };
             rows.push(tech_row(tag, seed));
         }
-        let patched = compact_tech_data_payload_delta(&rows, frame as u64, 0, &mut tracker);
-        let whole = compact_tech_data_payload(&rows, frame as u64, 0);
+        let patched = compact_tech_data_payload_delta(&rows, frame as u64, 0, &mut tracker, &test_technology_dictionary());
+        let whole = compact_tech_data_payload(&rows, frame as u64, 0, &test_technology_dictionary());
         if u32::from_le_bytes(patched[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA != 0
         {
             patches += 1;
@@ -421,6 +529,7 @@ fn an_unmeasured_country_is_neither_emitted_nor_removed() {
         0,
         0,
         &mut tracker,
+        &test_technology_dictionary(),
     );
     assert_eq!(
         decode_tech_payload(&seeded).len(),
@@ -434,6 +543,7 @@ fn an_unmeasured_country_is_neither_emitted_nor_removed() {
         1,
         0,
         &mut tracker,
+        &test_technology_dictionary(),
     );
     assert_ne!(
         u32::from_le_bytes(patched[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA,
@@ -453,6 +563,7 @@ fn an_unmeasured_country_is_neither_emitted_nor_removed() {
         2,
         0,
         &mut tracker,
+        &test_technology_dictionary(),
     );
     assert!(
         decode_tech_payload(&again).is_empty(),
@@ -476,11 +587,12 @@ fn a_key_leaving_the_roster_forces_a_whole_payload_and_re_seeds() {
         0,
         0,
         &mut tracker,
+        &test_technology_dictionary(),
     );
 
     // Country 3 is gone from the roster entirely — not present-and-unmeasured.
     let payload =
-        compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 1, 0, &mut tracker);
+        compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 1, 0, &mut tracker, &test_technology_dictionary());
     assert_eq!(
         u32::from_le_bytes(payload[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA,
         0,
@@ -510,7 +622,7 @@ fn a_key_leaving_the_roster_forces_a_whole_payload_and_re_seeds() {
 #[test]
 fn a_repeated_key_forces_a_whole_payload_instead_of_an_inconsistent_patch() {
     let mut tracker = CompactTechCountryDeltaTracker::default();
-    let _ = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 0, 0, &mut tracker);
+    let _ = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 0, 0, &mut tracker, &test_technology_dictionary());
 
     // The exact ordering the shared engine cannot represent: the FIRST
     // occurrence differs from the pin, the LAST equals it.
@@ -519,6 +631,7 @@ fn a_repeated_key_forces_a_whole_payload_instead_of_an_inconsistent_patch() {
         1,
         0,
         &mut tracker,
+        &test_technology_dictionary(),
     );
     assert_eq!(
         u32::from_le_bytes(payload[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA,
@@ -545,7 +658,7 @@ fn a_repeated_key_forces_a_whole_payload_instead_of_an_inconsistent_patch() {
 #[test]
 fn a_withheld_baseline_emits_whole_and_unseeds_the_pin() {
     let mut tracker = CompactTechCountryDeltaTracker::default();
-    let _ = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 0, 0, &mut tracker);
+    let _ = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 0, 0, &mut tracker, &test_technology_dictionary());
     assert!(tracker.baseline_seeded, "the first clean read seeds the pin");
 
     // A torn read that reached only one country.
@@ -554,6 +667,7 @@ fn a_withheld_baseline_emits_whole_and_unseeds_the_pin() {
         1,
         COMPACT_STATUS_PARTIAL_DATA,
         &mut tracker,
+        &test_technology_dictionary(),
     );
     assert_eq!(
         decode_tech_payload(&torn).len(),
@@ -568,7 +682,7 @@ fn a_withheld_baseline_emits_whole_and_unseeds_the_pin() {
     assert!(!tracker.baseline_seeded, "the pin is dropped, not advanced");
 
     // The next clean frame must therefore be a whole payload again.
-    let after = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 2, 0, &mut tracker);
+    let after = compact_tech_data_payload_delta(&[tech_row(1, 1), tech_row(2, 2)], 2, 0, &mut tracker, &test_technology_dictionary());
     assert_eq!(
         decode_tech_payload(&after).len(),
         2,
@@ -619,7 +733,7 @@ fn d13_tech_delta_bench() {
         .collect();
 
     let mut tracker = CompactTechCountryDeltaTracker::default();
-    let _ = compact_tech_data_payload_delta(&seed_rows, 0, 0, &mut tracker);
+    let _ = compact_tech_data_payload_delta(&seed_rows, 0, 0, &mut tracker, &test_technology_dictionary());
 
     let mut whole_best = Duration::from_secs(3600);
     let mut patch_best = Duration::from_secs(3600);
@@ -627,15 +741,15 @@ fn d13_tech_delta_bench() {
     let mut patch_bytes = 0usize;
     for _ in 0..D13_BENCH_TRIALS {
         let started = Instant::now();
-        let whole = compact_tech_data_payload(&frame_rows, 0, 0);
+        let whole = compact_tech_data_payload(&frame_rows, 0, 0, &test_technology_dictionary());
         whole_best = whole_best.min(started.elapsed());
         whole_bytes = whole.len();
 
         // A fresh pin each trial, so every trial times the same work.
         let mut trial_tracker = CompactTechCountryDeltaTracker::default();
-        let _ = compact_tech_data_payload_delta(&seed_rows, 0, 0, &mut trial_tracker);
+        let _ = compact_tech_data_payload_delta(&seed_rows, 0, 0, &mut trial_tracker, &test_technology_dictionary());
         let started = Instant::now();
-        let patch = compact_tech_data_payload_delta(&frame_rows, 0, 0, &mut trial_tracker);
+        let patch = compact_tech_data_payload_delta(&frame_rows, 0, 0, &mut trial_tracker, &test_technology_dictionary());
         patch_best = patch_best.min(started.elapsed());
         patch_bytes = patch.len();
     }
@@ -655,14 +769,14 @@ fn d13_tech_delta_bench() {
 #[test]
 fn the_seed_is_whole_and_every_later_clean_frame_announces_itself_as_a_patch() {
     let mut tracker = CompactTechCountryDeltaTracker::default();
-    let seed = compact_tech_data_payload_delta(&[tech_row(1, 1)], 0, 0, &mut tracker);
+    let seed = compact_tech_data_payload_delta(&[tech_row(1, 1)], 0, 0, &mut tracker, &test_technology_dictionary());
     assert_eq!(
         u32::from_le_bytes(seed[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA,
         0,
         "the seeding keyframe must not carry DELTA_DATA"
     );
     for frame in 1..5u64 {
-        let patch = compact_tech_data_payload_delta(&[tech_row(1, 1)], frame, 0, &mut tracker);
+        let patch = compact_tech_data_payload_delta(&[tech_row(1, 1)], frame, 0, &mut tracker, &test_technology_dictionary());
         assert_ne!(
             u32::from_le_bytes(patch[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA,
             0,
