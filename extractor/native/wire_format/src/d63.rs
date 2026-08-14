@@ -1,8 +1,8 @@
 //! d63 `country_core_scalars_live` — per-country core scalars.
 //!
-//! Derived from `world_fold.rs:12045`-`:12264`
+//! Derived from `world_fold.rs:12140`-`:12359`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
-// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=12045-12264 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=858c437da702f1a8a56cf478d63a59de83ff42a2104d63beebf98f84784f14ad
+// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=12140-12359 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=2ea3b7bc3e7a84db5443f20c62fd891adee09bd0f6fda2e2b6f853bf28d64d9e
 //! collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
 //! `extractor/documents/domains/d63_country_core_scalars_live.md` carries no

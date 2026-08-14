@@ -1,9 +1,9 @@
 //! d56 `naval_missions_status_live` — per-task-force naval mission status, plus
 //! the per-strategic-region naval-supremacy sidecar.
 //!
-//! Derived from `world_fold.rs:27458`-`:27565`
+//! Derived from `world_fold.rs:27553`-`:27660`
 //! (`fold_naval_missions_status`, dispatched at `:4723`), the row grammar in
-// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=27458-27565 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=8319393cdccae0634dcc3c1842ab75fe970d78796a97c56b7eca40c23f0c9478
+// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=27553-27660 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=3c60af93833aca64a53affbdd7d2be1afa46a4c0b1eb0afd2d5764934ef60f3d
 //! `extractor/native/lanes/naval_missions_status_live/src/domain56_compact.rs`
 //! (authority #2 for offsets, bounds and scales), and the collector read that
 //! produces the presence flags,

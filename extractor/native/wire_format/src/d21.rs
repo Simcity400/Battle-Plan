@@ -1,9 +1,9 @@
 //! d21 `land_combats_live`: the full active land-combat snapshot.
 //!
 //! This boundary is derived from the shipping fold in
-//! `world_fold.rs:24380`-`:24592` and the producer in
+//! `world_fold.rs:24475`-`:24687` and the producer in
 //! `collector/src/attach_log.rs:72387`-`:72454`.
-// @world-fold-authority domain=21 functions=fold_land_combats lines=24380-24592 sha256=cd94977bbb5bee1cd0b1fb6001ac319db09a380501e96c72e692450810e45787 closure=f229d457b4b0d0c7418b81ee2a08e36b79e34b7f24677de4ea73bd8b28db60f7
+// @world-fold-authority domain=21 functions=fold_land_combats lines=24475-24687 sha256=cd94977bbb5bee1cd0b1fb6001ac319db09a380501e96c72e692450810e45787 closure=efdbf3e9415c9424bbfc4139df81158212fbd2d5b4c16debcb7c81c481badb4c
 //!
 //! The shipping order is significant: the fold validates the 32-byte header,
 //! reserved word, and exact payload length before consulting `status_flags`.
