@@ -32778,6 +32778,86 @@ fn d95_excluding_the_only_surface_a_carrier_had_refuses_the_record() {
     );
 }
 
+/// The air-wing partition is a REFUSAL, and it must stay one on the wire even
+/// on the happiest hour this domain can have: both surfaces flagged, both dated
+/// to the record, rows present in each.
+///
+/// Lane IZ ran the search for a per-POV MAP-SPOTTED wing surface on exact a729
+/// air/wing map-icon family in the image, and the only air map icon is a
+/// per-province building icon that never reaches the intel getter. The one
+/// air-visibility path that does exist decides visibility once per COUNTRY, so
+/// it cannot yield a per-unit intel byte at all, and its enumeration sums a
+/// per-wing scalar into keyed totals carrying no identity pair: it answers a
+/// different question at a different granularity and cannot supply per-unit rows
+/// (`runs/iz_gp_u14/DOSSIER_GP_U14_wing_visibility.md`, section 5). So `wings`
+/// is `null` and `air_wings_available` is `false` because that is what the
+/// engine measured, and the shipping consumer refuses the hour outright if
+/// either moves: `replay_core/src/world.rs::parse_exact_spu1` answers
+/// "SPU1 air-wing rows must be unavailable" for a non-null wing surface and
+/// "SPU1 exact authority envelope mismatch" for a flag that is not `false`.
+///
+/// Before this test the whole extractor tree mentioned `air_wings_available`
+/// exactly once -- at its emission site -- so nothing producer-side held it.
+/// A flip would have shipped and only surfaced later, in a replay of an
+/// already-recorded capture.
+///
+/// What production change would make this fail: emitting `json!([])` instead of
+/// `Value::Null` for `wings` (the plausible "fill the declared-empty partition"
+/// edit, which claims a measured-empty surface nobody measured); flipping
+/// `air_wings_available` to `true`; or dropping either key from
+/// `build_pov_visibility_value` altogether. Each is a seam break, and each is
+/// caught here rather than at replay.
+#[test]
+fn d95_the_wing_partition_stays_a_named_refusal_on_a_fully_measured_hour() {
+    let snapshot = pov_snapshot(vec![
+        (94, pov_visibility_payload(Some(POV_TEST_RECORD_HOUR))),
+        (
+            95,
+            pov_spotted_payload(Some(POV_TEST_RECORD_HOUR), Some(POV_TEST_RECORD_HOUR)),
+        ),
+    ]);
+    let pov = &snapshot["visibility"]["povs"]["GER"]["spotted_units"];
+    // The premise: this is the measured hour, not a degraded one.
+    assert_eq!(
+        pov["land"][0]["stable_id"],
+        json!(40),
+        "premise: the land surface was measured this hour"
+    );
+    assert_eq!(
+        pov["taskforces"][0]["stable_id"],
+        json!(50),
+        "premise: the task-force surface was measured this hour"
+    );
+
+    assert!(
+        pov.as_object()
+            .expect("spotted_units is an object")
+            .contains_key("wings"),
+        "the partition is DECLARED -- dropping the key would leave a consumer \
+         unable to tell refusal from a recorder that never heard of wings"
+    );
+    assert_eq!(
+        pov["wings"],
+        Value::Null,
+        "no engine surface backs a wing row, so the partition is refused, never \
+         an empty measured collection"
+    );
+
+    let spotted_authority = &snapshot["visibility"]["authority"]["unit_spotting_authority"];
+    assert_eq!(
+        spotted_authority["land_frame_complete"],
+        json!(true),
+        "premise: the authority agrees both surfaces are complete"
+    );
+    assert_eq!(spotted_authority["taskforce_frame_complete"], json!(true));
+    assert_eq!(
+        spotted_authority["air_wings_available"],
+        json!(false),
+        "the authority half of the refusal is a measured a729 fact, and the \
+         XMAP05 consumer pins it exactly"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // d86/SHP1 carries the hour its PRODUCER sealed the history in, and the fold
 // has to attribute the claim by that hour rather than by the hour it drained
