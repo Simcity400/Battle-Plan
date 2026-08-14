@@ -1,82 +1,74 @@
 # Agent guidance
 
-This file changes only with the owner's permission.
+Changes only with the owner's permission.
 
-## Goals
+## Goal
 
-Perfect clean captures, small recordings, straight into replay, minimal
-performance hit. A bad hour costs that hour with a named reason — never the
-recording.
+Perfect clean captures, small, straight into replay, minimal perf hit.
+A bad hour costs that hour, with a named reason — never the recording.
 
 ## Rules
 
-- Never make the game wait, for anything.
-- Capture is attach-and-play. Nobody interacts with the client to help the
-  recorder. Find where data lives by reverse engineering and read it
-  passively; if that's impossible, derive it at replay or refuse it with a
-  named reason.
-- Fail closed: unproven values are refused, named. Never publish data under
-  the wrong hour.
-- No hardcoded game content. Constants and caps need proof. Mods must work.
-- Assume max game speed and a modest 4-core machine.
-- No backwards compatibility yet; delete replaced code in the same change,
-  with proof it's dead.
-- Fix what you find. Leave something open only if it needs the owner, a live
-  game, or belongs to someone else's active work.
-- Do your own work; the only child agent allowed is one read-only reviewer,
-  after the work is done. Re-review after every fix until it approves clean.
-- Report once, when finished, leading with the deciding numbers. Reviewers
-  get raw evidence, not summaries.
-- Clean up after yourself: worktree, branch, build output, temp files.
-- Never git stash. Check against origin before pushing.
-- Generated runtime inputs (e.g. extractor/game_defs/out) are not debris: a
-  purge must prove the regeneration path first.
-- Any committed hash-pinned file needs a .gitattributes `text eol=lf` line.
+- Never make the game wait.
+- Attach-and-play: find data by RE and read it passively; else derive at
+  replay or refuse it, named.
+- Fail closed. No hardcoded game content. Mods must work.
+- Assume max game speed on a modest 4-core machine.
+- No backwards compat: delete replaced code in the same change, prove it dead.
+- Fix what you find. Leave open only what needs the owner, a live game, or
+  someone else's active work.
+- One child agent only: the Codex reviewer below, after the work. Re-review
+  every fix until it approves clean.
+- Report once, numbers first. Reviewers get raw evidence, not summaries.
+- Clean up your worktree, branch, build output, temp files. Never stash.
+- Generated runtime inputs are not debris: prove regeneration before purging.
+- Hash-pinned committed files need `.gitattributes` `text eol=lf`.
 
 ## Tools
 
-- Validation: run **your own checkout's**
-  `extractor\native\scripts\Invoke-CentralRustValidation.ps1` (`-Mode Final
-  -Workspace All` for the full battery; narrower modes exist). One runner at
-  a time. Always capture the exit code itself.
-- Ghidra (static) and `hoi4_re` (live) are read-only authorities — check
-  status first, search before exporting, record what you conclude. Guides:
-  `replay_interface/tools/ghidra/README.md`, `replay_interface/tools/hoi4_re/README.md`.
-- Evidence goes in `extractor/native/runs/<your-run>/`, append-only.
+- Validation: your own checkout's
+  `extractor\native\scripts\Invoke-CentralRustValidation.ps1`; capture the exit code.
+- Ghidra and `hoi4_re` are read-only authorities (READMEs under `replay_interface/tools/`).
+- Evidence: `extractor/native/runs/<run>/`, append-only.
+
+## Codex reviewer
+
+`codex` is on the Bash PATH. Every call, exactly:
+
+```bash
+OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
+printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_policy=never \
+  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=high -o "$OUT" - > "$AJ"
+```
+
+- Flags are mandatory as written. Never `--ephemeral`, never `resume --last`,
+  never `service_tier=priority`, never a sandboxed `-s` mode (broken on this
+  machine). Use `mktemp` for `-o` — a hand-written path with brackets is eaten
+  by bash as a redirection.
+- Persist the `thread_id` (first line of `$AJ`) to your run dir immediately.
+- The reply is `$OUT`, never stdout. Success = exit 0 AND non-empty `$OUT`.
+  Retry once — except on usage-limit/credit signatures (check `$OUT`, stderr,
+  and the final `$AJ` events, not substrings mid-stream): queue the thread id
+  and resume it after limits reset instead of retrying.
+- Resume by id only: `codex exec -s danger-full-access resume "$TID" …`
+  (`-s` sits before `resume`; same model/effort flags).
+- Codex has no project memory: the prompt carries the full context, the closed
+  defect class, an out-of-scope list, raw evidence paths, and "this job is
+  read-only — do not modify files". Feed it via stdin with a trailing `-`.
+  Forbid it from consulting any machine-wide memory store.
+- Wait in-turn for the call — ending your turn kills the child. One fix round
+  per review; if the re-review still finds defects, fix the rest yourself.
+  Any commit after an APPROVE needs one more confirmation round.
 
 ## Orchestration
 
-For whoever runs the workflow. Nothing durable lives only in a session's
-memory — if a future orchestrator needs it, it goes here.
-
-- Work runs in parallel worker agents ("lanes"), each in its own worktree
-  under `.claude/worktrees/` with its own branch and build dir. The
-  orchestrator briefs, verifies, merges, pushes — never implements.
-- A lane's brief must carry everything: full context, acceptance bar, the
-  worktree as the only writable area, pointers to this file and to raw
-  evidence, the reviewer protocol, and the residual rule.
-- Reviewer is Codex CLI (protocol: `C:\Users\Example\.claude\CODEX_PROTOCOL.md`):
-  `codex exec --json -s danger-full-access -c approval_policy=never
-  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=high -o <file>`.
-  Never `--ephemeral`, never `resume --last`, never the priority tier. Persist
-  thread ids immediately; resume by id with flags before `resume`; read the
-  `-o` file, require exit 0 and non-empty.
-- Landing a finished lane: verify its approval and diff yourself → merge
-  `--no-ff` → if `world_fold.rs` or docs changed, run
-  `restamp_world_fold_citations.py` then `restamp_citation_allowance.py` then
-  both verify scripts, all green → run the touched crates through validation
-  on the merged tree, read the exit code in its own step → push integration
-  and `HEAD:master` together after comparing origin → remove worktree, delete
-  branch → update the ledger. Citation-marker merge conflicts: take the
-  current-tree line numbers, restamp.
-- A gate idle 15+ minutes is one of: the serialized validation mutex (wait);
-  orphaned cargo processes holding the build-dir file lock (old, ~0 CPU, no
-  compiler children — kill by specific PID, never by name); or a hung test
-  binary (kill it, re-run that test isolated). Sweep for stale processes
-  before every landing gate.
-- If an agent can't be resumed but its transcript exists, its work is safe in
-  its worktree: launch a replacement that adopts the same worktree and
-  branch, reconstructs state from the run dir and git, resumes the same
-  reviewer thread, and finishes to the same bar.
-- Batch owner questions; ask with options and a recommendation. Perfect
-  capture outranks recording size.
+- Lanes run in worktrees under `.claude/worktrees/`, own branch and build dir,
+  locked with a start commit. A brief carries full context, the acceptance
+  bar, the worktree as the only writable area, and this file.
+- Orchestrator: verify approval and diff yourself, merge `--no-ff`, restamp
+  citations if world_fold or docs changed, validate touched crates, push
+  master, remove worktree + branch.
+- Gate stuck 15+ min: mutex wait, orphaned cargo (kill by PID, never name),
+  or hung test binary.
+- Dead agent with a transcript: adopt its worktree, resume its reviewer thread.
+- Batch owner questions; give options and a recommendation.
