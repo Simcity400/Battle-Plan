@@ -8,7 +8,7 @@ Perfect clean captures, small, straight into replay, minimal perf hit.
 A bad hour costs that hour, with a named reason — never the recording.
 
 ## Rules
-
+- When asking questions to the owner, do not use any jargon and be concise; just make things very simple for them to      understand and explain how the change would affect the end users UX, if at all.
 - Never make the game wait.
 - Attach-and-play: find data by RE and read it passively; else derive at
   replay or refuse it, named.
