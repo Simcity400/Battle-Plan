@@ -158,8 +158,13 @@ $readOnlyGameStateWitness = Join-Path $PSScriptRoot "Read-Hoi4GameState.ps1"
 $passiveCaptureLifecycle = Join-Path $PSScriptRoot "PassiveCapture.Lifecycle.ps1"
 $interactionClosureHelper = Join-Path $PSScriptRoot "PortableProduct.InteractionClosure.ps1"
 $productionCapturePromotionHelper = Join-Path $PSScriptRoot "ProductionCapture.Promotion.ps1"
+# The serial/parallel partition authority. See its header for why the battery is
+# split at all and why the split is derived from the source rather than listed.
+$batteryPartitionHelper = Join-Path $PSScriptRoot "BatteryPartition.ps1"
+$batteryPartitionTests = Join-Path $PSScriptRoot "Test-BatteryPartition.ps1"
 . $interactionClosureHelper
 . $productionCapturePromotionHelper
+. $batteryPartitionHelper
 $productionSourceCapabilityPaths = [ordered]@{
     recorder_host_cargo_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\Cargo.toml'
     recorder_host_main_sha256 = Join-Path $repoRoot 'extractor\native\recorder_host\src\main.rs'
@@ -221,6 +226,12 @@ public static class PortableReceiptPublishNative {
 '@
 $mutex = [Threading.Mutex]::new($false, "Local\battle_plan_central_rust_validation")
 $ownsMutex = $false
+# The parallel half's core budget. See Enter-CentralValidationParallelSlot.
+$parallelSlotMutexes = @()
+$parallelSlotIndex = -1
+# Work that Final defers until it holds the machine-wide mutex, in the order it
+# was queued. Each entry is @{ Describe = <string>; Action = <scriptblock> }.
+$serialPhaseActions = [System.Collections.Generic.List[object]]::new()
 $releaseInputDigestBefore = $null
 $releaseBuildEnvironmentBefore = $null
 $releaseArtifactFreshness = $null
@@ -296,6 +307,74 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Program exited with code $LASTEXITCODE"
     }
+}
+
+function Invoke-CheckedNextestWithCensus {
+    <#
+    .SYNOPSIS
+    Run a `cargo nextest` selection, having first proved it selects tests.
+
+    .DESCRIPTION
+    Used for the SERIAL half only, and it exists for one defect: a serial
+    filterset that matches nothing. nextest exits ZERO for a filterset that
+    selects no tests -- correctly, there is nothing to fail -- so a partition
+    that stopped naming the machine-serial packages would produce a battery
+    that compiled them, ran them nowhere, and reported green. The parallel half
+    needs no such check: it is the complement, so if the serial half is
+    non-empty the parallel half was selected from a real set too.
+
+    The count comes from a `nextest list` of the SAME selection, whose JSON goes
+    to stdout, rather than from parsing the run's own summary. That is not a
+    stylistic choice. Capturing a native command's output in PowerShell 5.1
+    requires `2>&1`, which wraps every stderr line in an ErrorRecord, and under
+    this script's `$ErrorActionPreference = "Stop"` the FIRST cargo warning then
+    terminates the run. The earlier spelling did exactly that: it died on
+    cargo's pre-existing "src\main.rs found to be present in multiple build
+    targets" warning before a single serial test executed. Nothing else in this
+    file captures a cargo invocation, and now nothing does.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string[]]$ListArguments,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    # The list arguments are passed in rather than derived from the run's by
+    # swapping `run` for `list`: `--no-fail-fast` and `--timings` are run-only
+    # and nextest exits 2 on them, which the derived spelling turned into "this
+    # selection could not be listed" for every healthy run.
+    #
+    # No 2>&1: cargo's stderr goes to the console, where it belongs, and only
+    # stdout -- the JSON -- is captured.
+    $listJson = & cargo @ListArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Context could not be listed: cargo exited with code $LASTEXITCODE"
+    }
+    $listed = ($listJson | Out-String) | ConvertFrom-Json
+    $count = 0
+    foreach ($suite in $listed.'rust-suites'.PSObject.Properties) {
+        $cases = $suite.Value.testcases
+        if ($null -eq $cases) { continue }
+        foreach ($case in $cases.PSObject.Properties) {
+            # The JSON listing carries EVERY test in a selected binary and marks
+            # each with whether the filterset matched it; only the text listing
+            # prunes. Counting the properties alone reported 55 selected for a
+            # filterset that then ran 0, which is precisely the reading this
+            # check exists to refuse.
+            if ([string]$case.Value.'filter-match'.status -ceq 'matches') {
+                $count++
+            }
+        }
+    }
+    if ($count -le 0) {
+        throw (
+            "$Context selected ZERO tests. That is not a pass: the battery " +
+            'compiled the machine-serial packages and then ran none of them ' +
+            'under the mutex, so its seal would cover only the parallel half.'
+        )
+    }
+    Write-Host ("{0}: {1} machine-serial tests selected; running them under the mutex." -f $Context, $count)
+    Invoke-Checked -Program 'cargo' -Arguments $Arguments
 }
 
 function Get-RequiredReceiptField {
@@ -840,10 +919,196 @@ function Remove-ReleasePromotionState {
     }
 }
 
+function Get-CentralValidationParallelSlotCount {
+    <#
+    .SYNOPSIS
+    How many battery PARALLEL halves this machine may run at once.
+
+    .DESCRIPTION
+    The parallel half is not free of contention, it is free of CORRECTNESS
+    contention: two of them still want every core the machine has. Left
+    uncapped, N lanes finishing at once would each ask nextest for
+    ProcessorCount test threads and each ask cargo for ProcessorCount build
+    jobs, and the machine would spend its time context-switching.
+
+    The cap is on CONCURRENT BATTERIES, not on threads per battery, and that is
+    deliberate. Dividing the thread count instead would make the single-lane
+    case -- by far the common one -- several times slower than it is today in
+    exchange for a contention that is not happening. One slot per 8 logical
+    processors keeps worst-case oversubscription at about 2x, which the
+    scheduler absorbs, and leaves a lone battery exactly as fast as before.
+
+    A machine with fewer than 16 processors gets one slot, which means its
+    parallel halves serialize against each other -- still a strict improvement,
+    because they no longer serialize against anyone's SERIAL half or compile.
+    #>
+    return [int][Math]::Max(1, [Math]::Floor([Environment]::ProcessorCount / 8))
+}
+
+function Enter-CentralValidationParallelSlot {
+    <#
+    .SYNOPSIS
+    Take one of the machine's parallel-half slots, waiting for one if need be.
+
+    .DESCRIPTION
+    Slots are named MUTEXES rather than a named semaphore on purpose. A
+    semaphore whose owner is killed -- and a wedged battery does get killed,
+    that is written into the orchestration guidance -- never gives its count
+    back, so the machine would quietly lose a slot per kill until the session
+    ended. An abandoned mutex is handed to the next waiter by the OS, so a
+    killed battery costs nothing.
+
+    The wait is a POLL rather than `WaitHandle::WaitAny`, which throws
+    NotSupportedException for more than one handle on an STA thread -- and
+    powershell.exe's console host is STA. Polling a handful of handles every two
+    seconds is free at this granularity, and it makes the apartment state of
+    whatever shell invoked this script stop mattering.
+    #>
+    param([Parameter(Mandatory = $true)][Threading.Mutex[]]$Slots)
+
+    $deadline = (Get-Date).AddMinutes(90)
+    while ($true) {
+        for ($index = 0; $index -lt $Slots.Count; $index++) {
+            $taken = $false
+            try {
+                $taken = $Slots[$index].WaitOne(0)
+            }
+            catch [Threading.AbandonedMutexException] {
+                # The previous holder was killed. The slot is ours, and saying
+                # so is the point: a silent catch here would hide a wedged
+                # battery from the operator reading this log.
+                Write-Host (
+                    'Battery parallel slot {0} was abandoned by a killed run and has been reclaimed.' -f $index
+                )
+                $taken = $true
+            }
+            if ($taken) {
+                return $index
+            }
+        }
+        if ((Get-Date) -ge $deadline) {
+            throw (
+                'Another centralized Rust validation process is already active. ' +
+                'No battery parallel slot became free within 90 minutes.'
+            )
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
+function Enter-CentralValidationSerialPhase {
+    <#
+    .SYNOPSIS
+    Take the machine-wide mutex for the serial half, waiting rather than failing.
+
+    .DESCRIPTION
+    A split battery has already paid for its compile and its parallel tests by
+    the time it gets here, so refusing instantly -- which is right for a caller
+    that has done no work yet -- would throw all of that away and send the lane
+    round its retry loop from the beginning. It waits instead.
+
+    On expiry it throws with the SAME sentence the instant refusal uses, because
+    every lane's gate runner greps for exactly that text to tell "someone else
+    has the machine" apart from "the battery is red".
+    #>
+    param([Parameter(Mandatory = $true)][Threading.Mutex]$Mutex)
+
+    $acquired = $false
+    try {
+        $acquired = $Mutex.WaitOne([TimeSpan]::FromMinutes(90))
+    }
+    catch [Threading.AbandonedMutexException] {
+        Write-Host 'The central validation mutex was abandoned by a killed run and has been reclaimed.'
+        $acquired = $true
+    }
+    if (-not $acquired) {
+        throw (
+            'Another centralized Rust validation process is already active. ' +
+            'The serial half of this battery waited 90 minutes for it.'
+        )
+    }
+    return $true
+}
+
+function Add-SerialPhaseAction {
+    param(
+        [Parameter(Mandatory = $true)][string]$Describe,
+        [Parameter(Mandatory = $true)][scriptblock]$Action
+    )
+    $serialPhaseActions.Add([ordered]@{ Describe = $Describe; Action = $Action })
+}
+
+function Get-CargoRootPackages {
+    <#
+    .SYNOPSIS
+    The package names a cargo root's `--workspace` selection covers.
+
+    .DESCRIPTION
+    `--no-deps` is what makes this the WORKSPACE MEMBERS rather than the whole
+    dependency graph, and `--offline` keeps a gate from reaching the network.
+    Used for two things: scoping a filterset to names that exist in this root
+    (nextest refuses a filterset naming a package it cannot see), and the
+    fail-closed reconciliation against the partition scan.
+    #>
+    param([Parameter(Mandatory = $true)][string]$CargoRoot)
+
+    Push-Location $CargoRoot
+    try {
+        $json = & cargo metadata --no-deps --format-version 1 --offline 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo metadata failed in $CargoRoot; the battery partition cannot be scoped to it."
+        }
+        $metadata = ($json | Out-String) | ConvertFrom-Json
+        return @($metadata.packages | ForEach-Object { [string]$_.name } | Sort-Object -Unique)
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 try {
-    $ownsMutex = $mutex.WaitOne(0)
-    if (-not $ownsMutex) {
-        throw "Another centralized Rust validation process is already active."
+    # WHY THIS IS NOT ALWAYS THE INSTANT REFUSAL ANY MORE
+    #
+    # The machine-wide mutex used to cover the entire run, so a lane waiting for
+    # the battery was waiting for every other lane's COMPILE as well -- into a
+    # build directory that is private to each worktree and could never have
+    # conflicted. Lanes routinely burned eight or more 45-second retries against
+    # that. `Final` therefore splits: everything the partition clears runs with
+    # no mutex at all, and only the machine-serial half takes it.
+    #
+    # The split is refused for a NARROWED Final (-Package or -FilterExpression)
+    # for the same reason the release detour-identity gate refuses one: those
+    # runs select their own test set, and intersecting a caller's filterset with
+    # the partition's is a second place the selection could be got wrong for no
+    # gain -- a narrowed Final is short anyway. Every other mode keeps the whole
+    # run under the mutex, unchanged, so the mutex remains the one gate that
+    # anything serial passes through.
+    $splitBattery = ($Mode -eq 'Final' -and
+        $Package.Count -eq 0 -and
+        [string]::IsNullOrWhiteSpace($FilterExpression))
+    $batteryPartition = $null
+
+    if ($splitBattery) {
+        # Computed BEFORE any slot is taken: a partition that cannot be derived
+        # is a refusal, not a battery that runs everything in one half.
+        $batteryPartition = Get-BatteryPartition -RepoRoot $repoRoot
+        Write-BatteryPartitionSummary -Partition $batteryPartition
+        $slotCount = Get-CentralValidationParallelSlotCount
+        $parallelSlotMutexes = @(0..($slotCount - 1) | ForEach-Object {
+                [Threading.Mutex]::new($false, ("Local\battle_plan_central_rust_validation_parallel_{0}" -f $_))
+            })
+        Write-Host (
+            'Battery parallel half: waiting for 1 of {0} machine slot(s) ({1} logical processors).' -f `
+                $slotCount, [Environment]::ProcessorCount
+        )
+        $parallelSlotIndex = Enter-CentralValidationParallelSlot -Slots $parallelSlotMutexes
+        Write-Host ("Battery parallel half: holding slot {0}." -f $parallelSlotIndex)
+    }
+    else {
+        $ownsMutex = $mutex.WaitOne(0)
+        if (-not $ownsMutex) {
+            throw "Another centralized Rust validation process is already active."
+        }
     }
 
     # The package self-test only has a place in the Final and Release batteries.
@@ -859,6 +1124,28 @@ try {
         )
     }
 
+    # WHY EVERY GATE FROM HERE TO THE CARGO RUNS IS IN THE PARALLEL HALF
+    #
+    # The partition classifies cargo TESTS. These gates are not tests in it, so
+    # the fail-closed rule cannot decide them and each was read instead. All of
+    # them are parallel-safe for the same structural reason: what they touch is
+    # scoped either to the caller's own worktree or to its own process id.
+    #
+    #  * the python verifiers and unit suites read this worktree's source and
+    #    write only into it (--repo-root $repoRoot), and the one that writes -
+    #    verify_citation_integrity.py's allowance file - writes a per-worktree
+    #    path;
+    #  * Test-PassiveCapturePolicy.ps1 and Test-HeadlessRawCaptureUnits.ps1 build
+    #    their scratch under GetTempPath() with $PID / a fresh GUID in the name;
+    #  * the C07 gate runs --verify, which writes nothing at all and reports the
+    #    files it did not write;
+    #  * Assert-PinnedRustToolchain only asks three binaries their version.
+    #
+    # -RunPackageSelfTest is the one opt-in gate here whose cost is measured in
+    # tens of minutes. It is source-only and emits into this worktree's own
+    # .cargo-target, so it belongs in the parallel half too - which is also where
+    # it does the most good, since it is exactly the kind of long run nobody
+    # should be holding the machine for.
     if ($Workspace -in @("All", "Extractor") -and
         $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
         # These source checks run before Cargo and, for Release, before stale
@@ -874,6 +1161,26 @@ try {
             "-ExecutionPolicy", "Bypass",
             "-File", $gapLedgerExpansionTests
         )
+        # The partition decides which tests keep the machine-wide mutex. It runs
+        # in every mode that compiles this workspace, not only in the Final that
+        # uses it, because a partition helper that is only exercised by the tier
+        # it gates is a helper nobody notices going wrong until a lane's battery
+        # is the thing that noticed.
+        $partitionTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $batteryPartitionTests)
+        if ($LASTEXITCODE -ne 0) {
+            throw "battery partition source tests exited with code $LASTEXITCODE"
+        }
+        $partitionTestResult = (@($partitionTestOutput | Where-Object { $_ -and ([string]$_).Trim() }) |
+                Select-Object -Last 1 | ConvertFrom-Json)
+        if ([string]$partitionTestResult.schema -cne 'battle-plan.battery_partition_test.v1' -or
+            [string]$partitionTestResult.status -cne 'PASS' -or
+            # Pinned for the same reason every other case count here is: cases
+            # quietly ceasing to run is the failure this whole file guards
+            # against, and it looks exactly like a pass.
+            [int]$partitionTestResult.cases -ne 57) {
+            throw "battery partition source tests returned no authority"
+        }
+
         Invoke-Checked -Program "python" -Arguments @(
             $worldFoldCitationVerifier,
             "--repo-root",
@@ -1346,16 +1653,113 @@ try {
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "evidence"
                 }
                 "Final" {
+                    # THE SPLIT. The parallel half runs here and now, holding no
+                    # machine-wide mutex; the serial half is QUEUED and run
+                    # later, under it. Both are derived from one partition, and
+                    # the parallel filterset is always the complement of the
+                    # serial one, so no test can fall out of both halves. The
+                    # run is green only if every half of every root passed:
+                    # Invoke-Checked throws on any non-zero exit and the serial
+                    # queue is drained before this script can return 0.
+                    #
+                    # The build is the point. `nextest run` compiles the whole
+                    # `--all-targets --workspace` selection before it runs
+                    # anything, filterset or no filterset, so with the split the
+                    # compile -- the majority of a battery's wall clock, and the
+                    # phase that never had a reason to be serialized -- happens
+                    # outside the mutex.
+                    $rootHalves = $null
+                    if ($splitBattery) {
+                        $rootPackages = Get-CargoRootPackages -CargoRoot $workspaceRoot
+                        Assert-BatteryPartitionCoversPackages `
+                            -ObservedPackages $rootPackages `
+                            -SerialPackages $batteryPartition.Serial `
+                            -ParallelPackages $batteryPartition.Parallel
+                        $rootHalves = Get-BatteryRootHalves `
+                            -Partition $batteryPartition -RootPackages $rootPackages
+                    }
                     $arguments = @("nextest", "run", "--all-targets", "--no-fail-fast") +
                         $nextestConfigSelection + $nextestCiProfileSelection +
                         $timingSelection + $selection
                     if ($FilterExpression) {
                         $arguments += @("-E", $FilterExpression)
                     }
+                    elseif ($null -ne $rootHalves -and $rootHalves.Parallel) {
+                        $arguments += @("-E", $rootHalves.Parallel)
+                    }
                     Invoke-Checked -Program "cargo" -Arguments $arguments
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-nextest"
-                    Invoke-Checked -Program "cargo" -Arguments (@("test", "--doc", "--no-fail-fast") + $timingSelection + $selection)
-                    Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-doctest"
+                    if ($null -ne $rootHalves -and $rootHalves.Serial) {
+                        # Captured by value into the closure: $workspaceRoot and
+                        # the argument list are loop variables, and a script
+                        # block that read them at drain time would run every
+                        # queued action against the LAST workspace.
+                        $serialRoot = $workspaceRoot
+                        $serialName = $workspaceName
+                        $serialArguments = @("nextest", "run", "--all-targets", "--no-fail-fast") +
+                            $nextestConfigSelection + $nextestCiProfileSelection +
+                            $timingSelection + $selection + @("-E", $rootHalves.Serial)
+                        $serialListArguments = @("nextest", "list", "--all-targets") +
+                            $nextestConfigSelection + $nextestCiProfileSelection +
+                            $selection + @("-E", $rootHalves.Serial, "--message-format", "json")
+                        Add-SerialPhaseAction -Describe (
+                            "$serialName machine-serial tests ({0})" -f ($rootHalves.SerialPackages -join ', ')
+                        ) -Action {
+                            Push-Location $serialRoot
+                            try {
+                                Invoke-CheckedNextestWithCensus `
+                                    -Arguments $serialArguments `
+                                    -ListArguments $serialListArguments `
+                                    -Context "$serialName machine-serial tests"
+                                Save-CargoTimingReport -WorkspaceName $serialName -Label "final-nextest-serial"
+                            }
+                            finally { Pop-Location }
+                        }.GetNewClosure()
+                    }
+                    # DOCTESTS ARE NOT SPLIT, and the reason is fidelity rather
+                    # than caution.
+                    #
+                    # The nextest halves above are safe to split because the
+                    # CARGO selection is identical in both -- `--workspace
+                    # --all-targets` -- and only which of the built tests get
+                    # EXECUTED differs. Cargo's feature unification is computed
+                    # over the selected package set, so both halves compile
+                    # byte-for-byte what the un-split battery compiled.
+                    #
+                    # Doctests have no such filter. Splitting them means splitting
+                    # the cargo selection (`--workspace --exclude X` for one half,
+                    # `-p X` for the other), and each of those unifies features
+                    # over a DIFFERENT package set than `--workspace` does. The
+                    # halves would then be compiling their doctests against
+                    # differently-featured dependencies from the ones the battery
+                    # is supposed to certify -- a seal that no longer means what it
+                    # meant. The first attempt at this also failed outright:
+                    # `-p wire_format` re-unified compact_contract and rustdoc was
+                    # handed an extern rlib path that the excluded half had never
+                    # produced.
+                    #
+                    # So the whole doctest run is queued into the serial half, once,
+                    # with exactly today's arguments. That is also what the
+                    # fail-closed rule requires of anything the partition does not
+                    # classify. Measured warm on this tree it costs 9.9 s of mutex
+                    # time for the Extractor workspace.
+                    $doctestRoot = $workspaceRoot
+                    $doctestName = $workspaceName
+                    $doctestArguments = @("test", "--doc", "--no-fail-fast") + $timingSelection + $selection
+                    if ($splitBattery) {
+                        Add-SerialPhaseAction -Describe "$doctestName doctests (unsplit: cargo feature unification)" -Action {
+                            Push-Location $doctestRoot
+                            try {
+                                Invoke-Checked -Program "cargo" -Arguments $doctestArguments
+                                Save-CargoTimingReport -WorkspaceName $doctestName -Label "final-doctest"
+                            }
+                            finally { Pop-Location }
+                        }.GetNewClosure()
+                    }
+                    else {
+                        Invoke-Checked -Program "cargo" -Arguments $doctestArguments
+                        Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-doctest"
+                    }
                     # Everything above ran in the DEV profile, and a detour
                     # identity that only breaks under the release linker's
                     # identical-code folding is invisible to all of it. Before
@@ -1372,7 +1776,30 @@ try {
                             # on disk would be the previous invocation's and
                             # saving it under this label would attribute one
                             # run's cost to another.
-                            Invoke-ReleaseDetourIdentityGate
+                            #
+                            # This gate is the battery's second-largest compile
+                            # -- the lane crates again, optimized -- so which
+                            # half it lands in matters. It is classified by the
+                            # same partition as everything else, and by the
+                            # fail-closed rule: if ANY package it names is
+                            # machine-serial, the whole gate is.
+                            $detourSerial = $false
+                            if ($splitBattery) {
+                                $detourPackages = Get-DetourIdentityLanePackages
+                                $detourSerial = @($detourPackages |
+                                        Where-Object { $batteryPartition.Serial -contains $_ }).Count -gt 0
+                            }
+                            if ($detourSerial) {
+                                $detourRoot = $workspaceRoot
+                                Add-SerialPhaseAction -Describe 'release detour-identity gate' -Action {
+                                    Push-Location $detourRoot
+                                    try { Invoke-ReleaseDetourIdentityGate }
+                                    finally { Pop-Location }
+                                }.GetNewClosure()
+                            }
+                            else {
+                                Invoke-ReleaseDetourIdentityGate
+                            }
                         }
                         else {
                             Write-Host (
@@ -1479,6 +1906,44 @@ try {
         $standaloneRoots += $portableStandaloneRoots
         foreach ($standaloneRoot in $standaloneRoots) {
             $standaloneManifest = Join-Path $standaloneRoot "Cargo.toml"
+            # A standalone root is classified WHOLE rather than per package.
+            # These roots hold one or two crates each, so a filterset inside one
+            # would buy nothing, and "any serial package makes the root serial"
+            # is the fail-closed reading. A root the partition says nothing
+            # serial about runs in the parallel half exactly as it runs today.
+            if ($splitBattery -and $Mode -eq "Final") {
+                $standalonePackages = Get-CargoRootPackages -CargoRoot $standaloneRoot
+                Assert-BatteryPartitionCoversPackages `
+                    -ObservedPackages $standalonePackages `
+                    -SerialPackages $batteryPartition.Serial `
+                    -ParallelPackages $batteryPartition.Parallel
+                $standaloneSerialPackages = @($standalonePackages |
+                        Where-Object { $batteryPartition.Serial -contains $_ })
+                if ($standaloneSerialPackages.Count -gt 0) {
+                    $queuedRoot = $standaloneRoot
+                    $queuedManifest = $standaloneManifest
+                    Add-SerialPhaseAction -Describe (
+                        "standalone root {0} ({1})" -f `
+                            (Split-Path -Leaf $standaloneRoot), ($standaloneSerialPackages -join ', ')
+                    ) -Action {
+                        Push-Location $queuedRoot
+                        try {
+                            Invoke-CheckedNextestWithCensus `
+                                -Arguments @("nextest", "run", "--locked", "--all-targets", "--no-fail-fast") `
+                                -ListArguments @("nextest", "list", "--locked", "--all-targets", "--message-format", "json") `
+                                -Context ("standalone root {0}" -f (Split-Path -Leaf $queuedRoot))
+                            if (Test-CargoManifestHasLibraryTarget -ManifestPath $queuedManifest) {
+                                Invoke-Checked -Program "cargo" -Arguments @("test", "--locked", "--doc", "--no-fail-fast")
+                            }
+                            else {
+                                Write-Host "Skipping standalone doctests: no library target in $queuedManifest"
+                            }
+                        }
+                        finally { Pop-Location }
+                    }.GetNewClosure()
+                    continue
+                }
+            }
             Push-Location $standaloneRoot
             try {
                 if ($Mode -eq "Final") {
@@ -1499,6 +1964,51 @@ try {
                 Pop-Location
             }
         }
+    }
+
+    # THE SERIAL HALF. Everything queued above runs here, and only here, holding
+    # the same machine-wide mutex the whole run used to hold. The parallel slot
+    # is given back FIRST: a battery sitting in its serial half has no claim on
+    # the machine's cores, and holding a slot through it would block another
+    # lane's compile for no reason. That ordering is also what makes deadlock
+    # impossible -- no run ever holds a slot and waits for the mutex.
+    #
+    # A queue that came out EMPTY is a failure, not a fast run: it would mean the
+    # partition classified nothing as machine-serial for a battery that compiled
+    # recorder_host, and the run would be claiming a seal it never earned.
+    if ($splitBattery) {
+        if ($parallelSlotIndex -ge 0) {
+            $parallelSlotMutexes[$parallelSlotIndex].ReleaseMutex()
+            $parallelSlotIndex = -1
+        }
+        if ($serialPhaseActions.Count -eq 0) {
+            throw (
+                'the battery split queued NO machine-serial work. That is not a ' +
+                'pass: this run compiled the packages the partition calls ' +
+                'machine-serial and then ran none of them under the mutex, so ' +
+                'its verdict covers only the parallel half.'
+            )
+        }
+        Write-Host (
+            'Battery serial half: {0} queued step(s); waiting for the central validation mutex.' -f `
+                $serialPhaseActions.Count
+        )
+        $ownsMutex = Enter-CentralValidationSerialPhase -Mutex $mutex
+        # The number this whole change is about: how long ONE battery denies the
+        # machine to every other lane. Before the split it was the run's entire
+        # wall clock, compile included. Printing it makes a regression -- a
+        # package drifting into the serial half, or the split silently not
+        # applying -- visible in the gate log instead of only in the queue.
+        $serialPhaseStart = Get-Date
+        foreach ($queued in $serialPhaseActions) {
+            Write-Host ("Battery serial half: {0}" -f $queued.Describe)
+            & $queued.Action
+        }
+        $serialPhaseSeconds = ((Get-Date) - $serialPhaseStart).TotalSeconds
+        $sealTemplate =
+            'Battery seal: BOTH halves passed ({0} machine-serial step(s) after the ' +
+            'parallel half); central validation mutex held for {1:N1} s.'
+        Write-Host ($sealTemplate -f $serialPhaseActions.Count, $serialPhaseSeconds)
     }
 
     if ($fullExtractorRelease) {
@@ -1878,6 +2388,17 @@ try {
     }
 }
 finally {
+    # The parallel slot is released here as well as on the success path: a throw
+    # anywhere in the parallel half would otherwise leave a slot held until this
+    # process exited, and a run that fails early is exactly when the machine
+    # should get its slot back soonest.
+    if ($parallelSlotIndex -ge 0) {
+        $parallelSlotMutexes[$parallelSlotIndex].ReleaseMutex()
+        $parallelSlotIndex = -1
+    }
+    foreach ($slot in $parallelSlotMutexes) {
+        $slot.Dispose()
+    }
     if ($ownsMutex) {
         $mutex.ReleaseMutex()
     }
