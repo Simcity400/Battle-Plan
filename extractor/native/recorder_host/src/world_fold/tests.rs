@@ -3317,6 +3317,15 @@ fn chunk3_folds_d53_under_owned_diplomacy_and_intel_extras() {
     assert_eq!(ger["diplomacy"]["guarantees"], json!(["POL"]));
     assert_eq!(ger["diplomacy"]["non_aggression"], json!(["ENG"]));
     assert_eq!(ger["diplomacy"]["embargoes"], json!(["CZE"]));
+    // GP-U2: the subject/overlord edge replay's pair fold reads. The proof
+    // fixture's only subject relation is overlord=1 (GER) -> subject=22 (BUL).
+    // kills: dropping `project_domain53_subject_overlords` from the D53 block
+    // in `build_snapshot` leaves this leaf absent, which is what it was before
+    // this lane and is why `DiplomaticPairState::subject` never measured.
+    assert_eq!(
+        snapshot["countries"]["BUL"]["politics"]["autonomy"]["overlord"],
+        json!("GER")
+    );
     assert_eq!(
         ger["intel"][DOMAIN53_EXTRA_KEY]["agency_scalars"]["upgrade_progress_raw"],
         json!(2_400_000)
@@ -3488,6 +3497,420 @@ fn chunk3_partial_d53_relations_fail_closed() {
         .iter()
         .any(|problem| problem["domain_id"] == json!(53)
             && problem["problem"] == json!("compact_status_failure")));
+}
+
+/// GP-U2 (XMAP00 #11 `diplomacy.pair_relations`): the two pair leaves D53
+/// measured but the fold never spelled.
+///
+/// `replay_core/src/world.rs::fold_country_diplomacy_pairs` builds
+/// `WorldFrame.diplomacy.pairs` from five per-country paths. Three
+/// (`guarantees`, `non_aggression`, `embargoes`) were already promoted; the
+/// other two were not, so `DiplomaticPairState::military_access` and
+/// `::subject` read `Absent` on every hour of every recording while D53 was
+/// measuring both relations.
+///
+/// kills: dropping the `REL_KIND_MILITARY_ACCESS` tuple from the promotion list
+/// in `project_domain53_country_overlays` leaves `diplomacy.military_access`
+/// absent and this test fails. The subject half's fail-closed arm is covered
+/// separately, at both levels: `gp_u2_a_subject_seen_under_two_overlords_publishes_neither`
+/// on the resolver and
+/// `gp_u2_two_overlords_for_one_subject_publish_no_edge_through_the_wire`
+/// end to end.
+#[test]
+fn gp_u2_d53_spells_military_access_and_the_subject_overlord_at_the_pair_seam() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.relation_flags
+        .push(diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 3,
+            flag_kind: diplomacy53::compact::REL_KIND_MILITARY_ACCESS,
+            directed: true,
+        });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"]["military_access"],
+        json!(["POL"]),
+        "replay reads diplomacy.military_access through the same helper as \
+         guarantees/non_aggression/embargoes"
+    );
+    assert_eq!(
+        snapshot["countries"]["BUL"]["politics"]["autonomy"]["overlord"],
+        json!("GER"),
+        "the fixture's single subject relation is overlord=1 (GER) -> subject=22 (BUL)"
+    );
+}
+
+/// GP-U2, review round 1: the promoted pair leaves are PAIR TRUTH, so an
+/// endpoint D18 never resolved must not be published.
+///
+/// `country_ref_json` -> `resolve_country_key` falls back to the numeric id when
+/// `tag_by_db_id` has no mapping, and replay's `tags_from_simple_list` takes any
+/// string here as a TAG and publishes `Leaf::Measured(true)` for the pair. That
+/// would mint a diplomatic pair against a country that does not exist. The loop
+/// resolves strictly instead, and the raw row still survives under the
+/// diagnostic `domain53_extra` key.
+///
+/// kills: restoring `self.country_ref_json(row.target_tag_db_id, unresolved)` in
+/// the promotion loop of `project_domain53_country_overlays` publishes
+/// `["POL", "4242"]` and fails the first assertion.
+#[test]
+fn gp_u2_a_promoted_relation_target_d18_never_resolved_is_withheld_not_numeric() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    // 4242 is deliberately absent from the D18 roster below.
+    rows.relation_flags
+        .push(diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 1,
+            target_tag_db_id: 4242,
+            flag_kind: diplomacy53::compact::REL_KIND_GUARANTEE,
+            directed: true,
+        });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    let ger = &snapshot["countries"]["GER"];
+    assert_eq!(
+        ger["diplomacy"]["guarantees"],
+        json!(["POL"]),
+        "the unresolved endpoint is dropped from the canonical pair leaf, not \
+         spelled as its numeric id"
+    );
+    let raw_targets = ger["diplomacy"][DOMAIN53_EXTRA_KEY]["relation_flags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["flag_name"] == json!("guarantee"))
+        .map(|row| row["target_tag_db_id"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        raw_targets.contains(&json!(4242)),
+        "the measurement is not discarded — it stays under the diagnostic key, \
+         whose shape replay does not read as pair truth: {raw_targets:?}"
+    );
+}
+
+/// GP-U2, review round 2: the OWNER end of the pair needs the same proof as the
+/// target end.
+///
+/// `project_domain53_country_overlays` writes each overlay under
+/// `resolve_country_key(tag_db_id)`, which falls back to the numeric id, so an
+/// owner D18 never resolved creates a `countries["4242"]` object — and replay
+/// reads that key as the pair's owner TAG. Strict target resolution alone does
+/// not close it.
+///
+/// kills: dropping `self.tag_by_db_id.contains_key(tag_db_id)` from
+/// `promotion_admissible` publishes `countries["4242"].diplomacy.guarantees =
+/// ["POL"]` and fails the second assertion.
+#[test]
+fn gp_u2_a_promoted_relation_owner_d18_never_resolved_publishes_no_canonical_leaf() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    // 4242 is deliberately absent from the D18 roster below; the TARGET resolves.
+    rows.relation_flags
+        .push(diplomacy53::compact::RelationFlagRow {
+            src_tag_db_id: 4242,
+            target_tag_db_id: 3,
+            flag_kind: diplomacy53::compact::REL_KIND_GUARANTEE,
+            directed: true,
+        });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(report.ok(), "{:?}", report.errors);
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    assert_eq!(
+        snapshot["countries"]["GER"]["diplomacy"]["guarantees"],
+        json!(["POL"]),
+        "the resolved owner is unaffected"
+    );
+    assert_eq!(
+        snapshot["countries"]["4242"]["diplomacy"]["guarantees"],
+        Value::Null,
+        "an owner D18 never resolved publishes no canonical pair leaf, whatever \
+         its targets resolve to"
+    );
+    assert!(
+        !snapshot["countries"]["4242"][DOMAIN53_EXTRA_KEY.to_string()].is_null()
+            || !snapshot["countries"]["4242"]["diplomacy"][DOMAIN53_EXTRA_KEY]["relation_flags"]
+                .is_null(),
+        "the measurement still ships under the diagnostic key rather than being \
+         discarded: {}",
+        snapshot["countries"]["4242"]
+    );
+}
+
+/// GP-U2, review round 2: pair truth needs a CURRENT D18 roster, not a carried
+/// one.
+///
+/// `reset_hour_state` deliberately retains `tag_by_db_id` across the hour
+/// boundary while resetting `country_identity_known_this_hour`. Without a gate,
+/// a clean d53 frame in an hour with no d18 record would publish pair truth
+/// against the previous hour's roster, and `build_measured_countries` reports
+/// `known: false` for exactly those hours. This is the bar the fold's other
+/// exact cross-domain joins already apply.
+///
+/// kills: dropping `self.country_identity_known_this_hour` from
+/// `promotion_admissible`, or from the early return in
+/// `project_domain53_subject_overlords`, republishes both leaves in hour 2 and
+/// fails the hour-2 assertions.
+#[test]
+fn gp_u2_pair_leaves_need_a_current_d18_roster_not_last_hours() {
+    let d53_payload = || {
+        let mut rows = diplomacy53::extractor::proof_fixture_rows();
+        rows.operation_anchors.clear();
+        rows.intel_map.clear();
+        rows.relation_flags
+            .push(diplomacy53::compact::RelationFlagRow {
+                src_tag_db_id: 1,
+                target_tag_db_id: 3,
+                flag_kind: diplomacy53::compact::REL_KIND_MILITARY_ACCESS,
+                directed: true,
+            });
+        let report = diplomacy53::extractor::build_domain53_payload(
+            rows,
+            diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+        );
+        assert!(report.ok(), "{:?}", report.errors);
+        report.payload
+    };
+    let roster = || {
+        country_identity_payload(&[
+            (1, "GER"),
+            (2, "ENG"),
+            (3, "POL"),
+            (9, "CZE"),
+            (10, "AUS"),
+            (16, "ITA"),
+            (22, "BUL"),
+        ])
+    };
+
+    let snapshots = chunk1_snapshots(vec![
+        vec![(18, roster()), (53, d53_payload())],
+        // Hour 2: d53 reports cleanly, d18 does not report at all.
+        vec![(53, d53_payload())],
+    ]);
+    assert_eq!(snapshots.len(), 2);
+
+    assert_eq!(
+        snapshots[0]["countries"]["GER"]["diplomacy"]["military_access"],
+        json!(["POL"]),
+        "hour 1 has a current roster"
+    );
+    assert_eq!(
+        snapshots[0]["countries"]["BUL"]["politics"]["autonomy"]["overlord"],
+        json!("GER"),
+        "hour 1 has a current roster"
+    );
+
+    assert_eq!(
+        snapshots[1]["measured_countries"]["known"],
+        json!(false),
+        "hour 2 is the case this guard exists for: the measured-country set is \
+         unknown, not empty"
+    );
+    assert_eq!(
+        snapshots[1]["countries"]["GER"]["diplomacy"]["military_access"],
+        Value::Null,
+        "no canonical relation leaf may be published against a carried roster"
+    );
+    assert_eq!(
+        snapshots[1]["countries"]["BUL"]["politics"]["autonomy"]["overlord"],
+        Value::Null,
+        "no overlord edge may be published against a carried roster"
+    );
+}
+
+/// GP-U2, review round 2: the contradiction guard, exercised end to end through
+/// the wire.
+///
+/// The first draft of this lane recorded that no fixture could carry two
+/// overlords for one subject, because the D53 payload builder rejected the shape.
+/// That was only true of a HALF-built fixture: subject rows and their AUST
+/// current-status rows are both keyed `(overlord, subject)`, so `(GER, BUL)` and
+/// `(ENG, BUL)` both validate as long as each carries its own AUST row. The
+/// producer's cross-check proves the two sets AGREE with each other, not that a
+/// subject has one overlord. So the fold guard is load-bearing on a shape the
+/// wire can actually deliver.
+///
+/// kills: removing the `*current = None` arm from
+/// `world_fold::domain53_overlord_by_subject` publishes one of the two
+/// contradictory overlords for BUL and fails the last assertion.
+#[test]
+fn gp_u2_two_overlords_for_one_subject_publish_no_edge_through_the_wire() {
+    let mut rows = diplomacy53::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    let existing = rows
+        .subjects
+        .first()
+        .cloned()
+        .expect("the proof fixture carries a subject relation");
+    assert_eq!((existing.overlord_tag_db_id, existing.subject_tag_db_id), (1, 22));
+    rows.subjects.push(diplomacy53::compact::SubjectRow {
+        overlord_tag_db_id: 2,
+        subject_tag_db_id: existing.subject_tag_db_id,
+        ..existing.clone()
+    });
+    let existing_status = rows
+        .subject_autonomy_statuses
+        .first()
+        .cloned()
+        .expect("the proof fixture carries an AUST row");
+    rows.subject_autonomy_statuses
+        .push(diplomacy53::compact::SubjectAutonomyStatusRow {
+            overlord_tag_db_id: 2,
+            subject_tag_db_id: existing.subject_tag_db_id,
+            ..existing_status
+        });
+    let report = diplomacy53::extractor::build_domain53_payload(
+        rows,
+        diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(
+        report.ok(),
+        "the wire CAN carry two overlords for one subject once each has its AUST \
+         row; that is the point of this test: {:?}",
+        report.errors
+    );
+
+    let snapshot = snapshot_for_domain_records(vec![
+        (
+            18,
+            country_identity_payload(&[
+                (1, "GER"),
+                (2, "ENG"),
+                (3, "POL"),
+                (9, "CZE"),
+                (10, "AUS"),
+                (16, "ITA"),
+                (22, "BUL"),
+            ]),
+        ),
+        (53, report.payload),
+    ]);
+
+    let rows_out = snapshot["diplomacy_world"][DOMAIN53_EXTRA_KEY]["subject_autonomy_rows"]
+        .as_array()
+        .expect("the diagnostic rows still ship");
+    assert_eq!(
+        rows_out.len(),
+        2,
+        "both contradictory rows reach the fold as measurements: {rows_out:?}"
+    );
+    assert_eq!(
+        snapshot["countries"]["BUL"]["politics"]["autonomy"]["overlord"],
+        Value::Null,
+        "and neither is published as pair truth"
+    );
+}
+
+/// GP-U2, the fail-closed half of the subject seam, at the resolver level.
+///
+/// `gp_u2_two_overlords_for_one_subject_publish_no_edge_through_the_wire` proves
+/// the same rule end to end; this one pins the resolver's other cases (a repeat
+/// under the SAME overlord is still one edge, and a zero id on either end is no
+/// edge), which a wire fixture cannot reach because the payload builder rejects
+/// zero ids.
+///
+/// kills: removing the `*current = None` arm from
+/// `world_fold::domain53_overlord_by_subject` makes the contradictory subject
+/// resolve to one of its two overlords and fails the second assertion, which is
+/// exactly the "never publish data under the wrong pair" failure the guard
+/// exists to prevent.
+#[test]
+fn gp_u2_a_subject_seen_under_two_overlords_publishes_neither() {
+    let subject_row = |overlord_tag_db_id: u32, subject_tag_db_id: u32| {
+        diplomacy53::compact::SubjectRow {
+            overlord_tag_db_id,
+            subject_tag_db_id,
+            autonomy_state_hash: 7,
+            autonomy_ratio_raw: 40_000,
+            start_date_raw: 60_795_475,
+        }
+    };
+    let resolved = super::domain53_overlord_by_subject(&[
+        subject_row(1, 22),
+        subject_row(1, 22),
+        subject_row(2, 9),
+        subject_row(3, 9),
+        subject_row(0, 16),
+        subject_row(4, 0),
+    ]);
+
+    assert_eq!(
+        resolved.get(&22),
+        Some(&Some(1)),
+        "a subject repeated under the SAME overlord is still one measured edge"
+    );
+    assert_eq!(
+        resolved.get(&9),
+        Some(&None),
+        "two different overlords for one subject in one hour publish neither"
+    );
+    assert_eq!(resolved.get(&16), None, "a zero overlord id is not an edge");
+    assert_eq!(resolved.get(&0), None, "a zero subject id is not an edge");
 }
 
 #[test]
