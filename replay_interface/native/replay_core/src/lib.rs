@@ -231,8 +231,9 @@ pub use source::{
     open_recording_game, open_recording_game_with_decoder,
     open_recording_game_with_spooled_decoder, open_recording_with_decoder,
     open_recording_with_spooled_decoder, DeclaredCoverage, DeclaredCoverageGap,
-    DeclaredCoverageSelection, PackagedDecisionCatalog, PackagedStaticArtifact, RawFrame,
-    RecordedCampaignIdentity, RecordedCampaignIdentityWitnesses, ReplaySource, SourceError,
+    DeclaredCoverageSelection, PackagedDecisionCatalog, PackagedStaticArtifact,
+    ProductionProfileAuthority, ProductionProfileGuarantee, RawFrame, RecordedCampaignIdentity,
+    RecordedCampaignIdentityWitnesses, RecorderProductAdmission, ReplaySource, SourceError,
 };
 pub use static_focus_defs::{
     admit_static_focus_definitions, AdmittedStaticFocusDefinitions, StaticFocusBackgroundStyle,

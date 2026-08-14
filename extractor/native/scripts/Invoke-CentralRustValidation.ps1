@@ -1389,12 +1389,23 @@ try {
         $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
             [string]$interactionClosureResult.status -cne 'PASS' -or
-            # Test-ProductionInteractionClosure.ps1 emits 36. This pin said 30
+            # Test-ProductionInteractionClosure.ps1 emits 37. This pin said 30
             # for at least three commits while the test emitted 35, which means
             # every Final and Release threw here before reaching any of the
             # gates below - the case-count pin is the second pin site that gets
             # missed when cases are added, exactly like the marker census.
-            [int]$interactionClosureResult.cases -ne 36 -or
+            #
+            # IT HAPPENED AGAIN, and the recurrence is the point of this note.
+            # Lane IS (21579d03) added a case, taking the test to 37, and edited
+            # this same file without touching this line - so every Final and
+            # Release on the integration tip threw "returned no authority" while
+            # the closure test itself exited 0 with status PASS. Found and
+            # corrected by lane IQ, whose own Final could not run until it was.
+            # A pin that is missed twice by the lanes that move the thing it
+            # pins is a pin that wants deriving rather than restating; that is
+            # not this lane's change to make, and it is written down here so the
+            # third occurrence is not diagnosed from scratch.
+            [int]$interactionClosureResult.cases -ne 37 -or
             [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
             throw "production interaction-closure source tests returned no authority"
         }

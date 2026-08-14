@@ -9,7 +9,8 @@
 //! `stability=0.62` / `war_support=null(unobtained)` / `fuel=absent`.
 
 use replay_core::{
-    open_recording, open_recording_game, Leaf, MapLayerSource, WorldFrame, WorldTimeline,
+    open_recording, open_recording_game, Leaf, MapLayerSource, ProductionProfileAuthority,
+    WorldFrame, WorldTimeline,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -76,6 +77,14 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
+fn render_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     let source = match &args.game {
@@ -83,6 +92,53 @@ fn run() -> Result<(), String> {
         None => open_recording(&args.path),
     }
     .map_err(|e| e.to_string())?;
+    // Print the production-profile admission BEFORE the timeline takes the
+    // source: a recording that is admitted with a named shortfall must say so
+    // where the operator reads it, not only in the provenance accessor.
+    match source.product_admission() {
+        None => println!("product admission: no recorder manifest"),
+        Some(admission) if admission.is_full_production_profile() => {
+            println!("product admission: full production profile")
+        }
+        Some(admission) => {
+            println!(
+                "product admission: {} profile authority, admitted without {}",
+                // Printed because the guarantee list alone does not say WHY a
+                // guarantee is unheld: an unstated manifest made no claim, a
+                // disabled one made a claim that fell short.
+                match admission.authority {
+                    ProductionProfileAuthority::Unstated => "unstated",
+                    ProductionProfileAuthority::Disabled => "disabled",
+                    ProductionProfileAuthority::Enabled => "enabled",
+                },
+                admission
+                    .guarantees_not_held
+                    .iter()
+                    .map(|guarantee| guarantee.token())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            println!(
+                "  profile domains not scheduled: {}",
+                // UNKNOWN, not "none": an unstated manifest declared no set and
+                // replay cannot derive one from the package, so printing "none"
+                // would report an unmeasured thing as measured-empty.
+                if admission.authority == ProductionProfileAuthority::Unstated {
+                    "unknown (no production_profile authority)".to_string()
+                } else {
+                    render_list(&admission.profile_domains_not_scheduled)
+                }
+            );
+            println!(
+                "  required static artifacts missing: {}",
+                render_list(&admission.missing_required_static_artifacts)
+            );
+            println!(
+                "  static artifacts carried but refused (no content epoch): {}",
+                render_list(&admission.static_artifacts_not_content_bound)
+            );
+        }
+    }
     let timeline = WorldTimeline::open(source).map_err(|e| e.to_string())?;
 
     println!("game_id: {}", timeline.game_id());

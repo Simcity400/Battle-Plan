@@ -24,6 +24,15 @@ replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json text eol=
 replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.sha256 text eol=lf
+# XUI08's committed producer contract and evidence manifest are compiled in with
+# `include_bytes!` and hash-checked against the constants in
+# `replay_core/src/peace_conference_presentation.rs`. Without this line the
+# checkout representation decided the hash: the blobs are LF, `core.autocrlf`
+# handed the compiler CRLF on Windows, and the pinned constants were the CRLF
+# digests — so the same commit failed that test on any host that checks out LF.
+# Pinned to LF, which is what the XUI27 machine authority already records for
+# these paths.
+replay_interface/re_evidence/rendering_laws/XUI08/*.json text eol=lf
 # Exact-a729 shader fixture: source bytes intentionally retain shader-language
 # trailing whitespace and are hash-authenticated by XUI23 tests and receipts.
 replay_interface/native/replay_app/tests/fixtures/exact_a729/progress.shader text eol=lf whitespace=-trailing-space,-space-before-tab

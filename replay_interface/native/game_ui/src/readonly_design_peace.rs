@@ -359,6 +359,17 @@ pub struct ActivePeaceConferenceSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeaceConferenceSnapshot {
+    /// The game state held no peace conference this hour — the ordinary hour of
+    /// a campaign, and the one the shipped recorder measures globally and
+    /// passively.
+    ///
+    /// Kept apart from [`PeaceConferenceSnapshot::Inactive`], which means a
+    /// peace WINDOW refresh boundary ran and found nothing. Both render no
+    /// panel, but they are different observations by different observers and
+    /// the read-only model does not merge them: `Inactive`'s provenance id is
+    /// built from a refresh sequence that a measured-empty hour does not have,
+    /// so folding the two would require inventing one.
+    NoConferenceInProgress { source_record_id: String },
     Inactive { source_record_id: String },
     Active(ActivePeaceConferenceSnapshot),
 }
@@ -459,13 +470,15 @@ impl AdmittedPeaceConference {
     }
     pub fn conference_id(&self) -> Option<&str> {
         match &self.snapshot {
-            PeaceConferenceSnapshot::Inactive { .. } => None,
+            PeaceConferenceSnapshot::NoConferenceInProgress { .. }
+            | PeaceConferenceSnapshot::Inactive { .. } => None,
             PeaceConferenceSnapshot::Active(value) => Some(&value.conference_id),
         }
     }
     pub fn conference_reference(&self) -> Option<PeaceConferenceReference> {
         match &self.snapshot {
-            PeaceConferenceSnapshot::Inactive { .. } => None,
+            PeaceConferenceSnapshot::NoConferenceInProgress { .. }
+            | PeaceConferenceSnapshot::Inactive { .. } => None,
             PeaceConferenceSnapshot::Active(value) => Some(value.conference_reference),
         }
     }
@@ -756,7 +769,12 @@ pub fn admit_peace_conference(
     snapshot: &PeaceConferenceSnapshot,
 ) -> Result<AdmittedPeaceConference, Xui08Rejection> {
     let active = match snapshot {
-        PeaceConferenceSnapshot::Inactive { source_record_id } => {
+        // Both no-panel dispositions admit on provenance alone; neither has a
+        // row graph to check. They stay distinct so the caller can still tell
+        // "the game state held no conference" from "a window refresh found
+        // none".
+        PeaceConferenceSnapshot::NoConferenceInProgress { source_record_id }
+        | PeaceConferenceSnapshot::Inactive { source_record_id } => {
             if !nonempty(source_record_id) {
                 return Err(Xui08Rejection::MissingProvenance);
             }
@@ -1054,9 +1072,10 @@ pub fn admit_peace_conference(
 }
 
 /// Bind the strict PCS3 passive-global observation to the XUI08 snapshot.
-/// Legacy PCS1 is retained only as an authenticated inactive fallback; its
-/// header-only active form can never authorize participant/allocation/result
-/// rows.
+/// Legacy PCS1 is retained only as an authenticated MEASURED-EMPTY or
+/// WINDOW-INACTIVE fallback — the two stay distinct, and neither renders a
+/// panel; its header-only active form can never authorize
+/// participant/allocation/result rows.
 pub fn peace_conference_snapshot_from_world(
     frame: &WorldFrame,
 ) -> Result<PeaceConferenceSnapshot, Xui08Rejection> {
@@ -1071,6 +1090,16 @@ pub fn peace_conference_snapshot_from_world(
             rendered_text: value.final_text.clone(),
         };
         return match &exact.observation {
+            // No refresh sequence exists for a measured-empty hour, so the
+            // provenance id is built from what the record actually carries.
+            PeaceConferencePresentationObservationExact::NoConferenceInProgress {} => {
+                Ok(PeaceConferenceSnapshot::NoConferenceInProgress {
+                    source_record_id: format!(
+                        "pcs3:{}:{}",
+                        exact.record_sha256, exact.frame_hour
+                    ),
+                })
+            }
             PeaceConferencePresentationObservationExact::Inactive { refresh_sequence } => {
                 Ok(PeaceConferenceSnapshot::Inactive {
                     source_record_id: format!(
@@ -1239,6 +1268,14 @@ pub fn peace_conference_snapshot_from_world(
         .as_ref()
         .ok_or(Xui08Rejection::MissingProvenance)?;
     match &exact.observation {
+        PeaceConferenceObservationExact::NoConferenceInProgress {} => {
+            Ok(PeaceConferenceSnapshot::NoConferenceInProgress {
+                source_record_id: format!(
+                    "pcs1:{}:{}",
+                    exact.producer_manifest_sha256, exact.frame_hour
+                ),
+            })
+        }
         PeaceConferenceObservationExact::Inactive { refresh_sequence } => {
             Ok(PeaceConferenceSnapshot::Inactive {
                 source_record_id: format!(

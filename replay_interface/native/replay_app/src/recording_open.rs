@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PackagedDecisionCatalog, PackagedStaticArtifact,
+    PackagedDecisionCatalog, PackagedG2EngineCapture, PackagedStaticArtifact,
     PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
-    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity, ReplaySource,
-    SourceError,
+    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity,
+    RecorderProductAdmission, ReplaySource, SourceError,
 };
 
 #[cfg(all(windows, not(test)))]
@@ -1396,6 +1396,16 @@ impl ReplaySource for ProductReplaySource {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         self.inner.campaign_identity()
     }
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        self.inner.product_admission()
+    }
+    /// Found by the derived accessor list below the moment it replaced the
+    /// hand-maintained array: this one had never been forwarded, so the G2
+    /// engine capture admitted at ingest read as absent on the product route
+    /// while `replay_dump` saw it.
+    fn g2_engine_capture(&self) -> Option<&PackagedG2EngineCapture> {
+        self.inner.g2_engine_capture()
+    }
     fn design_catalog(&self) -> Option<&Arc<PortableDesignCatalog>> {
         self.inner.design_catalog()
     }
@@ -1467,31 +1477,46 @@ mod tests {
     /// to forward it, and the default answers "there is nothing here". A
     /// forgotten forward is therefore evidence loss on exactly the route
     /// players use, with no compile error and no failing behaviour test.
+    ///
+    /// THE ACCESSOR LIST IS DERIVED FROM THE TRAIT, not written here. It used
+    /// to be a hand-maintained array, which is the same defect one level up:
+    /// adding `product_admission` to the trait left the wrapper dropping it AND
+    /// this test passing, because nobody edited the array (Codex round 4,
+    /// HIGH). Reading `replay_core`'s trait means a new accessor fails this
+    /// test the moment it exists.
+    ///
+    /// kills: adding any accessor to `ReplaySource` without forwarding it here.
     #[test]
     fn the_product_source_wrapper_forwards_every_replay_source_accessor() {
-        // Normalize line endings first: include_str! sees the file exactly as
+        // Normalize line endings first: include_str! sees each file exactly as
         // checked out, and a CRLF checkout would otherwise never match "\n}\n".
+        let extract = |text: &str, header: &str| -> String {
+            let start = text.find(header).unwrap_or_else(|| {
+                panic!("{header:?} must exist");
+            });
+            let block = &text[start..];
+            let end = block.find("\n}\n").expect("block must close") + 1;
+            block[..end].to_string()
+        };
+
+        let trait_source =
+            include_str!("../../replay_core/src/source.rs").replace("\r\n", "\n");
+        let trait_block = extract(&trait_source, "pub trait ReplaySource: Send + Sync {");
+        let accessors = trait_block
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("fn "))
+            .filter_map(|rest| rest.split('(').next())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            accessors.len() >= 12,
+            "the trait scrape found only {accessors:?}; the header or layout moved and this test \
+             would silently check nothing"
+        );
+
         let source = include_str!("recording_open.rs").replace("\r\n", "\n");
-        let start = source
-            .find("impl ReplaySource for ProductReplaySource {")
-            .expect("the product wrapper must exist");
-        let block = &source[start..];
-        let end = block.find("\n}\n").expect("wrapper impl must close") + 1;
-        let block = &block[..end];
-        for accessor in [
-            "game_id",
-            "hours",
-            "warnings",
-            "declared_coverage",
-            "content_manifest",
-            "campaign_identity",
-            "design_catalog",
-            "decision_catalog",
-            "static_artifact",
-            "prefold_receipt",
-            "date_at",
-            "frame",
-        ] {
+        let block = extract(&source, "impl ReplaySource for ProductReplaySource {");
+        for accessor in &accessors {
             assert!(
                 block.contains(&format!("fn {accessor}(")),
                 "ProductReplaySource must forward {accessor}; the trait default would drop it"
@@ -1731,6 +1756,71 @@ mod tests {
             Some("fixture unavailable")
         );
         assert_eq!(identity.witnesses.session, Some(2));
+        drop(source);
+        fs::remove_dir(&spool_path).unwrap();
+        fs::remove_dir(&parent).unwrap();
+    }
+
+    struct AdmissionSource {
+        admission: RecorderProductAdmission,
+    }
+
+    impl ReplaySource for AdmissionSource {
+        fn game_id(&self) -> &str {
+            "admission"
+        }
+
+        fn hours(&self) -> &[i64] {
+            &[]
+        }
+
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+
+        fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+            Some(&self.admission)
+        }
+
+        fn frame(&self, _hour_index: i64) -> Result<RawFrame, SourceError> {
+            Err(SourceError::Open("fixture has no frames".into()))
+        }
+    }
+
+    /// BEHAVIOURAL sentinel for the late-attach admission on the product route.
+    ///
+    /// The forwarding test above is lexical, so a body that calls
+    /// `self.inner.product_admission()` and then returns `None` would satisfy
+    /// both of its substring searches while dropping the evidence (Codex round
+    /// 5, LOW). This one asks the wrapper for the value and compares it.
+    ///
+    /// kills: `ProductReplaySource::product_admission` returning the trait
+    /// default, or delegating and discarding.
+    #[test]
+    fn product_source_preserves_the_late_attach_admission() {
+        let parent = temp_root("product_admission_forwarding");
+        let spool_path = parent.join("spool");
+        let admission = RecorderProductAdmission {
+            authority: replay_core::ProductionProfileAuthority::Disabled,
+            guarantees_not_held: vec![
+                replay_core::ProductionProfileGuarantee::ProductionProfileEnabled,
+            ],
+            profile_domains_not_scheduled: vec!["decision_panel_live".into()],
+            missing_required_static_artifacts: vec!["focus_defs_static".into()],
+            static_artifacts_not_content_bound: vec!["localisation_join".into()],
+        };
+        let source = ProductReplaySource {
+            inner: Box::new(AdmissionSource {
+                admission: admission.clone(),
+            }),
+            _spool_root: ProductSpoolRoot::ensure(spool_path.clone()).unwrap(),
+            _recording_guard: ProductRecordingPathGuard::acquire(&spool_path).unwrap(),
+        };
+        assert_eq!(
+            source.product_admission(),
+            Some(&admission),
+            "the product route must carry the named shortfall, not the trait default"
+        );
         drop(source);
         fs::remove_dir(&spool_path).unwrap();
         fs::remove_dir(&parent).unwrap();

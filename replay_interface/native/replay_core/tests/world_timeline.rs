@@ -1879,6 +1879,723 @@ fn write_metadata_container_without_timeline(
     path
 }
 
+/// A late-attach recording: no finalized portable content-manifest epoch, so
+/// the static artifacts it DOES carry cannot be bound to the effective content
+/// they were derived from.
+///
+/// kills: restoring the whole-recording refusal when the container finalized no
+/// content manifest (case 1 stops opening); admitting an unbound artifact
+/// anyway (case 1's `static_artifact` stops being `None`, and a semantic
+/// adapter above it would join a catalog to content nothing proves it came
+/// from); losing the named refusal on the way into provenance (case 1's
+/// admission stops naming it); or accepting a recorder row that claims an epoch
+/// the container never finalized (case 2 stops refusing).
+///
+/// Case 2 is the one that makes this a carve-out rather than a loosening: the
+/// epoch check is not relaxed in either direction, it is answered against what
+/// the container actually finalized.
+#[test]
+fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifacts() {
+    use replay_core::{ProductionProfileAuthority, ProductionProfileGuarantee};
+
+    /// Sentinel the fixture builder recognises as "omit the field entirely",
+    /// so the absent case travels the same construction path as the malformed
+    /// values it sits beside.
+    const REMOVE_EPOCH_FIELD: &str = "<remove the epoch field>";
+    const NAME: &str = "ship_definitions_static";
+    const RELATIVE: &str = "static/ship_definitions_static/ship_definitions_catalog.json";
+
+    let root = unique_temp_dir("late_attach_static_roster");
+    let payload = br#"{"ships":[]}"#.to_vec();
+    let payload_sha =
+        format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&payload));
+
+    let build = |tag: &str,
+                 row_epoch: Value,
+                 production_profile: Option<Value>,
+                 extra: Option<Value>,
+                 legacy: bool|
+     -> PathBuf {
+        let game = format!("metadata_{tag}");
+        let mut recorder_manifest = resolved_recorder_manifest();
+        recorder_manifest["replay_game_id"] = json!(game);
+        if let Some(profile) = production_profile {
+            recorder_manifest["production_profile"] = profile;
+            recorder_manifest["scheduled_domains"] = json!(["fuel_live"]);
+        }
+        // The recorder writes a null epoch on every row it packs when it
+        // finalized no content manifest. `row_epoch` is what this fixture puts
+        // there instead.
+        let mut row = json!({
+            "name": NAME,
+            "path": RELATIVE,
+            "sha256": payload_sha,
+            "bytes": payload.len(),
+            "content_manifest_digest_sha256": row_epoch,
+        });
+        if row["content_manifest_digest_sha256"] == json!(REMOVE_EPOCH_FIELD) {
+            row.as_object_mut()
+                .unwrap()
+                .remove("content_manifest_digest_sha256");
+        }
+        let mut rows = vec![row];
+        if let Some(extra) = extra.clone() {
+            rows.push(extra);
+        }
+        recorder_manifest["replay_packaging"] = json!({ "static_artifacts": rows });
+        let roster = absent_static_artifact_roster()
+            .into_iter()
+            // A legacy roster predates the focus carrier: the artifact appears
+            // in no index row, no recorder row and no container entry.
+            .filter(|row| !legacy || row["name"] != json!("focus_defs_static"))
+            .map(|mut row| {
+                if row["name"] == json!(NAME) {
+                    row = json!({
+                        "name": NAME,
+                        "path": RELATIVE,
+                        "present": true,
+                        "role": "static_artifact",
+                        "sha256": payload_sha,
+                        "bytes": payload.len(),
+                    });
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        let entries = vec![
+            PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "game_id": game,
+                    "schema_version": "1",
+                    "host_fold_skipped": false,
+                    "static_artifacts": roster,
+                    "snapshots": [{
+                        "hour_index": 1,
+                        "date": "1936.1.1.1",
+                        "file": "000000000001.snapshot.json"
+                    }]
+                }))
+                .unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/timeline.json"),
+                bytes: recorder_portable_timeline(),
+                role: "timeline",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000001.snapshot.json"),
+                bytes: serde_json::to_vec(&metadata_snapshot(
+                    &game,
+                    json!({"world": {"scenario": {}}}),
+                ))
+                .unwrap(),
+                role: "snapshot",
+                hour_index: Some(1),
+            },
+            PackEntry {
+                path: format!("payload/{game}/{RELATIVE}"),
+                bytes: payload.clone(),
+                role: "static_artifact",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/recorder/native_session_manifest.json"),
+                bytes: serde_json::to_vec(&recorder_manifest).unwrap(),
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+                bytes: b"H4CR portable metadata fixture".to_vec(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            },
+        ];
+        let path = root.join(format!("{tag}.battleplan"));
+        fs::write(
+            &path,
+            // No `content_manifest`: exactly what a late attach seals, because
+            // the production finalizer never ran to build one.
+            pack(
+                &game,
+                &entries,
+                &PackIdentity {
+                    schema_version: Some("1".into()),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    };
+
+    let write = |tag: &str, row_epoch: Value, production_profile: Option<Value>| -> PathBuf {
+        build(tag, row_epoch, production_profile, None, false)
+    };
+    let write_with_extra_row =
+        |tag: &str, row_epoch: Value, production_profile: Option<Value>, extra: Option<Value>| {
+            build(tag, row_epoch, production_profile, extra, false)
+        };
+
+    // The seven required artifacts this fixture's index disposes
+    // `present: false`. A `Disabled` profile must declare exactly these, and
+    // the roster join reconciles the declaration against the package.
+    let absent_names = || -> Vec<String> {
+        absent_static_artifact_roster()
+            .into_iter()
+            .filter_map(|row| row["name"].as_str().map(str::to_string))
+            .filter(|name| name != NAME)
+            .collect()
+    };
+    // The rosters the declared difference is a difference OF, and the required
+    // set the legacy exemption is judged against, both have to be present and
+    // consistent for any stated profile authority.
+    let disabled_profile = || {
+        json!({
+            "enabled": false,
+            "profile_domains": ["fuel_live"],
+            "required_static_artifacts": absent_static_artifact_roster()
+                .into_iter()
+                .filter_map(|row| row["name"].as_str().map(str::to_string))
+                .collect::<Vec<_>>(),
+            "mandatory_domains_not_production_complete": [],
+            "profile_domains_not_scheduled": [],
+            "missing_required_static_artifacts": absent_names(),
+        })
+    };
+
+    // 1. THE SHIPPED LATE-ATTACH STATE: an explicit `enabled: false` profile,
+    //    no container epoch, no row epoch. The recording opens and the artifact
+    //    is refused by name.
+    //
+    //    `Disabled` rather than `Unstated` deliberately: a regression treating
+    //    every authority except `Unstated` as claiming production would pass an
+    //    unstated fixture while breaking every real late-attach recording
+    //    (Codex round 2, LOW).
+    let consistent = write("consistent", Value::Null, Some(disabled_profile()));
+    let source = open_recording(&consistent).expect(
+        "a recording whose container finalized no content manifest must still open; the \
+         artifacts it cannot bind are declined, not the recording",
+    );
+    assert!(source.static_artifact(NAME).is_none());
+    let admission = source
+        .product_admission()
+        .expect("a recorder-manifest recording carries a product admission");
+    assert_eq!(admission.authority, ProductionProfileAuthority::Disabled);
+    assert!(admission
+        .guarantees_not_held
+        .contains(&ProductionProfileGuarantee::ContentBoundStaticArtifacts));
+    assert_eq!(
+        admission.static_artifacts_not_content_bound,
+        vec![NAME.to_string()]
+    );
+    drop(source);
+
+    // 1b. The same package with NO profile authority still opens; the state is
+    //     reported as `Unstated` and nothing is reconciled against a
+    //     declaration that does not exist.
+    let unstated = write("unstated", Value::Null, None);
+    let source = open_recording(&unstated).expect("an unstated authority is still admissible");
+    assert_eq!(
+        source
+            .product_admission()
+            .expect("recorder-manifest recording")
+            .authority,
+        ProductionProfileAuthority::Unstated
+    );
+    drop(source);
+
+    // 1c. A DECLARATION THAT DISAGREES WITH THE PACKAGE is refused. Declaring
+    //     nothing missing while the index refuses seven artifacts would
+    //     otherwise report the static-artifact guarantee as held while
+    //     `static_artifact()` answered `None` (Codex round 2, MEDIUM).
+    let mut lying = disabled_profile();
+    lying["missing_required_static_artifacts"] = json!([]);
+    let path = write("declares_nothing_missing", Value::Null, Some(lying));
+    let Err(error) = open_recording(&path) else {
+        panic!("a declared missing set that disagrees with the package must refuse");
+    };
+    assert!(
+        error.to_string().contains("disagrees with the artifacts the verified package does not carry"),
+        "{error}"
+    );
+
+    let mut repeated = disabled_profile();
+    let mut names = absent_names();
+    names.push(names[0].clone());
+    repeated["missing_required_static_artifacts"] = json!(names);
+    let path = write("declares_a_repeat", Value::Null, Some(repeated));
+    let Err(error) = open_recording(&path) else {
+        panic!("a repeated declared name must refuse");
+    };
+    assert!(error.to_string().contains("repeats a name"), "{error}");
+
+    let mut unknown = disabled_profile();
+    unknown["missing_required_static_artifacts"] = json!(["not_a_static_artifact"]);
+    let path = write("declares_an_unknown", Value::Null, Some(unknown));
+    let Err(error) = open_recording(&path) else {
+        panic!("an unknown declared name must refuse");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("is not a required static artifact"),
+        "{error}"
+    );
+
+    // 1d. AN UNRECOGNISED RECORDER ROW is malformed, not decoration. The
+    //     per-name loop selects rows by name, so a row nothing selects used to
+    //     be silently ignored — and the container-role equality check could not
+    //     see it either, because it compares only the paths the loop expected
+    //     (Codex round 3, MEDIUM).
+    let path = write_with_extra_row(
+        "packages_an_unknown_row",
+        Value::Null,
+        Some(disabled_profile()),
+        Some(json!({
+            "name": "unexpected_static",
+            "path": "static/unexpected_static/unexpected.json",
+            "sha256": "dd".repeat(32),
+            "bytes": 1,
+            "content_manifest_digest_sha256": Value::Null,
+        })),
+    );
+    let Err(error) = open_recording(&path) else {
+        panic!("a recorder row naming a non-required artifact must refuse");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("which is not a required static artifact"),
+        "{error}"
+    );
+
+    let path = write_with_extra_row(
+        "packages_a_repeated_row",
+        Value::Null,
+        Some(disabled_profile()),
+        Some(json!({
+            "name": NAME,
+            "path": RELATIVE,
+            "sha256": payload_sha,
+            "bytes": payload.len(),
+            "content_manifest_digest_sha256": Value::Null,
+        })),
+    );
+    let Err(error) = open_recording(&path) else {
+        panic!("a repeated recorder row must refuse");
+    };
+    assert!(error.to_string().contains("more than once"), "{error}");
+
+    // 1e. THE LEGACY SEVEN-ROW ROSTER still opens. Its recorder build's
+    //     required set did not contain `focus_defs_static`, so it truthfully
+    //     declared only the six it knew about; reconciling that against an
+    //     absent set that includes the artifact it had never heard of would
+    //     refuse a recording this join promises stays readable (Codex round 3,
+    //     MEDIUM). The absence is still reported: the guarantee is not held and
+    //     the artifact is unavailable.
+    let legacy_declared = absent_names()
+        .into_iter()
+        .filter(|name| name != "focus_defs_static")
+        .collect::<Vec<_>>();
+    let legacy_required = absent_static_artifact_roster()
+        .into_iter()
+        .filter_map(|row| row["name"].as_str().map(str::to_string))
+        .filter(|name| name != "focus_defs_static")
+        .collect::<Vec<_>>();
+    let mut legacy_profile = disabled_profile();
+    legacy_profile["missing_required_static_artifacts"] = json!(legacy_declared);
+    // The exemption turns on the WRITER's advertised required set, not on the
+    // roster shape: a legacy build advertises seven.
+    legacy_profile["required_static_artifacts"] = json!(legacy_required);
+    let legacy = build("legacy_seven_row", Value::Null, Some(legacy_profile), None, true);
+    let source = open_recording(&legacy)
+        .expect("a pre-focus-carrier recording remains readable, as this join promises");
+    assert!(source.static_artifact("focus_defs_static").is_none());
+    assert!(source
+        .product_admission()
+        .expect("recorder-manifest recording")
+        .guarantees_not_held
+        .contains(&ProductionProfileGuarantee::RequiredStaticArtifacts));
+    drop(source);
+
+    // 2. Contradictory: the row claims an epoch the container never finalized.
+    let contradictory = write("contradictory", json!("cc".repeat(32)), None);
+    let Err(error) = open_recording(&contradictory) else {
+        panic!("a static-artifact row may not name an epoch the container never finalized");
+    };
+    assert!(
+        error.to_string().contains(NAME),
+        "the refusal must name the artifact: {error}"
+    );
+
+    // 3. A ROW EPOCH THAT IS NEITHER A DIGEST NOR NULL is malformed, not the
+    //    null disposition. Before the epoch became an `Option` these values
+    //    failed the digest comparison; reading them through
+    //    `and_then(Value::as_str)` would have turned each into `None` and let
+    //    the no-epoch branch accept it (Codex round 1, MEDIUM).
+    //    The ABSENT field is in the same list on purpose: the recorder writes
+    //    this field on every row it packs, so accepting an absent one as the
+    //    null disposition is the regression this pins (Codex round 2, LOW).
+    for (tag, malformed) in [
+        ("epoch_number", json!(7)),
+        ("epoch_object", json!({})),
+        ("epoch_array", json!([])),
+        ("epoch_bool", json!(false)),
+        ("epoch_absent", Value::String(REMOVE_EPOCH_FIELD.into())),
+    ] {
+        let path = write(tag, malformed.clone(), None);
+        let Err(error) = open_recording(&path) else {
+            panic!("{malformed} is a malformed content epoch, not the null disposition");
+        };
+        assert!(
+            error.to_string().contains("neither a digest string nor null"),
+            "{malformed} was not refused as malformed: {error}"
+        );
+    }
+
+    // 4. THE CARVE-OUT DOES NOT REACH A CAPTURE THAT CLAIMS THE PROFILE.
+    //    Building the portable content manifest is one of the things
+    //    `--profile production` guarantees, so an enabled profile with no
+    //    finalized epoch is self-contradictory and keeps the original
+    //    whole-recording refusal (Codex round 1, HIGH).
+    // The epoch refusal fires inside the roster join, before the declaration is
+    // reconciled, so this fixture only has to be a well-formed enabled profile.
+    let mut claiming_profile = disabled_profile();
+    claiming_profile["enabled"] = json!(true);
+    claiming_profile["missing_required_static_artifacts"] = json!([]);
+    let claiming = write("claiming_the_profile", Value::Null, Some(claiming_profile));
+    let Err(error) = open_recording(&claiming) else {
+        panic!("a capture claiming the production profile must carry a content epoch");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("while recorder production_profile.enabled is true"),
+        "the refusal must name why the carve-out does not apply: {error}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A pre-focus-carrier PRODUCTION package: `enabled: true`, a finalized content
+/// epoch, and all seven artifacts its recorder build required — the eighth
+/// simply did not exist for that build.
+///
+/// kills: asking the enabled "package carries everything" rule of the RAW
+/// absent set instead of the set after the legacy exemption. That order refuses
+/// this recording for lacking an artifact its writer had never heard of, which
+/// contradicts the readability the roster join promises (Codex round 6, HIGH).
+/// The no-epoch legacy case in the test above cannot see it: it is disabled, and
+/// an enabled variant of it would stop at the unrelated content-epoch refusal.
+/// Pack a container whose static-artifact roster carries exactly `carried`,
+/// every entry bound to a finalized portable content-manifest epoch.
+///
+/// Shared by the two epoch-bound cases below: the expensive part — a real
+/// container with real payloads, index rows, recorder rows and a digested
+/// content manifest — is identical, and only the roster and the profile
+/// authority differ.
+fn write_epoch_bound_package(
+    root: &Path,
+    tag: &str,
+    carried: &[(String, String)],
+    // Names the index must not mention AT ALL, as a roster written before that
+    // artifact existed would not. A name that is merely uncarried gets an
+    // ordinary `present: false` row instead.
+    omitted_from_the_roster: &[&str],
+    production_profile: Option<Value>,
+) -> PathBuf {
+    let game = format!("metadata_{tag}");
+    let content = portable_content_manifest_fixture();
+    let epoch = content
+        .manifest_digest_sha256
+        .clone()
+        .expect("the fixture content manifest is digested");
+    let carried_names = carried
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+
+    let mut entries = Vec::new();
+    let mut index_rows = Vec::new();
+    let mut recorder_rows = Vec::new();
+    for row in absent_static_artifact_roster() {
+        let name = row["name"].as_str().expect("roster name").to_string();
+        let relative = row["path"].as_str().expect("roster path").to_string();
+        if omitted_from_the_roster.contains(&name.as_str()) {
+            continue;
+        }
+        if !carried_names.contains(&name) {
+            index_rows.push(row);
+            continue;
+        }
+        let payload = format!("{{\"artifact\":\"{name}\"}}").into_bytes();
+        let sha = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(&payload));
+        index_rows.push(json!({
+            "name": name,
+            "path": relative,
+            "present": true,
+            "role": "static_artifact",
+            "sha256": sha,
+            "bytes": payload.len(),
+        }));
+        recorder_rows.push(json!({
+            "name": name,
+            "path": relative,
+            "sha256": sha,
+            "bytes": payload.len(),
+            "content_manifest_digest_sha256": epoch,
+        }));
+        entries.push(PackEntry {
+            path: format!("payload/{game}/{relative}"),
+            bytes: payload,
+            role: "static_artifact",
+            hour_index: None,
+        });
+    }
+
+    let mut recorder_manifest = resolved_recorder_manifest();
+    recorder_manifest["replay_game_id"] = json!(game);
+    recorder_manifest["portable_content_manifest"] = serde_json::to_value(&content).unwrap();
+    recorder_manifest["modset"]["game"] =
+        json!({"exe_sha256": content.source_game.executable_sha256.clone()});
+    if let Some(profile) = production_profile {
+        recorder_manifest["production_profile"] = profile;
+        recorder_manifest["scheduled_domains"] = json!(["fuel_live"]);
+    }
+    recorder_manifest["replay_packaging"] = json!({ "static_artifacts": recorder_rows });
+
+    entries.push(PackEntry {
+        path: format!("payload/{game}/index.json"),
+        bytes: serde_json::to_vec(&json!({
+            "game_id": game,
+            "schema_version": "1",
+            "host_fold_skipped": false,
+            "static_artifacts": index_rows,
+            "snapshots": [{
+                "hour_index": 1,
+                "date": "1936.1.1.1",
+                "file": "000000000001.snapshot.json"
+            }]
+        }))
+        .unwrap(),
+        role: "index",
+        hour_index: None,
+    });
+    entries.push(PackEntry {
+        path: format!("payload/{game}/timeline.json"),
+        bytes: recorder_portable_timeline(),
+        role: "timeline",
+        hour_index: None,
+    });
+    entries.push(PackEntry {
+        path: format!("payload/{game}/000000000001.snapshot.json"),
+        bytes: serde_json::to_vec(&metadata_snapshot(&game, json!({"world": {"scenario": {}}})))
+            .unwrap(),
+        role: "snapshot",
+        hour_index: Some(1),
+    });
+    entries.push(PackEntry {
+        path: format!("payload/{game}/recorder/native_session_manifest.json"),
+        bytes: serde_json::to_vec(&recorder_manifest).unwrap(),
+        role: "recorder_manifest",
+        hour_index: None,
+    });
+    entries.push(PackEntry {
+        path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+        bytes: b"H4CR portable metadata fixture".to_vec(),
+        role: "collector_compact_stream",
+        hour_index: None,
+    });
+
+    let path = root.join(format!("{tag}.battleplan"));
+    fs::write(
+        &path,
+        pack(
+            &game,
+            &entries,
+            &PackIdentity {
+                schema_version: Some("1".into()),
+                build_exe_sha256: Some(content.source_game.executable_sha256.clone()),
+                build_pinned: true,
+                content_manifest: Some(content),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+fn required_static_artifact_names() -> Vec<(String, String)> {
+    absent_static_artifact_roster()
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row["name"].as_str()?.to_string(),
+                row["path"].as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// A recording with NO production-profile authority whose package nevertheless
+/// carries every required static artifact, epoch-bound.
+///
+/// kills: deciding `RequiredStaticArtifacts` anywhere but the roster join. The
+/// guarantee used to be preloaded for an unstated authority and never removed,
+/// so this recording reported "admitted without required_static_artifacts" with
+/// nothing named missing — the same contradiction the legacy path had (Codex
+/// round 8, MEDIUM). The two manifest-only guarantees stay unevidenced, because
+/// nothing in the package can answer them.
+#[test]
+fn an_unstated_recording_carrying_every_artifact_holds_the_static_artifact_guarantee() {
+    use replay_core::{ProductionProfileAuthority, ProductionProfileGuarantee};
+
+    let root = unique_temp_dir("unstated_full_roster");
+    let carried = required_static_artifact_names();
+    assert_eq!(carried.len(), 8);
+    let path = write_epoch_bound_package(&root, "unstated_full", &carried, &[], None);
+
+    let source = open_recording(&path).expect("an unstated recording opens");
+    let admission = source
+        .product_admission()
+        .expect("recorder-manifest recording");
+    assert_eq!(admission.authority, ProductionProfileAuthority::Unstated);
+    assert!(admission.missing_required_static_artifacts.is_empty());
+    assert_eq!(
+        admission.guarantees_not_held,
+        vec![
+            ProductionProfileGuarantee::ProductionProfileEnabled,
+            ProductionProfileGuarantee::FullProfileDomainSchedule,
+        ],
+        "the package carries all eight, so that guarantee IS held; the two nothing in the \
+         package can answer stay unevidenced"
+    );
+    for (name, _) in &carried {
+        assert!(source.static_artifact(name).is_some());
+    }
+    drop(source);
+
+    // THE ADVERTISED REQUIRED SET IS VALIDATED FOR A CURRENT PACKAGE TOO, not
+    // only inside the legacy branch. A complete eight-artifact package used to
+    // open as a full production profile while advertising `7`, `null`, repeats
+    // or unknown names, because the field was read only when an artifact was
+    // missing (Codex round 12, MEDIUM).
+    let advertised_names = carried
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let profile_with = |advertised: Value| {
+        json!({
+            "enabled": true,
+            "profile_domains": ["fuel_live"],
+            "required_static_artifacts": advertised,
+            "mandatory_domains_not_production_complete": [],
+            "profile_domains_not_scheduled": [],
+            "missing_required_static_artifacts": [],
+        })
+    };
+    let mut short = advertised_names.clone();
+    short.pop();
+    let mut repeated = advertised_names.clone();
+    repeated.push(advertised_names[0].clone());
+    for (tag, advertised, expected) in [
+        ("advertises_nothing", json!([]), "is not the canonical required set"),
+        ("advertises_short", json!(short), "is not the canonical required set"),
+        (
+            "advertises_unknown",
+            json!(["not_a_static_artifact"]),
+            "is not the canonical required set",
+        ),
+        ("advertises_a_repeat", json!(repeated), "repeats a name"),
+        ("advertises_a_number", json!([7]), "is not a string"),
+        ("advertises_null", Value::Null, "is absent or is not an array"),
+    ] {
+        let path = write_epoch_bound_package(&root, tag, &carried, &[], Some(profile_with(advertised.clone())));
+        let Err(error) = open_recording(&path) else {
+            panic!("{advertised} is not a valid advertised required set");
+        };
+        assert!(
+            error.to_string().contains(expected),
+            "{advertised} was refused for the wrong reason: {error}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens() {
+    use replay_core::ProductionProfileGuarantee;
+
+    const SKIPPED: &str = "focus_defs_static";
+    let root = unique_temp_dir("legacy_production_roster");
+
+    // Every required artifact except the one this build predates.
+    let carried = required_static_artifact_names()
+        .into_iter()
+        .filter(|(name, _)| name != SKIPPED)
+        .collect::<Vec<_>>();
+    assert_eq!(carried.len(), 7);
+
+    let required = carried
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let path = write_epoch_bound_package(
+        &root,
+        "legacy_production",
+        &carried,
+        // A pre-focus roster never mentions the artifact its build predates.
+        &[SKIPPED],
+        Some(json!({
+            "enabled": true,
+            "profile_domains": ["fuel_live"],
+            // The advertised set this build required: exactly the seven.
+            "required_static_artifacts": required,
+            "mandatory_domains_not_production_complete": [],
+            "profile_domains_not_scheduled": [],
+            "missing_required_static_artifacts": [],
+        })),
+    );
+
+    let source = open_recording(&path)
+        .expect("a pre-focus production package carrying all seven of its artifacts must open");
+    // The seven it carried are admitted and epoch-bound; the eighth is absent,
+    // so the guarantee is still reported as not held rather than quietly held.
+    for (name, _) in &carried {
+        assert!(
+            source.static_artifact(name).is_some(),
+            "{name} is epoch-bound and must be admitted"
+        );
+    }
+    assert!(source.static_artifact(SKIPPED).is_none());
+    let admission = source
+        .product_admission()
+        .expect("recorder-manifest recording");
+    assert!(admission
+        .guarantees_not_held
+        .contains(&ProductionProfileGuarantee::RequiredStaticArtifacts));
+    // AND IT IS NAMED. Naming the guarantee while leaving the list as the
+    // declaration's `[]` would print "admitted without required_static_artifacts
+    // / required static artifacts missing: none" (Codex round 7, MEDIUM).
+    assert_eq!(
+        admission.missing_required_static_artifacts,
+        vec![SKIPPED.to_string()]
+    );
+    drop(source);
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn recorder_metadata_binds_session_metadata_end_to_end() {
     let root = unique_temp_dir("recorder_metadata_e2e");

@@ -12,7 +12,7 @@
 
 use serde_json::{Map, Value};
 use snapshot::{ExpectedIdentity, Store};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +46,252 @@ struct RecorderSessionBinding {
     localisation_language: String,
     display_variant: RecorderDisplayVariant,
     campaign_identity: Option<RecordedCampaignIdentity>,
+    product_admission: RecorderProductAdmission,
+}
+
+/// One guarantee of the recorder's `--profile production` capture profile that
+/// an admitted recording does not carry.
+///
+/// A recording that holds all of them is a full production-profile capture. A
+/// recording that holds fewer is still playable — but every consumer of
+/// [`ReplaySource::product_admission`] is told exactly which guarantee is
+/// missing and, through [`RecorderProductAdmission`], exactly what it covered.
+///
+/// WHY THIS ENUM EXISTS AT ALL. `--profile production` is early-launch-only:
+/// its finalizer builds the portable content manifest from the effective-VFS
+/// content observation authenticated in-process before `ResumeThread`, so it
+/// needs the in-memory early-launch manifest and the authenticated early
+/// process receipt, neither of which a `--pid` attach has. The shipped product
+/// is a late attach and therefore deliberately does NOT run it —
+/// `recorder_host/src/main.rs::product_auto_attach_worker_args`: "Do not pass
+/// `--profile production` here. That profile additionally requires a
+/// process-bound, pre-injection static bundle. The ordinary late-attach product
+/// cannot fabricate or rebind that evidence." Refusing every recording whose
+/// `production_profile.enabled` is not `true` therefore refuses every recording
+/// the shipped attach-and-play product can make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProductionProfileGuarantee {
+    /// The capture ran under `--profile production` / `--production`: the
+    /// recorder unioned the whole production domain roster into the schedule,
+    /// admitted and finalized a process-bound static bundle, and built the
+    /// portable content manifest from the pre-`ResumeThread` effective-VFS
+    /// observation.
+    ///
+    /// Absent on every late-attach capture. What replay loses with it is
+    /// covered by the two guarantees below plus
+    /// [`ReplaySource::content_manifest`], which already answers `None` for a
+    /// recording that carries no portable content manifest.
+    ProductionProfileEnabled,
+    /// Every production-profile domain was scheduled, so the recording is
+    /// expected to carry all of them.
+    ///
+    /// What "not held" NAMES depends on the authority, because this guarantee
+    /// is manifest-only — the package cannot answer it. For a stated authority
+    /// the domains in
+    /// [`RecorderProductAdmission::profile_domains_not_scheduled`] were never
+    /// captured and will read `DomainAbsent` at every hour. For
+    /// [`ProductionProfileAuthority::Unstated`] the schedule is UNKNOWN and
+    /// that list is empty because nothing can be named — an empty list there is
+    /// unavailable evidence, never measured completeness.
+    FullProfileDomainSchedule,
+    /// Every required deterministic static artifact was carried. Not held means
+    /// the artifacts named by
+    /// [`RecorderProductAdmission::missing_required_static_artifacts`] are
+    /// absent from the package; [`ReplaySource::static_artifact`] answers
+    /// `None` for each, and replay never fabricates one.
+    RequiredStaticArtifacts,
+    /// The static artifacts the package DOES carry are bound to a finalized
+    /// portable content-manifest epoch, so each catalog is joined to the exact
+    /// effective content it was derived from.
+    ///
+    /// Not held means the package carries static artifacts that name no epoch
+    /// and a container that finalized none — the production finalizer is what
+    /// builds that manifest, from the pre-`ResumeThread` effective-VFS
+    /// observation a late attach never made. Replay REFUSES those artifacts
+    /// rather than joining an unbound catalog: they are named by
+    /// [`RecorderProductAdmission::static_artifacts_not_content_bound`] and
+    /// [`ReplaySource::static_artifact`] answers `None` for each.
+    ContentBoundStaticArtifacts,
+}
+
+impl ProductionProfileGuarantee {
+    /// Stable token for reports and logs. Never parsed back.
+    pub fn token(self) -> &'static str {
+        match self {
+            ProductionProfileGuarantee::ProductionProfileEnabled => "production_profile_enabled",
+            ProductionProfileGuarantee::FullProfileDomainSchedule => {
+                "full_profile_domain_schedule"
+            }
+            ProductionProfileGuarantee::RequiredStaticArtifacts => "required_static_artifacts",
+            ProductionProfileGuarantee::ContentBoundStaticArtifacts => {
+                "content_bound_static_artifacts"
+            }
+        }
+    }
+}
+
+/// What a recording's recorder manifest SAYS about the production capture
+/// profile, as three distinguishable states.
+///
+/// Held apart from the guarantee list because they are different questions.
+/// "This capture states it did not run the profile" and "this recording states
+/// nothing about the profile at all" both leave the MANIFEST-ONLY guarantees
+/// unevidenced, but only the first tells you the recorder looked.
+///
+/// # Which guarantee comes from where
+///
+/// Two of the four are manifest-only, because nothing in the package can answer
+/// them: [`ProductionProfileGuarantee::ProductionProfileEnabled`] and
+/// [`ProductionProfileGuarantee::FullProfileDomainSchedule`]. Absent a
+/// `production_profile` block, both are reported as not held — unevidenced, not
+/// disproved.
+///
+/// The other two are decided at the static-artifact roster join from the
+/// VERIFIED PACKAGE, whatever the authority says and even when it says nothing:
+/// [`ProductionProfileGuarantee::RequiredStaticArtifacts`] and
+/// [`ProductionProfileGuarantee::ContentBoundStaticArtifacts`], together with
+/// the two lists that name them. Where a declaration also exists it is
+/// reconciled against the package rather than believed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProductionProfileAuthority {
+    /// The recorder manifest carries no `production_profile` block. Nothing is
+    /// CLAIMED, so both manifest-only guarantees are reported as not held —
+    /// which is NOT the same as their being disproved — and
+    /// [`RecorderProductAdmission::profile_domains_not_scheduled`] is empty
+    /// because there is nothing to name. The two package-verifiable guarantees
+    /// are still decided from the package, so an unstated recording carrying
+    /// all eight epoch-bound artifacts HOLDS them.
+    Unstated,
+    /// `production_profile.enabled == false`. The capture states what it did
+    /// and did not schedule, and `profile_domains_not_scheduled` is that
+    /// statement. The static-artifact lists are the package's answer, which the
+    /// capture's own declaration was reconciled against.
+    Disabled,
+    /// `production_profile.enabled == true`, and the recording satisfied every
+    /// part of the profile ITS OWN RECORDER BUILD DEFINED — as far as replay
+    /// can check.
+    ///
+    /// The static-artifact half is CHECKED AGAINST THE PACKAGE: an enabled
+    /// profile whose package lacks an artifact its build required is refused at
+    /// open. The schedule half is the manifest's DECLARATION, checked only in
+    /// the one direction replay can compute without the extractor's domain
+    /// registry — see `validate_recorder_product_admission`. An enabled
+    /// manifest that under-declares its unscheduled profile domains is
+    /// therefore admitted, and that limit is deliberate, named there, and
+    /// closed producer-side.
+    ///
+    /// One package shortfall also survives, and it is not a shortfall against
+    /// that build: a pre-focus-carrier package legitimately carries every
+    /// artifact its build required, so it opens with the newer artifact
+    /// reported missing.
+    Enabled,
+}
+
+/// What a recording's recorder manifest positively claims about the production
+/// capture profile, and — when it claims less than the whole profile — exactly
+/// which guarantees it does not hold and what each of them covered.
+///
+/// This is the provenance side of the late-attach admission (owner ruling,
+/// 2026-08-14). `open_recording` admits a capture that did not run the
+/// production profile, and records the difference HERE rather than discarding
+/// it: a consumer that needs the full profile can require
+/// [`RecorderProductAdmission::is_full_production_profile`] and refuse for
+/// itself, with the missing domains and artifacts already named.
+///
+/// It is not a loosening of the other admission authorities. A capture whose
+/// manifest names a mandatory domain that is not production-complete is still
+/// refused at open, enabled or not: that is a statement about the RECORDER
+/// BUILD's producers rather than about the capture's scope, so no attach mode
+/// explains it and the data it did deliver cannot be trusted as production
+/// data. A capture that positively claims the production profile
+/// (`enabled == true`) is still held to all of it — all of what ITS OWN
+/// RECORDER BUILD required, which is the one qualification that keeps a
+/// pre-focus-carrier production package readable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecorderProductAdmission {
+    /// What the manifest said, so an absent authority is never read as a
+    /// positive or a negative claim.
+    pub authority: ProductionProfileAuthority,
+    /// Production-profile guarantees this recording does not hold, ascending
+    /// and deduplicated. Empty means a full production-profile capture.
+    ///
+    /// A guarantee is "not held" when the recording carries no positive
+    /// evidence for it, which covers both "the capture said it fell short" and
+    /// "the capture said nothing" — read [`RecorderProductAdmission::authority`]
+    /// to tell those apart.
+    pub guarantees_not_held: Vec<ProductionProfileGuarantee>,
+    /// Production-profile domains the capture did not schedule, verbatim from
+    /// `production_profile.profile_domains_not_scheduled`.
+    ///
+    /// EMPTY MEANS TWO DIFFERENT THINGS, and
+    /// [`RecorderProductAdmission::authority`] is what separates them: for a
+    /// stated authority it means the capture declared nothing unscheduled; for
+    /// `Unstated` it means nothing was declared at all, and replay cannot
+    /// derive the set from the package.
+    pub profile_domains_not_scheduled: Vec<String>,
+    /// Required static artifacts this recording does not carry, in canonical
+    /// required-static-artifact registry order.
+    ///
+    /// Taken from the VERIFIED package once a recorder manifest is present, not
+    /// from the manifest's declaration — the two are reconciled at the roster
+    /// join and must agree, but the package is what `static_artifact()` answers
+    /// from, and a legacy roster's declaration legitimately omits the one
+    /// artifact its recorder build predates.
+    pub missing_required_static_artifacts: Vec<String>,
+    /// Static artifacts the package DOES carry, and replay refused, because
+    /// neither they nor the container name a finalized portable
+    /// content-manifest epoch to bind them to. In canonical
+    /// required-static-artifact registry order, which is the order the roster
+    /// join walks — not lexical.
+    ///
+    /// Filled at the roster join rather than from the manifest's profile
+    /// block: it is a fact about the packaged bytes, not about the capture's
+    /// declared scope.
+    pub static_artifacts_not_content_bound: Vec<String>,
+}
+
+impl RecorderProductAdmission {
+    /// Every guarantee held: the recording ran the whole production profile.
+    pub fn is_full_production_profile(&self) -> bool {
+        self.guarantees_not_held.is_empty()
+    }
+
+    /// The admission a recording that carries no `production_profile`
+    /// authority at all presents.
+    ///
+    /// Every MANIFEST-ONLY guarantee is reported as not held, because neither
+    /// is evidenced — an absent authority proves the schedule was complete
+    /// exactly as much as it proves the profile ran, which is not at all.
+    /// Naming only `ProductionProfileEnabled` here would have said the other
+    /// WAS held (Codex round 1, MEDIUM).
+    ///
+    /// `RequiredStaticArtifacts` is deliberately NOT among them, and the split
+    /// is the point: it is the one guarantee replay can VERIFY, because the
+    /// package either carries the artifacts or does not. It is decided once, at
+    /// the roster join, from what the package actually holds
+    /// ([`MetadataRoute::admit_static_artifacts`]). Preloading it here made an
+    /// unstated recording carrying all eight report the guarantee not held with
+    /// nothing named missing (Codex round 8, MEDIUM). Which domains were
+    /// scheduled, by contrast, is not visible in the package at all, so that
+    /// one can only ever come from the manifest.
+    fn unstated() -> Self {
+        RecorderProductAdmission {
+            authority: ProductionProfileAuthority::Unstated,
+            guarantees_not_held: vec![
+                ProductionProfileGuarantee::ProductionProfileEnabled,
+                ProductionProfileGuarantee::FullProfileDomainSchedule,
+            ],
+            profile_domains_not_scheduled: Vec::new(),
+            missing_required_static_artifacts: Vec::new(),
+            static_artifacts_not_content_bound: Vec::new(),
+        }
+    }
+
+    fn name_guarantee_not_held(&mut self, guarantee: ProductionProfileGuarantee) {
+        self.guarantees_not_held.push(guarantee);
+        self.guarantees_not_held.sort_unstable();
+        self.guarantees_not_held.dedup();
+    }
 }
 
 /// Shape-validated recorder-manifest campaign metadata retained by replay
@@ -143,6 +389,212 @@ struct MetadataRoute {
     timeline: Option<Value>,
     recorder_manifest: Option<Map<String, Value>>,
     g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
+}
+
+impl MetadataRoute {
+    /// Join the recorder-owned static-artifact roster and record, in this
+    /// recording's provenance, every artifact the package carried and the join
+    /// refused for want of a content-manifest epoch.
+    ///
+    /// The join is reached ONLY through here, so that it and the production
+    /// profile claim it depends on are read from one object. A second reader of
+    /// `production_profile.enabled` could drift from the one that produced the
+    /// admission; this cannot. The refusal is recorded here rather than at the
+    /// manifest's profile block because it is a fact about the packaged bytes
+    /// rather than about the capture's declared scope.
+    fn admit_static_artifacts(
+        &mut self,
+        store: &Store,
+        game_id: &str,
+    ) -> Result<BTreeMap<String, PackagedStaticArtifact>, SourceError> {
+        let claims_production_profile = self.binding.as_ref().is_some_and(|binding| {
+            binding.product_admission.authority == ProductionProfileAuthority::Enabled
+        });
+        let roster = validate_packaged_static_artifact_roster(
+            store,
+            game_id,
+            self.recorder_manifest.as_ref(),
+            claims_production_profile,
+        )?;
+        if let Some(binding) = self.binding.as_mut() {
+            // RECONCILE THE DECLARATION AGAINST THE PACKAGE. The manifest's
+            // `missing_required_static_artifacts` was believed until now, so a
+            // capture could declare nothing missing while its index refused an
+            // artifact — and the admission would report the static-artifact
+            // guarantee as HELD while `static_artifact()` answered `None`
+            // (Codex round 2, MEDIUM). A manifest that states nothing about the
+            // profile (`Unstated`) declares no list, so there is nothing to
+            // reconcile; the guarantee itself is decided below from the package,
+            // exactly as it is for a stated authority.
+            if binding.product_admission.authority != ProductionProfileAuthority::Unstated {
+                let declared = &binding.product_admission.missing_required_static_artifacts;
+                let declared_set = declared.iter().cloned().collect::<BTreeSet<_>>();
+                if declared_set.len() != declared.len() {
+                    return Err(SourceError::Open(format!(
+                        "recorder production_profile.missing_required_static_artifacts repeats a \
+                         name ({declared:?})"
+                    )));
+                }
+                if let Some(unknown) = declared_set.iter().find(|name| {
+                    !REQUIRED_PACKAGED_STATIC_ARTIFACTS
+                        .iter()
+                        .any(|(required, _)| required == name)
+                }) {
+                    return Err(SourceError::Open(format!(
+                        "recorder production_profile.missing_required_static_artifacts names \
+                         {unknown:?}, which is not a required static artifact"
+                    )));
+                }
+                // THE WRITER'S ADVERTISED REQUIRED SET, VALIDATED FOR EVERY
+                // STATED AUTHORITY. It used to be read only inside the legacy
+                // branch, so a current eight-artifact package could advertise
+                // `7`, `null`, repeats or unknown names and still open as a
+                // full production profile (Codex round 12, MEDIUM). The
+                // recorder writes this field unconditionally, so an absent or
+                // malformed one is malformed, not legacy-compatible.
+                let advertised = self
+                    .recorder_manifest
+                    .as_ref()
+                    .and_then(|manifest| {
+                        manifest
+                            .get("production_profile")
+                            .and_then(Value::as_object)
+                            .and_then(|profile| profile.get("required_static_artifacts"))
+                    })
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        SourceError::Open(
+                            "recorder production_profile.required_static_artifacts is absent or \
+                             is not an array, so what this recorder build required cannot be known"
+                                .into(),
+                        )
+                    })?;
+                let advertised_set = advertised
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        value.as_str().map(str::to_string).ok_or_else(|| {
+                            SourceError::Open(format!(
+                                "recorder production_profile.required_static_artifacts[{index}] \
+                                 is not a string"
+                            ))
+                        })
+                    })
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                if advertised_set.len() != advertised.len() {
+                    return Err(SourceError::Open(
+                        "recorder production_profile.required_static_artifacts repeats a name"
+                            .into(),
+                    ));
+                }
+                let canonical_current = REQUIRED_PACKAGED_STATIC_ARTIFACTS
+                    .iter()
+                    .map(|(name, _)| (*name).to_string())
+                    .collect::<BTreeSet<_>>();
+                // EQUALITY WITH A CANONICAL SET, not merely a plausible shape.
+                // `[]`, unknown names, or a deliberately short roster would
+                // otherwise read as "some other build", and inside the legacy
+                // branch that meant "predates" — so a current build could
+                // under-declare and pass as legacy (Codex round 5, MEDIUM).
+                let mut declarable_absent = roster.absent.clone();
+                match roster.legacy_skipped {
+                    None => {
+                        if advertised_set != canonical_current {
+                            return Err(SourceError::Open(format!(
+                                "recorder production_profile.required_static_artifacts \
+                                 {advertised_set:?} is not the canonical required set \
+                                 {canonical_current:?}"
+                            )));
+                        }
+                    }
+                    Some(skipped) => {
+                        let canonical_legacy = canonical_current
+                            .iter()
+                            .filter(|name| name.as_str() != skipped)
+                            .cloned()
+                            .collect::<BTreeSet<_>>();
+                        if advertised_set != canonical_legacy {
+                            return Err(SourceError::Open(format!(
+                                "static-artifact roster omits {skipped:?} but \
+                                 production_profile.required_static_artifacts {advertised_set:?} \
+                                 is not the canonical pre-{skipped} required set \
+                                 {canonical_legacy:?}; only a recorder build that predates the \
+                                 artifact is exempt from declaring it"
+                            )));
+                        }
+                        declarable_absent.remove(skipped);
+                    }
+                }
+                // A CAPTURE THAT CLAIMS THE PROFILE CARRIES EVERYTHING IT COULD
+                // HAVE CARRIED. Rule 3 held the DECLARATION to an empty list;
+                // the package is the stronger statement, and this closes the
+                // shape where an enabled manifest declares nothing missing
+                // while its rosters omit an artifact (Codex round 4, HIGH).
+                //
+                // It is asked of `declarable_absent`, AFTER the exemption is
+                // established — not of `roster.absent`. A pre-focus production
+                // package legitimately carries every artifact its build had,
+                // and asking the raw set would refuse it for lacking one its
+                // writer had never heard of, contradicting the readability this
+                // join promises (Codex round 6, HIGH). The artifact is still
+                // absent, so `RequiredStaticArtifacts` is still reported as not
+                // held below.
+                if binding.product_admission.authority == ProductionProfileAuthority::Enabled
+                    && !declarable_absent.is_empty()
+                {
+                    return Err(SourceError::Open(format!(
+                        "recorder production_profile.enabled is true but the verified package does \
+                         not carry {declarable_absent:?}; a capture that claims the production \
+                         profile carries every static artifact its recorder build required"
+                    )));
+                }
+                if declared_set != declarable_absent {
+                    return Err(SourceError::Open(format!(
+                        "recorder production_profile.missing_required_static_artifacts \
+                         {declared_set:?} disagrees with the artifacts the verified package does \
+                         not carry {declarable_absent:?}"
+                    )));
+                }
+            }
+            // THE GUARANTEE AND THE NAMED LIST BOTH FOLLOW THE PACKAGE, NOT THE
+            // DECLARATION, and they must follow the SAME thing or the provenance
+            // contradicts itself.
+            //
+            // A legacy seven-row roster declares nothing missing and is right to
+            // — its build had no eighth artifact — but the eighth is still
+            // absent and `static_artifact()` still answers `None` for it, so the
+            // guarantee is not held (Codex round 3, MEDIUM). Naming the
+            // guarantee while leaving the list as the declaration's `[]` printed
+            // "admitted without required_static_artifacts / required static
+            // artifacts missing: none" (Codex round 7, MEDIUM). The list is
+            // therefore replaced with what the VERIFIED package lacks, in
+            // canonical registry order. The declaration is not discarded — it
+            // was just proven equal to this set, minus any legacy exemption.
+            //
+            // Done outside the reconciliation block so an `Unstated` manifest,
+            // which declares nothing to reconcile, still says what its package
+            // lacks.
+            binding.product_admission.missing_required_static_artifacts =
+                REQUIRED_PACKAGED_STATIC_ARTIFACTS
+                    .iter()
+                    .map(|(name, _)| (*name).to_string())
+                    .filter(|name| roster.absent.contains(name))
+                    .collect();
+            if !roster.absent.is_empty() {
+                binding
+                    .product_admission
+                    .name_guarantee_not_held(ProductionProfileGuarantee::RequiredStaticArtifacts);
+            }
+            if !roster.not_content_bound.is_empty() {
+                binding
+                    .product_admission
+                    .name_guarantee_not_held(ProductionProfileGuarantee::ContentBoundStaticArtifacts);
+            }
+            binding.product_admission.static_artifacts_not_content_bound =
+                roster.not_content_bound;
+        }
+        Ok(roster.admitted)
+    }
 }
 
 #[derive(Debug)]
@@ -585,6 +1037,26 @@ pub trait ReplaySource: Send + Sync {
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
+    /// What this recording claims about the recorder's production capture
+    /// profile, and which of that profile's guarantees it does not hold.
+    ///
+    /// `None` means the recording carried no recorder manifest at all (a
+    /// snapshot-store or already-prefolded source), which is a different
+    /// statement from a manifest that carried no `production_profile`
+    /// authority — the latter answers `Some` with
+    /// [`ProductionProfileGuarantee::ProductionProfileEnabled`] named as not
+    /// held.
+    ///
+    /// A consumer that requires a full production-profile capture checks
+    /// [`RecorderProductAdmission::is_full_production_profile`] and refuses for
+    /// itself. The missing static artifacts are always named, because the
+    /// package is read. The missing DOMAINS are named only when the manifest
+    /// stated them: an `Unstated` authority reports the schedule guarantee as
+    /// not held with nothing named, because which domains were scheduled is not
+    /// visible in the package and no claim was made.
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        None
+    }
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         None
     }
@@ -977,11 +1449,7 @@ fn open_store_impl(
     }
 
     let hours: Vec<i64> = files_by_hour.keys().copied().collect();
-    let static_artifacts = validate_packaged_static_artifact_roster(
-        &store,
-        &game_id,
-        metadata.recorder_manifest.as_ref(),
-    )?;
+    let static_artifacts = metadata.admit_static_artifacts(&store, &game_id)?;
     let design_catalog = read_portable_design_catalog(
         &store,
         &game_id,
@@ -1010,7 +1478,7 @@ fn open_compact_stream_with_decoder(
     store: Store,
     game_id: String,
     declared_schema_version: Option<Value>,
-    metadata: MetadataRoute,
+    mut metadata: MetadataRoute,
     decoder: &dyn snapshot::CertifiedPrefoldDecoder,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
     let identity_mode = prefold_stream_identity_mode(&metadata);
@@ -1103,11 +1571,7 @@ fn open_compact_stream_with_decoder(
     }
     validate_prefolded_container_identity(container, certified.replay())?;
 
-    let static_artifacts = validate_packaged_static_artifact_roster(
-        &store,
-        &game_id,
-        metadata.recorder_manifest.as_ref(),
-    )?;
+    let static_artifacts = metadata.admit_static_artifacts(&store, &game_id)?;
     let design_catalog = read_portable_design_catalog(
         &store,
         &game_id,
@@ -1245,7 +1709,7 @@ fn open_packaged_replay_cache(
     store: Store,
     game_id: String,
     declared_schema_version: Option<Value>,
-    metadata: MetadataRoute,
+    mut metadata: MetadataRoute,
     cache_spool_base: Option<&Path>,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
     validate_index_schema_version(declared_schema_version.as_ref())?;
@@ -1593,11 +2057,7 @@ fn open_packaged_replay_cache(
             .expect("packaged replay cache requires a container"),
         &first,
     )?;
-    let static_artifacts = validate_packaged_static_artifact_roster(
-        &store,
-        &game_id,
-        metadata.recorder_manifest.as_ref(),
-    )?;
+    let static_artifacts = metadata.admit_static_artifacts(&store, &game_id)?;
     let design_catalog = read_portable_design_catalog(
         &store,
         &game_id,
@@ -1740,7 +2200,7 @@ fn open_compact_stream_with_spooled_decoder(
     store: Store,
     game_id: String,
     declared_schema_version: Option<Value>,
-    metadata: MetadataRoute,
+    mut metadata: MetadataRoute,
     spool_base: &Path,
     decoder: &dyn snapshot::CertifiedPrefoldSpoolDecoder,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
@@ -1875,11 +2335,7 @@ fn open_compact_stream_with_spooled_decoder(
         .iter()
         .map(|entry| entry.hour_index())
         .collect::<Vec<_>>();
-    let static_artifacts = validate_packaged_static_artifact_roster(
-        &store,
-        &game_id,
-        metadata.recorder_manifest.as_ref(),
-    )?;
+    let static_artifacts = metadata.admit_static_artifacts(&store, &game_id)?;
     let design_catalog = read_portable_design_catalog(
         &store,
         &game_id,
@@ -2304,16 +2760,80 @@ const REQUIRED_PACKAGED_STATIC_ARTIFACTS: &[(&str, &str)] = &[
 const LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT: usize =
     REQUIRED_PACKAGED_STATIC_ARTIFACTS.len() - 1;
 
+/// Outcome of the recorder-owned static-artifact roster join.
+struct PackagedStaticArtifactRoster {
+    /// Artifacts admitted with their full chain: recorder row, index row,
+    /// container entry, payload bytes, and content-manifest epoch.
+    admitted: BTreeMap<String, PackagedStaticArtifact>,
+    /// Artifacts the package carries and the join REFUSED because neither the
+    /// container nor the recorder rows name a finalized portable
+    /// content-manifest epoch to bind them to.
+    not_content_bound: Vec<String>,
+    /// Required artifacts the VERIFIED package does not carry: an index row
+    /// disposed `present: false`, or the one artifact a legacy roster predates.
+    ///
+    /// This is the observed truth. Without it the manifest's declaration was
+    /// believed: a capture could declare nothing missing while its index
+    /// refused an artifact, and the admission would report the static-artifact
+    /// guarantee as held while `static_artifact()` answered `None` (Codex
+    /// round 2, MEDIUM).
+    absent: BTreeSet<String>,
+    /// The artifact a legacy seven-row roster predates, when this package has
+    /// one.
+    ///
+    /// It is held apart from the rest of `absent` because a recorder build
+    /// whose required set did not contain `focus_defs_static` truthfully
+    /// declared nothing missing while carrying all seven, so reconciling its
+    /// `[]` against an absence it had never heard of would refuse a recording
+    /// this join promises stays readable (Codex round 3, MEDIUM).
+    ///
+    /// THE ROSTER SHAPE ALONE DOES NOT ESTABLISH THAT (Codex round 4, HIGH). A
+    /// current recorder advertises all eight in
+    /// `production_profile.required_static_artifacts`, and one that ships seven
+    /// rows while advertising eight is under-declaring, not legacy. The
+    /// exemption is therefore applied by
+    /// [`MetadataRoute::admit_static_artifacts`], which is where that
+    /// advertised set is read, and only when it proves the writer predates the
+    /// artifact.
+    legacy_skipped: Option<&'static str>,
+}
+
 /// Consume the complete recorder-owned static-artifact roster at replay
 /// admission.  Semantic adapters may select individual catalogs later, but no
 /// producer binding is allowed to sit in the portable file unchecked.
+///
+/// # Recordings with no finalized content-manifest epoch
+///
+/// The production finalizer is what builds the portable content manifest, from
+/// the effective-VFS observation authenticated in-process before
+/// `ResumeThread`; a late attach never made that observation, so its container
+/// finalizes no manifest and the recorder writes
+/// `content_manifest_digest_sha256: null` on every static-artifact row it
+/// packs. This used to abort the whole open, which refused the recording over
+/// artifacts it could simply decline.
+///
+/// It now declines them, and only them. The epoch check is not weakened in
+/// either direction: with an epoch, every row must carry exactly it; without
+/// one, every row must carry NONE — a row claiming an epoch the container never
+/// finalized is a contradiction and still refuses the recording. Unbindable
+/// artifacts are then verified for internal consistency and left OUT of the
+/// admitted map, so [`ReplaySource::static_artifact`] answers `None` for each
+/// and the semantic adapters above it stay unavailable rather than joining a
+/// catalog to content nothing proves it came from. What was refused is named in
+/// [`RecorderProductAdmission::static_artifacts_not_content_bound`].
 fn validate_packaged_static_artifact_roster(
     store: &Store,
     game_id: &str,
     recorder_manifest: Option<&Map<String, Value>>,
-) -> Result<BTreeMap<String, PackagedStaticArtifact>, SourceError> {
+    claims_production_profile: bool,
+) -> Result<PackagedStaticArtifactRoster, SourceError> {
     let Some(recorder_manifest) = recorder_manifest else {
-        return Ok(BTreeMap::new());
+        return Ok(PackagedStaticArtifactRoster {
+            admitted: BTreeMap::new(),
+            not_content_bound: Vec::new(),
+            absent: BTreeSet::new(),
+            legacy_skipped: None,
+        });
     };
     let recorder_rows = recorder_manifest
         .get("replay_packaging")
@@ -2324,6 +2844,37 @@ fn validate_packaged_static_artifact_roster(
                 "recorder-owned replay has no static-artifact packaging roster".into(),
             )
         })?;
+    // EVERY RECORDER ROW MUST BE A RECOGNISED, UNIQUE REQUIRED ARTIFACT. The
+    // per-name loop below selects rows by name, so a row named anything else —
+    // or a second row for a name that is not required — was matched by nothing
+    // and silently ignored, and the container-role equality check could not see
+    // it either because it only compares the paths the loop expected. An
+    // unreadable authority row in the roster is malformed, not decoration
+    // (Codex round 3, MEDIUM).
+    {
+        let mut seen = BTreeSet::new();
+        for (index, row) in recorder_rows.iter().enumerate() {
+            let name = row.get("name").and_then(Value::as_str).ok_or_else(|| {
+                SourceError::Open(format!(
+                    "recorder manifest replay_packaging.static_artifacts[{index}] has no string name"
+                ))
+            })?;
+            if !REQUIRED_PACKAGED_STATIC_ARTIFACTS
+                .iter()
+                .any(|(required, _)| *required == name)
+            {
+                return Err(SourceError::Open(format!(
+                    "recorder manifest packages static artifact {name:?}, which is not a required \
+                     static artifact"
+                )));
+            }
+            if !seen.insert(name) {
+                return Err(SourceError::Open(format!(
+                    "recorder manifest packages static artifact {name:?} more than once"
+                )));
+            }
+        }
+    }
     let index_bytes = store
         .read_game_file_bytes(game_id, "index.json")
         .map_err(|error| {
@@ -2365,15 +2916,28 @@ fn validate_packaged_static_artifact_roster(
     })?;
     let content_digest = container
         .content_manifest()
-        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref())
-        .ok_or_else(|| {
-            SourceError::Open(
-                "static-artifact roster has no finalized portable content-manifest epoch".into(),
-            )
-        })?;
+        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref());
+    // THE CARVE-OUT DOES NOT REACH A CAPTURE THAT CLAIMS THE PROFILE. Building
+    // the portable content manifest is one of the things `--profile production`
+    // guarantees, so a recording asserting `production_profile.enabled == true`
+    // without a finalized epoch is contradicting itself, exactly as it would by
+    // naming an unscheduled profile domain. It keeps the original mandatory
+    // refusal; only a disabled or unstated authority reaches the declining path
+    // below (Codex round 1, HIGH).
+    if claims_production_profile && content_digest.is_none() {
+        return Err(SourceError::Open(
+            "static-artifact roster has no finalized portable content-manifest epoch while \
+             recorder production_profile.enabled is true; the production profile is what builds \
+             that manifest, so a capture claiming it must carry one"
+                .into(),
+        ));
+    }
 
-    let mut expected_container_paths = std::collections::BTreeSet::new();
+    let mut expected_container_paths = BTreeSet::new();
     let mut admitted = BTreeMap::new();
+    let mut not_content_bound = Vec::new();
+    let mut absent = BTreeSet::new();
+    let mut legacy_skipped = None;
     for &(name, expected_path) in REQUIRED_PACKAGED_STATIC_ARTIFACTS {
         let recorder_matches = recorder_rows
             .iter()
@@ -2395,7 +2959,13 @@ fn validate_packaged_static_artifact_roster(
         {
             // A pre-focus-carrier recording remains readable but exposes no
             // focus definitions. A31 stays unavailable; there is no local VFS
-            // or playback-machine fallback.
+            // or playback-machine fallback. It is still an artifact the package
+            // does not carry, so the guarantee reflects it — but the recorder
+            // build that wrote a seven-row roster had no such artifact in its
+            // required set, so it is deliberately NOT something that build's
+            // declaration could have named.
+            absent.insert(name.to_string());
+            legacy_skipped = Some(name);
             continue;
         }
         if index_matches.len() != 1 {
@@ -2406,7 +2976,10 @@ fn validate_packaged_static_artifact_roster(
         let index_row = index_matches[0];
         let present = index_row.get("present").and_then(Value::as_bool);
         match (present, recorder_matches.as_slice()) {
-            (Some(false), []) => continue,
+            (Some(false), []) => {
+                absent.insert(name.to_string());
+                continue;
+            }
             (Some(false), [_]) => {
                 return Err(SourceError::Open(format!(
                     "recorder manifest records {name:?} present while index records it absent"
@@ -2415,13 +2988,35 @@ fn validate_packaged_static_artifact_roster(
             (Some(true), [recorder_row]) => {
                 let sha = recorder_row.get("sha256").and_then(Value::as_str);
                 let bytes = recorder_row.get("bytes").and_then(Value::as_u64);
-                let epoch = recorder_row
-                    .get("content_manifest_digest_sha256")
-                    .and_then(Value::as_str);
+                // TYPED, not `and_then(as_str)`. A row whose epoch is `7`,
+                // `{}`, `[]` or `false` would otherwise read as `None` and be
+                // taken for the null disposition the no-epoch branch requires.
+                // The recorder writes this field on every row it packs, as a
+                // digest string or as JSON null, so an absent one is malformed
+                // rather than legacy.
+                let epoch = match recorder_row.get("content_manifest_digest_sha256") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(value)) => Some(value.as_str()),
+                    _ => {
+                        return Err(SourceError::Open(format!(
+                            "recorder manifest static artifact {name:?} \
+                             content_manifest_digest_sha256 is absent or is neither a digest \
+                             string nor null"
+                        )))
+                    }
+                };
+                // With a finalized epoch every row must carry exactly it.
+                // Without one every row must carry null: a row naming an epoch
+                // the container never finalized is a contradiction, and it
+                // refuses the recording here rather than being declined below.
+                let epoch_binds = match content_digest {
+                    Some(digest) => epoch == Some(digest),
+                    None => epoch.is_none(),
+                };
                 if recorder_row.get("path").and_then(Value::as_str) != Some(expected_path)
                     || sha.is_none_or(|value| !lower_sha256(value))
                     || bytes.is_none()
-                    || epoch != Some(content_digest)
+                    || !epoch_binds
                 {
                     return Err(SourceError::Open(format!(
                         "recorder manifest static artifact {name:?} identity is invalid"
@@ -2482,16 +3077,23 @@ fn validate_packaged_static_artifact_roster(
                         "verified static artifact {name:?} bytes disagree with package authorities"
                     )));
                 }
-                admitted.insert(
-                    name.to_string(),
-                    PackagedStaticArtifact {
-                        name: name.to_string(),
-                        path: expected_path.to_string(),
-                        sha256: actual_sha,
-                        content_manifest_digest_sha256: content_digest.to_string(),
-                        bytes: Arc::from(payload),
-                    },
-                );
+                // Verified in full above; admitted only when an epoch binds it
+                // to the effective content it was derived from.
+                match content_digest {
+                    Some(digest) => {
+                        admitted.insert(
+                            name.to_string(),
+                            PackagedStaticArtifact {
+                                name: name.to_string(),
+                                path: expected_path.to_string(),
+                                sha256: actual_sha,
+                                content_manifest_digest_sha256: digest.to_string(),
+                                bytes: Arc::from(payload),
+                            },
+                        );
+                    }
+                    None => not_content_bound.push(name.to_string()),
+                }
                 expected_container_paths.insert(container_path);
             }
             (Some(true), []) => {
@@ -2517,7 +3119,12 @@ fn validate_packaged_static_artifact_roster(
                 .into(),
         ));
     }
-    Ok(admitted)
+    Ok(PackagedStaticArtifactRoster {
+        admitted,
+        not_content_bound,
+        absent,
+        legacy_skipped,
+    })
 }
 
 const DECISION_CATALOG_NAME: &str = "decisions_static_definitions";
@@ -3281,8 +3888,9 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
         })?;
         let recorder_manifest =
             parse_metadata_object(&manifest_bytes, &format!("recorder manifest {reference:?}"))?;
-        validate_recorder_product_admission(&recorder_manifest)?;
-        let binding = recorder_manifest_binding_value(&recorder_manifest, &reference)?;
+        let product_admission = validate_recorder_product_admission(&recorder_manifest)?;
+        let binding =
+            recorder_manifest_binding_value(&recorder_manifest, &reference, product_admission)?;
         return Ok(MetadataRoute {
             binding: Some(binding),
             timeline: Some(Value::Object(timeline)),
@@ -3339,8 +3947,8 @@ where
             "timeline.json.session_manifest references missing recorder manifest {reference:?}"
         ))
     })?;
-    validate_recorder_product_admission(&manifest)?;
-    let binding = recorder_manifest_binding_value(&manifest, &reference)?;
+    let product_admission = validate_recorder_product_admission(&manifest)?;
+    let binding = recorder_manifest_binding_value(&manifest, &reference, product_admission)?;
     Ok(MetadataRoute {
         binding: Some(binding),
         timeline: Some(Value::Object(timeline)),
@@ -3359,12 +3967,60 @@ fn parse_metadata_object(bytes: &[u8], context: &str) -> Result<Map<String, Valu
 }
 
 /// Reject recorder manifests that explicitly describe a recovery/quarantined
-/// artifact or an incomplete production profile. Missing fields remain legacy
-/// compatibility; once an authority is present it must positively admit the
-/// artifact rather than relying on defaults.
+/// artifact, or a capture whose named shortfall is not one a capture is allowed
+/// to have. Missing fields remain legacy compatibility; once an authority is
+/// present it must positively admit the artifact rather than relying on
+/// defaults.
+///
+/// # The late-attach admission (owner ruling, 2026-08-14)
+///
+/// This used to refuse any capture whose `production_profile.enabled` was not
+/// `true`. That refused EVERY capture the shipped product can make, and every
+/// committed capture in the tree, for a reason none of them can act on:
+/// `--profile production` is early-launch-only. Its finalizer builds the
+/// portable content manifest from the effective-VFS content observation
+/// authenticated in-process before `ResumeThread`, so it requires the
+/// in-memory early-launch manifest and the authenticated early process receipt
+/// (`recorder_host/src/main.rs`, the `cfg.production` content-manifest arm) —
+/// neither of which exists on a `--pid` attach. The shipped product is a late
+/// attach and deliberately does not run the profile at all
+/// (`recorder_host/src/main.rs::product_auto_attach_worker_args`: "Do not pass
+/// `--profile production` here. That profile additionally requires a
+/// process-bound, pre-injection static bundle. The ordinary late-attach product
+/// cannot fabricate or rebind that evidence."). Capture is attach-and-play, so
+/// the gate as written refused the product it exists to admit.
+///
+/// The carve-out is reasoned rather than blanket, and it is exactly three
+/// rules.
+///
+/// 1. WHAT MAY BE MISSING IS AN ABSENCE, AND AN ABSENCE IS ACCOUNTED FOR, NOT
+///    FATAL. `profile_domains_not_scheduled` names domains this capture never
+///    scheduled and `missing_required_static_artifacts` names artifacts it
+///    never carried. Both are already first-class absences downstream — an
+///    unscheduled domain reads `DomainAbsent` at every hour, and an absent
+///    static artifact answers `None` from [`ReplaySource::static_artifact`] and
+///    is never fabricated. Destroying the whole recording over an accounted
+///    absence is the thing `AGENTS.md` forbids: "A bad hour costs that hour
+///    with a named reason — never the recording."
+/// 2. WHAT MAY NOT BE MISSING IS CORRECTNESS.
+///    `mandatory_domains_not_production_complete` is not a scope fact about
+///    this capture at all — the recorder computes it from the descriptor
+///    STATUSES its own build carries
+///    (`compact_contract::mandatory_profile_domains_not_production_complete`).
+///    No attach mode explains it, and it says the data the capture DID deliver
+///    for those domains is not production data. It refuses, enabled or not.
+/// 3. A CAPTURE THAT CLAIMS THE PROFILE IS HELD TO ALL OF IT. When
+///    `enabled == true` every list must be empty, exactly as before. The
+///    carve-out only ever widens the `enabled == false` case.
+///
+/// Fail-closed on everything else: `enabled` must be present and boolean (an
+/// absent or non-boolean value is a malformed authority, not a false one), each
+/// of the three lists must be present and an array of strings, and the returned
+/// [`RecorderProductAdmission`] carries the named shortfall into the opened
+/// recording's provenance so no consumer has to rediscover it.
 fn validate_recorder_product_admission(
     manifest: &Map<String, Value>,
-) -> Result<(), SourceError> {
+) -> Result<RecorderProductAdmission, SourceError> {
     if let Some(value) = manifest.get("replay_artifact") {
         let artifact = value.as_object().ok_or_else(|| {
             SourceError::Open("recorder replay_artifact authority is not an object".into())
@@ -3382,36 +4038,219 @@ fn validate_recorder_product_admission(
             ));
         }
     }
-    if let Some(value) = manifest.get("production_profile") {
-        let profile = value.as_object().ok_or_else(|| {
-            SourceError::Open("recorder production_profile authority is not an object".into())
+    let Some(value) = manifest.get("production_profile") else {
+        return Ok(RecorderProductAdmission::unstated());
+    };
+    let profile = value.as_object().ok_or_else(|| {
+        SourceError::Open("recorder production_profile authority is not an object".into())
+    })?;
+    let enabled = profile
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            SourceError::Open(
+                "recorder production_profile.enabled is absent or is not a boolean".into(),
+            )
         })?;
-        if profile.get("enabled").and_then(Value::as_bool) != Some(true) {
-            return Err(SourceError::Open(
-                "recorder production profile is not positively enabled".into(),
-            ));
+    let read_list = |field: &str| -> Result<Vec<String>, SourceError> {
+        let rows = profile.get(field).and_then(Value::as_array).ok_or_else(|| {
+            SourceError::Open(format!(
+                "recorder production_profile.{field} is absent or is not an array"
+            ))
+        })?;
+        rows.iter()
+            .enumerate()
+            .map(|(index, row)| {
+                row.as_str().map(str::to_string).ok_or_else(|| {
+                    SourceError::Open(format!(
+                        "recorder production_profile.{field}[{index}] is not a string"
+                    ))
+                })
+            })
+            .collect()
+    };
+    // Read all three before judging any: a malformed list is a malformed
+    // authority whichever branch would have looked at it.
+    let mandatory_domains_not_production_complete =
+        read_list("mandatory_domains_not_production_complete")?;
+    let profile_domains_not_scheduled = read_list("profile_domains_not_scheduled")?;
+    let missing_required_static_artifacts = read_list("missing_required_static_artifacts")?;
+
+    // CHECK THE DECLARED DIFFERENCE AGAINST THE ROSTERS IT IS A DIFFERENCE OF,
+    // AS FAR AS REPLAY CAN.
+    //
+    // `profile_domains_not_scheduled` was believed outright, so a manifest
+    // could name a profile domain, omit it from `scheduled_domains`, and still
+    // declare nothing unscheduled — reporting the full schedule as held while
+    // the domain read `DomainAbsent` at every hour (Codex round 4, HIGH).
+    //
+    // THE LIMIT, AND WHY IT IS A LIMIT RATHER THAN A CHOICE. The recorder
+    // computes its own difference by RESOLVED DOMAIN ID, and `scheduled_domains`
+    // is the operator's vocabulary verbatim, which admits legacy aliases —
+    // `state_ownership` resolves to the same domain as the profile's
+    // `map_control` (Codex round 5, HIGH). Replay cannot resolve them: the
+    // replay workspace takes no dependency on the extractor's domain registry
+    // (`game_ui/tests/replay_dependency_boundary.rs`), and re-deriving that
+    // table here is exactly the harness drift the project forbids. So the
+    // set-difference `profile_domains - scheduled_domains` is NOT computable
+    // here without inventing a domain as missing and refusing a legitimate
+    // full-profile recording — a false refusal, which is worse than the
+    // over-trust it would replace.
+    //
+    // What IS sound, and is enforced below:
+    //   * both rosters are arrays of strings with no repeats;
+    //   * every declared name is a member of `profile_domains` — the
+    //     declaration and that roster are built from the same descriptors, so
+    //     both are canonical wire names and no alias can appear;
+    //   * a declared-unscheduled name may not appear verbatim in
+    //     `scheduled_domains`. An alias simply does not fire this check, so it
+    //     can never refuse a real recording, and it catches a manifest claiming
+    //     a domain was unscheduled that its own schedule names.
+    //
+    // The direction that stays unchecked is a manifest UNDER-declaring, and the
+    // one step that closes it is producer-side: the recorder publishing the
+    // profile domains it actually scheduled by canonical wire name, alongside
+    // the difference it already publishes. Replay would then reconcile exactly,
+    // with no registry of its own.
+    let unique_names = |rows: &Vec<String>, field: &str| -> Result<BTreeSet<String>, SourceError> {
+        let set = rows.iter().cloned().collect::<BTreeSet<_>>();
+        if set.len() != rows.len() {
+            return Err(SourceError::Open(format!(
+                "recorder {field} repeats a domain name ({rows:?})"
+            )));
         }
-        for field in [
-            "mandatory_domains_not_production_complete",
-            "profile_domains_not_scheduled",
-            "missing_required_static_artifacts",
-        ] {
-            let rows = profile
-                .get(field)
+        Ok(set)
+    };
+    let profile_domains = unique_names(
+        &{
+            let rows = profile.get("profile_domains").and_then(Value::as_array).ok_or_else(|| {
+                SourceError::Open(
+                    "recorder production_profile.profile_domains is absent or is not an array"
+                        .into(),
+                )
+            })?;
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    row.as_str().map(str::to_string).ok_or_else(|| {
+                        SourceError::Open(format!(
+                            "recorder production_profile.profile_domains[{index}] is not a string"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        },
+        "production_profile.profile_domains",
+    )?;
+    let scheduled_domains = unique_names(
+        &{
+            let rows = manifest
+                .get("scheduled_domains")
                 .and_then(Value::as_array)
                 .ok_or_else(|| {
-                    SourceError::Open(format!(
-                        "recorder production_profile.{field} is absent or is not an array"
-                    ))
+                    SourceError::Open(
+                        "recorder manifest scheduled_domains is absent or is not an array while a \
+                         production_profile authority is present"
+                            .into(),
+                    )
                 })?;
+            rows.iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    row.as_str().map(str::to_string).ok_or_else(|| {
+                        SourceError::Open(format!(
+                            "recorder manifest scheduled_domains[{index}] is not a string"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        },
+        "manifest scheduled_domains",
+    )?;
+    let declared_not_scheduled = unique_names(
+        &profile_domains_not_scheduled,
+        "production_profile.profile_domains_not_scheduled",
+    )?;
+    if let Some(unknown) = declared_not_scheduled
+        .iter()
+        .find(|name| !profile_domains.contains(*name))
+    {
+        return Err(SourceError::Open(format!(
+            "recorder production_profile.profile_domains_not_scheduled names {unknown:?}, which is \
+             not in production_profile.profile_domains"
+        )));
+    }
+    if let Some(contradicted) = declared_not_scheduled
+        .intersection(&scheduled_domains)
+        .next()
+    {
+        return Err(SourceError::Open(format!(
+            "recorder production_profile.profile_domains_not_scheduled names {contradicted:?}, \
+             which the manifest's own scheduled_domains carries"
+        )));
+    }
+
+    // Rule 2. A producer that is not production-complete is a correctness
+    // statement about the recorder build, not a scope statement about this
+    // capture, so no attach mode carves it out.
+    if !mandatory_domains_not_production_complete.is_empty() {
+        return Err(SourceError::Open(format!(
+            "recorder production_profile.mandatory_domains_not_production_complete is nonempty \
+             ({mandatory_domains_not_production_complete:?}); those domains' producers are not \
+             production-complete in the recording's own recorder build, which no capture mode \
+             explains and which the late-attach admission does not cover"
+        )));
+    }
+
+    // Rule 3. A capture that claims the profile is held to all of it.
+    if enabled {
+        for (field, rows) in [
+            (
+                "profile_domains_not_scheduled",
+                &profile_domains_not_scheduled,
+            ),
+            (
+                "missing_required_static_artifacts",
+                &missing_required_static_artifacts,
+            ),
+        ] {
             if !rows.is_empty() {
                 return Err(SourceError::Open(format!(
-                    "recorder production_profile.{field} is nonempty"
+                    "recorder production_profile.{field} is nonempty ({rows:?}) while \
+                     production_profile.enabled is true; a capture that claims the production \
+                     profile must satisfy all of it"
                 )));
             }
         }
+        return Ok(RecorderProductAdmission {
+            authority: ProductionProfileAuthority::Enabled,
+            guarantees_not_held: Vec::new(),
+            profile_domains_not_scheduled,
+            missing_required_static_artifacts,
+            static_artifacts_not_content_bound: Vec::new(),
+        });
     }
-    Ok(())
+
+    // Rule 1. Admit, naming every guarantee the capture does not hold.
+    let mut guarantees_not_held = vec![ProductionProfileGuarantee::ProductionProfileEnabled];
+    if !profile_domains_not_scheduled.is_empty() {
+        guarantees_not_held.push(ProductionProfileGuarantee::FullProfileDomainSchedule);
+    }
+    // `RequiredStaticArtifacts` is NOT decided here. It is the one guarantee
+    // replay can verify against the package rather than take on the manifest's
+    // word, and it is decided once, at the roster join
+    // ([`MetadataRoute::admit_static_artifacts`]), from what the package holds.
+    // Two places deciding one guarantee — one from the declaration, one from
+    // the package — is what let them disagree (Codex round 8, MEDIUM).
+    guarantees_not_held.sort_unstable();
+    guarantees_not_held.dedup();
+    Ok(RecorderProductAdmission {
+        authority: ProductionProfileAuthority::Disabled,
+        guarantees_not_held,
+        profile_domains_not_scheduled,
+        missing_required_static_artifacts,
+        static_artifacts_not_content_bound: Vec::new(),
+    })
 }
 
 fn read_optional_metadata_object_once<F>(
@@ -3453,6 +4292,7 @@ fn session_manifest_reference(
 fn recorder_manifest_binding_value(
     root: &Map<String, Value>,
     reference: &str,
+    product_admission: RecorderProductAdmission,
 ) -> Result<RecorderSessionBinding, SourceError> {
     let campaign_identity = recorder_campaign_identity(&root, reference)?;
     let modset = root
@@ -3584,6 +4424,7 @@ fn recorder_manifest_binding_value(
         localisation_language,
         display_variant,
         campaign_identity,
+        product_admission,
     })
 }
 
@@ -4422,6 +5263,12 @@ impl ReplaySource for IndexedReplaySource {
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
 
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        self.recorder_binding
+            .as_ref()
+            .map(|binding| &binding.product_admission)
+    }
+
 
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -4541,6 +5388,12 @@ impl ReplaySource for SpooledPrefoldedSource {
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
 
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        self.recorder_binding
+            .as_ref()
+            .map(|binding| &binding.product_admission)
+    }
+
 
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -4648,6 +5501,12 @@ impl ReplaySource for PrefoldedSource {
             .and_then(|binding| binding.campaign_identity.as_ref())
     }
 
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        self.recorder_binding
+            .as_ref()
+            .map(|binding| &binding.product_admission)
+    }
+
 
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -4743,6 +5602,12 @@ impl ReplaySource for StoreSource {
         self.recorder_binding
             .as_ref()
             .and_then(|binding| binding.campaign_identity.as_ref())
+    }
+
+    fn product_admission(&self) -> Option<&RecorderProductAdmission> {
+        self.recorder_binding
+            .as_ref()
+            .map(|binding| &binding.product_admission)
     }
     fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
         self.g2_engine_capture.as_ref()
@@ -5179,6 +6044,7 @@ mod tests {
     #[test]
     fn recorder_recovery_and_incomplete_production_profiles_are_not_playable() {
         let admitted = json!({
+            "scheduled_domains": ["fuel_live"],
             "replay_artifact": {
                 "recovery": false,
                 "reason": "gate_passed",
@@ -5186,12 +6052,17 @@ mod tests {
             },
             "production_profile": {
                 "enabled": true,
+                "profile_domains": ["fuel_live"],
                 "mandatory_domains_not_production_complete": [],
                 "profile_domains_not_scheduled": [],
                 "missing_required_static_artifacts": [],
             },
         });
-        validate_recorder_product_admission(admitted.as_object().unwrap()).unwrap();
+        let full = validate_recorder_product_admission(admitted.as_object().unwrap()).unwrap();
+        assert!(
+            full.is_full_production_profile(),
+            "an enabled profile with three empty lists holds every guarantee"
+        );
 
         let mut recovery = admitted.clone();
         recovery["replay_artifact"]["recovery"] = json!(true);
@@ -5213,6 +6084,7 @@ mod tests {
         );
 
         let mut incomplete = json!({
+            "scheduled_domains": ["fuel_live"],
             "replay_artifact": {
                 "recovery": false,
                 "reason": "gate_passed",
@@ -5220,6 +6092,7 @@ mod tests {
             },
             "production_profile": {
                 "enabled": true,
+                "profile_domains": ["fuel_live", "technology_mio_live"],
                 "mandatory_domains_not_production_complete": [],
                 "profile_domains_not_scheduled": [],
                 "missing_required_static_artifacts": [],
@@ -5248,6 +6121,285 @@ mod tests {
             )
             .is_err(),
             "present admission authorities must be complete and positive"
+        );
+    }
+
+    /// kills: dropping the `enabled == false` carve-out (case 1 stops
+    /// admitting), carving out `mandatory_domains_not_production_complete`
+    /// (case 4 stops refusing), letting the carve-out leak into an enabled
+    /// profile (case 5 stops refusing), losing the named shortfall on the way
+    /// into provenance (cases 1-3 stop naming it), or accepting a
+    /// non-boolean/absent `enabled` or a non-string list element as a false
+    /// value (cases 6-7 stop refusing).
+    ///
+    /// The production change each case is aimed at is the SHORTEST fix someone
+    /// under pressure would reach for: "just accept anything when the profile
+    /// is off". That is exactly what cases 4 and 5 forbid, and they are the
+    /// reason this is a carve-out and not a loosening.
+    #[test]
+    fn late_attach_captures_are_admitted_with_their_shortfall_named() {
+        // The two rosters the declared difference is a difference OF are built
+        // consistently: the profile is a fixed pair plus whatever this case
+        // says is unscheduled, and the schedule is the fixed pair.
+        let late_attach = |mandatory: Value, domains: Value, artifacts: Value, enabled: bool| {
+            let scheduled = ["fuel_live", "production_live"];
+            let mut profile_domains = scheduled.iter().map(|d| json!(d)).collect::<Vec<_>>();
+            profile_domains.extend(domains.as_array().expect("domain list").iter().cloned());
+            json!({
+                "scheduled_domains": scheduled,
+                "replay_artifact": {
+                    "recovery": false,
+                    "reason": "gate_passed",
+                    "gate_problems": [],
+                },
+                "production_profile": {
+                    "enabled": enabled,
+                    "profile_domains": profile_domains,
+                    "mandatory_domains_not_production_complete": mandatory,
+                    "profile_domains_not_scheduled": domains,
+                    "missing_required_static_artifacts": artifacts,
+                },
+            })
+        };
+
+        // 1. The shipped attach-and-play product: profile off, full runtime
+        // roster scheduled, one required static artifact not carried. Admitted,
+        // with the profile bit named as not held.
+        //
+        // `RequiredStaticArtifacts` is deliberately absent from what THIS
+        // function returns: it is decided against the package at the roster
+        // join, not from the declaration, so that one guarantee and the list
+        // naming it cannot disagree. The declaration read here is what the join
+        // reconciles the package against, and the guarantee itself is covered
+        // by `tests/world_timeline.rs` end to end.
+        let product = late_attach(json!([]), json!([]), json!(["focus_defs_static"]), false);
+        let admission =
+            validate_recorder_product_admission(product.as_object().unwrap()).expect(
+                "a late-attach capture must open; --profile production is early-launch-only",
+            );
+        assert!(!admission.is_full_production_profile());
+        assert_eq!(
+            admission.guarantees_not_held,
+            vec![ProductionProfileGuarantee::ProductionProfileEnabled]
+        );
+        assert_eq!(
+            admission.missing_required_static_artifacts,
+            vec!["focus_defs_static".to_string()],
+            "the declaration is read verbatim here; the roster join replaces it with the \
+             package's own answer after proving the two agree"
+        );
+        assert!(admission.profile_domains_not_scheduled.is_empty());
+
+        // 2. A narrower probe additionally leaves profile domains unscheduled.
+        // Still an accounted absence, still admitted, now naming all three.
+        let probe = late_attach(
+            json!([]),
+            json!(["decision_panel_live"]),
+            json!(["focus_defs_static"]),
+            false,
+        );
+        let admission =
+            validate_recorder_product_admission(probe.as_object().unwrap()).unwrap();
+        assert_eq!(
+            admission.guarantees_not_held,
+            vec![
+                ProductionProfileGuarantee::ProductionProfileEnabled,
+                ProductionProfileGuarantee::FullProfileDomainSchedule,
+            ]
+        );
+        assert_eq!(
+            admission.profile_domains_not_scheduled,
+            vec!["decision_panel_live".to_string()]
+        );
+
+        // 3. A capture that scheduled and carried everything but never claimed
+        // the profile loses exactly one guarantee, and names nothing missing.
+        let admission =
+            validate_recorder_product_admission(
+                late_attach(json!([]), json!([]), json!([]), false)
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            admission.guarantees_not_held,
+            vec![ProductionProfileGuarantee::ProductionProfileEnabled]
+        );
+
+        // 4. THE LINE. A domain whose producer is not production-complete is a
+        // statement about the recorder BUILD, not about how this capture
+        // attached, so turning the profile off does not carve it out.
+        let error = validate_recorder_product_admission(
+            late_attach(json!(["weather_live"]), json!([]), json!([]), false)
+                .as_object()
+                .unwrap(),
+        )
+        .expect_err("a not-production-complete producer refuses whether or not the profile ran");
+        assert!(error
+            .to_string()
+            .contains("mandatory_domains_not_production_complete"));
+
+        // 5. The carve-out never reaches a capture that CLAIMS the profile.
+        let error = validate_recorder_product_admission(
+            late_attach(json!([]), json!([]), json!(["focus_defs_static"]), true)
+                .as_object()
+                .unwrap(),
+        )
+        .expect_err("a capture claiming the production profile must satisfy all of it");
+        assert!(error
+            .to_string()
+            .contains("missing_required_static_artifacts"));
+
+        // 6. A malformed authority is malformed, not permissive: an absent or
+        // non-boolean `enabled` is refused rather than read as `false`.
+        //
+        // The ABSENT case is separate from the non-boolean ones and is checked
+        // on an otherwise fully valid manifest. Folding it into a fixture that
+        // is also missing `replay_artifact.gate_problems` would let a change
+        // that defaults only an absent `enabled` to `false` pass, because that
+        // fixture fails earlier for an unrelated reason (Codex round 1, LOW).
+        let mut absent = late_attach(json!([]), json!([]), json!([]), false);
+        absent["production_profile"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        let error = validate_recorder_product_admission(absent.as_object().unwrap())
+            .expect_err("an absent enabled is a malformed authority, not a false one");
+        assert!(error
+            .to_string()
+            .contains("enabled is absent or is not a boolean"));
+
+        for broken in [json!(null), json!("false"), json!(0)] {
+            let mut manifest = late_attach(json!([]), json!([]), json!([]), false);
+            manifest["production_profile"]["enabled"] = broken.clone();
+            let error = validate_recorder_product_admission(manifest.as_object().unwrap())
+                .expect_err("a non-boolean enabled is a malformed authority");
+            assert!(
+                error.to_string().contains("enabled is absent or is not a boolean"),
+                "{broken} was not refused as a malformed authority: {error}"
+            );
+        }
+
+        // 7. The lists now reach provenance, so their elements are typed.
+        let mut manifest = late_attach(json!([]), json!([]), json!([]), false);
+        manifest["production_profile"]["profile_domains_not_scheduled"] = json!([7]);
+        let error = validate_recorder_product_admission(manifest.as_object().unwrap())
+            .expect_err("a non-string list element is a malformed authority");
+        assert!(error
+            .to_string()
+            .contains("profile_domains_not_scheduled[0] is not a string"));
+
+        // 7b. THE DECLARED DIFFERENCE IS CHECKED AGAINST THE ROSTERS IT IS A
+        // DIFFERENCE OF, in the one direction replay can compute. Declaring a
+        // domain unscheduled that the manifest's own schedule names is a
+        // contradiction inside one document, and no alias can produce it: both
+        // the declaration and `profile_domains` are canonical wire names, so a
+        // hit here means the schedule spelled it canonically too.
+        let mut overstated = late_attach(json!([]), json!(["fuel_live"]), json!([]), false);
+        overstated["production_profile"]["profile_domains"] =
+            json!(["fuel_live", "production_live"]);
+        let error = validate_recorder_product_admission(overstated.as_object().unwrap())
+            .expect_err("a scheduled domain may not be declared unscheduled");
+        assert!(error
+            .to_string()
+            .contains("which the manifest's own scheduled_domains carries"));
+
+        // THE OTHER DIRECTION IS DELIBERATELY NOT CHECKED, and this case is
+        // here to say so rather than to leave the gap unnamed. A manifest that
+        // lists a profile domain, omits it from `scheduled_domains` and still
+        // declares nothing unscheduled is ADMITTED: `scheduled_domains` is the
+        // operator's vocabulary and admits legacy aliases the extractor's
+        // registry resolves (`state_ownership` is the same domain as the
+        // profile's `map_control`), and the replay workspace may not depend on
+        // that registry. Computing the difference here would refuse a
+        // legitimate aliased full-profile recording — a false refusal, which is
+        // worse. The closing step is producer-side and is named in the function
+        // docs (Codex round 5, HIGH).
+        let mut understated = late_attach(json!([]), json!([]), json!([]), false);
+        understated["production_profile"]["profile_domains"] =
+            json!(["fuel_live", "production_live", "decision_panel_live"]);
+        let admission = validate_recorder_product_admission(understated.as_object().unwrap())
+            .expect("under-declaration is not computable here; see the function docs");
+        assert_eq!(
+            admission.guarantees_not_held,
+            vec![ProductionProfileGuarantee::ProductionProfileEnabled],
+            "if this ever starts naming FullProfileDomainSchedule, the difference became \
+             computable and the comment above is stale"
+        );
+
+        // An aliased schedule must NOT be refused. This is the false refusal
+        // the check above was rewritten to avoid: `map_control` is a profile
+        // domain, the schedule carries its legacy alias, and the difference is
+        // correctly declared empty.
+        let mut aliased = late_attach(json!([]), json!([]), json!([]), true);
+        aliased["production_profile"]["profile_domains"] = json!(["map_control"]);
+        aliased["scheduled_domains"] = json!(["state_ownership"]);
+        validate_recorder_product_admission(aliased.as_object().unwrap())
+            .expect("a legitimate full-profile capture scheduling a legacy alias must open");
+
+        // A declared name outside the profile roster is named as such.
+        let mut foreign = late_attach(json!([]), json!([]), json!([]), false);
+        foreign["production_profile"]["profile_domains_not_scheduled"] =
+            json!(["not_a_profile_domain"]);
+        let error = validate_recorder_product_admission(foreign.as_object().unwrap())
+            .expect_err("a name outside the profile roster must refuse");
+        assert!(error
+            .to_string()
+            .contains("is not in production_profile.profile_domains"));
+
+        // Repeats in either roster are malformed, not tolerated by set logic.
+        let mut repeated = late_attach(json!([]), json!([]), json!([]), false);
+        repeated["scheduled_domains"] = json!(["fuel_live", "fuel_live", "production_live"]);
+        let error = validate_recorder_product_admission(repeated.as_object().unwrap())
+            .expect_err("a repeated scheduled domain is malformed");
+        assert!(error.to_string().contains("repeats a domain name"));
+
+        // 8. No `production_profile` authority at all: nothing is claimed, so
+        // the profile bit is not held and nothing is named missing.
+        let unstated = json!({
+            "replay_artifact": {
+                "recovery": false,
+                "reason": "gate_passed",
+                "gate_problems": [],
+            },
+        });
+        let admission =
+            validate_recorder_product_admission(unstated.as_object().unwrap()).unwrap();
+        assert_eq!(admission, RecorderProductAdmission::unstated());
+        assert_eq!(admission.authority, ProductionProfileAuthority::Unstated);
+        // Both MANIFEST-ONLY guarantees, not just the profile bit: an absent
+        // authority evidences the schedule exactly as little as it evidences
+        // the profile. `RequiredStaticArtifacts` is not here because it is
+        // verifiable against the package and is decided there.
+        assert_eq!(
+            admission.guarantees_not_held,
+            vec![
+                ProductionProfileGuarantee::ProductionProfileEnabled,
+                ProductionProfileGuarantee::FullProfileDomainSchedule,
+            ]
+        );
+
+        // 9. The three authority states are distinguishable, so "said nothing"
+        // is never read as "said it fell short" or the reverse.
+        assert_eq!(
+            validate_recorder_product_admission(
+                late_attach(json!([]), json!([]), json!([]), false)
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap()
+            .authority,
+            ProductionProfileAuthority::Disabled
+        );
+        assert_eq!(
+            validate_recorder_product_admission(
+                late_attach(json!([]), json!([]), json!([]), true)
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap()
+            .authority,
+            ProductionProfileAuthority::Enabled
         );
     }
 

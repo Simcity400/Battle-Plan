@@ -17,9 +17,9 @@ pub const XUI08_EXECUTABLE_SHA256: &str =
 // Hashes of committed Replay-side contract/evidence manifests.  Recordings
 // cannot authorize themselves by supplying arbitrary syntax-shaped hashes.
 pub const XUI08_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
-    "d6e57de2430c3957b4cf45929fbacad46e85a5b42a3a8935b061ab88cb104785";
+    "2d54f7ee3610af7f8aff97268c0c56e71674e408329daaaa6f6132e523a1f08c";
 pub const XUI08_EVIDENCE_MANIFEST_SHA256: &str =
-    "36e3797eb90b6adb48e5206c5577e60201cfee6ff1778c28291dc8d869cbd06d";
+    "c531145bd016c548bf1641f68cc542300fbaa333c2bdec174ccfd380078f7253";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -220,6 +220,21 @@ pub struct PeaceResultPresentationExact {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeaceConferencePresentationObservationExact {
+    /// The game state holds no peace conference, so there is no panel to
+    /// present. The mirror of
+    /// [`crate::world::PeaceConferenceObservationExact::NoConferenceInProgress`],
+    /// and it pairs only with it.
+    ///
+    /// This carrier's admission requires a same-frame d97 lifecycle witness. On
+    /// the ordinary hour that witness IS the measured-empty kind, so without
+    /// this variant an XUI08 record could never be admitted on nearly any hour
+    /// of any capture, whatever it said — the pairing match would fall through
+    /// to its refusing arm. Gap map GP-F15.
+    ///
+    /// Empty struct form for the same reason as its d97 mirror: it keeps
+    /// `deny_unknown_fields`, which a unit variant in an internally tagged enum
+    /// would not.
+    NoConferenceInProgress {},
     Inactive {
         refresh_sequence: u64,
     },
