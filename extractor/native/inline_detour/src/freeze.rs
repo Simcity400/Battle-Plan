@@ -4949,6 +4949,18 @@ mod tests {
     /// The held window is 2 ms, which is 2 ms of test process stopped. That is
     /// the cost of asking the question at all, it is bounded, and it is paid by
     /// a test rather than by a game.
+    ///
+    /// A thread already terminating in the kernel can exhaust the pass budget
+    /// with `SuspendThread` returning `ERROR_ACCESS_DENIED` before its thread
+    /// object is signalled -- the module doc's documented rare gap, and under a
+    /// fully loaded machine (the central battery runs 16 binaries at once, and
+    /// the ship target is a loaded 4-core box) the dying thread may not get a
+    /// quantum before ~100 us passes burn the budget. That named refusal is
+    /// fail-closed -- no byte was touched, and the shipped install unit retries
+    /// it -- NOT a successful freeze that missed a running thread. So that one
+    /// refusal is tolerated and the round retried; every other refusal still
+    /// fails, and the assertion after the loop refuses the vacuous run where
+    /// no freeze was ever successfully held.
     #[test]
     fn threads_churning_during_the_freeze_are_all_accounted_for() {
         let _serialised = os_suspend_state_guard();
@@ -4992,8 +5004,16 @@ mod tests {
         // workers spinning would leave them running for the rest of this
         // binary's life and every later test would measure a busier machine.
         let mut failure: Option<String> = None;
+        let mut successful_held_freezes = 0u32;
+        let mut tolerated_access_denied_refusals = 0u32;
         for round in 0..25 {
             match freeze_other_threads() {
+                Err(FreezeRefusal::ThreadSuspend { os_error, .. })
+                    if os_error == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED =>
+                {
+                    tolerated_access_denied_refusals += 1;
+                    continue;
+                }
                 Err(refusal) => {
                     failure = Some(format!(
                         "round {round}: threads exiting mid-enumeration must not                          refuse the freeze: {refusal}"
@@ -5046,6 +5066,7 @@ mod tests {
                         ));
                         break;
                     }
+                    successful_held_freezes += 1;
                 }
             }
         }
@@ -5071,6 +5092,10 @@ mod tests {
         if let Some(failure) = failure {
             panic!("{failure}");
         }
+        assert!(
+            successful_held_freezes > 0,
+            "all 25 attempts ended in the documented access-denied refusal              ({tolerated_access_denied_refusals} tolerated); no successful freeze              was held, so this run did not exercise the property"
+        );
         assert!(
             resumed,
             "the churn never advanced again after the freezes were dropped, so              the held-window observation above proved nothing"
