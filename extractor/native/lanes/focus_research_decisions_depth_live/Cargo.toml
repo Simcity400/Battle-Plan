@@ -15,6 +15,13 @@ path = "src/bin/proof_from_stream.rs"
 compact_contract = { path = "../../compact_contract" }
 direct_frd_transitions_live = { path = "../direct_frd_transitions_live" }
 recorder_host = { path = "../../recorder_host" }
+serde_json = "1"
+# The SAME SHA-256 the XUI09 consumer seals with: `snapshot` is the extractor's
+# facade over `portable_replay/native/snapshot`, which is the crate
+# `game_ui/src/research_observer.rs` calls. The producer-side witness law in
+# `xui09_research_contract` recomputes the consumer's canonical digests, and a
+# second implementation of SHA-256 would be a second thing to keep in step.
+snapshot = { path = "../../snapshot" }
 
 [features]
 default = []

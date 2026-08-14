@@ -474,6 +474,8 @@ dependencies = [
  "inline_detour",
  "minhook",
  "recorder_host",
+ "serde_json",
+ "snapshot",
  "windows-sys",
 ]
 

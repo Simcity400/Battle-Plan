@@ -18,6 +18,7 @@ mod a729_focus_item_inline;
 #[cfg(windows)]
 pub mod a729_research_ahead_hook;
 pub mod national_focus_presentation;
+pub mod xui09_research_contract;
 
 pub const DOMAIN_ID: u16 = 45;
 pub const DOMAIN_NAME: &str = "focus_research_decisions_depth_live";
