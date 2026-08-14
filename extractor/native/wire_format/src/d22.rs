@@ -1,8 +1,8 @@
 //! d22 `map_control_live` — who owns and who controls every state and province.
 //!
-//! Derived from `world_fold.rs:27568`-`:27689`
+//! Derived from `world_fold.rs:27475`-`:27599`
 //! (`fold_map_control`), its row-length constants at `:386`-`:387`, the projection
-// @world-fold-authority domain=22 functions=fold_map_control lines=27568-27689 sha256=9728e9c9d630963a2f6a611a09d2bc50e139530077d52cdf2c3aa5d5b5a927b9 closure=d2d4dfce110f5debccf9d0dae953b5803055629a3f3126d335a099ed78915814
+// @world-fold-authority domain=22 functions=fold_map_control lines=27475-27599 sha256=a7d6ab7667e6dadaec96b4ea080fa1b51be9deb9d7b3f88f9c0f4d736e98bfe2 closure=b925cf77fd6dd5561c09e5d5d4b7680df28c6a13f42815d4dc1d3dc0a9ae70e7
 //! that merges its output into the shared state/province objects (`world_fold.rs::build_snapshot`),
 //! and the collector read and payload writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:59480`-`:59538`,
@@ -137,6 +137,42 @@
 //! **No derived field (§6).** Nothing in d22 changes deterministically with the
 //! clock: ownership and control move on player and AI action. The mappers still
 //! take `frame_tick` so every domain's boundary has one shape.
+//!
+//! ## The snapshot's three TAG mirrors, and what MAPC1 certifies (GP-U15)
+//!
+//! Besides the per-state and per-province objects, d22 is the sole producer of
+//! `map.owner_by_state`, `map.control_by_state` and `map.control_by_province` —
+//! the flat id -> TAG tables replay's raster paths read. All three are derived
+//! by ONE function
+//! (`recorder_host/src/world_fold/wave2_sidecars/xmap05_control_authority.rs::control_census`),
+//! which also mints `map._r2_xmap05_control_authority`, the MAPC1 envelope XMAP05
+//! requires (`map_viewer/src/production_features/xmap05.rs::admitted_epoch_keying`).
+//!
+//! A mirror row exists **iff** the cell holds a country id this hour's D18 map
+//! resolved to a TAG. The two rows that never reach a mirror are the two this
+//! module documents above:
+//!
+//! * a CLEARED GATE is a measurement — "read successfully, and it is zero". For a
+//!   province that means sea, lake or wasteland (`state_id` null too, 3,141 of
+//!   13,413 rows in `runs/batch1/deepwar_t1`); those rows have no controller to
+//!   mirror. Replay's own rule for these tables is that a MISSING id is genuinely
+//!   uncontrolled while an explicit null blocks the whole projection
+//!   (`replay_app/src/map_labels.rs::measured_control_by_province`), so a null row
+//!   in a mirror is not neutral — it is a refusal.
+//! * an UNRESOLVED `tag_db_id` keeps its numeric spelling in the snapshot's
+//!   state/province objects (`world_fold.rs` §0.2, never fabricate a TAG). It must
+//!   not reach a mirror, because replay's TAG charset is `[A-Z0-9_]` and would
+//!   accept `"286"` as a country.
+//!
+//! Neither exclusion loses anything: the state and province objects still carry
+//! every d22 row with its explicit nulls and numeric ids, and the unresolved ids
+//! are named in `provenance.notes`.
+//!
+//! The MAPC1 envelope is the statement that neither exclusion was needed —
+//! every state has a resolved owner and controller, every in-state province has a
+//! resolved controller — plus the counts and the five digests replay re-derives.
+//! When that does not hold the envelope is OMITTED (not nulled: the consumer
+//! collapses null and absence to one error) and the hour names the cause once.
 
 use crate::body::{key, Key, KeyedState};
 use crate::record::Record;

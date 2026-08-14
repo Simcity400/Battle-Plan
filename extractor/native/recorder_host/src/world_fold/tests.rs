@@ -7073,9 +7073,21 @@ fn folds_two_hours_full_then_delta_with_delete() {
     assert_eq!(a["states"]["5"]["controller"], json!("47"));
     assert_eq!(a["provinces"]["900"]["controller"], json!("47"));
     assert_eq!(a["provinces"]["900"]["state_id"], json!(5));
-    // map layer mirror
-    assert_eq!(a["map"]["owner_by_state"]["5"], json!("47"));
-    assert_eq!(a["map"]["control_by_province"]["900"], json!("47"));
+    // Map layer mirrors. This stream carries no D18 record, so ids 47 and 48
+    // resolve to no TAG and the mirrors publish the ROW with an explicit null
+    // rather than the numeric id (GP-U15): replay's TAG charset accepts "47" as a
+    // country, and dropping the row entirely would read as "genuinely unowned".
+    // The state and province objects above keep the numeric ids.
+    assert_eq!(a["map"]["owner_by_state"]["5"], Value::Null);
+    assert!(a["map"]["owner_by_state"]
+        .as_object()
+        .expect("owner mirror")
+        .contains_key("5"));
+    assert_eq!(a["map"]["control_by_province"]["900"], Value::Null);
+    assert!(a["map"]["control_by_province"]
+        .as_object()
+        .expect("province mirror")
+        .contains_key("900"));
 
     // ---- hour B assertions (delta applied) ----
     let (b_hi, _, b_bytes) = &snaps[1];
@@ -13501,8 +13513,17 @@ fn assert_state5_chunk1_fields_survive(snap: &Value) {
             .abs()
             < 0.0001
     );
-    assert_eq!(snap["map"]["owner_by_state"]["5"], json!("47"));
-    assert_eq!(snap["map"]["control_by_province"]["900"], json!("48"));
+    // This scenario feeds no D18 record at all, so ids 47 and 48 resolve to no
+    // TAG. The mirrors keep the ROWS and publish explicit nulls: dropping them
+    // would tell replay that state 5 is unowned and province 900 uncontrolled,
+    // which is false — somebody owns and controls them and this recording cannot
+    // name them. Before GP-U15 the mirrors published `"47"` and `"48"` verbatim,
+    // and replay's TAG charset (`[A-Z0-9_]`) accepts a numeric string as a
+    // country, so those rows were country-table indexes dressed as countries.
+    // The state and province objects above still carry the numeric ids in full.
+    assert_eq!(snap["map"]["owner_by_state"], json!({"5": Value::Null}));
+    assert_eq!(snap["map"]["control_by_state"], json!({"5": Value::Null}));
+    assert_eq!(snap["map"]["control_by_province"], json!({"900": Value::Null}));
 }
 
 #[test]
@@ -36223,5 +36244,480 @@ fn hw_the_producer_seams_the_xmap00_admission_reads() {
     assert!(
         !ger_politics.contains_key("capital_state"),
         "the D14 fold now emits politics.capital_state; promote country.current_capital_state"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// GP-U15 / XMAP00 #4-#6: the MAPC1 control-authority envelope over d22.
+// ---------------------------------------------------------------------------
+
+/// D18 payload with an explicit per-row cosmetic MARKER, including marker 0
+/// (absent). `country_identity_payload_with_cosmetic` can only express markers
+/// 1 and 2, and marker 0 is the only non-measured cosmetic state XMAP05's
+/// presentation-identity gate admits, so this carrier's tests need it.
+fn country_identity_payload_with_cosmetic_marker(
+    rows: &[(u32, &str, u8, Option<&str>)],
+) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u64.to_le_bytes()); // wall
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // row_count
+    p.extend_from_slice(&(rows.len() as u32).to_le_bytes()); // changed
+    p.extend_from_slice(&0u32.to_le_bytes()); // status
+    for (tag_db_id, tag, marker, cosmetic) in rows {
+        p.extend_from_slice(&tag_db_id.to_le_bytes());
+        push_str(&mut p, tag);
+        p.push(*marker);
+        if *marker == 2 {
+            push_str(&mut p, cosmetic.expect("marker 2 carries a string"));
+        }
+    }
+    p
+}
+
+/// The one scenario every MAPC1 test in this file folds: three countries, three
+/// states, three in-state provinces and two provinces that belong to no state.
+///
+/// GER carries a cosmetic override, FRA and ITA carry an UNREADABLE cosmetic
+/// field (marker 0 -> no `cosmetic_tag` key -> the consumer's `Leaf::Absent`).
+/// State 11 is owned by FRA and controlled by GER, so an owner/controller swap
+/// is observable rather than symmetric.
+fn mapc1_scenario_records() -> Vec<(u16, Vec<u8>)> {
+    // tag_db_id order is GER(2), ITA(7), FRA(9); TAG order is FRA, GER, ITA.
+    // The two deliberately DISAGREE: both digests are defined over TAG order, so
+    // a producer that forgot to sort would still pass a fixture whose numeric and
+    // TAG orders coincided, and would then disagree with the consumer on any real
+    // roster.
+    let identity = country_identity_payload_with_cosmetic_marker(&[
+        (2, "GER", 2, Some("GER_REICH")),
+        (7, "ITA", 0, None),
+        (9, "FRA", 0, None),
+    ]);
+    // Every country the snapshot emits must be one D18 resolved, or replay's
+    // roster is DomainUnavailable. Fuel is the cheapest domain that puts a
+    // country into the snapshot's `countries` object at all.
+    let fuel = fuel_payload(&[
+        (2, 32768, 32768, 0, 0),
+        (7, 32768, 32768, 0, 0),
+        (9, 32768, 32768, 0, 0),
+    ]);
+    // GER=2, ITA=7, FRA=9 from here down.
+    let mut map_control = Vec::new();
+    map_control_header(&mut map_control, 3, 5, 0);
+    push_state_row(&mut map_control, 10, 2, 2);
+    push_state_row(&mut map_control, 11, 9, 2);
+    push_state_row(&mut map_control, 12, 7, 7);
+    push_prov_row(&mut map_control, 100, 2, 10);
+    push_prov_row(&mut map_control, 101, 2, 11);
+    push_prov_row(&mut map_control, 102, 7, 12);
+    // Sea/lake/wasteland: `CProvince::state` is null, so both gates are clear.
+    push_prov_row(&mut map_control, 900, 0, 0);
+    push_prov_row(&mut map_control, 901, 0, 0);
+    vec![(18, identity), (10, fuel), (22, map_control)]
+}
+
+/// The producer/consumer contract fixture. Byte-identical to the constant of
+/// the same name in
+/// `replay_interface/native/map_viewer/src/production_features/xmap05.rs`;
+/// `runs/jc_gpu15_mapc1/mapc1_identity_agreement.py` fails if the two drift.
+const MAPC1_PRODUCER_FIXTURE_V1: &str = r#"{
+  "authority": {
+    "capture_sequence": 1,
+    "country_count": 3,
+    "country_remap_rva": "0x00ba6240",
+    "country_roster_sha256": "7a266f5ac7bb922069f63f6926e310e78acffd6b89ef125cd140b4a1ca1aa5d9",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "frame_hour": 16959360,
+    "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
+    "presentation_identity_sha256": "311fc905ed65b790c1419234199d95bec64cbd7a95e23143804d87b3e89d4c3a",
+    "presentation_independent": true,
+    "producer": "presentation-independent owner/controller epoch",
+    "province_controller_complete": true,
+    "province_controller_field_offset": "0x188",
+    "province_controller_sha256": "60addcb31d1fd462d5edb5ecc45df91d564358ffcf0d867075c9bf57d22fda07",
+    "province_count": 3,
+    "province_identity_order": "province_id_ascending",
+    "provinces_outside_state": 2,
+    "schema": "MAPC1",
+    "schema_version": 1,
+    "state_controller_complete": true,
+    "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
+    "state_count": 3,
+    "state_identity_order": "state_id_ascending",
+    "state_owner_complete": true,
+    "state_owner_sha256": "d1a66bc71abb2fb008c008e1036721b5f208c0fb0cfbfaeadda2754392ed85fc"
+  },
+  "owner_by_state": { "10": "GER", "11": "FRA", "12": "ITA" },
+  "control_by_state": { "10": "GER", "11": "GER", "12": "ITA" },
+  "control_by_province": { "100": "GER", "101": "GER", "102": "ITA" },
+  "country_roster": [
+    { "tag": "FRA", "tag_db_id": 9 },
+    { "tag": "GER", "tag_db_id": 2 },
+    { "tag": "ITA", "tag_db_id": 7 }
+  ],
+  "presentation_identity": { "GER": "GER_REICH" }
+}"#;
+
+/// kills: any change to what the producer puts on the wire for MAPC1 - a
+/// renamed or dropped envelope field, a different digest input, a census that
+/// stops excluding the two stateless provinces, an owner/controller swap, or a
+/// `capture_sequence` of 0. The fixture text is the same the consumer's own
+/// admission test parses (`MAPC1_PRODUCER_FIXTURE_V1` in
+/// `map_viewer/src/production_features/xmap05.rs`, kept identical by
+/// `runs/jc_gpu15_mapc1/mapc1_identity_agreement.py`), so a producer change this
+/// assertion accepts and the consumer would refuse cannot exist: one of the two
+/// tests fails.
+#[test]
+fn mapc1_envelope_and_mirrors_match_the_shared_contract_fixture() {
+    let snapshot = snapshot_for_domain_records(mapc1_scenario_records());
+    let fixture: Value =
+        serde_json::from_str(MAPC1_PRODUCER_FIXTURE_V1)
+            .expect("fixture is json");
+
+    let map = snapshot["map"].as_object().expect("map object");
+    assert_eq!(
+        map["_r2_xmap05_control_authority"], fixture["authority"],
+        "minted MAPC1 envelope"
+    );
+    for key in ["owner_by_state", "control_by_state", "control_by_province"] {
+        assert_eq!(map[key], fixture[key], "map.{key}");
+    }
+
+    // The roster and presentation halves of the fixture are what replay
+    // reconstructs out of `countries`, so assert the snapshot really carries
+    // them in the shape the consumer reads.
+    let countries = snapshot["countries"].as_object().expect("countries object");
+    let roster = fixture["country_roster"].as_array().expect("roster array");
+    assert_eq!(countries.len(), roster.len(), "countries == D18 roster");
+    for entry in roster {
+        let tag = entry["tag"].as_str().expect("roster tag");
+        let country = countries[tag].as_object().expect("roster country present");
+        assert_eq!(country["_r2_tag_db_id"], entry["tag_db_id"], "{tag} identity");
+        match fixture["presentation_identity"].get(tag) {
+            Some(cosmetic) => assert_eq!(country["cosmetic_tag"], *cosmetic, "{tag} cosmetic"),
+            // The consumer's `Leaf::Absent` arm is the ABSENCE of the key, not a
+            // null: a null reads back as `Leaf::Unobtained` and is refused.
+            None => assert!(
+                !country.contains_key("cosmetic_tag"),
+                "{tag} must carry no cosmetic_tag key at all"
+            ),
+        }
+    }
+}
+
+/// kills: minting the envelope over a census that names a country id this
+/// hour's D18 map never resolved. Without the refusal the envelope would certify
+/// a table in which a country-table index (id 286 in the measured corpus) is
+/// indistinguishable from a TAG, because replay's TAG charset admits digits.
+#[test]
+fn mapc1_withholds_when_a_control_row_names_an_unresolved_country() {
+    let mut records = mapc1_scenario_records();
+    // Same scenario, minus ITA from the D18 roster - state 12 and province 102
+    // now name a country id with no TAG.
+    records[0] = (
+        18,
+        country_identity_payload_with_cosmetic_marker(&[
+            (2, "GER", 2, Some("GER_REICH")),
+            (9, "FRA", 0, None),
+        ]),
+    );
+    records[1] = (
+        10,
+        fuel_payload(&[(2, 32768, 32768, 0, 0), (9, 32768, 32768, 0, 0)]),
+    );
+    let snapshot = snapshot_for_domain_records(records);
+    let map = snapshot["map"].as_object().expect("map object");
+    assert!(
+        !map.contains_key("_r2_xmap05_control_authority"),
+        "the envelope must be omitted, not nulled: the consumer reads null and absence alike"
+    );
+    // The unresolved row is dropped from the TAG mirrors rather than published
+    // as the numeric id, and the state/province objects still carry it.
+    // State 12 and province 102 are owned/controlled by the unresolved id, so
+    // they stay in the mirrors as explicit NULL rows. Dropping them would tell
+    // every consumer that does not read the MAPC1 envelope that state 12 is
+    // unowned and province 102 uncontrolled, which is false.
+    assert_eq!(
+        map["owner_by_state"],
+        json!({"10": "GER", "11": "FRA", "12": Value::Null})
+    );
+    assert_eq!(
+        map["control_by_province"],
+        json!({"100": "GER", "101": "GER", "102": Value::Null})
+    );
+    assert_eq!(snapshot["states"]["12"]["owner"], json!("7"));
+    let notes = snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("_r2_xmap05_control_authority withheld")
+                && note.contains("no TAG in this hour")
+        })),
+        "the hour must name why the envelope was withheld: {notes:?}"
+    );
+}
+
+/// kills: certifying a presentation identity replay cannot compute. A country
+/// whose cosmetic override was MEASURED ABSENT folds as JSON null, and
+/// `replay_core` reads any null leaf as `Leaf::Unobtained`, which XMAP05
+/// refuses - so an envelope minted over it would certify a frame the consumer
+/// always rejects.
+#[test]
+fn mapc1_withholds_when_a_roster_country_publishes_a_null_cosmetic_tag() {
+    let mut records = mapc1_scenario_records();
+    records[0] = (
+        18,
+        country_identity_payload_with_cosmetic_marker(&[
+            (2, "GER", 2, Some("GER_REICH")),
+            (7, "ITA", 0, None),
+            (9, "FRA", 1, None),
+        ]),
+    );
+    let snapshot = snapshot_for_domain_records(records);
+    assert_eq!(snapshot["countries"]["FRA"]["cosmetic_tag"], Value::Null);
+    assert!(!snapshot["map"]
+        .as_object()
+        .expect("map object")
+        .contains_key("_r2_xmap05_control_authority"));
+    let notes = snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("_r2_xmap05_control_authority withheld") && note.contains("JSON null")
+        })),
+        "the hour must name the cosmetic cause: {notes:?}"
+    );
+}
+
+/// kills: certifying a state census with a hole, or leaving the hole invisible.
+/// A state measured with no owner is a real measurement, but it is not a state
+/// whose owner this envelope may claim to carry, and `state_owner_complete:
+/// true` over a mirror that silently dropped it would be a false certificate.
+#[test]
+fn mapc1_withholds_when_a_state_has_no_measured_owner() {
+    let mut records = mapc1_scenario_records();
+    let mut map_control = Vec::new();
+    map_control_header(&mut map_control, 3, 3, 0);
+    push_state_row(&mut map_control, 10, 2, 2);
+    push_state_row(&mut map_control, 11, 0, 2); // measured: no owner
+    push_state_row(&mut map_control, 12, 7, 7);
+    push_prov_row(&mut map_control, 100, 2, 10);
+    push_prov_row(&mut map_control, 101, 2, 11);
+    push_prov_row(&mut map_control, 102, 7, 12);
+    records[2] = (22, map_control);
+    let snapshot = snapshot_for_domain_records(records);
+    let map = snapshot["map"].as_object().expect("map object");
+    assert!(!map.contains_key("_r2_xmap05_control_authority"));
+    assert_eq!(map["owner_by_state"], json!({"10": "GER", "12": "ITA"}));
+    // The controller census is untouched by the owner hole, which is what makes
+    // the two key sets differ - exactly the comparison the consumer runs.
+    assert_eq!(
+        map["control_by_state"],
+        json!({"10": "GER", "11": "GER", "12": "ITA"})
+    );
+    assert_eq!(snapshot["states"]["11"]["owner"], Value::Null);
+}
+
+/// kills: publishing a stale `frame_hour`, the one field that binds the
+/// certificate to the hour it certifies. The consumer refuses a mismatch, so a
+/// producer that stamped the previous hour would take every frame down.
+#[test]
+fn mapc1_frame_hour_is_the_hour_being_built() {
+    let snapshot = snapshot_for_domain_records(mapc1_scenario_records());
+    let authority = &snapshot["map"]["_r2_xmap05_control_authority"];
+    assert_eq!(authority["frame_hour"], snapshot["hour_index"]);
+    assert_ne!(authority["capture_sequence"], json!(0));
+}
+
+/// Fold the MAPC1 scenario as hour A, then `second_hour` as hour B, and return
+/// both snapshots. d22's accumulator deliberately persists across hours, which is
+/// what makes hour B the interesting one.
+fn mapc1_two_hour_snapshots(second_hour: Vec<(u16, Vec<u8>)>) -> (Value, Value) {
+    let hour_a = raw_for(16_959_360);
+    let hour_b = raw_for(16_959_361);
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (hour, records) in [(hour_a, mapc1_scenario_records()), (hour_b, second_hour)] {
+        for (domain_id, payload) in records {
+            push_record(
+                &mut stream,
+                sequence,
+                hour,
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                &payload,
+            );
+            sequence += 1;
+        }
+        push_record(
+            &mut stream,
+            sequence,
+            hour,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        sequence += 1;
+    }
+    let mut fold = WorldFold::new("mapc1_two_hour");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 2, "one snapshot per game hour");
+    (parse(&snapshots[0].2), parse(&snapshots[1].2))
+}
+
+/// kills: certifying a RETAINED census under the current hour's `frame_hour`.
+///
+/// `map_control_unknown_this_hour` is reset to false every hour, so a producer
+/// gated on it alone reads "d22 is not unknown" on an hour where d22 sent nothing
+/// and mints a same-hour certificate over the PREVIOUS hour's rows — with digests
+/// that match, so nothing downstream could catch it. That is hour misattribution
+/// with a signature on it. Deleting the `map_control_measured_this_hour` term
+/// turns this test red.
+#[test]
+fn mapc1_withholds_on_an_hour_where_d22_sent_nothing() {
+    // Hour B repeats D18 and fuel, so every non-d22 precondition still holds and
+    // the only thing missing is a current-hour d22 observation.
+    let mut second_hour = mapc1_scenario_records();
+    second_hour.retain(|(domain_id, _)| *domain_id != 22);
+    let (first, second) = mapc1_two_hour_snapshots(second_hour);
+
+    assert!(
+        first["map"]["_r2_xmap05_control_authority"].is_object(),
+        "hour A measured d22 and must be certified"
+    );
+    let map = second["map"].as_object().expect("map object");
+    assert!(
+        !map.contains_key("_r2_xmap05_control_authority"),
+        "hour B measured no d22 and must NOT be certified"
+    );
+    // The retained accumulator still publishes the mirrors, which is d22's
+    // documented behaviour and not what this test objects to; what may not
+    // happen is a CERTIFICATE over them.
+    assert_eq!(map["owner_by_state"], first["map"]["owner_by_state"]);
+    let notes = second["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("_r2_xmap05_control_authority withheld")
+                && note.contains("no accepted d22 observation landed this hour")
+        })),
+        "hour B must name the stale-census cause: {notes:?}"
+    );
+}
+
+/// kills: treating a REFUSED d22 record as a measurement. A malformed payload
+/// never reaches `fold_map_control`'s success exit, so the hour has no accepted
+/// observation even though a d22 record arrived — the same stale-census hazard as
+/// a silent hour, reached by a different path.
+#[test]
+fn mapc1_withholds_on_an_hour_whose_d22_record_was_refused() {
+    let mut second_hour = mapc1_scenario_records();
+    for record in &mut second_hour {
+        if record.0 == 22 {
+            // A truncated payload: the header declares rows the body does not
+            // carry, so the length check refuses the whole record.
+            let mut truncated = Vec::new();
+            map_control_header(&mut truncated, 3, 5, 0);
+            push_state_row(&mut truncated, 10, 2, 2);
+            record.1 = truncated;
+        }
+    }
+    let (first, second) = mapc1_two_hour_snapshots(second_hour);
+    assert!(first["map"]["_r2_xmap05_control_authority"].is_object());
+    assert!(!second["map"]
+        .as_object()
+        .expect("map object")
+        .contains_key("_r2_xmap05_control_authority"));
+    let notes = second["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("_r2_xmap05_control_authority withheld")
+                && note.contains("no accepted d22 observation landed this hour")
+        })),
+        "a refused d22 record must not read as a measurement: {notes:?}"
+    );
+}
+
+/// kills: bounding a refusal reason on the DECODED tag rather than on what rides
+/// the wire. D18 TAGs are u16-length-prefixed, so one structurally valid record
+/// can carry 65,535 bytes in a single TAG; these reasons are written once per
+/// hour for the life of a recording.
+#[test]
+fn mapc1_refusal_reasons_are_size_bounded() {
+    let long_tag = "A".repeat(4096);
+    let mut records = mapc1_scenario_records();
+    records[0] = (
+        18,
+        country_identity_payload_with_cosmetic_marker(&[
+            (2, "GER", 2, Some("GER_REICH")),
+            (7, "ITA", 0, None),
+            (9, long_tag.as_str(), 0, None),
+        ]),
+    );
+    let snapshot = snapshot_for_domain_records(records);
+    let notes = snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    let withheld = notes
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|note| note.contains("_r2_xmap05_control_authority withheld"))
+        .collect::<Vec<_>>();
+    assert_eq!(withheld.len(), 1, "one reason per hour: {notes:?}");
+    assert!(
+        withheld[0].len() < 512,
+        "a refusal reason must not carry the whole TAG ({} bytes): {}",
+        withheld[0].len(),
+        &withheld[0][..withheld[0].len().min(200)]
+    );
+    assert!(
+        withheld[0].contains("4096 bytes starting"),
+        "the reason must still state the diagnostic fact: {}",
+        withheld[0]
+    );
+}
+
+/// kills: certifying a census whose TAGs replay's roster cannot contain. A D18
+/// identity that no country-rooted domain materialized this hour has no country
+/// object, so it is absent from the roster replay rebuilds — while d22 rows,
+/// which are keyed by tag_db_id, may still name it. Both sides would agree on the
+/// roster digest and XMAP05 would refuse the frame anyway, at
+/// `political_color_synthesis.rs::validate_xmap05_state_authority`. The
+/// producer must not hand out a certificate its own consumer rejects.
+#[test]
+fn mapc1_withholds_when_a_d18_identity_has_no_country_object() {
+    let mut records = mapc1_scenario_records();
+    // D18 measures all three; fuel materializes only two, so ITA(7) has no
+    // country object while states 12 and province 102 still name it.
+    records[1] = (
+        10,
+        fuel_payload(&[(2, 32768, 32768, 0, 0), (9, 32768, 32768, 0, 0)]),
+    );
+    let snapshot = snapshot_for_domain_records(records);
+    let countries = snapshot["countries"].as_object().expect("countries object");
+    assert!(
+        !countries.contains_key("ITA"),
+        "the scenario must leave ITA without a country object"
+    );
+    // The census still names ITA, which is exactly the hazard.
+    assert_eq!(snapshot["map"]["owner_by_state"]["12"], json!("ITA"));
+    assert!(!snapshot["map"]
+        .as_object()
+        .expect("map object")
+        .contains_key("_r2_xmap05_control_authority"));
+    let notes = snapshot["provenance"]["notes"]
+        .as_array()
+        .expect("notes array");
+    assert!(
+        notes.iter().any(|note| note.as_str().is_some_and(|note| {
+            note.contains("_r2_xmap05_control_authority withheld")
+                && note.contains("have no country object this hour")
+        })),
+        "the hour must name the unmaterialized identity: {notes:?}"
     );
 }

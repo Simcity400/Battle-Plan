@@ -143,7 +143,10 @@ mod peace_conference_presentation;
 mod politics_presentation;
 mod power_balance_state;
 mod weather_visual_lifecycle;
-mod xmap05_control_authority;
+/// `pub(crate)` alone among the thirteen: `build_snapshot` derives the three
+/// `map.*_by_*` TAG tables from this carrier's census so the mirrors and the
+/// envelope's digests cannot disagree. See its module docs.
+pub(crate) mod xmap05_control_authority;
 mod xui12_production_lines;
 mod xui15_trade_catalogue;
 mod xui23_command_abilities;
