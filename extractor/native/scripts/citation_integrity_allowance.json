@@ -1201,7 +1201,6 @@
       "world.rs:8737": 1,
       "world.rs:8893": 3,
       "world.rs:9274": 1,
-      "world_fold.rs:4186": 1,
       "xmap05.rs:1146": 1,
       "xmap17_player_labels.rs:13": 1,
       "xmap17_player_labels.rs:23": 1,
@@ -1497,11 +1496,6 @@
       "replay_core/src/world.rs:19936": 1,
       "replay_core/src/world.rs:29083": 1,
       "replay_core/src/world.rs:29108": 1
-    },
-    "extractor/native/recorder_host/src/world_fold/wave2_sidecars/peace_conference_presentation.rs": {
-      "replay_core/src/peace_conference_presentation.rs:12": 1,
-      "replay_core/src/world.rs:34673": 1,
-      "replay_core/src/world.rs:34714": 1
     },
     "extractor/native/recorder_host/src/world_fold/wave2_sidecars/politics_presentation.rs": {
       "replay_core/src/world.rs:23833": 1,
