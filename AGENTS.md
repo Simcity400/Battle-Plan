@@ -67,6 +67,9 @@ printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_poli
   finishes. Never detach with `&`, never sleep-poll in a loop, and never end
   your turn "waiting" for anything that is not a tracked background task:
   untracked children die the instant your turn ends, and no result ever comes.
+  Chain sequential long steps that need no judgement between them (battery →
+  review launch) into ONE background script — every separate pause costs an
+  orchestrator wake-up.
 - One fix round per review; if the re-review still finds defects, fix the rest
   yourself. Any commit after an APPROVE needs one more confirmation round.
 
