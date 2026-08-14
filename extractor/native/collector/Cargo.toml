@@ -85,26 +85,20 @@ test-support = []
 # compiled at all. NEVER enable it for a shipped capture -- a traced frame's
 # timings are not comparable with an untraced one's.
 range-tracer = []
-# Diagnostic-only A25 runtime-text hook owner. Ordinary production, including
-# the passive exact-roster registry, cannot enable these UI/materialisation
-# detours.
-unshipped-a25-runtime-text-evidence = []
-# Compile the A39 character-presentation fixture installer only for an explicit
-# unshipped evidence artifact. character_presentation_live_lane still declares
-# a729-fixture-hook, and this collector still depends on that lane, so without
-# this gate the only thing standing between a production build and the fixture
-# hook is that nobody typed the feature name. Four authorities require the gate
-# by name - the package builder, the package receipt verifier (which also lists
-# it in the forbidden-feature roster it enforces), and the central Release
-# contract - and the manifest was the only place it had gone.
-unshipped-a39-character-presentation-evidence = [
-    "character_presentation_live_lane/a729-fixture-hook",
-]
-# Compile the A31 focus-item fixture installer only for an explicit unshipped
-# evidence artifact.
-unshipped-a31-focus-presentation-evidence = [
-    "focus_research_decisions_depth_live/a729-focus-fixture-hook",
-]
+# This table is complete. Three evidence features stood here - A25 runtime
+# text, A39 character presentation, A31 focus presentation - and were the named
+# conditions that two lane FIXTURE HOOK installers and one collector-side
+# fixture ABI sat behind. Those installers are deleted, so there is nothing
+# left for a feature to gate: a capability that does not exist needs no gate
+# and cannot be reached by typing a feature name. Their three
+# `CollectorFeatureBits` wire bits (1<<3, 1<<4, 1<<5) are unassigned in the
+# same change. Do not add a feature here to re-gate a fixture hook.
+# `Assert-CollectorRetiredEvidenceFeatureAbsence` refuses the retired prefix
+# and any forwarding of a lane fixture feature, before a package is built.
+#
+# Note for anyone editing these comments: the package builder and two verifiers
+# read this file's TEXT as well as its parsed tables, so do not spell the
+# retired feature names or the retired lane feature names literally here.
 
 [dev-dependencies]
 # `test-support` enables the lane's lifecycle-claiming helper for tests only.

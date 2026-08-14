@@ -177,12 +177,10 @@ function Get-ProductionSourceCapabilityClosure {
         -Cargo $focusCargo `
         -ForbiddenFeature 'a729-focus-fixture-hook' `
         -LaneName 'focus_research_decisions_depth_live'
-    if (-not $collectorCargo.Contains('unshipped-a39-character-presentation-evidence = [') -or
-        -not $collectorCargo.Contains('"character_presentation_live_lane/a729-fixture-hook"') -or
-        -not $collectorCargo.Contains('unshipped-a31-focus-presentation-evidence = [') -or
-        -not $collectorCargo.Contains('"focus_research_decisions_depth_live/a729-focus-fixture-hook"')) {
-        throw 'collector production dependencies retain an unconditional fixture-only hook capability'
-    }
+    # This used to REQUIRE the collector manifest to forward both lane fixture
+    # features, because what it could prove then was that the fixture hooks were
+    # CONDITIONAL. The hooks are deleted, so absence is asserted instead.
+    Assert-CollectorRetiredEvidenceFeatureAbsence -CollectorCargo $collectorCargo
     if (-not $collectorCargo.Contains('crate-type = ["cdylib", "rlib"]') -or
         -not $collectorLib.Contains('BATTLE_PLAN_NO_SEMANTIC_ENGINE_STATE_WRITES_V1') -or
         $collectorLib.Contains('mod hour_latch') -or

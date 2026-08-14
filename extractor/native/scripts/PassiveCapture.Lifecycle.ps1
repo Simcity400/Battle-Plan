@@ -884,9 +884,9 @@ function Get-PassiveCollectorFeatureAuthorityFromSource {
         }
         # THE WHOLE EXPRESSION, OR NOTHING. Scanning for `Self::NAME` and
         # ignoring what is left silently narrows the mask the moment a term is
-        # written any other way: spelling one member as the literal `1 << 5`
-        # instead of `Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE` is
-        # identical Rust, and left this file believing KNOWN_MASK was 31 while
+        # written any other way: spelling one member as the literal `1 << 2`
+        # instead of `Self::RANGE_TRACER` is identical Rust, and a mask term
+        # written that way once left this file believing KNOWN_MASK was 31 while
         # the collector used 63 -- so a receipt declaring that feature would
         # have been refused as unknown. Everything except the members and the
         # `|` that joins them has to be whitespace.

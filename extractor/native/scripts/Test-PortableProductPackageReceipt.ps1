@@ -312,12 +312,9 @@ function Get-VerifiedProductionSourceCapabilityClosure {
         -Cargo $focusCargo `
         -ForbiddenFeature 'a729-focus-fixture-hook' `
         -LaneName 'focus_research_decisions_depth_live'
-    if (-not $collectorCargo.Contains('unshipped-a39-character-presentation-evidence = [') -or
-        -not $collectorCargo.Contains('"character_presentation_live_lane/a729-fixture-hook"') -or
-        -not $collectorCargo.Contains('unshipped-a31-focus-presentation-evidence = [') -or
-        -not $collectorCargo.Contains('"focus_research_decisions_depth_live/a729-focus-fixture-hook"')) {
-        throw 'collector production dependencies retain an unconditional fixture-only hook capability'
-    }
+    # Same change of shape as the builder: the fixture hooks are deleted, so the
+    # verifier asserts they are ABSENT rather than that they are conditional.
+    Assert-CollectorRetiredEvidenceFeatureAbsence -CollectorCargo $collectorCargo
     if (-not $collectorCargo.Contains('crate-type = ["cdylib", "rlib"]') -or
         -not $collectorLib.Contains('BATTLE_PLAN_NO_SEMANTIC_ENGINE_STATE_WRITES_V1') -or
         $collectorLib.Contains('mod hour_latch') -or
@@ -436,7 +433,7 @@ if ([string]$featureClosure.schema -cne 'battle-plan.production_feature_closure.
     $featureClosure.collector_dll.all_non_default_features_disabled -isnot [bool] -or
     -not $featureClosure.collector_dll.all_non_default_features_disabled -or
     (@($featureClosure.collector_dll.forbidden_features) -join '|') -cne
-        'test-support|unshipped-a25-runtime-text-evidence|unshipped-a39-character-presentation-evidence|unshipped-a31-focus-presentation-evidence' -or
+        'test-support' -or
     $featureClosure.collector_dll.built_last -isnot [bool] -or
     -not $featureClosure.collector_dll.built_last -or
     [string]$featureClosure.collector_dll.collector_cargo_sha256 -cne

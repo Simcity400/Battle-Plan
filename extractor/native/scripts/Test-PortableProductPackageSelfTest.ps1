@@ -3216,6 +3216,30 @@ pub unsafe fn external_fixture_suspends_indirectly(a: *mut u8) -> u32 {
         Join-Path $root 'extractor\native\collector\Cargo.toml'
     $collectorCargoOriginal = [IO.File]::ReadAllText($fixtureCollectorCargo)
     $cargoMutations = [ordered]@{
+        # The two cases below are the ones that reach
+        # `Assert-CollectorRetiredEvidenceFeatureAbsence`. Every other mutation
+        # in this table alters a DEPENDENCY table and is refused by
+        # `Assert-CollectorProductionDependencyFeatureClosure`; these alter the
+        # collector's OWN [features] table, which that helper never inspects.
+        'retired unshipped evidence feature cannot be redeclared' =
+            $collectorCargoOriginal.Replace(
+                'range-tracer = []',
+                @'
+range-tracer = []
+unshipped-a39-character-presentation-evidence = []
+'@
+            )
+        # The prefix is not the only thing refused: an ordinary-looking name
+        # that forwards a retired lane fixture feature is the same
+        # reintroduction wearing a different word.
+        'ordinary-named feature forwarding a retired lane fixture hook is rejected' =
+            $collectorCargoOriginal.Replace(
+                'range-tracer = []',
+                @'
+range-tracer = []
+ordinary-looking-feature = ["character_presentation_live_lane/a729-fixture-hook"]
+'@
+            )
         'multiline character dependency features are rejected' =
             $collectorCargoOriginal.Replace(
                 'character_presentation_live_lane = { path = "../lanes/character_presentation_live" }',
@@ -3445,6 +3469,17 @@ workspace_additive_alias = {
     if ($characterCargoDefaultMutation -ceq $characterCargoOriginal) {
         throw 'portable package self-test could not mutate protected lane defaults'
     }
+    # The retired fixture hook coming back is a NON-default feature declaration:
+    # the default table stays exactly `[]`, so the mutation above cannot catch
+    # it. That is the shape the lane had before this capability was deleted, and
+    # the shape the builder now refuses.
+    $characterCargoFixtureFeatureMutation = $characterCargoOriginal.Replace(
+        'default = []',
+        "default = []`na729-fixture-hook = []"
+    )
+    if ($characterCargoFixtureFeatureMutation -ceq $characterCargoOriginal) {
+        throw 'portable package self-test could not reintroduce a retired lane fixture feature'
+    }
 
     # The evidence-only actuator region is excised from the recorder's own
     # early_render_launch.rs and from nowhere else. A lane carrying a file with
@@ -3580,6 +3615,12 @@ pub fn observer_only() {}
                 RelativePath = $characterCargoRelative
                 Content = $characterCargoDefaultMutation
                 Zip = 'forbidden-lane-default-feature.zip'
+            },
+            [pscustomobject]@{
+                Name = 'retired lane fixture hook feature cannot be redeclared'
+                RelativePath = $characterCargoRelative
+                Content = $characterCargoFixtureFeatureMutation
+                Zip = 'forbidden-lane-fixture-feature.zip'
             },
             [pscustomobject]@{
                 Name = 'evidence interval exclusion is exact recorder path only'
@@ -4986,10 +5027,7 @@ fn synthetic_structural_d71_passive_gate() {
                     # Set-StrictMode instead of checking the closure.
                     all_non_default_features_disabled = $true
                     forbidden_features = @(
-                        'test-support',
-                        'unshipped-a25-runtime-text-evidence',
-                        'unshipped-a39-character-presentation-evidence',
-                        'unshipped-a31-focus-presentation-evidence'
+                        'test-support'
                     )
                     built_last = $true
                     collector_cargo_sha256 =

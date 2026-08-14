@@ -7,9 +7,15 @@ edition = "2021"
 name = "character_presentation_live_lane"
 path = "src/lib.rs"
 
+# The lane declares an exact empty default and NO fixture-only hook feature.
+# `a729-fixture-hook` gated one thing, `a729_hook::install_for_fixture_capture`,
+# which had no caller left in the tree when it was deleted; both are deleted.
+# (It was called by the collector's A39 evidence owner in an earlier revision,
+# 39573eb8a; that call was removed before this change.) The package builder and
+# the receipt verifier assert this table's shape, so a feature added back here
+# is refused before a package is built.
 [features]
 default = []
-a729-fixture-hook = []
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }

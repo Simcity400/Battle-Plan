@@ -1678,11 +1678,15 @@ try {
                             default_features = $false
                             enabled_features = @()
                             all_non_default_features_disabled = $true
+                            # The three `unshipped-*` names that stood here are
+                            # not forbidden any more, they no longer exist:
+                            # the features and the fixture hooks they gated are
+                            # deleted, and the package builder refuses the whole
+                            # `unshipped-` prefix in the collector manifest.
+                            # `test-support` remains a real, declarable feature
+                            # that must not enter a production artifact.
                             forbidden_features = @(
-                                'test-support',
-                                'unshipped-a25-runtime-text-evidence',
-                                'unshipped-a39-character-presentation-evidence',
-                                'unshipped-a31-focus-presentation-evidence'
+                                'test-support'
                             )
                             built_last = $true
                             collector_cargo_sha256 =

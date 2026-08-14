@@ -1020,14 +1020,11 @@ pub fn drain_evidence_record(elapsed_wall_ms: u64) -> Result<EvidenceRecord, Str
     })
 }
 
-#[cfg(feature = "a729-focus-fixture-hook")]
-pub fn install_for_fixture_capture(
-    decoder: Arc<dyn ExactA729FocusLiveDecoder>,
-) -> Result<InstalledAddresses, String> {
-    register_decoder(decoder)?;
-    install_hook_set()
-}
-
+/// `install_for_fixture_capture`, which took an arbitrary decoder and skipped
+/// BOTH activation-latch checks below, is retired with the
+/// `a729-focus-fixture-hook` feature that gated it. Its one caller was the
+/// collector's `A31FixtureAcquisitionOwner`, deleted in the same change, so
+/// every install now runs the authorization gate.
 pub fn install() -> Result<InstalledAddresses, String> {
     if !PRODUCTION_ACTIVATION_AUTHORIZED || !COMPACT_DOMAIN_89_SCHEDULED {
         return Err("A31 production hook activation is not authorized".into());

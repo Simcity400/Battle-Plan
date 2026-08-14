@@ -481,11 +481,21 @@ impl CaptureReadyFlags {
 ///
 /// # Stability
 ///
-/// Assigned bits are append-only and are a stable ABI. An unassigned bit is
-/// refused ([`PayloadError::UnknownCollectorFeatureBits`]) rather than ignored:
-/// a consumer that does not know a feature cannot know whether it is
-/// diagnostic, and silently dropping it is how a diagnostic build passes for a
-/// production one.
+/// New bits are appended. An unassigned bit is refused
+/// ([`PayloadError::UnknownCollectorFeatureBits`]) rather than ignored: a
+/// consumer that does not know a feature cannot know whether it is diagnostic,
+/// and silently dropping it is how a diagnostic build passes for a production
+/// one.
+///
+/// A bit is UNASSIGNED when the cargo feature it stood for is deleted, and
+/// that is a wire-format break by construction — every stream that declared it
+/// stops decoding. Pre-production that is the intended outcome (old captures
+/// are disposable) and it is why the refusal above must never be relaxed into
+/// a mask-and-ignore. What an unassignment must not do is free the bit for
+/// reuse: a number handed to a different feature would make an old diagnostic
+/// capture decode as a new clean one, which is the exact confusion this word
+/// exists to prevent. Retired numbers stay retired and are named at the
+/// assignment site.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CollectorFeatureBits(u32);
 
@@ -497,34 +507,28 @@ impl CollectorFeatureBits {
     pub const TEST_SUPPORT: u32 = 1 << 1;
     /// `collector/Cargo.toml` `range-tracer` — the capture-floor read tracer.
     pub const RANGE_TRACER: u32 = 1 << 2;
-    /// `collector/Cargo.toml` `unshipped-a25-runtime-text-evidence`.
-    pub const UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE: u32 = 1 << 3;
-    /// `collector/Cargo.toml` `unshipped-a39-character-presentation-evidence`.
-    pub const UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE: u32 = 1 << 4;
-    /// `collector/Cargo.toml` `unshipped-a31-focus-presentation-evidence`.
-    pub const UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE: u32 = 1 << 5;
-
-    pub const KNOWN_MASK: u32 = Self::DECLARED
-        | Self::TEST_SUPPORT
-        | Self::RANGE_TRACER
-        | Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE
-        | Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE
-        | Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE;
+    // Bits 3, 4 and 5 were `unshipped-a25-runtime-text-evidence`,
+    // `unshipped-a39-character-presentation-evidence` and
+    // `unshipped-a31-focus-presentation-evidence`. The fixture hooks those
+    // features gated are deleted and the features with them, so the bits are
+    // UNASSIGNED again and fall back under the refuse-unknown rule below. This
+    // is a wire-format break, taken deliberately while there is no backwards
+    // compatibility to keep: a stream that declares bit 3, 4 or 5 no longer
+    // decodes, which is correct, because no producer that can be built today
+    // has a feature to declare there. A bit added later takes the next free
+    // one; do not reuse 3..=5 for an unrelated feature, or an old diagnostic
+    // capture would decode as a new clean one.
+    pub const KNOWN_MASK: u32 = Self::DECLARED | Self::TEST_SUPPORT | Self::RANGE_TRACER;
 
     /// The features whose presence makes a capture inadmissible as TIMING
     /// evidence, or makes it interact with the engine in a way ordinary
     /// production does not.
     ///
     /// `range-tracer` records every guarded read and is the reason this word
-    /// exists. The three `unshipped-*` features install detours or fixtures
-    /// that no shipped capture carries. `test-support` compiles test-only
-    /// lifecycle helpers into the lane crates. None of them belong in a capture
-    /// whose numbers are compared against production.
-    pub const DIAGNOSTIC_MASK: u32 = Self::TEST_SUPPORT
-        | Self::RANGE_TRACER
-        | Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE
-        | Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE
-        | Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE;
+    /// exists. `test-support` compiles test-only lifecycle helpers into the
+    /// lane crates. Neither belongs in a capture whose numbers are compared
+    /// against production.
+    pub const DIAGNOSTIC_MASK: u32 = Self::TEST_SUPPORT | Self::RANGE_TRACER;
 
     /// Each assigned bit spelled as the CARGO FEATURE NAME it stands for, so a
     /// manifest and an operator's `--features` line use the same words.
@@ -532,18 +536,6 @@ impl CollectorFeatureBits {
     pub const FEATURE_NAMES: &'static [(u32, &'static str)] = &[
         (Self::TEST_SUPPORT, "test-support"),
         (Self::RANGE_TRACER, "range-tracer"),
-        (
-            Self::UNSHIPPED_A25_RUNTIME_TEXT_EVIDENCE,
-            "unshipped-a25-runtime-text-evidence",
-        ),
-        (
-            Self::UNSHIPPED_A39_CHARACTER_PRESENTATION_EVIDENCE,
-            "unshipped-a39-character-presentation-evidence",
-        ),
-        (
-            Self::UNSHIPPED_A31_FOCUS_PRESENTATION_EVIDENCE,
-            "unshipped-a31-focus-presentation-evidence",
-        ),
     ];
 
     /// The undeclared value: what a producer that predates this contract sends.
@@ -1415,6 +1407,21 @@ mod tests {
             CollectorFeatureBits::from_bits(1 << 31),
             Err(PayloadError::UnknownCollectorFeatureBits(1 << 31))
         );
+
+        // Bits 3, 4 and 5 are RETIRED, not merely unassigned: they carried the
+        // three `unshipped-*` evidence features. Every other assertion in this
+        // test derives from the masks, so handing one of those numbers to a new
+        // feature would make it known and leave the whole file green. This is
+        // the one place that would turn red, which is the point -- an old
+        // diagnostic capture declaring bit 3, 4 or 5 must never decode as a new
+        // clean one. A genuinely new feature takes the next free bit instead.
+        for retired in [1u32 << 3, 1u32 << 4, 1u32 << 5] {
+            assert_eq!(
+                CollectorFeatureBits::from_bits(CollectorFeatureBits::DECLARED | retired),
+                Err(PayloadError::UnknownCollectorFeatureBits(retired)),
+                "retired collector feature bit {retired:#x} must stay refused as unknown"
+            );
+        }
         assert_eq!(
             CollectorFeatureBits::from_bits(CollectorFeatureBits::TEST_SUPPORT),
             Err(PayloadError::UndeclaredCollectorFeatureBits(

@@ -911,6 +911,88 @@ function Assert-CollectorProductionDependencyFeatureClosure {
     }
 }
 
+# The collector's own [features] table declares no retired evidence feature and
+# forwards no lane fixture feature.
+#
+# `Assert-CollectorProductionDependencyFeatureClosure` above covers the
+# DEPENDENCY tables, where a fixture feature would be enabled directly. This
+# covers the other half - the collector's own features, where
+# `unshipped-a39-character-presentation-evidence` and
+# `unshipped-a31-focus-presentation-evidence` used to forward the two lane
+# fixture features, and `unshipped-a25-runtime-text-evidence` used to force a
+# runtime-text hook predicate true. All three are deleted with the hooks, so the
+# whole `unshipped-` prefix is refused rather than the three names: a fourth
+# feature arriving under the same convention is the same reintroduction.
+#
+# It reads the PARSED table, not the file text, so the manifest can describe in
+# a comment what it must not declare.
+# The retired fixture-hook INSTALLERS are absent from the lane sources.
+#
+# The manifest guards below refuse the retired feature names and the retired
+# forwarding fragments, and that is worth having, but on their own they are a
+# NAME filter: re-adding the installer behind a differently spelled lane feature
+# satisfies every one of them. What actually makes the capability unreachable is
+# that the function does not exist, so that is asserted directly, at the source.
+#
+# This is deliberately a coarse signature check rather than a parse. It is not
+# trying to detect a hostile rename of the function itself - nothing at the
+# packaging layer can - it pins the specific shape that was deleted, so that
+# restoring it by reverting the deletion (the realistic regression) is refused
+# even when the feature it hangs off is spelled some new way.
+#
+# It matches the DECLARATION, `fn install_for_fixture_capture`, and not the bare
+# name, so that the lane sources can still explain in a comment what was removed
+# and why. The retired FEATURE names are not checked here: features live in the
+# manifests, and the two manifest guards below are where their absence is
+# asserted. Each guard checks the thing that actually lives in the file it reads.
+function Assert-LaneFixtureInstallerSourceAbsence {
+    param(
+        [Parameter(Mandatory = $true)][string]$LaneSource,
+        [Parameter(Mandatory = $true)][string]$LaneName
+    )
+
+    if ($LaneSource.IndexOf(
+            'fn install_for_fixture_capture', [StringComparison]::Ordinal) -ge 0) {
+        throw "$LaneName source reintroduces the retired fixture-hook installer"
+    }
+}
+
+function Assert-CollectorRetiredEvidenceFeatureAbsence {
+    param([Parameter(Mandatory = $true)][string]$CollectorCargo)
+
+    foreach ($assignment in @(Get-TomlLogicalAssignments -Toml $CollectorCargo)) {
+        if ([string]$assignment.Section -cne 'features') {
+            continue
+        }
+        $keyParts = @(Split-TomlDottedKey -Text ([string]$assignment.Key))
+        if ($keyParts.Count -ne 1) {
+            throw 'collector Cargo features table uses a dotted feature key'
+        }
+        $featureName = [string]$keyParts[0]
+        if ($featureName.StartsWith('unshipped-', [StringComparison]::Ordinal)) {
+            throw "collector declares retired unshipped evidence feature '$featureName'"
+        }
+        $featureValue = ([string]$assignment.Value)
+        if ($featureValue.Contains('\')) {
+            throw "collector feature '$featureName' uses escaped forwarding text"
+        }
+        foreach ($fragment in @('a729-fixture-hook', 'a729-focus-fixture-hook')) {
+            if ($featureValue.IndexOf($fragment, [StringComparison]::Ordinal) -ge 0) {
+                throw "collector feature '$featureName' forwards retired lane fixture hook '$fragment'"
+            }
+        }
+    }
+}
+
+# The lane declares an exact empty default and does NOT declare the fixture-only
+# hook feature.
+#
+# This used to REQUIRE the feature to be declared, which proved the fixture-hook
+# installer was CONDITIONAL - reachable only by typing a non-default name. The
+# installers are now deleted, so absence is the property, and it is the stronger
+# one: a capability that does not exist cannot be enabled by any `--features`
+# line. Re-adding the feature to the lane manifest is what a reintroduction
+# looks like from here, and that is what this refuses.
 function Assert-ProtectedLaneDefaultFeatureClosure {
     param(
         [Parameter(Mandatory = $true)][string]$Cargo,
@@ -931,8 +1013,8 @@ function Assert-ProtectedLaneDefaultFeatureClosure {
     }
     if (-not $features.Contains('default') -or
         ([string]$features['default'] -replace '\s', '') -cne '[]' -or
-        -not $features.Contains($ForbiddenFeature)) {
-        throw "$LaneName does not retain an exact empty default and explicit forbidden hook feature"
+        $features.Contains($ForbiddenFeature)) {
+        throw "$LaneName does not retain an exact empty default with no fixture-only hook feature"
     }
 }
 

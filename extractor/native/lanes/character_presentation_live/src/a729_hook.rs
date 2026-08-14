@@ -901,7 +901,13 @@ pub struct InstalledAddresses {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HookDiagnostics {
-    pub installed_for_fixture_capture: bool,
+    /// The hook set is installed and its lifecycle is healthy.
+    ///
+    /// This was `installed_for_fixture_capture`, from when a fixture-only
+    /// installer stood beside `install()`. That installer is retired and
+    /// `install()` is the only way in, so the old name described a caller that
+    /// no longer exists while the value it reports never distinguished them.
+    pub hook_set_installed: bool,
     pub lifecycle_healthy: bool,
     pub teardown_active: bool,
     pub in_flight_callbacks: usize,
@@ -916,16 +922,23 @@ pub struct HookDiagnostics {
     pub current_error: Option<String>,
 }
 
-/// Production entry point. It cannot install until the evidence gate changes.
+/// The ONLY entry point. It cannot install until the evidence gate changes.
+///
+/// The harness-only `install_for_fixture_capture` that used to sit beside it is
+/// retired: it took an arbitrary decoder, skipped the installed-hook receipts,
+/// and was reachable only behind the `a729-fixture-hook` cargo feature. It had
+/// no caller left anywhere in the tree when it was deleted — the collector's
+/// A39 evidence owner called it in an earlier revision (39573eb8a), but that
+/// call had already been removed, leaving the owner's `character_install` field
+/// permanently `None`. So it is deleted rather than gated, and this lane now
+/// has no way to install a detour that a production build could not also
+/// install.
 pub fn install() -> Result<InstalledAddresses, String> {
     if !PRODUCTION_ACTIVATION_AUTHORIZED {
-        return Err(
-            "A39 production hook activation is not authorized; use the capture harness entry point"
-                .into(),
-        );
+        return Err("A39 production hook activation is not authorized".into());
     }
     register_decoder(collector_boundary_decoder())?;
-    install_hook_set(true)
+    install_hook_set()
 }
 
 #[derive(Clone, Debug)]
@@ -1016,25 +1029,6 @@ pub struct CharacterPresentationCandidateReservation {
     pub snapshot: CharacterPresentationSnapshot,
 }
 
-/// Explicit harness-only entry point for collecting the receipts and mixed
-/// fixtures required to promote d82. Every root is sentinel-gated before any
-/// detour is created, and partial installation is rolled back.
-#[cfg(feature = "a729-fixture-hook")]
-pub fn install_for_fixture_capture(
-    decoder: Arc<dyn ExactA729BoundaryDecoder>,
-) -> Result<InstalledAddresses, String> {
-    register_decoder(decoder)?;
-    let result = install_hook_set(false);
-    if result.is_err() && !HOOK_SET_PRESENT.load(Ordering::Acquire) {
-        if let Some(slot) = FIXTURE_DECODER.get() {
-            if let Ok(mut slot) = slot.lock() {
-                *slot = None;
-            }
-        }
-    }
-    result
-}
-
 fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), String> {
     let slot = FIXTURE_DECODER.get_or_init(|| Mutex::new(None));
     {
@@ -1052,7 +1046,12 @@ fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), St
     Ok(())
 }
 
-fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, String> {
+/// Installing ALWAYS observes the exact installed-hook receipts. The
+/// `production_receipts: bool` parameter existed for one other caller, the
+/// retired `install_for_fixture_capture`, which passed `false` to skip them;
+/// with that entry point deleted the only caller is `install()` and it passed
+/// `true`, so the receipt-free arm was dead and is gone with it.
+fn install_hook_set() -> Result<InstalledAddresses, String> {
     let _install_guard = INSTALL_LOCK
         .lock()
         .map_err(|_| "A39 install mutex poisoned")?;
@@ -1062,12 +1061,10 @@ fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, Str
         && originals_ready()
     {
         let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
-        if production_receipts {
-            if local_installed_hook_receipts_available() {
-                reobserve_local_install_receipts(resolved)?;
-            } else {
-                observe_install_receipts(resolved)?;
-            }
+        if local_installed_hook_receipts_available() {
+            reobserve_local_install_receipts(resolved)?;
+        } else {
+            observe_install_receipts(resolved)?;
         }
         return Ok(resolved);
     }
@@ -1084,9 +1081,7 @@ fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, Str
     {
         return Err("A39 fixture decoder is not registered".into());
     }
-    if production_receipts {
-        ensure_receipt_install_admissible()?;
-    }
+    ensure_receipt_install_admissible()?;
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
         return Err("A39 GetModuleHandleW(NULL) returned null".into());
@@ -1187,32 +1182,30 @@ fn install_hook_set(production_receipts: bool) -> Result<InstalledAddresses, Str
             });
         }
     }
-    if production_receipts {
-        if let Err(error) = observe_install_receipts(resolved) {
-            TEARDOWN_ACTIVE.store(true, Ordering::Release);
-            HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
-            let rollback = disable_and_remove(resolved);
-            let partial_release_error =
-                if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
-                    release_partial_local_install_receipts().err()
-                } else {
-                    None
-                };
+    if let Err(error) = observe_install_receipts(resolved) {
+        TEARDOWN_ACTIVE.store(true, Ordering::Release);
+        HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
+        let rollback = disable_and_remove(resolved);
+        let partial_release_error =
             if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
-                clear_removed_hook_set();
-            }
-            if let Some(partial_release_error) = partial_release_error {
-                return Err(format!(
-                    "A39 exact installed-hook receipt failed: {error}; partial receipt rollback failed: {partial_release_error}"
-                ));
-            }
-            return Err(match rollback.error {
-                Some(rollback_error) => {
-                    format!("A39 exact installed-hook receipt failed: {error}; rollback anomaly: {rollback_error}")
-                }
-                None => format!("A39 exact installed-hook receipt failed: {error}"),
-            });
+                release_partial_local_install_receipts().err()
+            } else {
+                None
+            };
+        if rollback.all_removed && IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+            clear_removed_hook_set();
         }
+        if let Some(partial_release_error) = partial_release_error {
+            return Err(format!(
+                "A39 exact installed-hook receipt failed: {error}; partial receipt rollback failed: {partial_release_error}"
+            ));
+        }
+        return Err(match rollback.error {
+            Some(rollback_error) => {
+                format!("A39 exact installed-hook receipt failed: {error}; rollback anomaly: {rollback_error}")
+            }
+            None => format!("A39 exact installed-hook receipt failed: {error}"),
+        });
     }
     *state.lock().map_err(|_| "A39 hook state poisoned")? = HookState::default();
     HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
@@ -1543,7 +1536,7 @@ pub fn diagnostics() -> HookDiagnostics {
         };
     };
     HookDiagnostics {
-        installed_for_fixture_capture: INSTALLED.load(Ordering::Acquire)
+        hook_set_installed: INSTALLED.load(Ordering::Acquire)
             && LIFECYCLE_HEALTHY.load(Ordering::Acquire),
         lifecycle_healthy: LIFECYCLE_HEALTHY.load(Ordering::Acquire),
         teardown_active: TEARDOWN_ACTIVE.load(Ordering::Acquire),

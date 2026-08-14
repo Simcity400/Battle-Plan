@@ -332,7 +332,7 @@ Assert-ClosureCase 'package forbids target control while retaining the injection
     $package.Contains('Get-ProductionSourceCapabilityClosure') -and
     $package.Contains('Assert-CollectorProductionDependencyFeatureClosure') -and
     $package.Contains('Assert-ProductionInteractionSourceTreeClosure') -and
-    $package.Contains('collector production dependencies retain an unconditional fixture-only hook capability') -and
+    $package.Contains('Assert-CollectorRetiredEvidenceFeatureAbsence') -and
     $package.Contains('target lifecycle capability escapes the evidence-only module') -and
     $package.Contains('canonical_hook_name_families_closed = $true') -and
     $package.Contains('(?:^|\.)a(?:25|28|30)(?:\.|$)') -and
@@ -346,11 +346,51 @@ Assert-ClosureCase 'package forbids target control while retaining the injection
 )
 $cases++
 
+# The manifest guards are a NAME filter: re-adding the installer behind a
+# differently spelled feature satisfies all of them. What makes the capability
+# unreachable is that the function is not in the source, so that is asserted
+# against the real lane sources, and the guard is exercised in both directions.
+$laneFixtureSources = [ordered]@{
+    character_presentation_live_lane =
+        Join-Path $repoRoot 'extractor\native\lanes\character_presentation_live\src\a729_hook.rs'
+    focus_research_decisions_depth_live =
+        Join-Path $repoRoot 'extractor\native\lanes\focus_research_decisions_depth_live\src\a729_focus_item_hook.rs'
+}
+$laneFixtureAbsenceHolds = $true
+foreach ($laneEntry in $laneFixtureSources.GetEnumerator()) {
+    $laneSource = Get-Content -LiteralPath $laneEntry.Value -Raw
+    try {
+        Assert-LaneFixtureInstallerSourceAbsence `
+            -LaneSource $laneSource -LaneName ([string]$laneEntry.Key)
+    }
+    catch {
+        $laneFixtureAbsenceHolds = $false
+    }
+    # And it is not vacuous: restoring the deleted signature is refused.
+    $restored = $laneSource + "`npub fn install_for_fixture_capture() {}`n"
+    $restoredRefused = $false
+    try {
+        Assert-LaneFixtureInstallerSourceAbsence `
+            -LaneSource $restored -LaneName ([string]$laneEntry.Key)
+    }
+    catch {
+        $restoredRefused = $true
+    }
+    if (-not $restoredRefused) { $laneFixtureAbsenceHolds = $false }
+}
+Assert-ClosureCase 'retired lane fixture-hook installers are absent from lane sources' (
+    $laneFixtureAbsenceHolds
+)
+$cases++
+
 Assert-ClosureCase 'interaction helper structurally closes dependency features and shipped client APIs' (
     $interactionClosureHelper.Contains('Get-TomlLogicalAssignments') -and
     $interactionClosureHelper.Contains('Split-TomlDottedKey') -and
     $interactionClosureHelper.Contains('Get-TomlInlineTableFields') -and
     $interactionClosureHelper.Contains('Assert-CollectorProductionDependencyFeatureClosure') -and
+    $interactionClosureHelper.Contains('Assert-CollectorRetiredEvidenceFeatureAbsence') -and
+    $interactionClosureHelper.Contains('Assert-LaneFixtureInstallerSourceAbsence') -and
+    $interactionClosureHelper.Contains("StartsWith('unshipped-'") -and
     $interactionClosureHelper.Contains('a729-fixture-hook') -and
     $interactionClosureHelper.Contains('a729-focus-fixture-hook') -and
     $interactionClosureHelper.Contains('Get-ProductionInteractionSourceTreeAuthority') -and
@@ -807,10 +847,15 @@ Assert-ClosureCase 'central Release rebuilds canonical injection artifacts with 
     $runner.Contains('"--lib"') -and
     $runner.Contains('"--no-default-features"') -and
     $runner.Contains("rebuild_order = @('recorder_host', 'collector_dll')") -and
-    $runner.Contains("'unshipped-a25-runtime-text-evidence'") -and
-    $runner.Contains("'unshipped-a39-character-presentation-evidence'") -and
-    $runner.Contains("'unshipped-a31-focus-presentation-evidence'") -and
-    $collectorCargo.Contains('unshipped-a25-runtime-text-evidence = []')
+    $runner.Contains("forbidden_features = @(") -and
+    $runner.Contains("'test-support'") -and
+    # The three `unshipped-*` names the roster used to carry are deleted along
+    # with the fixture hooks they gated, so the roster must NOT name them and
+    # the collector must not declare them. `Assert-CollectorRetiredEvidence
+    # FeatureAbsence` refuses the prefix in the manifest; this refuses it in the
+    # central Release contract that pins what the artifact was built without.
+    -not $runner.Contains("'unshipped-") -and
+    -not $collectorCargo.Contains('unshipped-')
 )
 $cases++
 

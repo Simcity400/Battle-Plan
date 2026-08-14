@@ -23,9 +23,11 @@ serde_json = "1"
 # second implementation of SHA-256 would be a second thing to keep in step.
 snapshot = { path = "../../snapshot" }
 
+# Exact empty default, no fixture-only hook feature: `a729-focus-fixture-hook`
+# gated `a729_focus_item_hook::install_for_fixture_capture`, and both are
+# deleted. The package builder and the receipt verifier assert this shape.
 [features]
 default = []
-a729-focus-fixture-hook = []
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
