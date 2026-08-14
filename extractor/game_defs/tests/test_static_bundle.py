@@ -39,7 +39,9 @@ def _write_json(path: Path, value) -> None:
     path.write_bytes(SB.pretty_json(value))
 
 
-def _binding_document(role: str, playset="playset-1", profile="profile-1"):
+def _binding_document(
+    role: str, playset="playset-1", profile="profile-1", base_content_sha256=None
+):
     content = SB.sha256_bytes(f"{role}-content".encode())
     if role == "mod_state":
         rows = [
@@ -65,8 +67,16 @@ def _binding_document(role: str, playset="playset-1", profile="profile-1"):
             "dlc": rows,
             "effective_content_sha256": SB._content_digest(rows),
         }
+    # load_order.v2: the vanilla row carries the effective-VFS BASE NAMESPACE
+    # digest, so it reconstructs from the inventory rows.  _fixture rewrites
+    # this document once that digest is known.
     rows = [
-        {"id": "vanilla", "kind": "vanilla", "ordinal": 0, "content_sha256": content},
+        {
+            "id": "vanilla",
+            "kind": "vanilla",
+            "ordinal": 0,
+            "content_sha256": base_content_sha256 or content,
+        },
         {
             "id": "dlc-1",
             "kind": "dlc",
@@ -373,6 +383,13 @@ def _fixture(tmp_path: Path):
     }
     source_inventory = {**core, "inventory_sha256": SB.sha256_bytes(SB.canonical_json(core))}
     _write_json(tmp_path / "source_inventory.json", source_inventory)
+    # The base row is only knowable once the inventory is built; rewrite the
+    # load-order binding so it carries the base namespace digest the resolver
+    # would have recorded.
+    _write_json(
+        tmp_path / "load.json",
+        _binding_document("load_order", base_content_sha256=namespaces[0]["content_sha256"]),
+    )
     for spec in specs:
         catalog = json.loads(spec.catalog.read_text(encoding="utf-8"))
         catalog["layers"] = [

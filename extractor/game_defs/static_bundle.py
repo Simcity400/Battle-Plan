@@ -38,7 +38,10 @@ OMISSION_INVENTORY_SCHEMA = "extractor.static_token_omissions.v1"
 DEFER_PROVENANCE_SCHEMA = "extractor.static_token_join_deferred.v1"
 MOD_STATE_SCHEMA = "extractor.mod_state.v1"
 DLC_STATE_SCHEMA = "extractor.dlc_state.v1"
-LOAD_ORDER_SCHEMA = "extractor.load_order.v1"
+# v2: the vanilla entry's content_sha256 IS the effective-VFS base namespace
+# digest, so the row reconstructs offline from the source inventory rows.  v1
+# recorded a second, differently-scoped full-tree hash that nothing could join.
+LOAD_ORDER_SCHEMA = "extractor.load_order.v2"
 PRODUCT_MODSET_SCHEMA = "extractor.product_modset_key.v1"
 HEX256 = set("0123456789abcdef")
 TECH_SHARING_UNJOINED_STATUS = (
@@ -844,6 +847,40 @@ def bind_catalog_sources(
     return report
 
 
+def join_base_layer_to_inventory(
+    load_items: list[dict[str, Any]], inventory: dict[str, Any]
+) -> dict[str, Any]:
+    """Join the vanilla load-order row to the effective-VFS base namespace.
+
+    IDENTITY and CONTENT are both joined.  The live resolver records the base
+    namespace's own digest in the vanilla row, and
+    ``live_binding_resolver.validate_source_inventory_document`` recomputes every
+    namespace digest from that namespace's own inventory rows, so this row is
+    reconstructible offline from the inventory alone -- it is not a second,
+    differently-scoped tree hash that only the resolving machine could check.
+    """
+    base = [
+        namespace
+        for namespace in inventory["namespaces"]
+        if namespace["binding"] == "base"
+    ]
+    if len(base) != 1:
+        raise BundleError("live source inventory must declare exactly one base namespace")
+    vanilla = [row for row in load_items if row["kind"] == "vanilla"]
+    if len(vanilla) != 1:
+        raise BundleError("load_order must contain exactly one vanilla layer")
+    if vanilla[0]["id"] != base[0]["id"]:
+        raise BundleError(
+            "load order base layer does not name the effective-VFS base namespace"
+        )
+    if vanilla[0]["content_sha256"] != base[0]["content_sha256"]:
+        raise BundleError(
+            "load order base layer content digest is not the effective-VFS base "
+            "namespace digest"
+        )
+    return base[0]
+
+
 def validate_source_inventory_bindings(
     inventory: dict[str, Any], state_bindings: dict[str, dict[str, Any]]
 ) -> None:
@@ -861,6 +898,7 @@ def validate_source_inventory_bindings(
     ):
         raise BundleError("live source inventory integrated DLC binding is invalid")
     load_items = state_bindings["load_order"]["items"]
+    join_base_layer_to_inventory(load_items, inventory)
     wanted_mod_ids = [row["id"] for row in load_items if row["kind"] == "mod"]
     wanted_dlc_ids = [row["id"] for row in load_items if row["kind"] == "dlc"]
     mod_by_id = {

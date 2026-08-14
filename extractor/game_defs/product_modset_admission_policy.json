@@ -1,5 +1,5 @@
 {
-  "schema": "extractor.product_modset_admission_policy.v2",
+  "schema": "extractor.product_modset_admission_policy.v3",
   "policy": "live_resolution_provenance",
   "resolution_mechanism": {
     "engine_build_id": "a729",
@@ -9,7 +9,7 @@
     "binding_schemas": {
       "mod_state": "extractor.mod_state.v1",
       "dlc_state": "extractor.dlc_state.v1",
-      "load_order": "extractor.load_order.v1"
+      "load_order": "extractor.load_order.v2"
     }
   },
   "required_provenance": [
@@ -17,6 +17,7 @@
     "engine_activated_dlc_roster",
     "engine_activated_mod_roster",
     "engine_mount_order_reproduced",
+    "base_layer_content_digest_joined",
     "effective_vfs_namespace_coverage",
     "binding_identity_agreement",
     "product_modset_key_recomputed"

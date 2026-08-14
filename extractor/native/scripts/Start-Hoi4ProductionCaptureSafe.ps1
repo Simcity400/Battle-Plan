@@ -382,7 +382,7 @@ if ($AcceptanceMode -eq 'production') {
         throw "static product-modset policy admission failed; see $($staticProductModsetAdmissionGate.stderr)"
     }
     $staticProductModsetAdmission = Get-Content -LiteralPath $staticProductModsetAdmissionPath -Raw | ConvertFrom-Json
-    if ([string]$staticProductModsetAdmission.schema -cne 'extractor.product_modset_policy_admission.v2' -or [string]$staticProductModsetAdmission.product_modset_sha256 -cne $productModsetSha256) {
+    if ([string]$staticProductModsetAdmission.schema -cne 'extractor.product_modset_policy_admission.v3' -or [string]$staticProductModsetAdmission.product_modset_sha256 -cne $productModsetSha256) {
         throw 'static product-modset policy admission is noncanonical or mismatched'
     }
     $admittedProductModsetPolicySha256 = [string]$staticProductModsetAdmission.policy_sha256
@@ -626,7 +626,7 @@ if ($AcceptanceMode -eq 'production' -and $null -ne $preparedModsetReceipt) {
         throw "prepared product-modset policy admission failed; see $($productModsetAdmissionGate.stderr)"
     }
     $productModsetAdmission = Get-Content -LiteralPath $productModsetAdmissionPath -Raw | ConvertFrom-Json
-    if ([string]$productModsetAdmission.schema -cne 'extractor.product_modset_capture_admission.v1' -or [string]$productModsetAdmission.verdict -cne 'passed' -or [string]$productModsetAdmission.product_modset_sha256 -cne $productModsetSha256 -or [string]$productModsetAdmission.product_modset_admission.schema -cne 'extractor.product_modset_policy_admission.v2') {
+    if ([string]$productModsetAdmission.schema -cne 'extractor.product_modset_capture_admission.v1' -or [string]$productModsetAdmission.verdict -cne 'passed' -or [string]$productModsetAdmission.product_modset_sha256 -cne $productModsetSha256 -or [string]$productModsetAdmission.product_modset_admission.schema -cne 'extractor.product_modset_policy_admission.v3') {
         throw 'prepared product-modset verifier emitted a noncanonical or mismatched policy admission'
     }
     if ([string]$productModsetAdmission.product_modset_admission.policy_sha256 -cne [string]$staticProductModsetAdmission.policy_sha256 -or [string]$productModsetAdmission.product_modset_admission.classification -cne [string]$staticProductModsetAdmission.classification) {

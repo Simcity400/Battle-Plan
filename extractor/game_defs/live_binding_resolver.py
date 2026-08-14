@@ -985,6 +985,37 @@ def validate_source_inventory_document(value: dict[str, Any]) -> dict[str, Any]:
     return {**core, "inventory_sha256": expected_inventory}
 
 
+def base_layer_load_row(source_inventory: dict[str, Any]) -> dict[str, Any]:
+    """Derive the vanilla load-order row from the effective-VFS base namespace.
+
+    THIS is the derivation that decides what the base layer's content digest
+    means, and therefore one of the inputs to every product-modset key.  It is a
+    named function with its own test rather than an expression inside
+    ``resolve_live_bindings`` because ``resolve_live_bindings`` needs a running
+    game and no test can execute it: the previous derivation (a second full-tree
+    hash over `vanilla` minus `dlc/` only) diverged from every consumer's
+    assumption for exactly that reason, unobserved, for as long as it existed.
+
+    The digest returned is the base namespace's own, which
+    ``validate_source_inventory_document`` recomputes from that namespace's
+    inventory rows -- so the row it builds is reconstructible offline by any
+    holder of the inventory.
+    """
+    base = [
+        namespace
+        for namespace in source_inventory["namespaces"]
+        if namespace["binding"] == "base"
+    ]
+    if len(base) != 1 or base[0]["id"] != "vanilla" or base[0]["kind"] != "vanilla":
+        raise ResolutionError("effective VFS does not declare exactly one base namespace")
+    return {
+        "id": "vanilla",
+        "kind": "vanilla",
+        "ordinal": 0,
+        "content_sha256": base[0]["content_sha256"],
+    }
+
+
 def _runtime_log_matches_process(runtime: dict[str, Any], process: dict[str, Any]) -> None:
     local_created = process["created_utc"].astimezone()
     hh, mm, ss = (int(part) for part in runtime["first_time"].split(":"))
@@ -1249,7 +1280,6 @@ def resolve_live_bindings(
     )
 
     mod_rows: list[dict[str, Any]] = []
-    mod_inventory: list[dict[str, Any]] = []
     mod_names: list[str] = []
     resolved_mod_sources: list[dict[str, Any]] = []
     mod_inventory_by_id: dict[str, list[dict[str, Any]]] = {}
@@ -1271,7 +1301,6 @@ def resolve_live_bindings(
                 raise ResolutionError(f"mod archive changed while resolving: {token}")
         else:
             content_sha, inventory = hash_tree(content_root, layer_kind="mod", layer_id=token)
-        mod_inventory.extend(inventory)
         mod_names.append(fields["name"])
         descriptor_sha, _ = _hash_file_stable(descriptor)
         normalized_id = token.replace("\\", "/")
@@ -1306,23 +1335,18 @@ def resolve_live_bindings(
         mod_inventory_by_id, ui14_receipt["effective_winners"]
     )
 
-    source_rows: list[dict[str, Any]] = []
-    vanilla_sha, vanilla_inventory = hash_tree(
-        vanilla, layer_kind="vanilla", layer_id="vanilla", exclude_top={"dlc"}
-    )
     descriptor_parent_ids = {descriptor.parent.name for descriptor in descriptors}
     excluded_descriptorless_asset_layers, _descriptorless_inventory = (
         classify_descriptorless_asset_layers(vanilla, descriptor_parent_ids)
     )
-    source_rows.extend(vanilla_inventory)
-    source_rows.extend(mod_inventory)
     dlc_rows: list[dict[str, Any]] = []
     enabled_dlc_ids: list[str] = []
     dlc_content: dict[str, str] = {}
     for name, (descriptor, fields) in sorted(descriptor_by_name.items()):
         dlc_id = descriptor.parent.name
-        content_sha, inventory = hash_tree(descriptor.parent, layer_kind="dlc", layer_id=dlc_id)
-        source_rows.extend(inventory)
+        content_sha, _inventory = hash_tree(
+            descriptor.parent, layer_kind="dlc", layer_id=dlc_id
+        )
         dlc_content[dlc_id] = content_sha
         enabled = dlc_id in selected_dlc_ids
         if enabled:
@@ -1388,7 +1412,20 @@ def resolve_live_bindings(
         )
     dlc_by_id = {row["id"]: row for row in dlc_rows}
     mod_by_id = {row["id"]: row for row in mod_rows}
-    load_rows = [{"id": "vanilla", "kind": "vanilla", "ordinal": 0, "content_sha256": vanilla_sha}]
+    # The effective-VFS inventory is built BEFORE the load order because the
+    # base layer's content digest IS the inventory's base namespace digest.
+    # Recording anything else -- as v1 did, with a second full-tree hash over
+    # `vanilla` minus `dlc/` only -- puts a digest in the product-modset key
+    # that no consumer holding the inventory can reconstruct.
+    source_inventory = recompute_source_inventory(
+        vanilla,
+        resolved_mod_sources,
+        enabled_dlc_ids,
+        [],
+        identity,
+    )
+    validate_source_inventory_document(source_inventory)
+    load_rows = [base_layer_load_row(source_inventory)]
     for ordinal, planned_row in enumerate(planned, start=1):
         row = (
             dlc_by_id[planned_row["id"]]
@@ -1427,14 +1464,7 @@ def resolve_live_bindings(
         role: SB._validate_binding_document(document, role) for role, document in documents.items()
     }
     SB._validate_binding_identity(bindings)
-    source_inventory = recompute_source_inventory(
-        vanilla,
-        resolved_mod_sources,
-        enabled_dlc_ids,
-        [],
-        identity,
-    )
-    validate_source_inventory_document(source_inventory)
+    SB.join_base_layer_to_inventory(bindings["load_order"]["items"], source_inventory)
     report = {
         "schema": RESOLUTION_SCHEMA,
         "passed": True,

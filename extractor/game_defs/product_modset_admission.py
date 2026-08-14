@@ -30,12 +30,16 @@ import live_binding_resolver as LR
 import static_bundle as SB
 
 
-POLICY_SCHEMA = "extractor.product_modset_admission_policy.v2"
-ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v2"
+# v3: the load-order base row now carries the effective-VFS base namespace
+# digest (load_order.v2), so admission joins it instead of recording that it
+# could not.  Every product-modset key changes with that derivation, and a v2
+# policy or receipt names a mechanism this module no longer implements.
+POLICY_SCHEMA = "extractor.product_modset_admission_policy.v3"
+ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v3"
 POLICY_NAME = "live_resolution_provenance"
 DEFAULT_POLICY = Path(__file__).resolve().with_name("product_modset_admission_policy.json")
 CANONICAL_POLICY_SHA256 = (
-    "3554f6840bc8bdd32a96f234bf49102f1652f2eeafc79ac935ae590d0cfa0e37"
+    "ba5905b205ea83eec7557aa79dd078cab82baa31238f8ef68102d7db20452915"
 )
 
 # The exact obligations this module enforces.  A policy that names a different
@@ -46,6 +50,7 @@ IMPLEMENTED_PROVENANCE: tuple[str, ...] = (
     "engine_activated_dlc_roster",
     "engine_activated_mod_roster",
     "engine_mount_order_reproduced",
+    "base_layer_content_digest_joined",
     "effective_vfs_namespace_coverage",
     "binding_identity_agreement",
     "product_modset_key_recomputed",
@@ -345,23 +350,20 @@ def _engine_mount_order(
     entries = load_order["items"]
     if not entries or entries[0]["kind"] != "vanilla" or entries[0]["ordinal"] != 0:
         raise SB.BundleError("load order does not begin with the base vanilla layer")
-    base = [
-        namespace
-        for namespace in source_inventory["namespaces"]
-        if namespace["binding"] == "base"
-    ]
-    if len(base) != 1 or entries[0]["id"] != base[0]["id"]:
-        raise SB.BundleError(
-            "load order base layer does not name the effective-VFS base namespace"
-        )
-    # The base row's content_sha256 is deliberately NOT joined here.  The live
-    # resolver digests it over `vanilla` minus `dlc/` only
-    # (live_binding_resolver.py::resolve_live_bindings), while the base
-    # namespace digests `vanilla` minus `dlc/` AND `integrated_dlc/`
-    # (::recompute_source_inventory), so the two cover different file sets by
-    # construction and no offline join between them exists.  It is still bound
-    # into the product-modset key through load_order.effective_content_sha256.
-    # See runs/ja_modset_design/RESIDUALS.txt (g) for the one-step closure.
+    # base_layer_content_digest_joined: the base row's IDENTITY and its CONTENT
+    # digest both join to the effective-VFS base namespace, whose digest
+    # ``LR.validate_source_inventory_document`` has already recomputed from that
+    # namespace's own inventory rows above.  Every digest feeding the
+    # product-modset key is therefore reconstructible from the documents in
+    # front of admission; load_order.v1 recorded a differently-scoped second
+    # tree hash here that no holder of the inventory could check.
+    #
+    # ``admit`` reaches this same join a second time through
+    # ``SB.validate_source_inventory_bindings`` (the effective_vfs_namespace_
+    # coverage obligation).  The repetition is deliberate and it is why removing
+    # either call alone still fails closed: a named obligation must be enforced
+    # by its own code path rather than by another obligation's side effect.
+    SB.join_base_layer_to_inventory(entries, source_inventory)
     engine_order = [
         str(source["id"]).replace("\\", "/") for source in ordered_sources
     ]

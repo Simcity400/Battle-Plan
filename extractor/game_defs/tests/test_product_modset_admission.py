@@ -62,6 +62,26 @@ class SyntheticModset:
         self.userdir = root / "userdir"
         _write(self.vanilla / "common" / "base.txt", "synthetic vanilla payload")
 
+        # Every real install carries integrated_dlc layers (4 on the host this
+        # was developed against), and the corpus must too.  Without one, the
+        # retired v1 base digest (`vanilla` minus `dlc/`) and the base-namespace
+        # digest (`vanilla` minus `dlc/` AND `integrated_dlc/`) are computed
+        # over the SAME files and no fixture can tell the two derivations
+        # apart -- which is exactly why the v1 defect was invisible to tests
+        # while every production corpus carried it.
+        self.integrated_dlc = [
+            ("dlc903_synthetic_integrated", "Synthetic Integrated Pack"),
+        ]
+        for dlc_id, name in self.integrated_dlc:
+            _write(
+                self.vanilla / "integrated_dlc" / dlc_id / f"{dlc_id}.dlc",
+                f'name="{name}"\npath="dlc/{dlc_id}"\n',
+            )
+            _write(
+                self.vanilla / "integrated_dlc" / dlc_id / "common" / "integrated.txt",
+                f"synthetic integrated payload for {dlc_id}",
+            )
+
         # Three installed products: two the engine activated (one of which the
         # launcher profile did not ask for) and one it did not.
         self.installed_dlc = [
@@ -227,6 +247,20 @@ class SyntheticModset:
             "source_inventory_sha256": self.inventory["inventory_sha256"],
             "resolved_mod_sources": self.sources,
         }
+
+    def retired_v1_base_digest(self) -> str:
+        """The digest ``extractor.load_order.v1`` recorded in the vanilla row.
+
+        A deliberate reproduction of the RETIRED derivation -- the resolver's
+        second full-tree hash over `vanilla` minus `dlc/`, which included
+        `integrated_dlc/` and therefore matched no namespace in the effective
+        VFS.  It exists only so the negative tests below can present a corpus
+        shaped exactly like every v1 recording.
+        """
+        digest, _rows = LR.hash_tree(
+            self.vanilla, layer_kind="vanilla", layer_id="vanilla", exclude_top={"dlc"}
+        )
+        return digest
 
     def documents(self) -> dict[str, dict[str, Any]]:
         return {
@@ -416,6 +450,149 @@ class ProvenanceAdmissionTests(unittest.TestCase):
         _redigest(documents["load_order"])
         with self.assertRaisesRegex(SB.BundleError, "does not name the effective-VFS base"):
             fixture.admit(bindings=documents)
+
+    def test_resolver_derives_the_base_row_from_the_base_namespace(self) -> None:
+        """The PRODUCTION derivation of the vanilla load-order row, under test.
+
+        ``live_binding_resolver.resolve_live_bindings`` needs a running game and
+        no test can execute it, so the one decision inside it that defines a
+        product-modset key input lives in its own function,
+        ``base_layer_load_row``, and is exercised here.  The corpus carries an
+        integrated_dlc layer, which is what makes the retired derivation
+        (`vanilla` minus `dlc/`) and the base namespace (`vanilla` minus `dlc/`
+        AND `integrated_dlc/`) cover different files at all.
+
+        These live in THIS file, not in test_live_binding_resolver.py, because
+        .github/workflows/rust-production.yml runs this file directly with
+        `python <file>` and does not run pytest: a pytest-only test of this
+        derivation would never execute in CI.
+
+        kills: changing base_layer_load_row to hash a tree of its own, or to
+        return any digest other than the base namespace's, fails the
+        content_sha256 assertion below -- and only that one; the row-shape and
+        retired-versus-reconstructed assertions do not depend on what the
+        function returns.
+        """
+        fixture = self._modded()
+        row = LR.base_layer_load_row(fixture.inventory)
+        self.assertEqual(
+            (row["id"], row["kind"], row["ordinal"]), ("vanilla", "vanilla", 0)
+        )
+        base = next(
+            namespace for namespace in fixture.inventory["namespaces"]
+            if namespace["binding"] == "base"
+        )
+        reconstructed = SB.sha256_bytes(
+            SB.canonical_json([
+                {"relpath": item["relpath"], "bytes": item["bytes"], "sha256": item["sha256"]}
+                for item in fixture.inventory["rows"]
+                if item["namespace_ordinal"] == base["ordinal"]
+            ])
+        )
+        self.assertEqual(row["content_sha256"], reconstructed)
+        self.assertNotEqual(fixture.retired_v1_base_digest(), reconstructed)
+        # ... and the row it builds satisfies the join every consumer applies.
+        SB.join_base_layer_to_inventory([row], fixture.inventory)
+
+    def test_resolver_refuses_an_effective_vfs_without_exactly_one_base(self) -> None:
+        """kills: relaxing ``len(base) != 1`` in base_layer_load_row.
+
+        Both directions are exercised, because each is defeated by a different
+        weakening: dropping to ``not base`` still refuses zero bases but accepts
+        TWO and silently takes the first, and dropping the emptiness half
+        accepts zero.
+        """
+        fixture = self._modded()
+
+        no_base = deepcopy(fixture.inventory)
+        no_base["namespaces"][0]["binding"] = "asset_only"
+        with self.assertRaisesRegex(LR.ResolutionError, "exactly one base namespace"):
+            LR.base_layer_load_row(no_base)
+
+        two_bases = deepcopy(fixture.inventory)
+        second = next(
+            namespace for namespace in two_bases["namespaces"]
+            if namespace["binding"] != "base"
+        )
+        second["binding"] = "base"
+        with self.assertRaisesRegex(LR.ResolutionError, "exactly one base namespace"):
+            LR.base_layer_load_row(two_bases)
+
+    def test_base_load_order_row_reconstructs_offline_from_the_inventory_rows(
+        self,
+    ) -> None:
+        """The join lane JA proved impossible against load_order.v1.
+
+        Reconstructs the vanilla row's CONTENT digest from the source
+        inventory's own base-namespace rows -- relpath/bytes/sha256 only,
+        never the namespace's declared content_sha256 -- so a holder of the
+        inventory alone can check the digest bound into the product-modset key.
+
+        kills: deleting the CONTENT comparison in
+        ``static_bundle.join_base_layer_to_inventory`` -- the single
+        implementation both admission call sites reach -- makes the v1-shaped
+        corpus in the second half admit, so the assertRaises fails.  Building
+        this corpus without its integrated_dlc layer makes the retired and
+        current derivations hash the same files, so the assertNotEqual fails.
+
+        It does NOT kill a change to the resolver: this corpus is built by the
+        fixture, not by ``resolve_live_bindings``, which needs a running game.
+        The production derivation is covered by
+        test_resolver_derives_the_base_row_from_the_base_namespace above.
+        Removing only the call in ``_engine_mount_order`` is likewise NOT
+        killed here: ``admit`` reaches the same join again through
+        ``validate_source_inventory_bindings``, which is deliberate -- see the
+        comment at that call site.
+        """
+        fixture = self._modded()
+        inventory = fixture.inventory
+        base = next(
+            namespace
+            for namespace in inventory["namespaces"]
+            if namespace["binding"] == "base"
+        )
+        content_rows = [
+            {"relpath": row["relpath"], "bytes": row["bytes"], "sha256": row["sha256"]}
+            for row in inventory["rows"]
+            if row["namespace_ordinal"] == base["ordinal"]
+        ]
+        reconstructed = SB.sha256_bytes(SB.canonical_json(content_rows))
+        vanilla_row = fixture.documents()["load_order"]["items"][0]
+        self.assertEqual(vanilla_row["kind"], "vanilla")
+        self.assertEqual(vanilla_row["content_sha256"], reconstructed)
+
+        # The corpus must be able to tell the two derivations apart, or the
+        # equality above would hold for a v1 recording too and prove nothing.
+        retired = fixture.retired_v1_base_digest()
+        self.assertNotEqual(retired, reconstructed)
+
+        # ... and a corpus carrying the retired digest is refused, named.
+        documents = fixture.documents()
+        documents["load_order"]["items"][0]["content_sha256"] = retired
+        _redigest(documents["load_order"])
+        product = SB.product_modset_binding(
+            LR.EXPECTED_EXE_SHA256, documents, fixture.inventory
+        )
+        with self.assertRaisesRegex(
+            SB.BundleError, "content digest is not the effective-VFS base namespace digest"
+        ):
+            fixture.admit(bindings=documents, product_modset=product)
+
+    def test_v1_load_order_document_is_refused_by_schema_not_by_mismatch(self) -> None:
+        """An old-derivation recording refuses on WHAT IT IS, before any digest.
+
+        kills: leaving ``static_bundle.LOAD_ORDER_SCHEMA`` at
+        ``extractor.load_order.v1`` -- a v1 document would then be read as a
+        current one and refused, if at all, only as an unexplained digest
+        mismatch.
+        """
+        fixture = self._modded()
+        wire = deepcopy(fixture.documents_wire["load_order"])
+        wire["schema"] = "extractor.load_order.v1"
+        wire["entries"][0]["content_sha256"] = fixture.retired_v1_base_digest()
+        wire["effective_content_sha256"] = SB._content_digest(wire["entries"])
+        with self.assertRaisesRegex(SB.BundleError, "schema must be"):
+            SB._validate_binding_document(wire, "load_order")
 
     def test_asset_layer_roster_must_match_the_mounted_namespaces(self) -> None:
         fixture = self._modded()

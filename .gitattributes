@@ -48,6 +48,11 @@ extractor/game_defs/product_modset_admission_policy.json text eol=lf
 # committed source_inventory.json beside it, so the bytes must survive checkout
 # unchanged or the retained admission receipt stops describing them.
 extractor/native/runs/ja_modset_design/synthetic_corpus/** text eol=lf
+# Lane JK's synthetic corpus, same contract: the tree's digests are recorded in
+# the bindings/*.json committed beside it (and in the admission receipt in the
+# run dir), so a CRLF smudge on checkout would leave the evidence describing
+# bytes that are no longer there.
+extractor/native/runs/jk_loadorder_digest/synthetic_corpus/** text eol=lf
 
 # Rendering-law evidence is SHA-pinned as canonical LF text. Keep these packet
 # trees byte-stable on Windows so their verifiers do not mistake checkout EOL
