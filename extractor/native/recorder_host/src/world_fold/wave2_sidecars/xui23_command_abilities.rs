@@ -41,9 +41,15 @@
 //! authority.
 //!
 //! The payload also carries `replay_frame_identity_sha256`, computed over the
-//! whole frame with only this key removed (`:1201`–`:1202`). See the scaffold's
-//! module docs and the lane's residual on the frame-identity cycle before
-//! implementing it.
+//! SHARED base-frame projection under this carrier's own domain separator
+//! (`portable_replay_format::replay_frame_identity`, domain
+//! `hoi4.xui23.replay-base-frame.v2`). The producer must call that same
+//! function: it removes every registered sidecar key at both scopes, so the
+//! digest is the same whether or not XUI12's and XUI15's carriers ship in the
+//! same hour. Until GP-F10 this digest covered the whole frame with only this
+//! key removed, which — with XUI12's and XUI15's digests doing the mirror image
+//! — made the three a fixed-point cycle no emission order could satisfy. The
+//! retired `hoi4.xui23.replay-frame.v1` domain is refused by name.
 
 use serde_json::Value;
 

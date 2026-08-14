@@ -325,6 +325,13 @@ pub(crate) fn build_wave2_sidecars(feed: &Wave2Feed) -> Wave2Batch {
                 ]
             }
         };
+        let entries = match registered_entries_or_refusal(carrier.scope, entries) {
+            Ok(entries) => entries,
+            Err(refusal) => {
+                batch.refusals.push(refusal);
+                continue;
+            }
+        };
         let target = match carrier.scope {
             SidecarScope::Root => &mut batch.root,
             SidecarScope::Map => &mut batch.map,
@@ -332,6 +339,56 @@ pub(crate) fn build_wave2_sidecars(feed: &Wave2Feed) -> Wave2Batch {
         target.extend(entries);
     }
     batch
+}
+
+/// Fail closed against the SHARED base-frame registry, at emission, per CARRIER.
+///
+/// Three replay carriers bind a `replay_frame_identity_sha256` computed over the
+/// base-frame projection, which is the snapshot minus every key in
+/// `snapshot::replay_frame_identity`'s registry. A scaffold entry whose key is
+/// NOT in that registry lands inside all three preimages, so the hour it appears
+/// in silently invalidates three carriers its lane never heard of — the second
+/// half of GP-F10, which no per-hour signal would otherwise show. A test alone
+/// would not hold this: it would have to be remembered. This sits on the path
+/// every hour takes.
+///
+/// ALL-OR-NOTHING per carrier, and that is the point rather than tidiness. An
+/// earlier revision filtered key by key, so a pair with one registered half
+/// would have emitted that half alone — and both pair consumers reject
+/// one-sided presence as a malformed carrier
+/// (`production_lines.rs::xui12_producer_payload_from_frame`,
+/// `trade_compositor.rs::xui15_producer_payload_from_frame`) rather than as a
+/// clean absence. That turns "nothing was produced" into "what was produced is
+/// corrupt", which is a worse hour than the perturbation being prevented.
+///
+/// The refusal names both halves of the answer: which keys are unregistered, and
+/// which keys are being withheld because of them.
+fn registered_entries_or_refusal(
+    scope: SidecarScope,
+    entries: Vec<(String, Value)>,
+) -> Result<Vec<(String, Value)>, String> {
+    let registered: &[&str] = match scope {
+        SidecarScope::Root => &snapshot::replay_frame_identity::REGISTERED_ROOT_SIDECAR_KEYS,
+        SidecarScope::Map => &snapshot::replay_frame_identity::REGISTERED_MAP_SIDECAR_KEYS,
+    };
+    let unregistered: Vec<&str> = entries
+        .iter()
+        .map(|(key, _)| key.as_str())
+        .filter(|key| !registered.contains(key))
+        .collect();
+    if unregistered.is_empty() {
+        return Ok(entries);
+    }
+    let withheld: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+    Err(format!(
+        "{}: emitted by the wave-2 scaffold but absent from \
+         portable_replay_format::replay_frame_identity's registered sidecar keys, so it would \
+         enter the base-frame preimage and move the XUI12, XUI15 and XUI23 replay-frame \
+         identities; this carrier's keys ({}) are withheld TOGETHER until the registry names \
+         them, because a half-emitted pair is a malformed carrier rather than a clean absence",
+        unregistered.join(", "),
+        withheld.join(", ")
+    ))
 }
 
 /// Merge one half of a batch into a snapshot object, refusing to overwrite.
@@ -458,6 +515,113 @@ mod tests {
             EXPECTED_KEYS.iter().map(|key| (*key).to_owned()).collect();
         assert_eq!(declared, expected);
         assert_eq!(declared.len(), 15, "fifteen keys across thirteen carriers");
+    }
+
+    /// kills: adding a carrier here without registering its key in the shared
+    /// base-frame registry — the exclusion set the three replay-frame
+    /// identities are computed against. An unregistered key enters all three
+    /// preimages, so the first hour it appears in invalidates XUI12's, XUI15's
+    /// and XUI23's carriers, none of which the adding lane touched (GP-F10).
+    /// Asserted BOTH ways and per scope: the registry is not allowed to drift
+    /// ahead of the emitters either, because a key excluded from the identity
+    /// that nothing emits is a hole nobody is watching.
+    #[test]
+    fn every_registered_key_is_emitted_here_and_every_emitted_key_is_registered() {
+        use snapshot::replay_frame_identity::{
+            REGISTERED_MAP_SIDECAR_KEYS, REGISTERED_ROOT_SIDECAR_KEYS,
+        };
+        let mut declared_root = BTreeSet::new();
+        let mut declared_map = BTreeSet::new();
+        for carrier in carriers() {
+            let target = match carrier.scope {
+                SidecarScope::Root => &mut declared_root,
+                SidecarScope::Map => &mut declared_map,
+            };
+            target.insert(carrier.slot.wire_key.to_owned());
+            if let Some(paired) = carrier.paired_key {
+                target.insert(paired.to_owned());
+            }
+        }
+        let registered_root: BTreeSet<String> = REGISTERED_ROOT_SIDECAR_KEYS
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect();
+        let registered_map: BTreeSet<String> = REGISTERED_MAP_SIDECAR_KEYS
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect();
+        assert_eq!(
+            declared_root, registered_root,
+            "the root carriers and the shared base-frame registry disagree"
+        );
+        assert_eq!(
+            declared_map, registered_map,
+            "the map carriers and the shared base-frame registry disagree"
+        );
+    }
+
+    /// kills: dropping the emission-time registry check in
+    /// `build_wave2_sidecars`, and — the defect review round 2 caught — making
+    /// it filter key by key instead of carrier by carrier. A pair with one
+    /// registered half would then emit that half alone, and both pair consumers
+    /// read one-sided presence as a MALFORMED carrier rather than a clean
+    /// absence, which is a worse hour than the perturbation the guard prevents.
+    ///
+    /// Exercised through `registered_entries_or_refusal`, the same function
+    /// `build_wave2_sidecars` calls — an earlier version of this test
+    /// reimplemented the filtering and so could not have seen the split-pair
+    /// defect at all.
+    #[test]
+    fn an_unregistered_scaffold_key_withholds_its_whole_carrier_and_names_it() {
+        // The production path, on the real frozen carrier list: no refusal.
+        let hour = build_wave2_sidecars(&Wave2Feed::unfed());
+        assert!(hour.refusals.is_empty(), "{:?}", hour.refusals);
+
+        // A fully registered pair passes through untouched.
+        let good = vec![
+            ("_r2_xui12_production_lines_payload".to_owned(), Value::Null),
+            (
+                "_r2_xui12_producer_canvas_authority".to_owned(),
+                Value::Null,
+            ),
+        ];
+        assert_eq!(
+            registered_entries_or_refusal(SidecarScope::Root, good.clone()),
+            Ok(good)
+        );
+
+        // A pair with exactly ONE unregistered half is withheld ENTIRELY.
+        let half_registered = vec![
+            ("_r2_xui12_production_lines_payload".to_owned(), Value::Null),
+            ("_r2_not_registered_anywhere".to_owned(), Value::Null),
+        ];
+        let refusal = registered_entries_or_refusal(SidecarScope::Root, half_registered)
+            .expect_err("one unregistered half withholds the pair");
+        assert!(refusal.contains("_r2_not_registered_anywhere"), "{refusal}");
+        assert!(
+            refusal.contains("_r2_xui12_production_lines_payload"),
+            "the registered half is withheld too, and the refusal must say so: {refusal}"
+        );
+        assert!(refusal.contains("withheld TOGETHER"), "{refusal}");
+        // And the refusal states the consequence, not merely "unknown key": a
+        // reader has to learn WHY the key cannot ride this hour.
+        assert!(
+            refusal.contains("XUI12, XUI15 and XUI23 replay-frame identities"),
+            "the refusal must name the three identities it protects: {refusal}"
+        );
+
+        // A map-scoped key is checked against the MAP registry, not the root
+        // one: swapping the two lists would let a root key ride in `map`.
+        assert!(registered_entries_or_refusal(
+            SidecarScope::Map,
+            vec![("_r2_politics_presentation_exact".to_owned(), Value::Null)]
+        )
+        .is_err());
+        assert!(registered_entries_or_refusal(
+            SidecarScope::Map,
+            vec![("_r2_weather_visual_lifecycle".to_owned(), Value::Null)]
+        )
+        .is_ok());
     }
 
     /// kills: leaving a carrier's `slot` with an empty reason, a blank ledger

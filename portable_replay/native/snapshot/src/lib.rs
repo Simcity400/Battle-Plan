@@ -32,6 +32,7 @@ pub mod prefolded;
 pub mod prefolded_decoder;
 pub mod recording_composition;
 pub mod replay_cache;
+pub mod replay_frame_identity;
 pub mod sha256;
 pub mod stream_verify;
 pub mod strict_json;
