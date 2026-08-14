@@ -153,6 +153,24 @@ pub struct D98TheatreSelectorContentIdentityAuthority {
     pub layers: Vec<D98ContentLayerAuthority>,
 }
 
+/// A recorded mount plus the physical descriptor it was bound through.
+///
+/// `recorded.descriptor_sha256` is the *semantic* descriptor digest the VFS
+/// mounter verifies — whitespace- and comment-insensitive, so it deliberately
+/// does NOT move when the file is merely reformatted. `descriptor_file_sha256`
+/// is the digest of the raw bytes, which does. Both are kept because they
+/// answer different questions: the semantic digest proves the mount is the one
+/// that was bound, the raw digest is what an attach-window bracket re-reads to
+/// prove the descriptor did not change underneath a long content walk.
+///
+/// `descriptor_path` is `None` for base content, which has no descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundContentLayer {
+    pub recorded: RecordedContentLayer,
+    pub descriptor_path: Option<PathBuf>,
+    pub descriptor_file_sha256: Option<String>,
+}
+
 /// A recorded mount plus the identity value the collector transports for it.
 ///
 /// `recorded.descriptor_sha256` is the *semantic* descriptor digest the VFS
@@ -276,18 +294,21 @@ pub fn d98_theatre_selector_content_identity_from_resolved_launch(
 
 /// Build the ordered mount stack: base, then integrated DLC, then enabled DLC,
 /// then every enabled mod in `dlc_load.json` order.
-fn d98_ordered_layers(
+///
+/// This is the one place the recorder turns a resolved launch into the layer
+/// order the effective VFS mounts. Domain 98's content identity and the
+/// attach-time content proof both consume it, so the two cannot drift into two
+/// different opinions about which layers the engine is running.
+pub fn ordered_content_layers_from_resolved_launch(
     roots: &RuntimeContentRoots,
     launch: &PortableLaunchBinding,
     report: &ModsetReport,
-    exact_exe_sha256: &str,
-) -> Result<Vec<D98OrderedLayer>, String> {
-    let mut ordered = Vec::new();
-    // Base carries no descriptor, so its launch-bound content identity is the
-    // pinned executable. That is a build identity rather than a directory
-    // digest, and it is deliberately not load-bearing for display names: the
-    // localisation digest covers the base localisation bytes directly.
-    ordered.push(D98OrderedLayer {
+) -> Result<Vec<BoundContentLayer>, String> {
+    let mut ordered: Vec<BoundContentLayer> = Vec::new();
+    // Base carries no descriptor at all, so there is nothing to verify and
+    // nothing for a bracket to re-read; its identity is the executable, which
+    // every caller already holds.
+    ordered.push(BoundContentLayer {
         recorded: RecordedContentLayer {
             ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -299,7 +320,8 @@ fn d98_ordered_layers(
             replace_paths: Vec::new(),
             required_for_playback: false,
         },
-        authority_sha256: exact_exe_sha256.into(),
+        descriptor_path: None,
+        descriptor_file_sha256: None,
     });
 
     // `dlc_descriptor_evidence` is keyed by the descriptor entry exactly as the
@@ -313,7 +335,7 @@ fn d98_ordered_layers(
             .and_then(Option::as_ref)
         else {
             return Err(format!(
-                "D98 content identity enabled DLC lacks launch-bound descriptor evidence: {entry:?}"
+                "bound content layers: enabled DLC lacks launch-bound descriptor evidence: {entry:?}"
             ));
         };
         enabled_descriptor_evidence.insert(
@@ -334,15 +356,17 @@ fn d98_ordered_layers(
         )
     {
         let descriptor = stable_relative_join(&roots.install_root, &bound.layer_id)?;
-        let expected = enabled_descriptor_evidence.get(&bound.layer_id).map(String::as_str);
+        let expected = enabled_descriptor_evidence
+            .get(&bound.layer_id)
+            .map(String::as_str);
         let (text, file_sha256) = stable_descriptor_text_and_file_sha256(&descriptor, expected)?;
         if semantic_descriptor_sha256(&text) != bound.descriptor_sha256 {
             return Err(format!(
-                "D98 content identity DLC descriptor drifted while binding: {}",
+                "bound content layers: DLC descriptor drifted while binding: {}",
                 bound.layer_id
             ));
         }
-        ordered.push(D98OrderedLayer {
+        ordered.push(BoundContentLayer {
             recorded: RecordedContentLayer {
                 ordinal: ordered.len() as u32,
                 layer_kind: kind,
@@ -354,20 +378,21 @@ fn d98_ordered_layers(
                 replace_paths: descriptor_replace_paths(&text),
                 required_for_playback: false,
             },
-            authority_sha256: file_sha256,
+            descriptor_path: Some(descriptor),
+            descriptor_file_sha256: Some(file_sha256),
         });
     }
 
     for bound in &launch.ordered_mods {
         let descriptor = stable_relative_join(&roots.user_dir, &bound.layer_id)?;
-        let (text, _) = stable_descriptor_text_and_file_sha256(&descriptor, None)?;
+        let (text, file_sha256) = stable_descriptor_text_and_file_sha256(&descriptor, None)?;
         if semantic_descriptor_sha256(&text) != bound.descriptor_sha256 {
             return Err(format!(
-                "D98 content identity mod descriptor drifted while binding: {}",
+                "bound content layers: mod descriptor drifted while binding: {}",
                 bound.layer_id
             ));
         }
-        ordered.push(D98OrderedLayer {
+        ordered.push(BoundContentLayer {
             recorded: RecordedContentLayer {
                 ordinal: ordered.len() as u32,
                 layer_kind: ContentLayerKind::Mod,
@@ -380,12 +405,73 @@ fn d98_ordered_layers(
                 replace_paths: descriptor_replace_paths(&text),
                 required_for_playback: false,
             },
-            // The mod content digest, not the descriptor digest: an in-place
-            // edit of the mod's files must move this value.
-            authority_sha256: bound.content_sha256.clone(),
+            descriptor_path: Some(descriptor),
+            descriptor_file_sha256: Some(file_sha256),
         });
     }
     Ok(ordered)
+}
+
+/// Domain 98's view of the shared stack: the same mounts, plus the per-layer
+/// value that enters the transported content identity.
+fn d98_ordered_layers(
+    roots: &RuntimeContentRoots,
+    launch: &PortableLaunchBinding,
+    report: &ModsetReport,
+    exact_exe_sha256: &str,
+) -> Result<Vec<D98OrderedLayer>, String> {
+    // The shared builder appends mods last, in `launch.ordered_mods` order, so
+    // the two lists advance together. A positional cursor rather than a lookup
+    // by layer id: a `dlc_load.json` that lists one mod twice produces two
+    // layers with the SAME id, and a lookup would silently answer both from the
+    // first row. (That shape is refused a few lines later by
+    // `validate_d98_layer_inventory`, but this must not be the code that
+    // depends on it.)
+    let mut mods = launch.ordered_mods.iter();
+    ordered_content_layers_from_resolved_launch(roots, launch, report)?
+        .into_iter()
+        .map(|layer| {
+            // Base: the pinned executable. That is a build identity rather than
+            // a directory digest, and it is deliberately not load-bearing for
+            // display names — the localisation digest covers the base
+            // localisation bytes directly.
+            //
+            // Mod: the CONTENT digest, not the descriptor digest, so an
+            // in-place edit of the mod's files moves this value.
+            //
+            // DLC: the raw descriptor file digest.
+            let authority_sha256 = match layer.recorded.layer_kind {
+                ContentLayerKind::Base => exact_exe_sha256.to_string(),
+                ContentLayerKind::Mod => {
+                    let bound = mods.next().ok_or_else(|| {
+                        format!(
+                            "D98 content identity lost the bound mod {}",
+                            layer.recorded.layer_id
+                        )
+                    })?;
+                    if bound.layer_id != layer.recorded.layer_id {
+                        return Err(format!(
+                            "D98 content identity mod order diverged at {}",
+                            layer.recorded.layer_id
+                        ));
+                    }
+                    bound.content_sha256.clone()
+                }
+                ContentLayerKind::Dlc | ContentLayerKind::IntegratedDlc => {
+                    layer.descriptor_file_sha256.clone().ok_or_else(|| {
+                        format!(
+                            "D98 content identity DLC layer {} carries no descriptor digest",
+                            layer.recorded.layer_id
+                        )
+                    })?
+                }
+            };
+            Ok(D98OrderedLayer {
+                recorded: layer.recorded,
+                authority_sha256,
+            })
+        })
+        .collect()
 }
 
 /// Read a descriptor under a double-read stability bracket, returning its
@@ -1100,6 +1186,68 @@ mod tests {
 
 
 
+
+    /// The per-layer identity value across a MIXED stack.
+    ///
+    /// `d98_ordered_layers` is now a mapper over the shared
+    /// `ordered_content_layers_from_resolved_launch`, and the thing the shared
+    /// builder does NOT carry is which digest each kind contributes to the
+    /// transported identity: base is the executable, a DLC is its RAW
+    /// descriptor file digest, and a mod is its CONTENT digest (so an in-place
+    /// edit of a mod's files moves it, which a descriptor digest would not).
+    /// Every single-layer test here would pass if those three were swapped;
+    /// this one would not, and it is also the only test that pins mods to their
+    /// `dlc_load.json` ORDER rather than to a lookup by id.
+    #[test]
+    fn a_mixed_layer_stack_keeps_each_kinds_own_identity_and_the_authored_mod_order() {
+        let fixture = base_only("d98_mixed_layers");
+        let descriptor_text = "name=\"Integrated\"\n";
+        fixture.write(&fixture.install.clone(), "integrated_dlc/pack/pack.dlc", descriptor_text);
+        fixture.base("integrated_dlc/pack/localisation/english/pack_l_english.yml", "l_english:\n");
+        let descriptor_file_sha256 =
+            format!("{:x}", Sha256::digest(descriptor_text.as_bytes()));
+
+        let second = fixture.add_mod("second", "");
+        let first = fixture.add_mod("first", "");
+        fixture.mod_file("first", "localisation/english/a_l_english.yml", "l_english:\n");
+        fixture.mod_file("second", "localisation/english/b_l_english.yml", "l_english:\n");
+
+        let mut report = fixture.report(Some("l_english"));
+        // Authored order: `second` BEFORE `first`, so an implementation that
+        // sorted or looked mods up by id would produce a different stack.
+        report.enabled_mods = vec![second.clone(), first.clone()];
+        report.installed_dlcs = vec!["integrated_dlc/pack/pack.dlc".into()];
+
+        let authority = identity(&report);
+        let kinds = authority
+            .layers
+            .iter()
+            .map(|layer| (layer.layer_kind, layer.layer_id.as_str(), layer.sha256.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ("base", "base", A729_EXE_SHA256),
+                (
+                    "integrated_dlc",
+                    "integrated_dlc/pack/pack.dlc",
+                    descriptor_file_sha256.as_str()
+                ),
+                (
+                    "mod",
+                    "mod/second.mod",
+                    second.content_sha256.as_deref().unwrap()
+                ),
+                (
+                    "mod",
+                    "mod/first.mod",
+                    first.content_sha256.as_deref().unwrap()
+                ),
+            ],
+            "base carries the executable, a DLC its raw descriptor digest, and a mod its content \
+             digest, in dlc_load.json order"
+        );
+    }
 
     #[test]
     fn absent_localisation_language_fails_closed() {

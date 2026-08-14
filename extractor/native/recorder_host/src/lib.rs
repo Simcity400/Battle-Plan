@@ -1,3 +1,7 @@
+/// KIND C content certification: what the engine's effective VFS exposed while
+/// the recorder was attaching. See the module header for why the launch-time
+/// epoch is a route the shipped binary can never take.
+pub mod attach_content_proof;
 pub mod auto_attach;
 /// What build produced a capture, on the manifest and readable by the audit
 /// tools. See the module header for the t34/t35 defect it closes.

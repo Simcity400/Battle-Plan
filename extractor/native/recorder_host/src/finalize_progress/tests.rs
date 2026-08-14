@@ -191,7 +191,13 @@ impl SteppedPublisher {
     fn start(out_dir: &Path, first_work: u64) -> Self {
         let (meter, control) = stepped_meter(first_work);
         let publisher =
-            FinalizeProgressPublisher::start(out_dir, binding(), Box::new(meter), STEP_INTERVAL)
+            FinalizeProgressPublisher::start(
+                out_dir,
+                binding(),
+                Box::new(meter),
+                STEP_INTERVAL,
+                PHASE_FINALIZING,
+            )
                 .unwrap();
         let started = Self {
             control: Arc::new(control),

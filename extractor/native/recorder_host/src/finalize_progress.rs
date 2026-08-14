@@ -465,11 +465,19 @@ impl FinalizeProgressPublisher {
     /// Begin publishing. Fails only if the very first sample cannot be written:
     /// a receipt whose absence is ambiguous is worse than none at all, so the
     /// caller learns immediately rather than at the first supervisor poll.
+    /// `phase` names WHAT is being metered, and is published verbatim in every
+    /// sample. It is a parameter rather than a constant because the same
+    /// receipt carries two different long operations a supervisor must be able
+    /// to tell apart: the post-capture finalize, and the attach-time content
+    /// fingerprint. Only `finish` publishes `PHASE_COMPLETE`, so a publisher
+    /// that is merely dropped (which is how the fingerprint's ends) never
+    /// claims the recorder is done.
     pub fn start(
         out_dir: &Path,
         binding: FinalizeProgressBinding,
         meter: Box<dyn WorkMeter>,
         interval: Duration,
+        phase: &'static str,
     ) -> Result<Self, String> {
         let started = Instant::now();
         let mut tracker = ProgressTracker::new(started);
@@ -480,7 +488,7 @@ impl FinalizeProgressPublisher {
         // forward by exactly that walk.
         let first_work = meter.observe();
         let first = tracker.sample(
-            PHASE_FINALIZING,
+            phase,
             0,
             Instant::now(),
             SystemTime::now(),
@@ -515,7 +523,7 @@ impl FinalizeProgressPublisher {
                     // timestamp.
                     let work = meter.observe();
                     let sample = tracker.sample(
-                        PHASE_FINALIZING,
+                        phase,
                         next,
                         Instant::now(),
                         SystemTime::now(),

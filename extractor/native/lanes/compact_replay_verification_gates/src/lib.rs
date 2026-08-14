@@ -3376,7 +3376,46 @@ fn validate_required_static_artifacts(
     game_id: &str,
 ) -> Result<Value, String> {
     let manifest_authority = verify_static_manifest_authority(manifest, run_dir_manifest)?;
-    let expected_count = compact_contract::REQUIRED_STATIC_ARTIFACTS.len();
+    let roles = compact_contract::REQUIRED_STATIC_ARTIFACTS
+        .iter()
+        .map(|role| (*role).to_string())
+        .collect::<BTreeSet<_>>();
+    let details = admit_packaged_static_artifacts(
+        container,
+        game_id,
+        &roles,
+        &manifest_authority.artifact_hashes,
+        Some(&manifest_authority.bundle_artifacts),
+    )?;
+    Ok(json!({
+        "required_count": compact_contract::REQUIRED_STATIC_ARTIFACTS.len(),
+        "exact_required_roles": true,
+        "bundle_id": manifest_authority.bundle_id,
+        "product_modset_sha256": manifest_authority.product_modset_sha256,
+        "retained_manifest_sha256": manifest_authority.retained_manifest_sha256,
+        "retained_binding_count": manifest_authority.retained_binding_count,
+        "verifier_sha256": manifest_authority.verifier_sha256,
+        "artifacts": details,
+    }))
+}
+
+/// Bind the packaged static artifacts to the container, for whichever role set
+/// the recording's content proof declares.
+///
+/// `roles` is the EXACT set the container must carry — the canonical eight
+/// under the launch-time epoch, the declared subset under the attach-time
+/// proof — and the index, the manifest and the container entries must all agree
+/// on precisely that set. `retained` is the launch-time route's retained bundle
+/// evidence; the attach-time route has no bundle and passes `None`, which is
+/// why the digest chain is stated per binding rather than assumed.
+fn admit_packaged_static_artifacts(
+    container: &Container,
+    game_id: &str,
+    roles: &BTreeSet<String>,
+    artifact_hashes: &BTreeMap<String, String>,
+    retained: Option<&BTreeMap<String, StaticBundleArtifactBinding>>,
+) -> Result<Vec<Value>, String> {
+    let expected_count = roles.len();
     let expected_index_path = format!("payload/{game_id}/index.json");
     let index_entries = container.entries_by_role("index");
     if index_entries.len() != 1 || index_entries[0].path != expected_index_path {
@@ -3399,30 +3438,61 @@ fn validate_required_static_artifacts(
         .ok_or_else(|| {
             "authoritative replay index.static_artifacts is missing or not an array".to_string()
         })?;
-    if rows.len() != expected_count {
-        return Err(format!(
-            "authoritative replay index.static_artifacts has {} rows, expected exactly {expected_count}",
-            rows.len()
-        ));
-    }
-    let required = compact_contract::REQUIRED_STATIC_ARTIFACTS
+    // THE INDEX ROSTERS EVERY CANONICAL ROLE, present or absent, and the
+    // recorder writes it that way on purpose ("the index records EVERY known
+    // artifact as present or absent, so a reader always learns exactly which
+    // enrichment bundles this recording carries -- the absent ones are badged,
+    // never fabricated"). So the roster check is over the CANONICAL set, and
+    // `roles` decides which of those rows must be PRESENT. A short packaged
+    // roster is therefore still fully accounted for: every role it does not
+    // carry appears here badged absent with a reason.
+    let canonical = compact_contract::REQUIRED_STATIC_ARTIFACTS
         .iter()
-        .copied()
+        .map(|role| (*role).to_string())
         .collect::<BTreeSet<_>>();
+    let required = roles;
     let mut index_bindings = BTreeMap::<String, StaticArtifactIndexBinding>::new();
     let mut relative_paths = BTreeSet::new();
+    let mut rostered = BTreeSet::new();
     for (row_index, row) in rows.iter().enumerate() {
         let name = row
             .get("name")
             .and_then(Value::as_str)
             .filter(|name| !name.is_empty())
             .ok_or_else(|| format!("replay index static_artifacts[{row_index}].name is invalid"))?;
-        if !required.contains(name) {
+        if !canonical.contains(name) {
             return Err(format!(
                 "authoritative replay index contains unexpected static role {name:?}"
             ));
         }
-        if row.get("present").and_then(Value::as_bool) != Some(true) {
+        if !rostered.insert(name.to_string()) {
+            return Err(format!(
+                "authoritative replay index duplicates static role {name:?}"
+            ));
+        }
+        let present = row.get("present").and_then(Value::as_bool);
+        if !required.contains(name) {
+            // A role this recording does not carry. It must be badged absent
+            // WITH A REASON -- a bare `present: false` would let a container
+            // drop a role silently.
+            if present != Some(false) {
+                return Err(format!(
+                    "authoritative replay index static role {name:?} is not packaged by \n                     this recording but is not badged present=false"
+                ));
+            }
+            if row
+                .get("absence_reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .is_none()
+            {
+                return Err(format!(
+                    "authoritative replay index static role {name:?} is absent but names no reason"
+                ));
+            }
+            continue;
+        }
+        if present != Some(true) {
             return Err(format!(
                 "authoritative replay index static role {name:?} is not present=true"
             ));
@@ -3472,8 +3542,13 @@ fn validate_required_static_artifacts(
             ));
         }
     }
-    for name in &required {
-        if !index_bindings.contains_key(*name) {
+    if rostered != canonical {
+        return Err(format!(
+            "authoritative replay index rosters {rostered:?}, not the canonical static \n             roster {canonical:?}: a role missing from the index is a role no reader can \n             learn about"
+        ));
+    }
+    for name in required {
+        if !index_bindings.contains_key(name) {
             return Err(format!(
                 "authoritative replay index is missing required static role {name:?}"
             ));
@@ -3509,14 +3584,14 @@ fn validate_required_static_artifacts(
     }
 
     let mut details = Vec::with_capacity(expected_count);
-    for name in compact_contract::REQUIRED_STATIC_ARTIFACTS {
+    for name in required {
+        let name = name.as_str();
         let binding = index_bindings
-            .get(*name)
+            .get(name)
             .expect("required index binding checked above");
-        let manifest_sha256 = manifest_authority
-            .artifact_hashes
-            .get(*name)
-            .expect("required manifest binding checked above");
+        let manifest_sha256 = artifact_hashes.get(name).ok_or_else(|| {
+            format!("manifest carries no static artifact digest for role {name:?}")
+        })?;
         if manifest_sha256 != &binding.sha256 {
             return Err(format!(
                 "static role {name:?} manifest sha256 {manifest_sha256} != replay index sha256 {}",
@@ -3544,15 +3619,24 @@ fn validate_required_static_artifacts(
                 binding.bytes, binding.sha256
             ));
         }
-        let bundle_binding = manifest_authority
-            .bundle_artifacts
-            .get(*name)
-            .expect("retained bundle artifact roster checked above");
-        if observed_sha256 != bundle_binding.sha256 {
-            return Err(format!(
-                "static role {name:?} admitted bytes sha256 {observed_sha256} != retained bundle artifact sha256 {}",
-                bundle_binding.sha256
-            ));
+        // The retained-bundle leg exists only on the launch-time route. The
+        // attach-time route has no bundle to compare against, and says so by
+        // passing `None` rather than by quietly skipping a check a reader would
+        // assume ran.
+        let bundle_binding = retained
+            .map(|bundle| {
+                bundle.get(name).ok_or_else(|| {
+                    format!("retained static bundle carries no artifact for role {name:?}")
+                })
+            })
+            .transpose()?;
+        if let Some(bundle_binding) = bundle_binding {
+            if observed_sha256 != bundle_binding.sha256 {
+                return Err(format!(
+                    "static role {name:?} admitted bytes sha256 {observed_sha256} != retained bundle artifact sha256 {}",
+                    bundle_binding.sha256
+                ));
+            }
         }
         let artifact_json = snapshot::parse_json_strict(&bytes).map_err(|error| {
             format!("admitted static role {name:?} is not strict JSON: {error}")
@@ -3568,7 +3652,8 @@ fn validate_required_static_artifacts(
             .remove("artifact_sha256");
         let recomputed_artifact_sha256 = canonical_json_sha256(&unhashed_artifact)?;
         if embedded_artifact_sha256 != recomputed_artifact_sha256
-            || embedded_artifact_sha256 != bundle_binding.artifact_sha256
+            || bundle_binding
+                .is_some_and(|bundle| embedded_artifact_sha256 != bundle.artifact_sha256)
         {
             return Err(format!(
                 "static role {name:?} artifact_sha256 is not bound to canonical admitted artifact bytes"
@@ -3587,15 +3672,554 @@ fn validate_required_static_artifacts(
             entries_by_path.keys().collect::<Vec<_>>()
         ));
     }
+    Ok(details)
+}
+
+/// WHICH content proof this recording states it took.
+///
+/// Read positively, from a field every recording writes, and never inferred
+/// from which other fields happen to be present — the same discipline the
+/// `raw_stream_packaging` route holds itself to a few hundred lines below.
+enum ContentProofKind {
+    /// A content manifest observed before `ResumeThread`, with the eight-role
+    /// static bundle behind it.
+    LaunchTimeStaticBundleV1,
+    /// The attach-time effective-VFS join. See
+    /// `recorder_host::attach_content_proof`.
+    AttachTimeEffectiveVfsJoinV1,
+}
+
+fn read_content_proof_kind(embedded_manifest: &Value) -> Result<ContentProofKind, String> {
+    let field = recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD;
+    let declared = embedded_manifest
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "container-authenticated recorder_manifest carries no {field}; a recording states \
+                 which content proof it took, and a consumer never infers one from a missing entry"
+            )
+        })?;
+    if declared == recorder_host::attach_content_proof::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1 {
+        Ok(ContentProofKind::LaunchTimeStaticBundleV1)
+    } else if declared
+        == recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1
+    {
+        Ok(ContentProofKind::AttachTimeEffectiveVfsJoinV1)
+    } else {
+        // `none` lands here too, and that is the point: a recording that took
+        // no content proof is not certifiable as content-bound, and it says so
+        // itself rather than being caught by a downstream absence.
+        Err(format!(
+            "recording declares {field} {declared:?}, which certifies no content: this loader \
+             admits {:?} and {:?}",
+            recorder_host::attach_content_proof::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1,
+            recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
+        ))
+    }
+}
+
+/// KIND C: admit a recording whose content identity was proved at ATTACH, by
+/// joining every packaged artifact's content claims against the engine's own
+/// effective VFS.
+///
+/// The launch-time epoch this replaces is unreachable by the shipped product
+/// binary — the early-launch actuator is compile-excluded — so without this
+/// route no production recording could ever be certified as content-bound.
+/// What it admits is nonetheless narrower than the launch-time route, and the
+/// report says so: there is no static bundle, no product-modset key and no
+/// portable content manifest behind it, and the claim it does make is exactly
+/// "every content byte these artifacts declare is what the engine exposed
+/// during the stated attach window".
+fn certify_attach_time_content_proof(
+    container: &Container,
+    embedded_manifest: &Value,
+    game_id: &str,
+) -> Result<Value, String> {
+    let field = recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD;
+    let proof = embedded_manifest
+        .get(field)
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("recording declares the attach-time proof but carries no {field}"))?;
+    if proof.get("schema").and_then(Value::as_str)
+        != Some(recorder_host::attach_content_proof::SCHEMA)
+    {
+        return Err(format!(
+            "{field}.schema is not {:?}",
+            recorder_host::attach_content_proof::SCHEMA
+        ));
+    }
+    if proof.get("kind").and_then(Value::as_str)
+        != Some(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1)
+    {
+        return Err(format!("{field}.kind disagrees with the declared proof kind"));
+    }
+    // THE ROUTE MUST MATCH THE EVIDENCE, and the verifier decides that for
+    // itself (Codex review round 2, finding 1).
+    //
+    // The recorder refuses to write a recording that carries both, but a
+    // consumer that trusted the declaration would let a recording holding the
+    // PRE-RESUME evidence declare the attach kind and so skip the launch-time
+    // route's static bundle, retained evidence, eight-role roster and
+    // portable-manifest epoch. The declaration routes; the evidence decides
+    // whether the declaration is admissible.
+    //
+    // `portable_content_manifest` is deliberately NOT in this list: the
+    // recorder builds one from a `portable_content_use_trace` on an ordinary
+    // late attach, so its presence is not pre-resume evidence. These two are.
+    for pre_resume in ["early_render_launch_manifest", "early_render_capture_receipt"] {
+        if embedded_manifest
+            .get(pre_resume)
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(format!(
+                "recording declares the attach-time content proof but carries pre-resume evidence \
+                 {pre_resume:?}: a recording observed before the engine was resumed takes the \
+                 launch-time route, and cannot certify under the attach-time one"
+            ));
+        }
+    }
+    // An unsettled window is a walk over a corpus that was moving, so nothing
+    // observed inside it describes one install. The recorder still seals such a
+    // recording — the game hours are real — and this is where it stops being
+    // read as a content proof.
+    if proof.get("window_settled").and_then(Value::as_bool) != Some(true) {
+        return Err(format!(
+            "{field} reports an unsettled attach window after {} attempt(s): the install changed \
+             while the corpus was being fingerprinted, so no observation inside the window \
+             describes one install",
+            proof
+                .get("window_attempts")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        ));
+    }
+    let observed_at = proof
+        .get("observed_at_unix")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{field}.observed_at_unix is missing or not an integer"))?;
+    let completed_at = proof
+        .get("completed_at_unix")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{field}.completed_at_unix is missing or not an integer"))?;
+    if completed_at < observed_at {
+        return Err(format!("{field} window closes before it opens"));
+    }
+    // The interval the proof does NOT cover, verified rather than carried
+    // (Codex review round 2, finding 2). Capture is attach-and-play, so the
+    // engine has usually been running for a while when the window opens, and
+    // content it read at ITS launch that changed before the window is outside
+    // every observation this proof makes. Requiring the stamp, and requiring it
+    // to precede the window, is what makes the gap a measured quantity in the
+    // verified result instead of a caveat in a design document.
+    let game_process_start_unix = proof
+        .get("game_process_start_unix")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| {
+            format!(
+                "{field}.game_process_start_unix is missing or not an integer: without it the \
+                 interval between the engine starting and the attach window opening — which this \
+                 proof does not cover — cannot be read off the recording"
+            )
+        })?;
+    if game_process_start_unix > observed_at {
+        return Err(format!(
+            "{field} reports the engine starting after the attach window opened, so the window is \
+             not an observation of a running engine's install"
+        ));
+    }
+    let executable_sha256 = canonical_sha256(
+        proof.get("executable_sha256"),
+        &format!("{field}.executable_sha256"),
+    )?;
+    let dlc_load_sha256 = canonical_sha256(
+        proof.get("dlc_load_sha256"),
+        &format!("{field}.dlc_load_sha256"),
+    )?;
+    // The proof states the WORLD it was taken in. A consumer that wants to know
+    // whether a mod could have added content no artifact claims reads the layer
+    // stack; it is bound here so that statement cannot be edited after the
+    // fact.
+    let layer_rows = proof
+        .get("layer_stack")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.layer_stack is missing or not an array"))?;
+    // A vacuous stack must not certify. An empty list has a perfectly valid
+    // digest, so without this the whole "the proof states the world it was
+    // taken in" claim could be satisfied by stating no world at all (Codex
+    // review round 1, finding 5).
+    if layer_rows.is_empty() {
+        return Err(format!(
+            "{field}.layer_stack is empty: a proof that states no content layers states no world"
+        ));
+    }
+    let mut layers = Vec::with_capacity(layer_rows.len());
+    for (index, row) in layer_rows.iter().enumerate() {
+        let ordinal = row
+            .get("ordinal")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{field}.layer_stack[{index}].ordinal is invalid"))?;
+        if ordinal != index as u64 {
+            return Err(format!(
+                "{field}.layer_stack ordinals are not contiguous from zero, so the load order the \
+                 digest covers is not the order the rows are in"
+            ));
+        }
+        let kind = row
+            .get("kind")
+            .and_then(Value::as_str)
+            .and_then(recorder_host::attach_content_proof::layer_kind_from_wire)
+            .ok_or_else(|| format!("{field}.layer_stack[{index}].kind is not a known layer kind"))?;
+        if (index == 0) != (kind == "base") {
+            return Err(format!(
+                "{field}.layer_stack must begin with ordinal-zero base content and carry no other"
+            ));
+        }
+        let optional_sha256 = |key: &str| -> Result<Option<String>, String> {
+            match row.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                value => canonical_sha256(value, &format!("{field}.layer_stack[{index}].{key}"))
+                    .map(Some),
+            }
+        };
+        layers.push(recorder_host::attach_content_proof::ProofLayer {
+            ordinal: u32::try_from(ordinal)
+                .map_err(|_| format!("{field}.layer_stack[{index}].ordinal is out of range"))?,
+            kind,
+            layer_id: row
+                .get("layer_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| format!("{field}.layer_stack[{index}].layer_id is invalid"))?
+                .to_string(),
+            descriptor_sha256: optional_sha256("descriptor_sha256")?,
+            descriptor_file_sha256: optional_sha256("descriptor_file_sha256")?,
+            source_container_sha256: optional_sha256("source_container_sha256")?,
+        });
+    }
+    // RE-DERIVED from the rows above, through the producer's own function, so
+    // the digest is recomputed from the block's field VALUES rather than
+    // trusted or re-serialized from whatever key order the document had.
+    let recomputed_stack_sha256 = recorder_host::attach_content_proof::layer_stack_sha256(&layers)?;
+    let declared_stack_sha256 = canonical_sha256(
+        proof.get("layer_stack_sha256"),
+        &format!("{field}.layer_stack_sha256"),
+    )?;
+    if recomputed_stack_sha256 != declared_stack_sha256 {
+        return Err(format!(
+            "{field}.layer_stack_sha256 {declared_stack_sha256} is not the digest of the layer \
+             rows it travels with ({recomputed_stack_sha256})"
+        ));
+    }
+
+    // The ROSTER, reconciled against the manifest's own two lists so a role
+    // cannot be hidden by being left out of both.
+    let canonical = compact_contract::REQUIRED_STATIC_ARTIFACTS
+        .iter()
+        .map(|role| (*role).to_string())
+        .collect::<BTreeSet<_>>();
+    let rows = embedded_manifest
+        .get("replay_packaging")
+        .and_then(|value| value.get("static_artifacts"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "manifest replay_packaging.static_artifacts is missing or not an array".to_string()
+        })?;
+    let mut declared = BTreeSet::new();
+    let mut artifact_hashes = BTreeMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        let name = row
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| {
+                format!("manifest replay_packaging.static_artifacts[{index}].name is invalid")
+            })?;
+        if !canonical.contains(name) {
+            return Err(format!(
+                "manifest replay_packaging.static_artifacts contains unexpected role {name:?}"
+            ));
+        }
+        if !declared.insert(name.to_string()) {
+            return Err(format!(
+                "manifest replay_packaging.static_artifacts duplicates role {name:?}"
+            ));
+        }
+        artifact_hashes.insert(
+            name.to_string(),
+            canonical_sha256(
+                row.get("sha256"),
+                &format!("manifest static artifact {name:?} sha256"),
+            )?,
+        );
+    }
+    let missing_rows = embedded_manifest
+        .get("production_profile")
+        .and_then(|profile| profile.get("missing_required_static_artifacts"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "manifest production_profile.missing_required_static_artifacts is missing or not an \
+             array"
+                .to_string()
+        })?;
+    let mut missing = BTreeSet::new();
+    for (index, row) in missing_rows.iter().enumerate() {
+        let name = row.as_str().ok_or_else(|| {
+            format!(
+                "manifest production_profile.missing_required_static_artifacts[{index}] is not a \
+                 string"
+            )
+        })?;
+        if !missing.insert(name.to_string()) {
+            return Err(format!(
+                "manifest production_profile.missing_required_static_artifacts duplicates {name:?}"
+            ));
+        }
+    }
+    if !declared.is_disjoint(&missing) {
+        return Err(format!(
+            "roles {:?} are declared both packaged and missing",
+            declared.intersection(&missing).collect::<Vec<_>>()
+        ));
+    }
+    let union = declared.union(&missing).cloned().collect::<BTreeSet<_>>();
+    if union != canonical {
+        return Err(format!(
+            "packaged roles plus missing roles {union:?} != the canonical roster {canonical:?}, so \
+             a role could be omitted from the recording without being named anywhere"
+        ));
+    }
+
+    // Zero packaged roles would admit zero artifacts and join zero paths while
+    // still reporting `static_artifacts_joined: true`. The producer refuses to
+    // start a fingerprint with no artifacts; the consumer must not depend on
+    // that (Codex review round 1, finding 5).
+    if declared.is_empty() {
+        return Err(format!(
+            "{field}: the recording packages no static artifacts at all, so its attach-time proof \
+             binds nothing to the captured content"
+        ));
+    }
+    let admitted =
+        admit_packaged_static_artifacts(container, game_id, &declared, &artifact_hashes, None)?;
+
+    // Every packaged role must carry a PASSING join receipt bound to the exact
+    // bytes admitted above. This is the line between KIND C and a weaker
+    // "layer identity" admission: a catalog the recorder could not join is
+    // reported as unbound to the captured content, and a certification that
+    // shrugged at that would be claiming what it did not prove.
+    let refused_rows = proof
+        .get("refused_artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.refused_artifacts is missing or not an array"))?;
+    let mut refused = BTreeMap::new();
+    for row in refused_rows {
+        let role = row
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{field}.refused_artifacts row names no role"))?;
+        let reason = row
+            .get("reason")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{field}.refused_artifacts row for {role:?} names no reason"))?;
+        refused.insert(role.to_string(), reason.to_string());
+    }
+    let join_rows = proof
+        .get("artifact_joins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.artifact_joins is missing or not an array"))?;
+    let mut joins = BTreeMap::new();
+    for row in join_rows {
+        let role = row
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{field}.artifact_joins row names no role"))?;
+        if refused.contains_key(role) {
+            return Err(format!(
+                "{field} both joins and refuses static role {role:?}"
+            ));
+        }
+        let artifact_sha256 = canonical_sha256(
+            row.get("artifact_sha256"),
+            &format!("{field}.artifact_joins {role:?} artifact_sha256"),
+        )?;
+        let claimed_paths = row
+            .get("claimed_paths")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{field}.artifact_joins {role:?} claimed_paths is invalid"))?;
+        if claimed_paths == 0 {
+            return Err(format!(
+                "{field}.artifact_joins {role:?} joined no paths at all, so it proves nothing about \
+                 the captured content"
+            ));
+        }
+        if joins
+            .insert(
+                role.to_string(),
+                (artifact_sha256, claimed_paths, row.clone()),
+            )
+            .is_some()
+        {
+            return Err(format!("{field}.artifact_joins duplicates role {role:?}"));
+        }
+    }
+    let mut joined_details = Vec::with_capacity(admitted.len());
+    for artifact in &admitted {
+        let name = artifact
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("admitted static artifact carries its role");
+        let observed_sha256 = artifact
+            .get("sha256")
+            .and_then(Value::as_str)
+            .expect("admitted static artifact carries its digest");
+        let Some((artifact_sha256, claimed_paths, row)) = joins.get(name) else {
+            return Err(format!(
+                "static role {name:?} is packaged but has no attach-time join receipt{}",
+                refused
+                    .get(name)
+                    .map(|reason| format!(": {reason}"))
+                    .unwrap_or_default()
+            ));
+        };
+        if artifact_sha256 != observed_sha256 {
+            return Err(format!(
+                "static role {name:?} was joined as artifact {artifact_sha256}, but the container \
+                 admitted {observed_sha256}: the receipt covers a different build of the artifact"
+            ));
+        }
+        joined_details.push(json!({
+            "name": name,
+            "path": artifact.get("path"),
+            "bytes": artifact.get("bytes"),
+            "sha256": observed_sha256,
+            "claimed_paths": claimed_paths,
+            "joined_bytes": row.get("joined_bytes"),
+            "proven_absent_paths": row.get("proven_absent_paths"),
+            "localisation_source_sha256": row.get("localisation_source_sha256"),
+        }));
+    }
+
+    // Content the scheduled roster consumes DIRECTLY rather than through a
+    // packaged catalog. D81's province catalog is the one the production roster
+    // needs; a recording that could not resolve it names the gap here.
+    // The EXPECTED roster is derived here from the recording's own sealed
+    // scheduled domains rather than read out of the proof, so a recording
+    // cannot certify by shipping two empty arrays (Codex review round 1,
+    // finding 4).
+    let scheduled = embedded_manifest
+        .get("scheduled_domains")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "manifest scheduled_domains is missing or not an array".to_string())?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut expected_required_content = BTreeSet::new();
+    if scheduled.contains(compact_contract::rail_replay::DOMAIN_NAME) {
+        expected_required_content
+            .insert(recorder_host::attach_content_proof::D81_PROVINCE_CATALOG_PATH.to_string());
+    }
+    let joined_required = proof
+        .get("required_content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.required_content is missing or not an array"))?;
+    let mut joined_required_paths = BTreeSet::new();
+    for row in joined_required {
+        let logical_path = row
+            .get("logical_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| format!("{field}.required_content row names no logical_path"))?;
+        canonical_sha256(
+            row.get("sha256"),
+            &format!("{field}.required_content {logical_path:?} sha256"),
+        )?;
+        row.get("bytes")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{field}.required_content {logical_path:?} bytes is invalid"))?;
+        let winning_layer_id = row
+            .get("winning_layer_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!("{field}.required_content {logical_path:?} names no winning layer")
+            })?;
+        if !layers.iter().any(|layer| layer.layer_id == winning_layer_id) {
+            return Err(format!(
+                "{field}.required_content {logical_path:?} was won by layer {winning_layer_id:?}, \
+                 which is not in the layer stack the proof states"
+            ));
+        }
+        if !joined_required_paths.insert(logical_path.to_string()) {
+            return Err(format!(
+                "{field}.required_content duplicates {logical_path:?}"
+            ));
+        }
+    }
+    if !expected_required_content.is_subset(&joined_required_paths) {
+        return Err(format!(
+            "the scheduled roster consumes playback-required content that the attach-time proof \
+             does not join: {:?}",
+            expected_required_content
+                .difference(&joined_required_paths)
+                .collect::<Vec<_>>()
+        ));
+    }
+    let refused_required = proof
+        .get("refused_required_content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.refused_required_content is missing or not an array"))?;
+    if !refused_required.is_empty() {
+        return Err(format!(
+            "{field} could not resolve {} playback-required content file(s) through the \
+             attach-time effective VFS: {}",
+            refused_required.len(),
+            refused_required
+                .iter()
+                .map(|row| format!(
+                    "{} ({}): {}",
+                    row.get("logical_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?"),
+                    row.get("purpose").and_then(Value::as_str).unwrap_or("?"),
+                    row.get("reason").and_then(Value::as_str).unwrap_or("?"),
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+
     Ok(json!({
-        "required_count": expected_count,
-        "exact_required_roles": true,
-        "bundle_id": manifest_authority.bundle_id,
-        "product_modset_sha256": manifest_authority.product_modset_sha256,
-        "retained_manifest_sha256": manifest_authority.retained_manifest_sha256,
-        "retained_binding_count": manifest_authority.retained_binding_count,
-        "verifier_sha256": manifest_authority.verifier_sha256,
-        "artifacts": details,
+        "content_proof_kind":
+            recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
+        "static_artifacts_joined": true,
+        // Named, not inferred: the packaged roster is deliberately allowed to be
+        // short of the canonical eight here, and a reader must be able to see
+        // WHICH roles this recording does not carry rather than count rows.
+        "required_count": compact_contract::REQUIRED_STATIC_ARTIFACTS.len(),
+        "exact_required_roles": declared.len() == canonical.len(),
+        "packaged_roles": declared.iter().collect::<Vec<_>>(),
+        "missing_required_static_artifacts": missing.iter().collect::<Vec<_>>(),
+        "attach_window_observed_at_unix": observed_at,
+        "attach_window_completed_at_unix": completed_at,
+        "attach_window_seconds": completed_at.saturating_sub(observed_at),
+        // Reported so a consumer reads the uncovered interval rather than
+        // assuming there is none.
+        "game_process_start_unix": game_process_start_unix,
+        "seconds_running_before_the_window_opened": observed_at
+            .saturating_sub(game_process_start_unix),
+        "attach_window_attempts": proof.get("window_attempts"),
+        "executable_sha256": executable_sha256,
+        "dlc_load_sha256": dlc_load_sha256,
+        "layer_stack_sha256": declared_stack_sha256,
+        "layer_count": layers.len(),
+        "required_content": proof.get("required_content"),
+        "artifacts": joined_details,
+        // The launch-time epoch is ABSENT here, and its absence is stated
+        // rather than left for a reader to notice.
+        "portable_content_manifest":
+            "absent: certified by attach_time_effective_vfs_join_v1 instead of a pre-resume epoch",
+        "static_bundle":
+            "absent: the attach-time proof binds the artifacts to engine content directly",
     }))
 }
 
@@ -4335,27 +4959,89 @@ fn load_verified_replay_authority(
         )?,
     };
 
-    // The SEALED manifest is the authority. The run-dir copy — already bound to
-    // it above — is passed only so the retained static-bundle evidence can be
-    // located at the absolute paths the sealed copy is forbidden to carry.
-    let static_artifacts = validate_required_static_artifacts(
-        &container,
-        &embedded_manifest,
-        external_manifest,
-        container.game_id(),
-    )?;
-    let container_content = container.content_manifest().ok_or_else(|| {
-        "production replay container has no top-level portable content manifest".to_string()
-    })?;
-    let container_content_value = serde_json::to_value(container_content).map_err(|error| {
-        format!("serialize admitted container content manifest failed: {error}")
-    })?;
-    if embedded_manifest.get("portable_content_manifest") != Some(&container_content_value) {
-        return Err(
-            "container top-level portable content manifest differs from embedded recorder authority"
-                .into(),
-        );
-    }
+    // WHICH CONTENT PROOF THIS RECORDING TOOK decides what can be proved about
+    // its catalogs, and it is read positively from the container-authenticated
+    // copy rather than inferred from which fields are present.
+    //
+    //  * `launch_time_static_bundle_v1` — the pre-resume epoch, the eight-role
+    //    static bundle and the container's own portable content manifest. That
+    //    path is unchanged, byte for byte.
+    //  * `attach_time_effective_vfs_join_v1` — the artifacts were joined
+    //    against the engine's effective VFS during a bounded attach window.
+    //    There is no bundle and no launch-time epoch behind it; the container's
+    //    content manifest may legitimately be absent, and its absence is named.
+    let content_proof_kind = read_content_proof_kind(&embedded_manifest)?;
+    let static_artifacts = match content_proof_kind {
+        ContentProofKind::LaunchTimeStaticBundleV1 => {
+            // The other direction of the exclusivity (Codex review round 2,
+            // finding 1). A recording that took the attach-time proof and then
+            // declared the launch-time kind would be certified against evidence
+            // it does not have; refusing here means the declaration can never
+            // outrank the evidence in either direction.
+            let attach_field = recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD;
+            if embedded_manifest
+                .get(attach_field)
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(format!(
+                    "recording declares the launch-time content epoch but carries an \
+                     {attach_field}: the two describe different observation points and a \
+                     recording certifies under exactly one"
+                ));
+            }
+            // The SEALED manifest is the authority. The run-dir copy — already
+            // bound to it above — is passed only so the retained static-bundle
+            // evidence can be located at the absolute paths the sealed copy is
+            // forbidden to carry.
+            let static_artifacts = validate_required_static_artifacts(
+                &container,
+                &embedded_manifest,
+                external_manifest,
+                container.game_id(),
+            )?;
+            let container_content = container.content_manifest().ok_or_else(|| {
+                "production replay container has no top-level portable content manifest".to_string()
+            })?;
+            let container_content_value =
+                serde_json::to_value(container_content).map_err(|error| {
+                    format!("serialize admitted container content manifest failed: {error}")
+                })?;
+            if embedded_manifest.get("portable_content_manifest") != Some(&container_content_value)
+            {
+                return Err(
+                    "container top-level portable content manifest differs from embedded recorder \
+                     authority"
+                        .into(),
+                );
+            }
+            static_artifacts
+        }
+        ContentProofKind::AttachTimeEffectiveVfsJoinV1 => {
+            // A container that carries a content manifest anyway must still
+            // agree with the recorder authority: the attach-time route relaxes
+            // the REQUIREMENT for one, never the binding of one that exists.
+            if let Some(container_content) = container.content_manifest() {
+                let container_content_value = serde_json::to_value(container_content)
+                    .map_err(|error| {
+                        format!("serialize admitted container content manifest failed: {error}")
+                    })?;
+                if embedded_manifest.get("portable_content_manifest")
+                    != Some(&container_content_value)
+                {
+                    return Err(
+                        "container top-level portable content manifest differs from embedded \
+                         recorder authority"
+                            .into(),
+                    );
+                }
+            }
+            certify_attach_time_content_proof(
+                &container,
+                &embedded_manifest,
+                container.game_id(),
+            )?
+        }
+    };
     // -----------------------------------------------------------------------
     // PER-HOUR VERIFIED COVERAGE — what this container actually asserts.
     // Owner ruling 2026-08-11 (task #188).
@@ -10889,7 +11575,11 @@ mod tests {
                 rows.pop();
             },
         );
-        assert!(error.contains("index.static_artifacts"), "{error}");
+        // The refusal now names WHICH role the index stopped rostering, rather
+        // than only that the row count was wrong: the index rosters every
+        // canonical role present-or-absent, so a short index is a role no
+        // reader can learn about at all.
+        assert!(error.contains("not the canonical static"), "{error}");
 
         let error = static_authority_error(
             "static_index_duplicate",
@@ -10918,7 +11608,13 @@ mod tests {
                 }));
             },
         );
-        assert!(error.contains("expected exactly"), "{error}");
+        // Named, not counted: a forged extra row is refused by its own role
+        // name rather than by the index being one row too long, which is what
+        // a short-but-legal packaged roster made necessary.
+        assert!(
+            error.contains("unexpected static role \"forged_extra\""),
+            "{error}"
+        );
 
         let error = static_authority_error(
             "static_index_alias",
@@ -11702,6 +12398,12 @@ mod tests {
             },
             "static_bundle": static_bundle,
             "portable_content_manifest": portable_content_manifest,
+            // Positively declared, as every recording now declares it. The
+            // launch-time fixtures take the launch-time route; the attach-time
+            // tests rewrite this field, which is exactly the routing contract.
+            recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD:
+                recorder_host::attach_content_proof::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1,
+            recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD: Value::Null,
             "replay_entries": {
                 "stream": "collector_raw/collector_stream.bin",
                 "stream_role": "collector_compact_stream",
@@ -11989,6 +12691,621 @@ mod tests {
             },
             "token_gate_required": true,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // KIND C — attach-time effective-VFS join
+    // -----------------------------------------------------------------------
+
+    /// A recording of the shape the SHIPPED recorder produces: a late attach,
+    /// so no static bundle, no pre-resume content epoch, and a container with
+    /// no top-level portable content manifest. What it does carry is the
+    /// attach-time proof block.
+    ///
+    /// `packaged` is the role subset this recording ships; the rest are named
+    /// in `production_profile.missing_required_static_artifacts`, which is how
+    /// a short roster stays accounted for instead of merely being short.
+    fn attach_time_manifest(game_id: &str, evidence_root: &Path, packaged: &[&str]) -> Value {
+        let mut manifest = replay_test_manifest(game_id, evidence_root);
+        let object = manifest.as_object_mut().unwrap();
+        // Everything the launch-time route owns comes back out: this recording
+        // never had a suspended process to observe.
+        object.insert("static_bundle".to_string(), Value::Null);
+        object.insert("portable_content_manifest".to_string(), Value::Null);
+        object.insert(
+            recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD.to_string(),
+            json!(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1),
+        );
+        object["production_profile"]["enabled"] = json!(false);
+        // D81 is scheduled deliberately: it is the domain that consumes a
+        // content file DIRECTLY rather than through a packaged catalog, so the
+        // positive case proves that requirement is met rather than absent.
+        object.insert(
+            "scheduled_domains".to_string(),
+            json!([compact_contract::rail_replay::DOMAIN_NAME, "fuel_live"]),
+        );
+        object["production_profile"]["missing_required_static_artifacts"] = json!(
+            compact_contract::REQUIRED_STATIC_ARTIFACTS
+                .iter()
+                .filter(|role| !packaged.contains(role))
+                .collect::<Vec<_>>()
+        );
+        object["replay_packaging"]["static_artifacts"] = json!(packaged
+            .iter()
+            .map(|role| json!({
+                "name": role,
+                "sha256": Sha256::hex(&replay_test_static_artifact_bytes(role)),
+            }))
+            .collect::<Vec<_>>());
+        let layers = vec![recorder_host::attach_content_proof::ProofLayer {
+            ordinal: 0,
+            kind: "base",
+            layer_id: "base".into(),
+            descriptor_sha256: None,
+            descriptor_file_sha256: None,
+            source_container_sha256: None,
+        }];
+        object.insert(
+            recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD.to_string(),
+            json!({
+                "schema": recorder_host::attach_content_proof::SCHEMA,
+                "kind": recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
+                "game_process_start_unix": 1_786_652_129i64,
+                "observed_at_unix": 1_786_653_129i64,
+                "completed_at_unix": 1_786_653_193i64,
+                "window_attempts": 1,
+                "window_settled": true,
+                "executable_sha256": "8".repeat(64),
+                "executable_size_bytes": 55_680_632u64,
+                "dlc_load_sha256": "7".repeat(64),
+                "layer_stack": [{
+                    "ordinal": 0,
+                    "kind": "base",
+                    "layer_id": "base",
+                    "descriptor_sha256": Value::Null,
+                    "descriptor_file_sha256": Value::Null,
+                    "source_container_sha256": Value::Null,
+                }],
+                "layer_stack_sha256":
+                    recorder_host::attach_content_proof::layer_stack_sha256(&layers).unwrap(),
+                "artifact_joins": packaged
+                    .iter()
+                    .map(|role| json!({
+                        "role": role,
+                        "artifact_sha256": Sha256::hex(&replay_test_static_artifact_bytes(role)),
+                        "claimed_paths": 11u64,
+                        "joined_bytes": 2_048u64,
+                        "proven_absent_paths": 0u64,
+                        "localisation_source_sha256": Value::Null,
+                    }))
+                    .collect::<Vec<_>>(),
+                "refused_artifacts": [],
+                "required_content": [{
+                    "purpose": "D81 province catalog",
+                    "logical_path": "map/definition.csv",
+                    "sha256": "6".repeat(64),
+                    "bytes": 1_234u64,
+                    "winning_layer_id": "base",
+                }],
+                "refused_required_content": [],
+            }),
+        );
+        manifest
+    }
+
+    /// Seal an attach-time recording: the packaged role subset, and NO
+    /// container content manifest.
+    fn write_attach_time_replay_fixture(
+        dir: &Path,
+        game_id: &str,
+        manifest_bytes: &[u8],
+        packaged: &[&str],
+    ) -> Vec<u8> {
+        write_attach_time_replay_fixture_with_index_mutation(
+            dir,
+            game_id,
+            manifest_bytes,
+            packaged,
+            |_| {},
+        )
+    }
+
+    fn write_attach_time_replay_fixture_with_index_mutation<F>(
+        dir: &Path,
+        game_id: &str,
+        manifest_bytes: &[u8],
+        packaged: &[&str],
+        mutate_index: F,
+    ) -> Vec<u8>
+    where
+        F: FnOnce(&mut Vec<Value>),
+    {
+        let sealed_bytes = sealed_manifest_bytes(manifest_bytes);
+        let mut descriptors = Vec::new();
+        let mut entries = vec![
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/collector_raw/collector_stream.bin"),
+                bytes: b"stream".to_vec(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            },
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/recorder/native_session_manifest.json"),
+                bytes: sealed_bytes.clone(),
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+        ];
+        // The recorder rosters EVERY canonical role in the index, badging the
+        // ones it does not carry, so the fixture does too — a short packaged
+        // roster that simply omitted its absent roles would be a container the
+        // recorder cannot produce.
+        for role in compact_contract::REQUIRED_STATIC_ARTIFACTS {
+            if !packaged.contains(role) {
+                descriptors.push(json!({
+                    "name": role,
+                    "present": false,
+                    "role": "static_artifact",
+                    "absence_reason": "not supplied to the recorder for this recording",
+                }));
+                continue;
+            }
+            let bytes = replay_test_static_artifact_bytes(role);
+            let relative_path = required_static_artifact_relative_path(role).unwrap();
+            descriptors.push(json!({
+                "name": role,
+                "present": true,
+                "role": "static_artifact",
+                "path": relative_path.clone(),
+                "sha256": Sha256::hex(&bytes),
+                "bytes": bytes.len(),
+            }));
+            entries.push(snapshot::PackEntry {
+                path: format!("payload/{game_id}/{relative_path}"),
+                bytes,
+                role: "static_artifact",
+                hour_index: None,
+            });
+        }
+        mutate_index(&mut descriptors);
+        entries.insert(
+            0,
+            snapshot::PackEntry {
+                path: format!("payload/{game_id}/index.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "game_id": game_id,
+                    "schema_version": "1",
+                    "snapshots": [],
+                    "static_artifacts": descriptors,
+                }))
+                .unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+        );
+        let packed = snapshot::pack(
+            game_id,
+            &entries,
+            &snapshot::PackIdentity {
+                schema_version: Some(REPLAY_CONTAINER_SCHEMA_VERSION.to_string()),
+                // The launch-time epoch a late attach can never have.
+                content_manifest: None,
+                ..snapshot::PackIdentity::default()
+            },
+            false,
+        )
+        .unwrap();
+        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        sealed_bytes
+    }
+
+    /// The whole KIND C route, end to end and then broken one way at a time.
+    ///
+    /// The positive case is the shape the shipped recorder produces: six of the
+    /// eight roles packaged, the other two named as missing, no static bundle,
+    /// no container content manifest — a recording the launch-time route
+    /// refuses four separate ways.
+    #[test]
+    fn an_attach_time_recording_certifies_and_every_break_refuses_by_name() {
+        let packaged = [
+            compact_contract::STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+            compact_contract::STATIC_ARTIFACT_LOCALISATION_JOIN,
+            compact_contract::STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+            compact_contract::STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+            compact_contract::STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+            compact_contract::STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+        ];
+        let load = |label: &str, mutate: &dyn Fn(&mut Value)| -> Result<Value, String> {
+            let dir = TmpDir::new(label);
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            mutate(&mut manifest);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| authority.details)
+        };
+
+        let details = load("attach_ok", &|_| {}).expect("an attach-time recording certifies");
+        let proof = &details["static_artifacts"];
+        assert_eq!(
+            proof["content_proof_kind"],
+            json!(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1)
+        );
+        assert_eq!(proof["static_artifacts_joined"], json!(true));
+        assert_eq!(proof["exact_required_roles"], json!(false));
+        assert_eq!(proof["attach_window_seconds"], json!(64));
+        assert_eq!(proof["artifacts"].as_array().unwrap().len(), packaged.len());
+        assert!(
+            proof["portable_content_manifest"]
+                .as_str()
+                .unwrap()
+                .starts_with("absent:"),
+            "the missing launch-time epoch must be NAMED, not inferred: {proof}"
+        );
+
+        let breaks: Vec<(&str, Box<dyn Fn(&mut Value)>, &str)> = vec![
+            (
+                // The route itself. A recording that states no content proof is
+                // not certifiable, and it says so rather than being caught by a
+                // downstream absence.
+                "attach_kind_none",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD] =
+                        json!(recorder_host::attach_content_proof::KIND_NONE);
+                }),
+                "certifies no content",
+            ),
+            (
+                "attach_unsettled_window",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["window_settled"] = json!(false);
+                }),
+                "unsettled attach window",
+            ),
+            (
+                // The digest must be re-derivable from the rows it travels
+                // with, or the layer stack is a claim nobody checked.
+                "attach_forged_stack_digest",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["layer_stack_sha256"] = json!("1".repeat(64));
+                }),
+                "is not the digest of the layer rows",
+            ),
+            (
+                // THE LINE BETWEEN KIND C AND A WEAKER ADMISSION: a packaged
+                // catalog with no join receipt is a catalog that was never
+                // bound to the captured content.
+                "attach_unjoined_role",
+                Box::new(|manifest: &mut Value| {
+                    let joins = manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["artifact_joins"]
+                        .as_array_mut()
+                        .unwrap();
+                    joins.pop();
+                }),
+                "is packaged but has no attach-time join receipt",
+            ),
+            (
+                // A receipt for a DIFFERENT build of the artifact proves
+                // nothing about the bytes this container ships.
+                "attach_receipt_for_other_build",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["artifact_joins"][0]["artifact_sha256"] = json!("2".repeat(64));
+                }),
+                "the receipt covers a different build of the artifact",
+            ),
+            (
+                "attach_joined_and_refused",
+                Box::new(|manifest: &mut Value| {
+                    let role = manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["artifact_joins"][0]["role"]
+                        .clone();
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["refused_artifacts"] =
+                        json!([{ "role": role, "reason": "fixture contradiction" }]);
+                }),
+                "both joins and refuses static role",
+            ),
+            (
+                // A role in neither list is a role the recording never
+                // accounts for, which is exactly how a short roster would hide
+                // a catalog rather than name it.
+                "attach_role_in_neither_list",
+                Box::new(|manifest: &mut Value| {
+                    manifest["production_profile"]["missing_required_static_artifacts"] = json!([]);
+                }),
+                "!= the canonical roster",
+            ),
+            (
+                "attach_role_in_both_lists",
+                Box::new(|manifest: &mut Value| {
+                    manifest["production_profile"]["missing_required_static_artifacts"] = json!(
+                        compact_contract::REQUIRED_STATIC_ARTIFACTS
+                            .iter()
+                            .collect::<Vec<_>>()
+                    );
+                }),
+                "declared both packaged and missing",
+            ),
+            (
+                // The one content file the roster reads directly rather than
+                // through a packaged catalog.
+                "attach_required_content_refused",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["refused_required_content"] = json!([{
+                        "purpose": "D81 province catalog",
+                        "logical_path": "map/definition.csv",
+                        "reason": "absent from the attach-time effective VFS",
+                    }]);
+                }),
+                "playback-required content file",
+            ),
+            (
+                "attach_empty_join",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["artifact_joins"][0]["claimed_paths"] = json!(0);
+                }),
+                "joined no paths at all",
+            ),
+            (
+                "attach_no_proof_block",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] =
+                        Value::Null;
+                }),
+                "declares the attach-time proof but carries no",
+            ),
+            (
+                // A VACUOUS PROOF: an empty layer stack has a perfectly valid
+                // digest, so the "the proof states the world it was taken in"
+                // claim would otherwise be satisfied by stating no world.
+                "attach_empty_layer_stack",
+                Box::new(|manifest: &mut Value| {
+                    let layers: Vec<recorder_host::attach_content_proof::ProofLayer> = Vec::new();
+                    let proof = &mut manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD];
+                    proof["layer_stack"] = json!([]);
+                    proof["layer_stack_sha256"] = json!(
+                        recorder_host::attach_content_proof::layer_stack_sha256(&layers).unwrap()
+                    );
+                }),
+                "states no content layers",
+            ),
+            (
+                // The other vacuous shape: package nothing, declare everything
+                // missing, and report `static_artifacts_joined: true` over an
+                // empty set.
+                "attach_packages_nothing",
+                Box::new(|manifest: &mut Value| {
+                    manifest["replay_packaging"]["static_artifacts"] = json!([]);
+                    manifest["production_profile"]["missing_required_static_artifacts"] = json!(
+                        compact_contract::REQUIRED_STATIC_ARTIFACTS
+                            .iter()
+                            .collect::<Vec<_>>()
+                    );
+                }),
+                "packages no static artifacts at all",
+            ),
+            (
+                // TWO EMPTY ARRAYS MUST NOT CERTIFY. The expected roster is
+                // derived from the recording's own scheduled domains, so a
+                // recording that scheduled D81 and joined nothing is refused
+                // even though it also refused nothing.
+                "attach_required_content_silently_absent",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["required_content"] = json!([]);
+                }),
+                "consumes playback-required content that the attach-time proof does not join",
+            ),
+            (
+                "attach_required_content_won_by_an_unstated_layer",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["required_content"][0]["winning_layer_id"] = json!("mod/ghost.mod");
+                }),
+                "is not in the layer stack the proof states",
+            ),
+            (
+                // THE ROUTE MUST MATCH THE EVIDENCE. A recording holding the
+                // pre-resume evidence that declares the attach-time kind would
+                // otherwise skip the launch-time route's static bundle,
+                // retained evidence and eight-role roster entirely.
+                "attach_kind_over_pre_resume_evidence",
+                Box::new(|manifest: &mut Value| {
+                    manifest["early_render_launch_manifest"] =
+                        json!({ "fixture": "pre-resume evidence" });
+                }),
+                "carries pre-resume evidence",
+            ),
+            (
+                // The interval this proof does NOT cover has to be a measured
+                // quantity in the verified result, not a caveat in a document.
+                "attach_no_process_start",
+                Box::new(|manifest: &mut Value| {
+                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                        ["game_process_start_unix"] = Value::Null;
+                }),
+                "game_process_start_unix is missing or not an integer",
+            ),
+            (
+                "attach_process_started_after_the_window",
+                Box::new(|manifest: &mut Value| {
+                    let proof = &mut manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD];
+                    let observed = proof["observed_at_unix"].as_i64().unwrap();
+                    proof["game_process_start_unix"] = json!(observed + 1);
+                }),
+                "the engine starting after the attach window opened",
+            ),
+        ];
+        for (label, mutate, expected) in breaks {
+            let error = load(label, mutate.as_ref())
+                .map(|details| format!("unexpectedly certified: {details}"))
+                .unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{label}: expected a refusal naming {expected:?}, got {error}"
+            );
+        }
+    }
+
+    /// A role this recording does not package must be BADGED absent, with a
+    /// reason.
+    ///
+    /// The short packaged roster is what makes the attach-time route usable at
+    /// all, and it is also what could let a container drop a catalog quietly.
+    /// The index rosters every canonical role either way; these are the two
+    /// ways that badging could be hollowed out.
+    #[test]
+    fn an_unpackaged_role_must_be_badged_absent_with_a_reason() {
+        let packaged = [
+            compact_contract::STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+            compact_contract::STATIC_ARTIFACT_LOCALISATION_JOIN,
+            compact_contract::STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+            compact_contract::STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+            compact_contract::STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+            compact_contract::STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+        ];
+        let cases: Vec<(&str, Box<dyn Fn(&mut Vec<Value>)>, &str)> = vec![
+            (
+                "index_absent_row_claims_present",
+                Box::new(|rows: &mut Vec<Value>| {
+                    for row in rows.iter_mut() {
+                        if row["present"] == json!(false) {
+                            row["present"] = json!(true);
+                        }
+                    }
+                }),
+                "is not badged present=false",
+            ),
+            (
+                "index_absent_row_without_a_reason",
+                Box::new(|rows: &mut Vec<Value>| {
+                    for row in rows.iter_mut() {
+                        if row["present"] == json!(false) {
+                            row.as_object_mut().unwrap().remove("absence_reason");
+                        }
+                    }
+                }),
+                "is absent but names no reason",
+            ),
+            (
+                "index_drops_the_absent_rows_entirely",
+                Box::new(|rows: &mut Vec<Value>| {
+                    rows.retain(|row| row["present"] == json!(true));
+                }),
+                "not the canonical static",
+            ),
+        ];
+        for (label, mutate, expected) in cases {
+            let dir = TmpDir::new(label);
+            let manifest = attach_time_manifest("g", &dir.0, &packaged);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture_with_index_mutation(
+                &dir.0,
+                "g",
+                &manifest_bytes,
+                &packaged,
+                mutate.as_ref(),
+            );
+            let error = load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err();
+            assert!(
+                error.contains(expected),
+                "{label}: expected a refusal naming {expected:?}, got {error}"
+            );
+        }
+    }
+
+    /// The launch-time route must not be reachable by a recording that merely
+    /// omits the new field, and the attach-time route must not be reachable by
+    /// declaring it over a launch-time recording's body.
+    #[test]
+    fn the_content_proof_route_is_read_positively_and_never_inferred() {
+        let dir = TmpDir::new("content_proof_route");
+        let mut manifest = replay_test_manifest("g", &dir.0);
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .remove(recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("carries no content_proof_kind"),
+            "an absent declaration must refuse, never default to the launch-time route: {error}"
+        );
+
+        // The other direction: a launch-time body that CLAIMS the attach-time
+        // kind has no proof block, so it refuses on the block rather than
+        // silently taking the weaker route's checks over the stronger route's
+        // evidence.
+        let dir = TmpDir::new("content_proof_route_swap");
+        let mut manifest = replay_test_manifest("g", &dir.0);
+        manifest[recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD] =
+            json!(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1);
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("declares the attach-time proof but carries no"),
+            "{error}"
+        );
+
+        // And the third direction: a launch-time recording that ALSO carries an
+        // attach-time proof. Without this the two proofs could coexist and the
+        // declaration alone would pick which set of checks ran (Codex review
+        // round 2, finding 1).
+        let dir = TmpDir::new("content_proof_route_both");
+        let mut manifest = replay_test_manifest("g", &dir.0);
+        manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] = json!({
+            "schema": recorder_host::attach_content_proof::SCHEMA,
+            "kind": recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
+        });
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("declares the launch-time content epoch but carries an"),
+            "{error}"
+        );
     }
 
     fn replay_test_static_artifacts(game_id: &str) -> (Vec<Value>, Vec<snapshot::PackEntry>) {
