@@ -67,14 +67,92 @@
 //!  * `OpenThread` failed some OTHER way AND a fresh enumeration of THIS
 //!    PROCESS, taken after that failure, no longer lists the id -- see
 //!    "Thread ids are system-wide" below; or
-//!  * the handle was opened, `SuspendThread` failed, AND the thread object
-//!    becomes signalled within [`TERMINATION_PROOF_TIMEOUT_MS`], which is
-//!    positive proof the thread has terminated and will execute no further
-//!    user-mode instruction.
+//!  * the handle was opened, `SuspendThread` failed, AND the thread object is
+//!    signalled at that instant, which is positive proof the thread has
+//!    terminated and will execute no further user-mode instruction.
 //!
 //! Anything else refuses. Every id that is NOT already held suspended has its
 //! disposition re-derived from scratch each pass, so a recycled id belonging
 //! to a new live thread is opened and suspended like any other.
+//!
+//! # A suspend failure that settles nothing DEFERS, and is never waited out
+//!
+//! The probe above is a ZERO-timeout wait, and that is a rule rather than a
+//! parameter. It runs INSIDE the frozen window -- on every pass after the first,
+//! every thread this freeze has already suspended is stopped behind it -- so a
+//! timeout there is the game stopped for the length of the timeout. The
+//! one blocking call this module does make is [`FREEZE_LOCK`], and the section
+//! below is exact about why that one is different.
+//!
+//! That leaves a real gap, and it is the one this module used to close with a
+//! 50 ms bounded wait. A thread that has entered `NtTerminateThread` reports
+//! ERROR_ACCESS_DENIED from `SuspendThread` BEFORE its thread object is
+//! signalled, so a zero-timeout probe can catch it between the two and read a
+//! thread that is already past all user-mode code as one that might still be
+//! running. Measured with a standalone probe over 98 enumeration rounds against
+//! churning threads, every one of the 47 suspend failures was already signalled
+//! when it was probed -- but a 200-round test still hit the gap, and a churn
+//! test that waited for it saw it arrive in 1.7 s to 176.8 s over 13 runs. It is
+//! rare. It is not absent.
+//!
+//! The wait bought a decision this module does not have to make. Nothing here
+//! needs that thread's disposition AT THE INSTANT THE SUSPEND FAILS; it needs it
+//! before the patch, and the patch happens at the fixed point. So an
+//! unsettled suspend failure is now neither a suspension nor a vanish: it is
+//! UNSETTLED, [`pass_is_quiet`] cannot end the loop on a pass that saw one, and
+//! the next pass re-derives that id's disposition from scratch exactly as it
+//! does for every other id it does not already hold. By then the thread is
+//! absent from the snapshot, or opens with `ERROR_INVALID_PARAMETER`, or
+//! suspends, or is signalled.
+//!
+//! Three properties are what make that better than a shorter wait:
+//!
+//!  * NO THREAD OF THE GAME IS EVER WAITED ON. There is no timed wait, no sleep
+//!    and no spin anywhere in this module. Be exact about the one blocking call
+//!    that IS here, because "nothing blocks" would be false: [`FREEZE_LOCK`] is
+//!    a mutex, and a second freezer parks on it. That is a recorder thread
+//!    waiting for a recorder thread, it is taken BEFORE anything is suspended,
+//!    and no game thread ever reaches this module.
+//!    [`only_the_freeze_lock_blocks_in_this_module`] pins exactly that: one
+//!    lock, the zero-timeout probe, and nothing else;
+//!  * the elapsed time a deferral costs is WORK -- a fresh
+//!    `CreateToolhelp32Snapshot` and a re-derivation of every id not already
+//!    held -- performed by the freezing thread, while the exiting thread (which
+//!    is by definition NOT one we hold suspended) runs to its end on any other
+//!    core. One such pass is MEASURED at 95-110 ms on this machine
+//!    (`runs/ir_waitfree_freeze/pass_cost.txt`), so a single deferral already
+//!    buys more elapsed time than the 50 ms wait did;
+//!  * a deferral that keeps failing still REFUSES, and names the thread and the
+//!    OS error it could not settle, exactly as an immediate refusal did.
+//!
+//! [`MAX_UNSETTLED_REDERIVATIONS`] is the allowance, and it is deliberately
+//! small for the reason the second bullet implies: a pass is EXPENSIVE, so
+//! letting an unsettled id run the [`MAX_PASSES`] budget out would hold the game
+//! for a measured 994 ms to 1.22 s and trade one stall for a bigger one.
+//!
+//! What this is NOT is free. The comparison, stated so nobody has to reconstruct
+//! it, and counted in PASSES because a pass is the unit that costs:
+//!
+//!  * a clean freeze is 2 passes, unchanged, MEASURED at 189-208 ms;
+//!  * an unsettled probe used to cost 1 pass plus up to 50 ms BLOCKED, and then
+//!    either proceed or refuse;
+//!  * it now costs up to 3 passes to refuse -- MEASURED at 278-330 ms -- and up
+//!    to 4 to proceed, because the pass that finally settles the id counts it as
+//!    newly suspended or vanished and therefore cannot itself be the quiet one;
+//!  * the common case, a thread already signalled when its suspend is refused,
+//!    is unchanged and costs nothing at all.
+//!
+//! So this is more wall clock, none of it spent blocked. The reason that is the
+//! right trade rather than a worse one is the pass cost itself, and closing THAT
+//! is a different change: `NtGetNextThread` returns handles straight from the
+//! kernel and would remove the system-wide walk this module pays at least twice
+//! per freeze.
+//!
+//! What no design here can do is prove termination with zero latency: a
+//! terminating thread's object signals when the kernel signals it, and nothing
+//! in user mode makes that sooner. So this is a trade, stated rather than
+//! implied -- the freezing thread spends work it was going to spend anyway
+//! instead of blocking, and it stops requiring the proof to arrive on demand.
 //!
 //! # Thread ids are system-wide, and that is why `OpenThread` can be DENIED
 //!
@@ -144,6 +222,22 @@
 //! (`CreateRemoteThread`) is in no snapshot at all, and no user-mode snapshot
 //! fixed point can see it. `hoi4.exe` does not name `CreateRemoteThread`
 //! either, but this workspace's own injector does exactly that at attach.
+//!
+//! # "With every other thread suspended", which is shorthand
+//!
+//! This module says that a lot, and it is exact only at the fixed point. Inside
+//! the loop it means: with everything THIS FREEZE HAS ALREADY SUSPENDED still
+//! held. Three kinds of thread are outside that set while a pass runs -- an id
+//! this pass has not reached yet, an id left UNSETTLED by a failed suspend, and
+//! a thread created since the snapshot.
+//!
+//! Nothing rests on the shorthand, which is why it is left standing rather than
+//! expanded at each of its thirteen sites. Every claim that uses it is a claim
+//! about a HAZARD -- an allocation, a lock, a wait -- and the hazard needs only
+//! one suspended thread holding the resource. A larger unsuspended set makes the
+//! hazard rarer, never worse, so reading the shorthand literally is the
+//! conservative reading in every case. Where the difference does matter, the
+//! text says which set it means.
 //!
 //! # Why it iterates
 //!
@@ -296,23 +390,59 @@ const MAXIMUM_SUSPEND_COUNT: u32 = 127;
 /// inside the window we hold. Ours is not the last one that has to succeed.
 const SUSPENSIONS_STILL_TO_COME: u32 = 1;
 
-/// How long a suspend failure is given to resolve into a proven termination.
-///
-/// A thread that has entered `NtTerminateThread` reports ERROR_ACCESS_DENIED
-/// from `SuspendThread` BEFORE its thread object is signalled, so a zero
-/// timeout reads a thread that is already past all user-mode code as one that
-/// might still be running. Measured: a zero-timeout probe saw every failure
-/// signalled, and a 200-round test still hit the gap. The wait is bounded so a
-/// thread that is genuinely unsuspendable refuses instead of blocking; it
-/// costs nothing in the ordinary case, where the object signals immediately.
-const TERMINATION_PROOF_TIMEOUT_MS: u32 = 50;
-
 /// How many enumeration passes may run before the freeze is refused.
 ///
 /// Reaching a fixed point takes two passes in a process that creates no
 /// threads. The headroom covers a burst of thread creation racing the first
 /// pass; a process that never settles is refused rather than retried forever.
 pub(crate) const MAX_PASSES: u32 = 16;
+
+/// How many FURTHER passes may re-derive an id that a suspend failure left
+/// unsettled, before the freeze refuses and names the thread.
+///
+/// Counted as re-derivations and not as passes deliberately, because those are
+/// different numbers and naming it for the wrong one is how the constant ends up
+/// permitting something other than what it says: the pass that FIRST sees the
+/// unsettled probe is not a re-derivation, so this value of 2 means three
+/// consecutive unsettled passes in total, and the test asserts exactly that.
+///
+/// A pass is not cheap. `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)` walks the
+/// whole SYSTEM's thread list, and this module then filters it to our process;
+/// MEASURED on Windows 10.0.26200, debug build, three threads to suspend
+/// (`runs/ir_waitfree_freeze/pass_cost.txt`): a clean two-pass freeze took
+/// 189-208 ms, so a pass costs roughly 95-110 ms. Letting an unsettled id run
+/// the full [`MAX_PASSES`] budget out was measured at 994 ms to 1.22 s
+/// (`runs/ir_waitfree_freeze/pass_cost_unbounded_mutation.txt`) -- twenty to
+/// twenty-five times the wait it replaced, which would have been trading one
+/// stall for a bigger one.
+///
+/// Two, because ONE re-derivation already gives a mid-exit thread more elapsed
+/// time than the deleted 50 ms wait ever did, and the second is margin. A thread
+/// caught between `SuspendThread` refusing it and its thread object signalling
+/// is microseconds from being signalled, so a single fresh snapshot -- 95-110 ms
+/// of it -- is already an enormous margin on the thing being waited for.
+///
+/// WHAT IT COUNTS IS A STREAK, NOT A THREAD, and the distinction is not
+/// cosmetic. The allowance is spent per FREEZE: it starts on the first pass that
+/// ends with an unsettled probe, is cleared by the first pass that settles
+/// everything it saw, and is exhausted by consecutive unsettled passes whether
+/// or not they name the same id. So the thread the refusal names may have been
+/// probed only once. That is deliberate and it is the fail-closed direction --
+/// a shared budget refuses SOONER than a per-thread one -- and it is the
+/// direction available: per-thread state would have to be built INSIDE the
+/// frozen window, where a buffer that outgrows its reservation takes the
+/// allocator's lock a suspended thread may hold, which is the one failure worse
+/// than refusing.
+///
+/// The claim this therefore does NOT make: that the named thread is provably not
+/// mid-exit. The claim it does make: this freeze has now spent
+/// `MAX_UNSETTLED_REDERIVATIONS` whole system-wide thread walks, with the
+/// process held, without the set closing, and the next one is not worth the
+/// game's time.
+///
+/// It is a BOUND on how long a refusal takes, not a bound on correctness:
+/// exceeding it refuses, fail-closed, exactly as an immediate refusal did.
+pub(crate) const MAX_UNSETTLED_REDERIVATIONS: u32 = 2;
 
 /// Entered [`freeze_other_threads`], whatever the outcome.
 static FREEZE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
@@ -327,15 +457,43 @@ static FREEZE_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// machine -- a guard that cannot tell "correct" from "never tried". Carried
 /// over from `fired_event_popups_live`, which is where it was first needed.
 static SUSPEND_FAILURES_EXCUSED_AS_TERMINATED: AtomicU64 = AtomicU64::new(0);
-/// How many of those excusals needed the bounded wait -- the thread object was
-/// NOT signalled at the instant the suspend was refused, and only became so a
-/// moment later.
+/// How many times a `SuspendThread` failure settled NOTHING at the instant it
+/// was probed, and was therefore deferred to a later pass.
 ///
-/// This is the population [`TERMINATION_PROOF_TIMEOUT_MS`] exists for.
-/// Counting it separately is what lets a test prove the wait is load-bearing
-/// instead of asserting that a constant is non-zero: drop the timeout to 0 and
-/// this counter stops moving while the other one keeps going.
-static SUSPEND_FAILURES_NEEDING_THE_WAIT: AtomicU64 = AtomicU64::new(0);
+/// This is the population the deleted 50 ms wait existed for, and the counter
+/// is what lets a test say the deferral path was REACHED rather than merely not
+/// refused.
+///
+/// It counts DEFERRALS, not threads. One thread that never becomes suspendable
+/// is deferred once per remaining pass and moves this counter that many times
+/// before the freeze refuses it by name. A thread that was merely mid-exit moves
+/// it once and is gone by the next pass.
+static SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS: AtomicU64 = AtomicU64::new(0);
+/// How many enumeration passes every freeze in this process has spent between
+/// them, whatever each one then decided.
+///
+/// A pass is this module's unit of cost: its fixed-point enumeration is a
+/// system-wide thread-list walk, and from the second pass on it is taken inside
+/// the frozen window.
+///
+/// COUNTS PASSES, NOT SNAPSHOTS, and the two are not the same number. Each pass
+/// takes exactly one fixed-point enumeration, but a pass that meets a denied
+/// `OpenThread` also takes a [`id_is_still_in_this_process`] snapshot per such
+/// id -- the recycled-id evidence, which the module header describes. So this is
+/// a floor on the walks a freeze performed, not a total, and it is the right
+/// floor: the per-pass enumeration is the cost every freeze pays on every pass,
+/// and the recycled-id probe is a rare extra on a rare path.
+///
+/// It is the number that says what freezing has actually cost the game, which
+/// neither [`FREEZE_ATTEMPTS`] nor [`ProcessFreeze::passes`] can: the first does
+/// not know how long each attempt took, and the second exists only on the
+/// freezes that SUCCEEDED, so every refusal's cost was previously unobservable.
+///
+/// It is also the only instrument that can say a refusal respected
+/// [`MAX_UNSETTLED_REDERIVATIONS`]. Counting deferrals cannot: a second thread
+/// caught mid-exit adds deferrals without adding passes, so a deferral bound
+/// either flakes or has to be loosened until it stops testing anything.
+static FREEZE_PASSES_SPENT: AtomicU64 = AtomicU64::new(0);
 /// How many times an `OpenThread` failure that was NOT "no such thread id" was
 /// excused because a fresh enumeration of this process no longer listed the
 /// id.
@@ -387,10 +545,18 @@ pub fn suspend_failures_excused_as_terminated() -> u64 {
     SUSPEND_FAILURES_EXCUSED_AS_TERMINATED.load(Ordering::Acquire)
 }
 
-/// How many of those needed [`TERMINATION_PROOF_TIMEOUT_MS`] to elapse rather
-/// than being signalled the instant the suspend was refused.
-pub fn suspend_failures_needing_the_termination_wait() -> u64 {
-    SUSPEND_FAILURES_NEEDING_THE_WAIT.load(Ordering::Acquire)
+/// How many `SuspendThread` failures settled nothing when they were probed and
+/// were handed to a later pass instead of refusing the freeze.
+pub fn suspend_failures_deferred_to_a_later_pass() -> u64 {
+    SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS.load(Ordering::Acquire)
+}
+
+/// How many enumeration passes every freeze in this process has spent. THE cost
+/// number, and a FLOOR on the system-wide thread-list walks those freezes
+/// performed: one per pass, plus a rare extra whenever a denied `OpenThread`
+/// has to be explained.
+pub fn freeze_passes_spent() -> u64 {
+    FREEZE_PASSES_SPENT.load(Ordering::Acquire)
 }
 
 /// How many `OpenThread` failures were excused because the id had left this
@@ -441,7 +607,20 @@ pub enum FreezeRefusal {
     /// A thread could not be opened, the failure was not "no such thread id",
     /// and the id was still this process's own on re-enumeration.
     ThreadOpen { thread: u32, os_error: u32 },
-    /// A thread could not be suspended and could not be proven terminated.
+    /// The freeze ran out of passes to re-derive a suspend that had settled
+    /// nothing, and this is the thread the LAST such pass could not settle.
+    ///
+    /// Either budget can end it -- [`MAX_UNSETTLED_REDERIVATIONS`] consecutive
+    /// unsettled passes, or [`MAX_PASSES`] reached while the last pass was still
+    /// unsettled -- so this does not name which, because a refusal that guesses
+    /// its own cause sends an operator to the wrong place. What both mean is the
+    /// same: no more passes are being spent on it.
+    ///
+    /// A single unsettled probe is not this: it defers, and the next pass asks
+    /// again. Nor is this a claim that THIS thread was unsettled for the whole
+    /// streak -- the allowance is spent per freeze rather than per thread, so a
+    /// streak can span more than one id and the name is the one that ended it.
+    /// The OS error is that thread's own.
     ThreadSuspend { thread: u32, os_error: u32 },
     /// A thread was suspended, but too close to Windows' maximum suspend
     /// count for MinHook's own suspension to succeed on top of ours.
@@ -489,7 +668,8 @@ impl fmt::Display for FreezeRefusal {
             Self::ThreadSuspend { thread, os_error } => write!(
                 f,
                 "detour patch refused: thread {thread} could not be suspended \
-                 (os error {os_error}) and is not terminated, so it may be \
+                 (os error {os_error}) and was still not proven terminated when \
+                 the freeze ran out of passes to re-derive it, so it may be \
                  executing inside the patch site; no target byte was touched"
             ),
             Self::SuspendCeiling {
@@ -672,11 +852,19 @@ pub(crate) fn leaves_room_for_minhooks_suspension(previous_count: u32) -> bool {
 /// were allowed to be the last. Counting only newly SUSPENDED threads misses
 /// exactly that case.
 ///
+/// `unsettled` is the third count and the one that replaced a wait: a thread
+/// whose `SuspendThread` failed and whose thread object was not signalled at
+/// that instant is neither suspended nor proven gone, so a pass that saw one
+/// has NOT closed the set and must not be the last. Folding it into `vanished`
+/// would be a fail-open -- a vanish is a positive claim that the thread ended,
+/// and this is the absence of any claim at all.
+///
 /// This still terminates. Once every live thread is suspended, no thread runs
 /// to create another and no suspended thread can exit, so the vanished count
-/// falls to zero as the kernel drops the terminated entries from its list.
-pub(crate) fn pass_is_quiet(newly_suspended: u32, vanished: u32) -> bool {
-    newly_suspended == 0 && vanished == 0
+/// falls to zero as the kernel drops the terminated entries from its list; and
+/// an id that stays unsettled runs the pass budget out and REFUSES, by name.
+pub(crate) fn pass_is_quiet(newly_suspended: u32, vanished: u32, unsettled: u32) -> bool {
+    newly_suspended == 0 && vanished == 0 && unsettled == 0
 }
 
 /// `SuspendThread` failed on a handle we hold.
@@ -967,54 +1155,19 @@ fn id_is_still_in_this_process(thread_id: u32) -> Result<bool, FreezeRefusal> {
     }
 }
 
-/// Has this thread terminated, given a bounded moment to finish doing so?
+/// Has this thread terminated, RIGHT NOW?
 ///
-/// Probed in two steps rather than one so the bounded wait's own population is
-/// countable. The threads that are ALREADY signalled when the suspend is
-/// refused would be excused by a zero timeout too; the ones that are not are
-/// the entire reason [`TERMINATION_PROOF_TIMEOUT_MS`] is non-zero, and
-/// [`SUSPEND_FAILURES_NEEDING_THE_WAIT`] is how a test proves that population
-/// is non-empty instead of asserting that a constant is non-zero. The total
-/// time bound is unchanged: nothing is waited on for longer than
-/// `TERMINATION_PROOF_TIMEOUT_MS`.
+/// The timeout is zero and must stay zero. A thread object is signalled when
+/// the kernel signals it and nothing in user mode makes that sooner, so any
+/// non-zero timeout here is the freezing thread blocking -- with, in every pass
+/// after the first, every other thread in this process already suspended. That
+/// is the game waiting, which this module does not do at any price.
+///
+/// A `false` here is therefore "not proven terminated at this instant", NOT
+/// "still running". The caller treats it as unsettled and asks again on the
+/// next pass; see the module header.
 fn thread_has_terminated(handle: HANDLE) -> bool {
-    if unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0 {
-        return record_termination_probe(true, false);
-    }
-    let signalled_after_the_wait =
-        unsafe { WaitForSingleObject(handle, TERMINATION_PROOF_TIMEOUT_MS) } == WAIT_OBJECT_0;
-    record_termination_probe(false, signalled_after_the_wait)
-}
-
-/// The whole decision [`thread_has_terminated`] makes, with the two OS probes
-/// as inputs.
-///
-/// Split out so the rule -- and specifically the fact that only the DELAYED
-/// signal increments [`SUSPEND_FAILURES_NEEDING_THE_WAIT`] -- can be driven
-/// from a test directly, both orderings, in microseconds. Establishing the
-/// same rule through the OS means waiting for a thread to be caught between
-/// `SuspendThread` refusing it and its thread object signalling, which is a
-/// rare interleaving whose arrival time is a random variable: measured over 13
-/// runs of that test it ranged from 1.7 s to 176.8 s, and failed once. A gate
-/// cannot be built on that, and it does not have to be: the OS's part is
-/// "sometimes a thread is caught mid-exit", which the churn test still proves,
-/// and this is the part that is pure logic.
-///
-/// `signalled_after_wait` is meaningless when `signalled_immediately` is true,
-/// and the caller never performs the second wait in that case -- the
-/// short-circuit is preserved, so the bound on the whole probe is still one
-/// [`TERMINATION_PROOF_TIMEOUT_MS`].
-pub(crate) fn record_termination_probe(
-    signalled_immediately: bool,
-    signalled_after_wait: bool,
-) -> bool {
-    if signalled_immediately {
-        return true;
-    }
-    if signalled_after_wait {
-        SUSPEND_FAILURES_NEEDING_THE_WAIT.fetch_add(1, Ordering::AcqRel);
-    }
-    signalled_after_wait
+    unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 }
 }
 
 /// THE freeze, for a caller that rewrites bytes without MinHook.
@@ -1066,6 +1219,13 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let mut ids: Vec<u32> = Vec::new();
+    // Pass 1 is THIS enumeration -- the loop below skips its own for `pass == 1`
+    // and reads what this leaves -- so it is counted here rather than there. The
+    // difference only shows on the paths that return before the loop ever runs:
+    // a refused snapshot, a truncated enumeration, or a reservation that could
+    // not be satisfied all spend a system-wide thread walk, and counting them at
+    // the top of the loop would report those costs as zero.
+    FREEZE_PASSES_SPENT.fetch_add(1, Ordering::AcqRel);
     // Growth::Allowed is correct HERE and nowhere else in this function:
     // nothing is suspended yet, so taking the allocator's lock is ordinary. It
     // is also the only place it may appear, and the source pin in the tests
@@ -1107,9 +1267,24 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         passes: 0,
     };
 
+    // The last thread this pass could not settle, and the OS error its suspend
+    // reported. Reset at the top of every pass, so what survives the loop
+    // describes the FINAL pass and nothing earlier: a thread that was mid-exit
+    // on pass 3 and gone by pass 4 must not be named as the reason pass 16 ran
+    // out. Two `u32`s in a `Copy` `Option`, written inside the frozen window and
+    // allocating nothing.
+    let mut unsettled_suspend: Option<(u32, u32)> = None;
+    // The pass a run of unsettled probes started on. Cleared by any pass that
+    // settled everything it saw, so the allowance is CONSECUTIVE passes and does
+    // not accumulate across a freeze that kept making progress in between.
+    let mut unsettled_since: Option<u32> = None;
     for pass in 1..=MAX_PASSES {
         freeze.passes = pass;
+        unsettled_suspend = None;
         if pass > 1 {
+            // Counted here and not at the top of the loop: pass 1's enumeration
+            // was taken before the loop and is already counted there.
+            FREEZE_PASSES_SPENT.fetch_add(1, Ordering::AcqRel);
             // A verification pass, inside the frozen window: reuse only, never
             // Growth::Allowed.
             /* Every comment shape appears here on purpose, because the source
@@ -1122,6 +1297,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         }
         let mut newly_suspended = 0u32;
         let mut vanished = 0u32;
+        let mut unsettled = 0u32;
         // Indexed rather than iterated: the body needs `&mut freeze.frozen`
         // while reading `freeze.enumeration`, and every refusal below returns
         // `freeze` out of the function.
@@ -1213,10 +1389,19 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
                         continue;
                     }
                     ThreadDisposition::Refuse => {
-                        return Err(FreezeRefusal::ThreadSuspend {
-                            thread: thread_id,
-                            os_error,
-                        })
+                        // NOT a refusal here, and this is the wait's
+                        // replacement. Nothing was proven either way: the
+                        // suspend failed and the thread object was not
+                        // signalled at that instant. Recording it as unsettled
+                        // stops this pass being the last one and re-derives the
+                        // id from scratch next pass, which is what a mid-exit
+                        // thread needs and what a 50 ms wait used to buy. A
+                        // streak of passes that keeps ending here refuses below,
+                        // by name, when either budget runs out.
+                        SUSPEND_FAILURES_DEFERRED_TO_A_LATER_PASS.fetch_add(1, Ordering::AcqRel);
+                        unsettled_suspend = Some((thread_id, os_error));
+                        unsettled += 1;
+                        continue;
                     }
                 }
             }
@@ -1237,13 +1422,44 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             freeze.frozen.push((thread_id, handle));
             newly_suspended += 1;
         }
-        if pass_is_quiet(newly_suspended, vanished) {
+        if pass_is_quiet(newly_suspended, vanished, unsettled) {
             // A whole pass found nothing outside the suspended set. Only this
             // thread runs now, and it starts no threads, so the set is closed.
             return Ok(freeze);
         }
+        // How many re-derivations this run of unsettled probes has had. `first`
+        // is the pass that SAW the probe, so `pass - first` is the number of
+        // further passes that have re-derived it -- the quantity
+        // MAX_UNSETTLED_REDERIVATIONS is named for. A pass that settled
+        // everything it saw clears the run: the allowance is for a thread
+        // finishing its exit, not a standing budget carried across a freeze that
+        // kept making progress.
+        match (unsettled_suspend, unsettled_since) {
+            (None, _) => unsettled_since = None,
+            (Some(_), None) => unsettled_since = Some(pass),
+            (Some((thread, os_error)), Some(first)) => {
+                if pass.saturating_sub(first) >= MAX_UNSETTLED_REDERIVATIONS {
+                    // This freeze has now spent its whole allowance of
+                    // consecutive unsettled passes -- whole system-wide thread
+                    // walks, with the process held -- and the set has still not
+                    // closed. Deliberately NOT a claim about the thread named
+                    // below: the streak is the freeze's, and this id may have
+                    // been probed once. What is decided here is that the next
+                    // pass is not worth the game's time.
+                    return Err(FreezeRefusal::ThreadSuspend { thread, os_error });
+                }
+            }
+        }
     }
 
+    // The pass budget is gone. If the LAST pass still could not settle a
+    // suspend, that thread is the cause and is named as one -- an operator
+    // reading "N threads were still starting" about a single thread that would
+    // not suspend is being told the wrong thing to go and look at. Otherwise
+    // the process genuinely never went quiet.
+    if let Some((thread, os_error)) = unsettled_suspend {
+        return Err(FreezeRefusal::ThreadSuspend { thread, os_error });
+    }
     let still_running = {
         let mut count = 0u32;
         for &thread_id in &freeze.enumeration {
@@ -1504,121 +1720,51 @@ mod tests {
         assert_eq!(classify_suspend_failure(false), ThreadDisposition::Refuse);
     }
 
-    /// Falsifiable, and the deterministic half of the bounded wait's proof:
-    /// fails if the delayed-signal population stops being counted separately
-    /// from the already-signalled one.
+    /// Falsifiable: fails if the termination probe spends 25 ms or more on a
+    /// thread it cannot prove terminated.
     ///
-    /// kills: counting every excusal as a waited one, or counting none.
+    /// kills: the deleted 50 ms bounded wait, and any replacement for it that
+    /// costs 25 ms or more on every probe -- a `sleep`, a retry loop, a second
+    /// timed wait.
     ///
-    /// This is the RULE the churn test used to establish by waiting for the OS
-    /// to catch a thread between `SuspendThread` refusing it and its thread
-    /// object signalling. That wait took between 1.7 s and 176.8 s over 13
-    /// measured runs and failed once; the logic it was waiting to demonstrate
-    /// is right here and takes no time at all.
+    /// BE EXACT ABOUT WHAT THAT IS, because "fails if the probe ever spends
+    /// time" is what this said first and it was an overclaim twice over. This is
+    /// a COARSE timing check with a wide scheduling tolerance. A 1 ms timeout
+    /// passes it, and has to: the correct zero-timeout implementation can itself
+    /// be descheduled between the clock reads, so a ceiling tight enough to
+    /// catch 1 ms would go red on a loaded machine. And the tolerance is
+    /// statistical rather than absolute -- eight probes could in principle all
+    /// be preempted, though a 25 ms preemption eight times running is not a
+    /// machine anything else on this gate would survive either.
     ///
-    /// It does NOT kill a zero [`TERMINATION_PROOF_TIMEOUT_MS`], and saying it
-    /// did was this test's own first mistake: it SUPPLIES the probe results
-    /// instead of measuring them, so a zero timeout satisfies every row below
-    /// unchanged. [`the_termination_proof_actually_spends_the_bounded_wait`] is
-    /// what kills that, by measuring what the wait costs against a floor that
-    /// is not derived from the constant.
+    /// The EXACT property -- that the timeout argument is the literal `0` -- is
+    /// a source property and is pinned as one, in
+    /// [`only_the_freeze_lock_blocks_in_this_module`]. This test is what that
+    /// one cannot be: a measurement of the real entry point, on a real thread
+    /// handle, at the real access mask.
+    ///
+    /// The measurement needs no thread race and no contrived handle. A thread
+    /// that is deliberately still RUNNING never signals its thread object, so
+    /// this is the exact shape the deleted wait was spent on: the probe must now
+    /// answer "not proven terminated" immediately and let the caller defer.
+    ///
+    /// The MINIMUM over several probes is what buys that tolerance. A single
+    /// measurement is not safe in the success direction; a wait, by contrast, is
+    /// paid on EVERY probe -- the OS does not return early from a timed wait --
+    /// so a correct build needs one un-preempted probe out of eight while a
+    /// 50 ms wait cannot produce a fast one however lucky the scheduling.
+    ///
+    /// The ceiling is a LITERAL and is deliberately not derived from anything in
+    /// production: a threshold computed from the thing under test is not a
+    /// threshold, which is how the test this replaces once survived the very
+    /// mutation it was written to kill.
+    ///
+    /// It does NOT kill moving the wait somewhere else in the module. The source
+    /// scan in [`only_the_freeze_lock_blocks_in_this_module`] is what covers
+    /// that, and neither test claims the other's ground.
     #[test]
-    fn only_a_delayed_signal_counts_as_a_waited_termination_proof() {
-        let _serialised = os_suspend_state_guard();
-
-        // Already signalled when the suspend was refused: terminated, and NOT
-        // a member of the population the timeout exists for.
-        let before = suspend_failures_needing_the_termination_wait();
-        assert!(record_termination_probe(true, false));
-        assert_eq!(
-            suspend_failures_needing_the_termination_wait(),
-            before,
-            "a thread that was already signalled did not need the wait"
-        );
-
-        // Not signalled at the refusal, signalled within the timeout: this is
-        // the population, and a zero timeout would never see it.
-        assert!(record_termination_probe(false, true));
-        assert_eq!(
-            suspend_failures_needing_the_termination_wait(),
-            before + 1,
-            "the delayed signal is what the bounded wait is for"
-        );
-
-        // Never signalled: not terminated, so it refuses, and it is not
-        // counted as a wait that paid off.
-        assert!(!record_termination_probe(false, false));
-        assert_eq!(
-            suspend_failures_needing_the_termination_wait(),
-            before + 1,
-            "a thread that never signalled proves nothing"
-        );
-    }
-
-    /// Falsifiable, and the OTHER half of the bounded wait's proof: fails if
-    /// [`TERMINATION_PROOF_TIMEOUT_MS`] stops being spent.
-    ///
-    /// kills: setting [`TERMINATION_PROOF_TIMEOUT_MS`] to zero, or to anything
-    /// under the floor below, and any change that stops the probe SPENDING that
-    /// time before it answers.
-    ///
-    /// It does NOT kill replacing the second `WaitForSingleObject` with a
-    /// `sleep` of the same length and a hard-coded `false`: this measures
-    /// elapsed time and the verdict, not that the handle was probed. Nothing
-    /// here can see that, and the evidence-tier test is what would eventually
-    /// notice the delayed-signal population had stopped existing.
-    ///
-    /// The seam test above proves the RULE and cannot prove the DURATION,
-    /// because it supplies the probe results instead of measuring them -- a
-    /// zero timeout would satisfy it unchanged, which is the gap this closes.
-    /// Measuring it needs no thread race and no contrived handle: a thread that
-    /// is deliberately still RUNNING never signals its thread object, so
-    /// `thread_has_terminated` spends the whole configured timeout on it and
-    /// then correctly answers "not terminated". That is also the exact
-    /// production shape -- a live thread we could not suspend is the case the
-    /// timeout exists to adjudicate -- so this measures the real entry point on
-    /// a real thread handle, opened at the real access mask.
-    ///
-    /// Deterministic in the only direction that matters. A timed wait may
-    /// return LATE under load -- which still passes -- and the OS does not
-    /// return early from one, so this cannot flake the way the churn test it
-    /// replaces did. Half the constant is the threshold rather than the whole
-    /// of it purely to absorb timer granularity; at zero the elapsed time is
-    /// microseconds, so the mutation is nowhere near the margin.
-    #[test]
-    fn the_termination_proof_actually_spends_the_bounded_wait() {
-        // A LITERAL floor, deliberately NOT derived from
-        // TERMINATION_PROOF_TIMEOUT_MS. The first version of this test computed
-        // it as `TERMINATION_PROOF_TIMEOUT_MS / 2`, which is precisely how it
-        // survived the mutation it was written to kill: at a zero timeout the
-        // floor went to zero with it and every assertion passed. A threshold
-        // derived from the thing under test is not a threshold.
-        //
-        // 25 ms is half the 50 ms the constant is set to, which leaves ample
-        // room for timer granularity while sitting three orders of magnitude
-        // above the microseconds a zero timeout returns in. If the constant is
-        // ever lowered below this deliberately, this test is the review gate
-        // that says so.
-        const BOUNDED_WAIT_FLOOR_MS: u64 = 25;
-
-        // The constant, checked directly, BESIDE the measurement and not
-        // instead of it. Timing alone cannot settle this: with the timeout at
-        // zero both waits return immediately, but a preemption inside the
-        // measured interval can still inflate the elapsed time past the floor,
-        // and then a mutated build passes. This assertion has no such gap.
-        //
-        // It is not a substitute for the measurement either -- it says nothing
-        // about whether the second wait is still PERFORMED, which is what the
-        // elapsed time below is for. Deleting either leaves a live mutation.
-        assert!(
-            u64::from(TERMINATION_PROOF_TIMEOUT_MS) >= BOUNDED_WAIT_FLOOR_MS,
-            "TERMINATION_PROOF_TIMEOUT_MS is {TERMINATION_PROOF_TIMEOUT_MS} ms, under \
-             the {BOUNDED_WAIT_FLOOR_MS} ms floor; a thread that has entered \
-             NtTerminateThread reports ERROR_ACCESS_DENIED from SuspendThread \
-             BEFORE its thread object is signalled, so a timeout this short reads \
-             a thread that is already past all user-mode code as one that might \
-             still be running"
-        );
+    fn the_termination_proof_answers_without_waiting() {
+        const NO_WAIT_CEILING_MS: u128 = 25;
 
         let _serialised = os_suspend_state_guard();
         let stop = Arc::new(AtomicBool::new(false));
@@ -1641,37 +1787,139 @@ mod tests {
             thread_id = live_thread_id.load(Ordering::Acquire);
             std::thread::yield_now();
         }
+        // NOTHING PANICS UNTIL THE WORKER IS STOPPED AND JOINED. A panic here
+        // would leave it spinning for the rest of this test binary's life, and
+        // every later test would then be measuring a busier machine than it
+        // meant to -- one red test reported as several.
+        const PROBES: u32 = 8;
         let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, thread_id) };
-        assert!(
-            !handle.is_null(),
-            "a live thread of this process must be openable at the freeze mask"
-        );
-
-        let waited_before = suspend_failures_needing_the_termination_wait();
-        let started = std::time::Instant::now();
-        let verdict = thread_has_terminated(handle);
-        let elapsed = started.elapsed();
-        unsafe { CloseHandle(handle) };
+        let opened = !handle.is_null();
+        let mut verdict = true;
+        let mut elapsed = std::time::Duration::MAX;
+        if opened {
+            for _ in 0..PROBES {
+                let started = std::time::Instant::now();
+                verdict = thread_has_terminated(handle);
+                elapsed = elapsed.min(started.elapsed());
+            }
+            unsafe { CloseHandle(handle) };
+        }
         stop.store(true, Ordering::Release);
         worker.join().expect("worker joins");
 
+        assert!(
+            opened,
+            "a live thread of this process must be openable at the freeze mask"
+        );
         assert!(
             !verdict,
             "a thread that is still running is not proof of termination"
         );
         assert!(
-            elapsed >= std::time::Duration::from_millis(BOUNDED_WAIT_FLOOR_MS),
-            "the termination proof returned after {elapsed:?}, under the \
-             {BOUNDED_WAIT_FLOOR_MS} ms floor, so it did not spend the wait it is \
-             supposed to give a thread to finish terminating; a zero timeout reads \
-             a thread that is already past all user-mode code as one that might \
-             still be running"
+            elapsed.as_millis() < NO_WAIT_CEILING_MS,
+            "the fastest of {PROBES} termination proofs took {elapsed:?}, over \
+             the {NO_WAIT_CEILING_MS} ms ceiling, so it is waiting on a thread \
+             object again; it runs with the rest of the process suspended, and \
+             an unsettled probe is deferred to the next pass rather than paid for"
         );
+    }
+
+    /// Falsifiable: fails if the termination probe stops being a ZERO-timeout
+    /// wait, if a second wait appears anywhere in this module's production code,
+    /// or if the one deliberate blocking call stops being the only one.
+    ///
+    /// kills: restoring `WaitForSingleObject(handle, TERMINATION_PROOF_TIMEOUT_MS)`
+    /// or ANY other timeout, however small -- the argument is pinned as the
+    /// literal `0`, so this is exact where a timing test cannot be -- and the
+    /// shapes a reintroduction would otherwise take instead: `Sleep`,
+    /// `std::thread::sleep`, `yield_now`, `park`, `SwitchToThread`,
+    /// `WaitForMultipleObjects`, `SleepEx`, a spin, and a deadline loop built
+    /// from `Instant`/`Duration`.
+    ///
+    /// WHAT IT DOES NOT DO, said plainly because the previous name for it
+    /// ("no blocking call survives") claimed otherwise and was wrong twice over.
+    /// It is a ROSTER: it cannot see a helper that blocks inside itself, or an
+    /// aliased call, and no substring pass can. And this module DOES block, in
+    /// exactly one place -- [`FREEZE_LOCK`] is a mutex and a second freezer
+    /// parks on it. That is not a hole: the lock is taken before anything is
+    /// suspended, the thread that parks is another freezer rather than a thread
+    /// of the game, and no game thread ever calls into this module. So the lock
+    /// is asserted to be present and singular instead of being banned, which is
+    /// what makes a SECOND one -- a lock taken with threads already suspended,
+    /// which is the deadlock the module header warns about -- fail here.
+    ///
+    /// [`the_termination_proof_answers_without_waiting`] measures the one probe
+    /// that exists today; this is the whole-module half, and it is worth having
+    /// as text because a wait added anywhere in here runs with every other
+    /// thread in the process suspended.
+    #[test]
+    fn only_the_freeze_lock_blocks_in_this_module() {
+        let production = code_only(&production_code());
+        // Exactly one wait, and it is the zero-timeout probe. Requiring only
+        // that the zero-timeout spelling is PRESENT would let a second, timed
+        // wait sit beside it.
         assert_eq!(
-            suspend_failures_needing_the_termination_wait(),
-            waited_before,
-            "a wait that timed out is not a wait that paid off"
+            production.matches("WaitForSingleObject").count(),
+            2,
+            "this module names WaitForSingleObject somewhere other than its \
+             import and its one zero-timeout probe; a second wait blocks the \
+             freezing thread with every other thread already suspended"
         );
+        assert!(
+            production.contains("WaitForSingleObject(handle, 0) == WAIT_OBJECT_0"),
+            "the termination probe must be a ZERO-timeout wait; a timeout here \
+             is a thread of this process blocked on a thread that is dying, with \
+             the rest of the process already suspended behind it"
+        );
+        // The deliberate blockers, counted AND named rather than banned. Exactly
+        // two `.lock()` calls exist in what `production_code()` returns, and
+        // both are pinned by identity, so a third breaks the count and a
+        // substituted one breaks the name.
+        //
+        // ONE OF THEM IS TEST SCAFFOLDING, and that is a limitation of
+        // `production_code()` rather than a lock in production:
+        // `os_suspend_state_guard` is `#[cfg(test)]` but is declared ABOVE the
+        // `mod tests` block that the split cuts at, so it comes back in the
+        // "production" half. Asserting a count of one here went red on a correct
+        // build; naming both is what the split can actually support.
+        assert_eq!(
+            production.matches(concat!(".lo", "ck()")).count(),
+            2,
+            "this module takes a lock beyond FREEZE_LOCK and the test-only \
+             suspend-state guard; the freeze holds every other thread suspended, \
+             so a new lock is one a suspended thread may already own with nobody \
+             left to release it"
+        );
+        assert!(
+            production.contains(concat!("FREEZE_LO", "CK.lock()")),
+            "the one lock production takes must be FREEZE_LOCK, acquired before \
+             the first suspension so that two freezers cannot interleave"
+        );
+        assert!(
+            production.contains(concat!("OS_SUSPEND_STATE_TE", "STS.lock()")),
+            "the second lock must still be the cfg(test) suspend-state guard; if \
+             it is not, the count above is passing over a lock nobody named"
+        );
+        for blocking in [
+            concat!("Sle", "ep("),
+            concat!("sle", "ep("),
+            concat!("yield_", "now"),
+            concat!("park", "("),
+            concat!("SwitchTo", "Thread"),
+            concat!("WaitForMultiple", "Objects"),
+            concat!("Sleep", "Ex"),
+            concat!("Instant::", "now"),
+            concat!("Duration::", "from"),
+            concat!("spin_", "loop"),
+            concat!("elap", "sed("),
+        ] {
+            assert!(
+                !production.contains(blocking),
+                "this module's production code contains `{blocking}`; the freeze \
+                 never sleeps and never spins, because everything it holds up is \
+                 held up with the rest of the process suspended"
+            );
+        }
     }
 
     /// Falsifiable: fails if a successfully opened handle is suspended without
@@ -1991,10 +2239,12 @@ mod tests {
         let inner = code_only(inner_body);
         let inner = inner.as_str();
         assert!(
-            inner.contains("if pass_is_quiet(newly_suspended, vanished) {"),
-            "the fixed point must ask pass_is_quiet with BOTH counts; asking \
-             about newly_suspended alone lets a pass that saw a thread vanish \
-             be the last one"
+            inner.contains("if pass_is_quiet(newly_suspended, vanished, unsettled) {"),
+            "the fixed point must ask pass_is_quiet with ALL THREE counts; \
+             asking about newly_suspended alone lets a pass that saw a thread \
+             vanish be the last one, and dropping `unsettled` lets a pass that \
+             could not settle a suspend failure be the last one -- which is the \
+             fail-open the bounded wait was covering for"
         );
         assert_eq!(
             inner.matches("vanished += 1;").count(),
@@ -2106,6 +2356,42 @@ mod tests {
                  can still execute is, and only the thread object answers that"
             );
         }
+        // The wait's replacement, pinned at the only call site that can undo it.
+        // A `Refuse` disposition here means NOTHING was settled, not that the
+        // thread is live: the freeze must record it as unsettled and let the
+        // next pass re-derive the id. Returning from this arm is the historical
+        // shape -- it is what refused an entire installation on an ordinary
+        // thread exit before the thread-object proof existed, and it is what
+        // deleting the 50 ms wait would restore if the deferral went with it.
+        assert!(
+            suspend_arm.contains("unsettled += 1;"),
+            "the failed-suspend arm must record an unsettled probe so the pass \
+             cannot be the last one; without it the freeze either refuses a \
+             thread that was merely mid-exit or certifies a set it never closed"
+        );
+        assert!(
+            suspend_arm.contains("unsettled_suspend = Some((thread_id, os_error));"),
+            "an unsettled probe must carry the thread and its OS error to the \
+             end of the pass budget; a refusal that cannot name the thread it \
+             could not settle sends an operator to the wrong place"
+        );
+        assert!(
+            !suspend_arm.contains("return Err"),
+            "the failed-suspend arm refuses immediately; a probe that settled \
+             nothing has to be deferred to the next pass, and only the exhausted \
+             deferral allowance may turn it into a refusal"
+        );
+        // And the allowance must be the thing that ends it. A deferral with no
+        // ceiling is not free: each extra pass is a system-wide thread-list walk
+        // taken with the process suspended, so an id allowed to run MAX_PASSES
+        // out trades the 50 ms wait for a measured 994 ms to 1.22 s of frozen
+        // game.
+        assert!(
+            inner.contains("pass.saturating_sub(first) >= MAX_UNSETTLED_REDERIVATIONS"),
+            "the pass loop must bound how long an id may stay unsettled; without \
+             it a thread that will never suspend holds the whole process for the \
+             full MAX_PASSES budget"
+        );
         // Every mention of a disposition in this arm is a match PATTERN. One
         // CONSTRUCTED here would be a second source of truth beside the
         // classifier, which is the shape of every allowlist this arm has ever
@@ -2341,10 +2627,19 @@ mod tests {
     // (that the answer is consulted). Both go red under the mutation that
     // ignores the ceiling.
     //
-    // NOT COVERED OFFLINE ANY MORE, in those words: that a live process
-    // actually refuses. Closing that needs the freeze driven somewhere it
-    // cannot wedge a shared test binary -- a dedicated single-test process --
-    // or a live patched hoi4.exe.
+    // WHAT IS COVERED OFFLINE AGAIN, and what still is not. That a real freeze
+    // in a real process refuses rather than certifying a thread it could not
+    // suspend IS covered, by
+    // `a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance`,
+    // which reaches the same OS state one suspend count higher -- where ours
+    // fails outright rather than landing on the ceiling -- and which undoes its
+    // setup before its first assertion so a red run cannot wedge the binary the
+    // way the removed test did.
+    //
+    // What is still NOT covered offline is this decision specifically: that a
+    // suspend which SUCCEEDS at 126 refuses because MinHook's would then fail.
+    // That needs a live patched hoi4.exe, or the freeze driven in a dedicated
+    // single-test process.
 
     /// Falsifiable: fails if a pass that saw a thread vanish is ever allowed
     /// to be the last one.
@@ -2358,13 +2653,240 @@ mod tests {
     /// outside the suspended set proves the set is closed.
     #[test]
     fn a_pass_that_saw_a_thread_vanish_is_never_the_last_one() {
-        assert!(pass_is_quiet(0, 0), "nothing outside the set is the fixed point");
         assert!(
-            !pass_is_quiet(0, 1),
+            pass_is_quiet(0, 0, 0),
+            "nothing outside the set is the fixed point"
+        );
+        assert!(
+            !pass_is_quiet(0, 1, 0),
             "a vanished thread may have started a successor the snapshot cannot show"
         );
-        assert!(!pass_is_quiet(1, 0), "a newly suspended thread is a changed set");
-        assert!(!pass_is_quiet(3, 2));
+        assert!(
+            !pass_is_quiet(1, 0, 0),
+            "a newly suspended thread is a changed set"
+        );
+        // The wait's replacement, at the one point where it could fail open. A
+        // thread whose suspend failed and whose object was not signalled is
+        // neither suspended nor proven gone; a pass that ends on one has closed
+        // nothing, and letting it be the last returns a freeze with a thread in
+        // the process that may still be executing.
+        assert!(
+            !pass_is_quiet(0, 0, 1),
+            "an unsettled suspend failure is not a closed set; the next pass has \
+             to re-derive that id, which is what replaced the bounded wait"
+        );
+        assert!(!pass_is_quiet(3, 2, 1));
+    }
+
+    /// Falsifiable, BEHAVIOURALLY, and the half of the deferral no seam test can
+    /// reach: fails if a thread whose suspend could not be settled is ever
+    /// certified, fails if the pass loop does not re-derive it first, and fails
+    /// if the re-derivation is unbounded.
+    ///
+    /// kills: deleting the deferral (the refusal would arrive on the first
+    /// unsettled probe, so the counter would move exactly once); letting an
+    /// unsettled probe end the loop (the freeze would return `Ok` holding a
+    /// thread short of the set it claims is closed); dropping the named thread
+    /// from the refusal (it would come back as `NotQuiescent`); and letting the
+    /// deferral run the whole [`MAX_PASSES`] budget out instead of
+    /// [`MAX_UNSETTLED_REDERIVATIONS`], which measured at 994 ms to 1.22 s of
+    /// frozen process -- twenty to twenty-five times the wait this lane deleted.
+    ///
+    /// What it does NOT kill is a wait of the deleted length put back into the
+    /// probe. [`the_termination_proof_answers_without_waiting`] kills that by
+    /// measurement and [`only_the_freeze_lock_blocks_in_this_module`] by text;
+    /// neither test claims the other's ground.
+    ///
+    /// # Why the suspend-count ceiling is the instrument, and what it is NOT
+    ///
+    /// The production population is a thread caught between `SuspendThread`
+    /// refusing it and its thread object signalling, and that interleaving is
+    /// not schedulable on demand -- the churn test that waits for it takes
+    /// 1.7-176.8 s. The CODE PATH does not care why the suspend failed, so this
+    /// manufactures the same state another way: a thread already held at
+    /// `MAXIMUM_SUSPEND_COUNT` fails `SuspendThread` outright, and its thread
+    /// object is not signalled, which is `previous_count == u32::MAX` and
+    /// `thread_has_terminated` false -- the identical branch, deterministically,
+    /// in one call.
+    ///
+    /// BE EXACT ABOUT WHAT THAT DEMONSTRATES. The worker is held suspended 127
+    /// times, so it is NOT executing while the freeze runs. This test therefore
+    /// proves the BRANCH and the BOUND -- an unsettled probe defers, the
+    /// deferral is capped, and the exhausted cap refuses by name -- and it does
+    /// NOT demonstrate that certifying such a thread would leave real
+    /// instructions running. Nothing offline can: a genuinely running,
+    /// genuinely unsuspendable thread of one's own process is not a state a test
+    /// can arrange. Claiming otherwise would be the overclaim the module header
+    /// spends its length avoiding.
+    ///
+    /// It is NOT `SuspendCeiling`. That refusal is for a suspend that SUCCEEDED
+    /// with no room left for MinHook's; this is the next count up, where ours
+    /// fails outright.
+    ///
+    /// # The suite wedge the note above records, and what this does about it
+    ///
+    /// Be precise, because "this one is safe" would be an overclaim. The wedge
+    /// was a LEAK: threads left Suspended with no thread running the freeze. Two
+    /// things here make that unreachable -- `ProcessFreeze::drop` resumes
+    /// everything the refusal path held, and this test's own 127 suspensions are
+    /// undone BEFORE its first assertion, so no panic path leaves the process
+    /// changed.
+    ///
+    /// What is NOT addressed, and is not this test's to address: a hang INSIDE
+    /// the frozen window, where an allocation takes a lock a suspended thread
+    /// holds. That hazard belongs to taking a real freeze in a shared test
+    /// binary at all, and three tests in this module already do it --
+    /// [`a_held_freeze_stops_other_threads_and_dropping_it_starts_them_again`],
+    /// [`a_frozen_thread_is_found_where_it_is_stopped_and_nowhere_else`] and
+    /// [`threads_churning_during_the_freeze_are_all_accounted_for`], the last
+    /// under 25 freezes of deliberate churn. This one takes a single freeze with
+    /// no churn, so it adds no exposure those do not already carry. Removing the
+    /// hazard means a dedicated single-test process, which is a change to how
+    /// this crate is tested rather than to this test.
+    #[test]
+    fn a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance() {
+        let _serialised = os_suspend_state_guard();
+        let stop = Arc::new(AtomicBool::new(false));
+        let live_thread_id = Arc::new(AtomicU32::new(0));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            let live_thread_id = Arc::clone(&live_thread_id);
+            std::thread::spawn(move || {
+                live_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+                while !stop.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        let mut worker_id = 0u32;
+        while worker_id == 0 {
+            worker_id = live_thread_id.load(Ordering::Acquire);
+            std::thread::yield_now();
+        }
+        // NOTHING PANICS FROM HERE UNTIL THE PROCESS IS PUT BACK, deliberately
+        // and including the open itself. An assertion in this stretch would
+        // unwind with the worker still spinning, suspended some unknown number
+        // of times, and its handle leaked; every later test in this binary would
+        // then meet a thread it cannot suspend, and one red test would be
+        // reported as a suite full of them.
+        let handle = unsafe { OpenThread(FREEZE_THREAD_ACCESS, 0, worker_id) };
+        let opened = !handle.is_null();
+
+        // Up to the ceiling exactly. The next suspension -- the freeze's own --
+        // is the one that fails.
+        let mut raised = 0u32;
+        let mut previous_counts_were_sequential = true;
+        if opened {
+            while raised < MAXIMUM_SUSPEND_COUNT {
+                let previous = unsafe { SuspendThread(handle) };
+                previous_counts_were_sequential &= previous == raised;
+                raised += 1;
+            }
+        }
+
+        let deferred_before = suspend_failures_deferred_to_a_later_pass();
+        let passes_before = freeze_passes_spent();
+        let refusals_before = freeze_refusals();
+        let started = std::time::Instant::now();
+        let outcome = if opened {
+            Some(freeze_other_threads())
+        } else {
+            None
+        };
+        let elapsed = started.elapsed();
+        let deferred = suspend_failures_deferred_to_a_later_pass() - deferred_before;
+        let passes = freeze_passes_spent() - passes_before;
+
+        // Put the process back before asserting anything, so a failing assertion
+        // reports itself instead of wedging the binary.
+        while raised > 0 {
+            unsafe { ResumeThread(handle) };
+            raised -= 1;
+        }
+        if opened {
+            unsafe { CloseHandle(handle) };
+        }
+        stop.store(true, Ordering::Release);
+        worker.join().expect("worker joins");
+
+        assert!(
+            opened,
+            "a live thread of this process must be openable at the freeze mask"
+        );
+        assert!(
+            previous_counts_were_sequential,
+            "SuspendThread returns the PREVIOUS count and the setup did not see              0, 1, 2, ...; something else is suspending this thread, so it was              never raised to exactly MAXIMUM_SUSPEND_COUNT and the branch under              test may not have been the one taken"
+        );
+        match outcome.expect("the freeze runs whenever the handle opened") {
+            Ok(freeze) => {
+                let held = freeze.frozen_thread_count();
+                drop(freeze);
+                panic!(
+                    "the freeze declared the thread set closed ({held} thread(s) \
+                     held) while one enumerated thread was neither suspended nor \
+                     proven terminated; an unsettled probe must never end the \
+                     pass loop"
+                );
+            }
+            Err(FreezeRefusal::ThreadSuspend { thread, .. }) => assert_eq!(
+                thread, worker_id,
+                "the refusal must name the thread whose suspend could not be \
+                 settled"
+            ),
+            Err(other) => panic!(
+                "an unsuspendable thread must refuse as ThreadSuspend and name \
+                 itself; got {other}"
+            ),
+        }
+        assert_eq!(
+            freeze_refusals() - refusals_before,
+            1,
+            "the refusal must be counted exactly once"
+        );
+        // THE DEFERRAL HAPPENED, which is what the deferral counter can say
+        // soundly.
+        assert!(
+            deferred > 1,
+            "the unsettled probe was deferred {deferred} time(s), so the pass \
+             loop is not re-deriving it at all; refusing on the first unsettled \
+             probe is the behaviour the deleted 50 ms wait existed to paper over"
+        );
+        // THE DEFERRAL WAS BOUNDED, which the deferral counter CANNOT say and
+        // the pass counter can. Two attempts got this wrong before the
+        // instrument was right, and both failures are why it is spelled out.
+        //
+        // Counting deferrals is unsound in both directions. Another thread of
+        // this binary caught mid-exit adds deferrals without adding passes, so
+        // the bound flakes; and deriving a tolerance from
+        // `suspend_failures_excused_as_terminated` does not repair that, because
+        // a deferred mid-exit thread often does NOT go on to be excused -- it is
+        // simply absent from the next snapshot, or its `OpenThread` fails with
+        // ERROR_INVALID_PARAMETER, and both of those are vanishes that move no
+        // excusal counter at all.
+        //
+        // Passes are exact. A stray deferral rides along inside a pass this
+        // freeze was already spending, so it cannot add one, and the streak
+        // refuses on the same pass whichever id ends it. MEASURED
+        // (`runs/ir_waitfree_freeze/pass_cost.txt` and
+        // `pass_cost_unbounded_mutation.txt`): 3 passes and 278-330 ms here,
+        // against 16 passes and 994 ms-1.22 s with the allowance removed.
+        assert_eq!(
+            passes,
+            u64::from(MAX_UNSETTLED_REDERIVATIONS) + 1,
+            "the refusal spent {passes} pass(es), not the pass that first saw \
+             the unsettled probe plus its {MAX_UNSETTLED_REDERIVATIONS} \
+             re-derivation(s); every pass is a system-wide thread-list walk \
+             taken with the rest of the process suspended, and letting the \
+             streak run the MAX_PASSES budget out was measured at 994 ms to \
+             1.22 s of frozen process"
+        );
+        // A backstop, not the discriminator: it catches a deferral that is not a
+        // bounded loop at all, and says what the run cost when something above
+        // has already gone red.
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "the refusal took {elapsed:?}, which is not a bounded pass loop at all"
+        );
     }
 
     /// Falsifiable, and the one that observes the real OS: fails if the freeze
@@ -2441,87 +2963,52 @@ mod tests {
         );
     }
 
-    /// Falsifiable, and the reason a thread that merely exited does not refuse
-    /// a patch: fails if a `SuspendThread` failure is ever excused by anything
-    /// but the thread object being signalled, and fails if the BOUNDED WAIT
-    /// that excusal depends on stops being load-bearing.
+    /// Falsifiable, and the OS-facing half of the wait's replacement: fails if
+    /// a suspend failure that settles nothing ever refuses a freeze, and fails
+    /// if that population was never reached.
     ///
-    /// MOVED HERE from `fired_event_popups_live`, whose hand-rolled suspender
-    /// this freeze replaced. What was measured there, with a standalone probe
-    /// over 98 enumeration rounds against churning threads: every one of the 47
-    /// `SuspendThread` failures reported ERROR_ACCESS_DENIED (5), and every one
-    /// of those threads was already signalled. The rule that replaced excused
-    /// only ERROR_INVALID_HANDLE (6) and ERROR_INVALID_PARAMETER (87) -- neither
-    /// of which the OS ever returned for a suspend -- so an ordinary thread exit
-    /// refused an entire installation, about one run in ten.
+    /// kills: turning an unsettled probe back into an immediate refusal -- which
+    /// is what this module did before the 50 ms wait was added, and what
+    /// deleting the wait without the deferral would restore.
     ///
-    /// Two mutations turn this red. Restore an error-code allowlist and the
-    /// excused count stops moving. Drop [`TERMINATION_PROOF_TIMEOUT_MS`] to
-    /// zero and the WAITED count stops moving, because the threads that are
-    /// already signalled at the instant the suspend is refused would be excused
-    /// by a zero timeout too -- stopping at that first, easier shape is what let
-    /// a zero-timeout mutation survive an earlier version of this test. Both
-    /// shapes are required.
+    /// THIS IS THE POPULATION THE DELETED WAIT EXISTED FOR. A thread caught
+    /// between `SuspendThread` refusing it and its thread object signalling is
+    /// rare: measured over 13 runs of this churn it arrived in anywhere from
+    /// 1.7 s to 176.8 s, a 105x spread, and one of those 13 runs never saw it.
+    /// A default-tier test cannot be built on an arrival time that is a function
+    /// of how the OS scheduled 64 churn threads that minute, which is why this
+    /// is `#[ignore]`d into `-Mode Evidence` and why the routine gate holds the
+    /// same rule by other means:
     ///
-    /// [`FreezeRefusal::NotQuiescent`] is TOLERATED and is not a defect here:
-    /// the churn below is deliberately pathological -- 64 threads starting and
-    /// exiting continuously -- and a fixed point that cannot be reached in
-    /// [`MAX_PASSES`] under that load is the freeze correctly refusing to
-    /// certify a process that never went quiet. Every OTHER refusal fails the
-    /// test, which is where the coverage is: `ThreadSuspend` is exactly the
-    /// fail-closed-on-a-dead-thread regression this exists to catch.
+    ///  * [`the_termination_proof_answers_without_waiting`] measures that the
+    ///    probe spends nothing, and
+    ///    [`only_the_freeze_lock_blocks_in_this_module`] that nothing else in the
+    ///    module blocks;
+    ///  * [`a_thread_that_cannot_be_suspended_refuses_by_name_within_the_allowance`]
+    ///    drives a REAL unsettled suspend failure deterministically, through the
+    ///    suspend-count ceiling, and pins both halves of the deferral: the pass
+    ///    loop absorbs it, and running the passes out still refuses by name;
+    ///  * [`a_pass_that_saw_a_thread_vanish_is_never_the_last_one`] pins that an
+    ///    unsettled pass cannot be the last one.
     ///
-    /// `ThreadOpen` is the SECOND refusal shape this catches, and the reason
-    /// the recycled-id disposition exists. Before it, this test failed on
-    /// about one run in five with "thread N could not be opened (os error 5)"
-    /// -- an `ERROR_ACCESS_DENIED` on an id the kernel had already handed to
-    /// another process. The counter below is reported on failure because
-    /// distinguishing "the recycled-id path is broken" from "the recycled-id
-    /// path was never reached" is otherwise guesswork.
+    /// What is left here is the one claim none of those can make: that against a
+    /// real OS the deferral is REACHED and RESOLVES -- the freeze goes on to
+    /// succeed rather than refusing the thread it deferred. That is worth paying
+    /// minutes for, in the evidence tier, and not in every Final.
+    ///
+    /// [`FreezeRefusal::NotQuiescent`] is TOLERATED: the churn is deliberately
+    /// pathological -- 64 threads starting and exiting continuously -- and a
+    /// fixed point that cannot be reached in [`MAX_PASSES`] under that load is
+    /// the freeze correctly refusing to certify a process that never went quiet.
+    /// EVERY other refusal fails, including `ThreadSuspend`, which under this
+    /// churn is exactly the regression this exists to catch.
     ///
     /// Nothing is joined while a freeze is held: each freeze is dropped at the
     /// end of its own iteration, and the churn threads are stopped and joined
     /// only after the loop.
-    ///
-    /// # Why this is `#[ignore]`d, and what still runs in the routine gate
-    ///
-    /// It waits for TWO shapes, and the second is rare: a thread caught between
-    /// `SuspendThread` refusing it and its thread object signalling. Measured
-    /// over 13 runs of the routine gate it arrived in anywhere from 1.7 s to
-    /// 176.8 s -- a 105x spread on one test -- and one of those 13 runs failed
-    /// outright. A default-tier test has to be deterministic; this one's
-    /// runtime and its verdict are both functions of how the OS scheduled 64
-    /// churn threads that minute, which is why it read as a hang and why it
-    /// went red without anything being wrong.
-    ///
-    /// Nothing was deleted to achieve that. The two mutations this exists to
-    /// kill are both still killed, in a tier each:
-    ///
-    ///  * the HISTORICAL allowlist -- the one that refused threads which had in
-    ///    fact terminated -- dies in the routine gate, in
-    ///    [`the_fail_open_decisions_are_taken_only_through_their_classifiers`],
-    ///    which pins the failed-suspend arm to a single
-    ///    `classify_suspend_failure(thread_has_terminated(handle))` that the
-    ///    match must consume, and in the behavioural churn test beside it. An
-    ///    allowlist that EXCUSES on the codes the OS really returns is not
-    ///    killed by either, and the note on that test says so rather than
-    ///    claiming otherwise;
-    ///  * a zero [`TERMINATION_PROOF_TIMEOUT_MS`] dies in the routine gate in
-    ///    TWO deterministic places:
-    ///    [`only_a_delayed_signal_counts_as_a_waited_termination_proof`] pins
-    ///    the rule (only a DELAYED signal is counted as a wait that paid off)
-    ///    by driving [`record_termination_probe`] directly, and
-    ///    [`the_termination_proof_actually_spends_the_bounded_wait`] pins the
-    ///    duration by waiting on a handle that never signals and measuring
-    ///    what was spent.
-    ///
-    /// What is left here is the one claim neither of those can make: that the
-    /// delayed-signal population is NON-EMPTY against a real OS. That is worth
-    /// keeping and worth paying minutes for, in `-Mode Evidence`, under the
-    /// evidence profile's own timeout -- not in every Final.
     #[test]
     #[ignore = "evidence tier: waits for a rare OS interleaving; 1.7-176.8 s measured over 13 runs"]
-    fn a_termination_proof_that_needed_the_bounded_wait_is_observed_against_the_os() {
+    fn a_deferred_suspend_failure_is_observed_resolving_against_the_os() {
         let _serialised = os_suspend_state_guard();
         let stop = Arc::new(AtomicBool::new(false));
         let churn = {
@@ -2549,7 +3036,7 @@ mod tests {
 
         const MAX_ROUNDS: u32 = 20_000;
         let excused_before = suspend_failures_excused_as_terminated();
-        let waited_before = suspend_failures_needing_the_termination_wait();
+        let deferred_before = suspend_failures_deferred_to_a_later_pass();
         let recycled_before = open_failures_excused_as_no_longer_ours();
         let mut rounds = 0u32;
         let outcome = loop {
@@ -2560,9 +3047,9 @@ mod tests {
                 Err(refusal) => break Err((rounds, refusal)),
             }
             let excused = suspend_failures_excused_as_terminated() - excused_before;
-            let waited = suspend_failures_needing_the_termination_wait() - waited_before;
-            if excused > 0 && waited > 0 {
-                break Ok((rounds, excused));
+            let deferred = suspend_failures_deferred_to_a_later_pass() - deferred_before;
+            if excused > 0 && deferred > 0 {
+                break Ok((rounds, deferred));
             }
             if rounds >= MAX_ROUNDS {
                 break Ok((rounds, 0));
@@ -2573,8 +3060,8 @@ mod tests {
         let recycled = open_failures_excused_as_no_longer_ours() - recycled_before;
         match outcome {
             Err((round, refusal)) => panic!(
-                "round {round}: a thread exiting mid-enumeration must not refuse \
-                 the freeze: {refusal} \
+                "round {round}: a thread exiting mid-suspend must be deferred to \
+                 the next pass, not refuse the freeze: {refusal} \
                  ({recycled} open failure(s) had already been excused as \
                  no-longer-ours during this run)"
             ),
@@ -2583,7 +3070,7 @@ mod tests {
                  exiting mid-suspend, so this test proved nothing; make the churn \
                  harder rather than letting it pass vacuously"
             ),
-            Ok((_, excused)) => assert!(excused > 0),
+            Ok((_, deferred)) => assert!(deferred > 0),
         }
     }
 

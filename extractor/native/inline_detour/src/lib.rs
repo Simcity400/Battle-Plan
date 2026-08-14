@@ -1183,9 +1183,10 @@ pub use release_ledger::{
 
 #[cfg(windows)]
 pub use freeze::{
-    freeze_attempts, freeze_attempts_on_this_thread, freeze_process, freeze_refusals,
-    open_failures_excused_as_no_longer_ours, suspend_failures_excused_as_terminated,
-    suspend_failures_needing_the_termination_wait, FreezeRefusal, ProcessFreeze,
+    freeze_attempts, freeze_attempts_on_this_thread, freeze_passes_spent, freeze_process,
+    freeze_refusals, open_failures_excused_as_no_longer_ours,
+    suspend_failures_deferred_to_a_later_pass, suspend_failures_excused_as_terminated,
+    FreezeRefusal, ProcessFreeze,
 };
 
 #[cfg(windows)]
