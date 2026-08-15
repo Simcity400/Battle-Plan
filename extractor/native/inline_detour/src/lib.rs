@@ -62,12 +62,18 @@
 #[cfg(windows)]
 mod freeze;
 
+/// What every stopped window cost, recorded in production rather than in a test
+/// program. See the module for the gap it closes.
+#[cfg(windows)]
+pub mod freeze_census;
+
 #[cfg(windows)]
 pub mod release_ledger;
 
 #[cfg(windows)]
 mod windows_impl {
     use super::freeze::{freeze_other_threads, FreezeRefusal};
+    use crate::freeze_census::FreezeEntryPoint;
     use crate::release_ledger::ReleaseOperation;
     use core::ffi::c_void;
     use minhook::{MinHook, MH_STATUS};
@@ -293,9 +299,10 @@ mod windows_impl {
     /// valid callable for as long as the patch is live.
     pub unsafe fn enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
         run_pinned(pin_containing_module, || {
-            let frozen = freeze_other_threads()?;
+            let mut frozen = freeze_other_threads()?;
             // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
-            let outcome = unsafe { MinHook::enable_hook(target) };
+            frozen.note_entry(FreezeEntryPoint::Enable, "", 1);
+            let outcome = frozen.time_minhook(|| unsafe { MinHook::enable_hook(target) });
             drop(frozen);
             outcome.map_err(InlineDetourEnableError::MinHook)
         })?;
@@ -358,9 +365,14 @@ mod windows_impl {
     /// difference; the pin, the freeze and the ordering are identical.
     fn apply_queued_without_counting() -> Result<(), InlineDetourEnableError> {
         run_pinned(pin_containing_module, || {
-            let frozen = freeze_other_threads()?;
+            let mut frozen = freeze_other_threads()?;
             // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
-            let outcome = unsafe { MinHook::apply_queued() };
+            // The batch size is MinHook's internal state and is not reported
+            // back, so this window records no target count rather than a wrong
+            // one; the census reads a zero here as "not stated" for exactly the
+            // reason this function's own doc gives.
+            frozen.note_entry(FreezeEntryPoint::ApplyQueued, "", 0);
+            let outcome = frozen.time_minhook(|| unsafe { MinHook::apply_queued() });
             drop(frozen);
             outcome.map_err(InlineDetourEnableError::MinHook)
         })
@@ -693,14 +705,22 @@ mod windows_impl {
         let rolled_back;
         let mut attempted_rollback = false;
         match freeze_other_threads() {
-            Ok(frozen) => {
+            Ok(mut frozen) => {
                 // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
+                // Named by its FIRST target, which is how a window is attributed
+                // to the lane that took it: every production caller passes the
+                // `&'static str` names the pinned roster already uses.
+                frozen.note_entry(
+                    FreezeEntryPoint::EnableBatch,
+                    targets[0].0,
+                    targets.len() as u32,
+                );
                 for &(_, target) in targets {
                     statuses.push(unsafe { MinHook::queue_enable_hook(target) });
                 }
                 let queued_any = statuses.iter().any(|status| status.is_ok());
                 if queued_any {
-                    if let Err(apply) = unsafe { MinHook::apply_queued() } {
+                    if let Err(apply) = frozen.time_minhook(|| unsafe { MinHook::apply_queued() }) {
                         apply_refusal =
                             Some(InlineDetourEnableError::MinHook(apply));
                         for (index, &(_, target)) in targets.iter().enumerate() {
@@ -868,7 +888,7 @@ mod windows_impl {
         }
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
-        let frozen = match freeze_other_threads() {
+        let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
             Err(refusal) => {
                 // Nothing queued, nothing unpatched: every detour is still
@@ -893,11 +913,16 @@ mod windows_impl {
             }
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
+        frozen.note_entry(
+            FreezeEntryPoint::DisableBatch,
+            targets[0].0,
+            targets.len() as u32,
+        );
         for &(_, target) in targets {
             statuses.push(unsafe { MinHook::queue_disable_hook(target) });
         }
         if statuses.iter().any(|status| status.is_ok()) {
-            if let Err(apply) = unsafe { MinHook::apply_queued() } {
+            if let Err(apply) = frozen.time_minhook(|| unsafe { MinHook::apply_queued() }) {
                 apply_refusal = Some(InlineDetourReleaseError::MinHook(apply));
                 // STOP AT THE FIRST REFUSAL, IN SLICE ORDER, and put back
                 // whatever the apply released after it.
@@ -1032,7 +1057,7 @@ mod windows_impl {
         // deadlock, not a slow path.
         let mut statuses: Vec<Result<(), InlineDetourReleaseError>> =
             Vec::with_capacity(targets.len());
-        let frozen = match freeze_other_threads() {
+        let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
             Err(refusal) => {
                 let retained = InlineDetourReleaseError::FreezeRefused(refusal);
@@ -1058,11 +1083,26 @@ mod windows_impl {
             }
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
-        for &(_, target) in targets {
-            statuses.push(
-                unsafe { MinHook::remove_hook(target) }.map_err(InlineDetourReleaseError::MinHook),
-            );
-        }
+        frozen.note_entry(
+            FreezeEntryPoint::RemoveBatch,
+            targets[0].0,
+            targets.len() as u32,
+        );
+        // TIMED AROUND THE WHOLE LOOP, not around one call, and the difference
+        // is stated because it changes what the row means: `remove_batch` has no
+        // apply -- `MH_RemoveHook` is per target and there is no queued form --
+        // so this window's MinHook cost is N removals rather than one apply. The
+        // target count is on the row beside it, so a reader divides rather than
+        // being told a per-call figure that was never measured.
+        let statuses_ref = &mut statuses;
+        frozen.time_minhook(|| {
+            for &(_, target) in targets {
+                statuses_ref.push(
+                    unsafe { MinHook::remove_hook(target) }
+                        .map_err(InlineDetourReleaseError::MinHook),
+                );
+            }
+        });
         drop(frozen);
         let mut already_released = Vec::new();
         let outcomes = targets
@@ -1123,7 +1163,7 @@ mod windows_impl {
     /// returns `Ok`, and must remain valid FOREVER if it returns
     /// [`InlineDetourReleaseError::detour_retained`].
     pub unsafe fn disable(target: *mut c_void) -> Result<(), InlineDetourReleaseError> {
-        let frozen = match freeze_other_threads() {
+        let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
             Err(refusal) => {
                 RETAINED_DETOURS.fetch_add(1, Ordering::AcqRel);
@@ -1135,7 +1175,8 @@ mod windows_impl {
             }
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
-        let outcome = unsafe { MinHook::disable_hook(target) };
+        frozen.note_entry(FreezeEntryPoint::Disable, "", 1);
+        let outcome = frozen.time_minhook(|| unsafe { MinHook::disable_hook(target) });
         drop(frozen);
         record_release(
             target,
@@ -1178,7 +1219,7 @@ mod windows_impl {
     /// was restored, so the caller's trampoline and detour must both stay
     /// valid for the life of the process.
     pub unsafe fn remove(target: *mut c_void) -> Result<(), InlineDetourReleaseError> {
-        let frozen = match freeze_other_threads() {
+        let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
             Err(refusal) => {
                 RETAINED_DETOURS.fetch_add(1, Ordering::AcqRel);
@@ -1190,7 +1231,8 @@ mod windows_impl {
             }
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
-        let outcome = unsafe { MinHook::remove_hook(target) };
+        frozen.note_entry(FreezeEntryPoint::Remove, "", 1);
+        let outcome = frozen.time_minhook(|| unsafe { MinHook::remove_hook(target) });
         drop(frozen);
         record_release(
             target,
@@ -2673,6 +2715,102 @@ mod batch_tests {
             singles_enable + singles_disable,
             (enabled.freezes() + released.freezes()) * 12,
             "12x on the install-plus-release span"
+        );
+    }
+
+    /// Falsifiable: fails if a real batch install leaves the production freeze
+    /// census with nothing to say about it.
+    ///
+    /// THE DEFECT CLASS THIS CLOSES is not a wrong number, it is a missing one.
+    /// `FREEZE_ATTEMPTS` existed for months with zero consumers, and every
+    /// stopped-window timer lived in a test module, so a recording could prove
+    /// forty-five hooks installed and say NOTHING about how many times the game
+    /// was stopped to install them or for how long. The adversarial review of
+    /// lane t54's leg 5 is that finding. A census that silently recorded nothing
+    /// would reproduce it exactly.
+    ///
+    /// What production change would make this fail? Removing the `record` call
+    /// from `ProcessFreeze::drop`; dropping the `timing` field so it is never
+    /// filled; removing `note_entry` from `enable_batch`, which would leave a
+    /// real batch attributed to `freeze_process`; or removing `time_minhook`,
+    /// which would leave `minhook_us` at zero on a window that really did call
+    /// `MH_ApplyQueued`.
+    ///
+    /// It does NOT assert a duration THRESHOLD. What a freeze costs is the
+    /// question the instrument exists to answer on a real attach, and a test
+    /// that pinned a millisecond figure on a build machine would be asserting
+    /// the machine. What is asserted is that the window is bounded by nothing
+    /// and STRICTLY POSITIVE, which a clock read that never happened cannot be,
+    /// and that the parts do not exceed the whole.
+    #[test]
+    fn a_batch_install_leaves_a_named_row_in_the_production_freeze_census() {
+        let _serial = BATCH_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ledger = crate::release_ledger::TEST_LEDGER_SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _suspend = crate::freeze::os_suspend_state_guard();
+        let targets = create_roster_victims();
+        let before = crate::freeze_census::freeze_windows().len();
+
+        let enabled = unsafe { enable_batch(&targets) };
+        assert!(enabled.all_succeeded(), "{:?}", enabled.outcomes());
+        let released = unsafe { remove_batch(&targets) };
+        assert!(released.all_succeeded(), "{:?}", released.outcomes());
+
+        let rows = crate::freeze_census::freeze_windows();
+        assert!(
+            rows.len() > before,
+            "a real batch install recorded no census row at all; the recording \
+             would carry the same silence lane t54's leg 5 named"
+        );
+        // The batch's own row, found by the name the caller passed. Searched by
+        // LABEL rather than taken as the last row, because these tests run
+        // beside others that freeze.
+        let batch_row = rows
+            .iter()
+            .rev()
+            .find(|row| {
+                row.entry_point == Some(crate::freeze_census::FreezeEntryPoint::EnableBatch)
+                    && row.label == targets[0].0
+            })
+            .expect("the batch install's window is named by its first target");
+        assert_eq!(
+            batch_row.target_count,
+            targets.len() as u32,
+            "the row must say how many targets the window covered"
+        );
+        assert!(
+            batch_row.window_us > 0,
+            "the window has zero duration, which means no clock was read"
+        );
+        assert!(
+            batch_row.minhook_us > 0,
+            "the row says MH_ApplyQueued took no time; the apply is what this \
+             census exists to size and an unmarked span is indistinguishable \
+             from a window that never called it"
+        );
+        assert!(
+            batch_row.acquire_us + batch_row.minhook_us <= batch_row.window_us,
+            "the parts exceed the whole: acquire {} + minhook {} > window {}",
+            batch_row.acquire_us,
+            batch_row.minhook_us,
+            batch_row.window_us
+        );
+        assert!(
+            batch_row.passes >= 2,
+            "a clean freeze spends two enumeration passes; {} says the row's \
+             pass count was never carried across from the freeze",
+            batch_row.passes
+        );
+        // And the removal's row, which is the teardown half of the census and is
+        // the one that proves the instrument is not install-only.
+        assert!(
+            rows.iter().rev().any(|row| {
+                row.entry_point == Some(crate::freeze_census::FreezeEntryPoint::RemoveBatch)
+                    && row.label == targets[0].0
+            }),
+            "the release half of the capture records no window; a teardown that \
+             stops the game is a stopped window too"
         );
     }
 

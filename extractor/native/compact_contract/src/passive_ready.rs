@@ -570,6 +570,32 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
 /// parallel 36/41/etc. count in READY producers, verifiers, or package gates.
 const _: () = assert!(PINNED_PRODUCTION_HOOK_SPECS_V1.len() <= u16::MAX as usize);
 pub const PINNED_PRODUCTION_HOOK_COUNT_V1: u16 = PINNED_PRODUCTION_HOOK_SPECS_V1.len() as u16;
+
+/// How many of the pinned roster's entries are `bootstrap.*` IMPORT slots.
+///
+/// Derived from the same roster and never restated as a literal, for the reason
+/// the comment above gives about the total.
+///
+/// It exists because those entries are the only ones that are patched WITHOUT
+/// stopping the game: an import-slot swap is a pointer store into the IAT, not
+/// a rewrite of live code, so it takes no process freeze. Every other entry is
+/// an inline detour and cannot be installed without one. That makes this the
+/// exact boundary at which `install_freeze_count == 0` stops being possible,
+/// which is what `validate_ready` uses it for.
+pub const PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1: u16 = {
+    let mut count = 0u16;
+    let mut index = 0usize;
+    while index < PINNED_PRODUCTION_HOOK_SPECS_V1.len() {
+        if matches!(
+            PINNED_PRODUCTION_HOOK_SPECS_V1[index].target,
+            PinnedHookTargetSpecV1::ImportExport { .. }
+        ) {
+            count += 1;
+        }
+        index += 1;
+    }
+    count
+};
 /// SHA-256 of the canonical identity-digest-sorted allowlist encoding.
 ///
 /// Package and verifier tooling strict-extracts this literal rather than

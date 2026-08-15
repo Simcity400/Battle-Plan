@@ -1361,7 +1361,14 @@ function Assert-PassiveReadySourceContractParity {
         # the two payloads share a prefix layout and only READY gave that word
         # away.
         'collector_features: CollectorFeatureBits::from_bits(read_u32(bytes, 20))?,',
-        'if read_u16(bytes, 50) != 0 {',
+        # The DECODE side of offset 50, which was reserved-must-be-zero until the
+        # install freeze count took it -- the same thing offset 20 did for the
+        # feature word, pinned the same way and for the same reason. What this
+        # fragment now guards is that the field is READ AS A u16 AT 50: a decoder
+        # that read one byte would report 1 for a capture that stopped the game
+        # 257 times, and every offset after 50 is unchanged, so nothing else in
+        # this list would notice.
+        'install_freeze_count: read_u16(bytes, 50),',
         'if read_u32(bytes, 20) != 0 {'
     )) {
         Assert-PassiveProducerFragment `
@@ -1418,7 +1425,11 @@ function Assert-PassiveReadySourceContractParity {
         'out.extend_from_slice(&self.scheduler_worker_count.to_le_bytes());',
         'out.extend_from_slice(&self.allowed_hook_count.to_le_bytes());',
         'out.extend_from_slice(&self.active_hook_count.to_le_bytes());',
-        'out.extend_from_slice(&0u16.to_le_bytes());',
+        # WAS the reserved-must-be-zero u16 at offset 50, now the install freeze
+        # count. This mirror pins the ORDER, so what it has to follow is the
+        # field moving from a literal zero to a named field appended in exactly
+        # the same position -- payload length and every later offset unchanged.
+        'out.extend_from_slice(&self.install_freeze_count.to_le_bytes());',
         'out.extend_from_slice(&self.clock_hour_raw.to_le_bytes());',
         'out.extend_from_slice(&self.clock_observation_ordinal.to_le_bytes());',
         'out.extend_from_slice(&self.target_executable_sha256);',

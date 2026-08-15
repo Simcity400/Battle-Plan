@@ -639,10 +639,12 @@
 //! callers replace sequences whose interior is a legitimate branch target and
 //! nothing here can prove where such a thread should resume.
 
+use crate::freeze_census::{FreezeEntryPoint, FreezeTiming};
 use core::ffi::c_void;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     GetThreadContext, CONTEXT, CONTEXT_CONTROL_AMD64,
@@ -790,6 +792,16 @@ std::thread_local! {
     /// operation, so the caller's own count answers the question without a
     /// lock and without a test-only code path in the freeze itself.
     static THREAD_FREEZE_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// Whether the attempt this thread is currently making has suspended
+    /// anything yet.
+    ///
+    /// Cleared at the top of every attempt and set by the first `SuspendThread`
+    /// that succeeds. It exists to keep the census HONEST about what a refusal
+    /// was: `freeze_other_threads_inner` can fail before it suspends anything at
+    /// all -- resolving ntdll, sizing its buffers, reserving them -- and a row
+    /// for one of those would claim the game was stopped when it never was.
+    static SUSPENDED_ANY_THIS_FREEZE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// How many times a freeze was attempted for a detour patch. Diagnostic, and
@@ -1233,6 +1245,17 @@ pub struct ProcessFreeze {
     _serialisation: MutexGuard<'static, ()>,
     /// Enumeration passes it took to reach the fixed point.
     passes: u32,
+    /// What this stopped window is costing, in flight.
+    ///
+    /// `None` only between the struct being built and the freeze being
+    /// established -- `freeze_other_threads` fills it on the way out, and the
+    /// `Drop` below records nothing without it. A REFUSED attempt never reaches
+    /// `Drop` at all, because no `ProcessFreeze` exists -- so its row, when it
+    /// has one, is written by `freeze_other_threads`'s own `Err` arm instead.
+    /// It has one whenever it suspended something before giving up, and none
+    /// when it refused before its first `SuspendThread` and therefore stopped
+    /// nothing.
+    timing: Option<FreezeTiming>,
 }
 
 /// One thread this freeze has accounted for, and how.
@@ -1299,6 +1322,41 @@ impl ProcessFreeze {
     /// process answer: one to suspend, one to observe nothing new.
     pub fn passes(&self) -> u32 {
         self.passes
+    }
+
+    /// Name which entry point took this window, and over how many targets.
+    ///
+    /// A freeze nobody names is recorded as `freeze_process`, which is what a
+    /// lane taking the guard directly IS -- so forgetting to call this
+    /// mis-attributes a window rather than losing it, and the census can be read
+    /// without assuming every caller cooperated.
+    pub(crate) fn note_entry(
+        &mut self,
+        entry_point: FreezeEntryPoint,
+        label: &'static str,
+        target_count: u32,
+    ) {
+        if let Some(timing) = self.timing.as_mut() {
+            timing.note_entry(entry_point, label, target_count);
+        }
+    }
+
+    /// Time `call` and record the span as this window's MinHook cost.
+    ///
+    /// The span is the caller's MinHook call and NOTHING ELSE, which is the
+    /// whole point: lane JU's finding is a RATIO -- `MH_ApplyQueued` against the
+    /// window that contains it -- and a ratio whose numerator quietly included
+    /// the queueing loop or the rollback would answer a different question than
+    /// the one the census is for. Two `Instant::now()` reads bracket exactly the
+    /// call and are the only work this adds inside the frozen window.
+    pub(crate) fn time_minhook<T>(&mut self, call: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let outcome = call();
+        let span = started.elapsed();
+        if let Some(timing) = self.timing.as_mut() {
+            timing.note_minhook(span);
+        }
+        outcome
     }
 
     /// Is any frozen thread stopped inside one of `ranges` (`[start, end)`)?
@@ -1493,6 +1551,24 @@ impl Drop for ProcessFreeze {
                 }
                 CloseHandle(entry.handle);
             }
+        }
+        // THE CENSUS ROW, and it is recorded HERE -- after the resume loop and
+        // before anything else -- for two reasons that pull the same way.
+        //
+        // After the resumes, because a row recorded before them would be time
+        // added to the stopped window in order to measure it, and because this
+        // is the instant the window actually ends.
+        //
+        // In `Drop` rather than at each call site, because `freeze_process` is
+        // public and lanes take it directly with no MinHook call at all. A
+        // census written by callers would cover the callers that remembered.
+        //
+        // `crate::freeze_census::record` takes no lock and allocates nothing --
+        // see that module's header for why that is a property and not an
+        // accident -- so this adds no blocking call to a module whose whole
+        // point is that it has none.
+        if let Some(timing) = self.timing.take() {
+            crate::freeze_census::record(timing.close(Instant::now(), self.passes));
         }
     }
 }
@@ -2036,12 +2112,62 @@ pub fn freeze_process() -> Result<ProcessFreeze, FreezeRefusal> {
 /// Held suspensions must be released promptly. The returned guard does that on
 /// drop; leaking it hangs the process.
 pub(crate) fn freeze_other_threads() -> Result<ProcessFreeze, FreezeRefusal> {
-    FREEZE_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
+    // The ordinal is the value this attempt CLAIMED, so it is 1-based and
+    // unique across the process even under concurrent freezers. It is what lets
+    // a census row be matched against `freeze_attempts()`.
+    let ordinal = FREEZE_ATTEMPTS
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
     THREAD_FREEZE_ATTEMPTS.with(|count| count.set(count.get().saturating_add(1)));
+    // TAKEN AT ENTRY, and BE EXACT ABOUT WHAT THAT MAKES `window_us`: it is the
+    // whole freeze CALL, entry to resume-complete, and its opening part is NOT
+    // stopped time. `freeze_other_threads_inner` resolves ntdll, walks once to
+    // size its buffers and reserves them with nothing suspended; only then does
+    // the first `SuspendThread` run. So the row's `window_us` is an UPPER BOUND
+    // on how long the game was stopped and `acquire_us` is an upper bound on the
+    // stopped part of the acquisition.
+    //
+    // It is measured this way on purpose rather than from the first suspension.
+    // The bound is the number a caller can act on -- it is the whole cost of
+    // asking for a freeze -- and the alternative would need a timestamp taken
+    // inside the pass loop, which is a write into the frozen window in order to
+    // report a smaller figure. Lane JU's paired figures are this same span
+    // (`freeze_other_threads()` entry to return), so the census and the evidence
+    // it is checked against measure the same thing.
+    let started = Instant::now();
+    SUSPENDED_ANY_THIS_FREEZE.with(|flag| flag.set(false));
     match freeze_other_threads_inner() {
-        Ok(freeze) => Ok(freeze),
+        Ok(mut freeze) => {
+            freeze.timing = Some(FreezeTiming::new(ordinal, started, Instant::now()));
+            Ok(freeze)
+        }
         Err(refusal) => {
             FREEZE_REFUSALS.fetch_add(1, Ordering::AcqRel);
+            // A REFUSED ATTEMPT CAN STILL BE A STOPPED WINDOW, and this line
+            // exists because the first version of this census said it never was.
+            //
+            // The refusal path is fail-CLOSED, not no-op. `freeze_other_threads_
+            // inner` suspends thread by thread and can give up several passes
+            // later, resuming everything it stopped on the way out -- so the
+            // game really was stopped for part of this span even though nothing
+            // was patched. Skipping the row would make the census SHORTER than
+            // the attempt count the READY receipt publishes, and the two would
+            // stop being checkable against each other, which is the only reason
+            // the receipt carries a count at all.
+            // ONLY WHEN SOMETHING WAS ACTUALLY SUSPENDED. A refusal that never
+            // reached the first `SuspendThread` -- ntdll unresolved, a buffer
+            // that could not be reserved -- stopped nothing, and a row for it
+            // would be a stopped window this process never had (confirmation
+            // review, finding 1). Such an attempt is still counted by
+            // `freeze_attempts`, which is what that counter means, and the
+            // census's job is to describe the windows rather than the attempts.
+            if SUSPENDED_ANY_THIS_FREEZE.with(|flag| flag.get()) {
+                crate::freeze_census::record(crate::freeze_census::refused_window(
+                    ordinal,
+                    started,
+                    Instant::now(),
+                ));
+            }
             Err(refusal)
         }
     }
@@ -2138,6 +2264,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         roster,
         _serialisation: serialisation,
         passes: 0,
+        timing: None,
     };
 
     let current_thread_id = unsafe { GetCurrentThreadId() };
@@ -2258,6 +2385,16 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             // Not yet accounted for by this freeze: either it is new, or it is
             // on its way out. Both are decided from scratch, right now.
             let previous_count = unsafe { SuspendThread(handle) };
+            if previous_count != u32::MAX {
+                // THE GAME IS NOW STOPPED, and this is the only place that can
+                // say so. A refused freeze that never got this far stopped
+                // nothing, and recording a census row for it would report a
+                // stopped window that never happened -- confirmation review
+                // finding 1. A thread-local `Cell`: no allocation, no lock, and
+                // it cannot be wrong under concurrency because a freeze is
+                // serialised per thread by construction.
+                SUSPENDED_ANY_THIS_FREEZE.with(|flag| flag.set(true));
+            }
             if previous_count != u32::MAX && !leaves_room_for_minhooks_suspension(previous_count) {
                 // Our suspension succeeded and MinHook's would not. Undo ours
                 // and refuse: proceeding would hand MinHook its fail-open
@@ -3188,10 +3325,8 @@ mod tests {
             concat!("SwitchTo", "Thread"),
             concat!("WaitForMultiple", "Objects"),
             concat!("Sleep", "Ex"),
-            concat!("Instant::", "now"),
             concat!("Duration::", "from"),
             concat!("spin_", "loop"),
-            concat!("elap", "sed("),
         ] {
             assert!(
                 !production.contains(blocking),
@@ -3200,6 +3335,175 @@ mod tests {
                  held up with the rest of the process suspended"
             );
         }
+        // READING THE CLOCK IS NOT WAITING ON IT, and that difference is the
+        // whole reason this is a COUNT rather than a ban.
+        //
+        // `Instant::now` and `elapsed(` were in the list above until the freeze
+        // census existed, and they were there as PROXIES. The defect the list
+        // was written for was the deleted 50 ms bounded wait, and a bounded wait
+        // needs a deadline to wait until. What actually performs a wait is one
+        // of the eight spellings still banned above, and `Duration::from` -- the
+        // way a deadline gets built -- is deliberately still among them, so a
+        // timestamp cannot be turned back into one without failing this test.
+        //
+        // What a clock read is on this platform is `QueryPerformanceCounter`: it
+        // allocates nothing, takes no lock and blocks on nothing. Banning it
+        // outright cost this module the only instrument that can say what a
+        // stopped window cost in PRODUCTION rather than in a test program --
+        // which is precisely the gap lane JU's leg-5 review named, and the
+        // reason its 27.9-72.5 ms figures could not be quoted for a real attach.
+        //
+        // So the reads are COUNTED, and each is pinned to the span it opens or
+        // closes. A fifth read, or a read moved somewhere this file does not
+        // name, fails here.
+        assert_eq!(
+            production.matches(concat!("Instant::", "now")).count(),
+            5,
+            "the freeze census takes exactly five clock reads in this module -- \
+             two bracketing the acquisition, one closing a REFUSED attempt, one \
+             at the end of the resume loop, one opening the caller's MinHook \
+             span; a sixth is a read nobody accounted for"
+        );
+        assert_eq!(
+            production.matches(concat!("elap", "sed(")).count(),
+            1,
+            "exactly one span is closed with `elapsed()`, the MinHook call's; \
+             the others are closed by subtracting two named instants, which is \
+             what lets a row say WHICH part of the window each one is"
+        );
+        for census_read in [
+            "let started = Instant::now();",
+            "Some(FreezeTiming::new(ordinal, started, Instant::now()))",
+            "timing.close(Instant::now(), self.passes)",
+        ] {
+            assert!(
+                production.contains(census_read),
+                "the freeze census clock read `{census_read}` is not where this \
+                 module says it is; a read that moved is a window measured over \
+                 a different span than the row claims"
+            );
+        }
+        // AND THE ONE SPAN TAKEN INSIDE THE WINDOW IS PINNED AS A WHOLE BLOCK,
+        // because counting its parts is not enough.
+        //
+        // Adversarial review round 2, finding 5. The count and the three site
+        // pins above are ALL satisfied by
+        //     let span = loop { let s = started.elapsed();
+        //                       if s.as_millis() >= 50 { break s; } };
+        // -- the same clock-read count, the same one `elapsed(`, the same three
+        // sites, and a fifty-millisecond busy-wait running with every other
+        // thread in the process suspended. That is the deleted bounded wait,
+        // reintroduced past a guard that was watching the wrong thing.
+        //
+        // So the three statements are pinned VERBATIM and adjacent. A loop, a
+        // branch, or any statement at all between the clock reads changes this
+        // text and fails here.
+        // THE WHOLE FUNCTION, not the three statements inside it.
+        //
+        // The first version of this pin took only the adjacent statements, and
+        // the confirmation round defeated it in one line: a raw
+        //     let until = GetTickCount64() + 50;
+        //     while GetTickCount64() < until {}
+        // placed IMMEDIATELY BEFORE them names none of the banned spellings,
+        // adds no clock read this file counts, and leaves the pinned substring
+        // intact -- while busy-waiting fifty milliseconds with the whole process
+        // suspended. Pinning a substring can only ever forbid what is BETWEEN
+        // its ends; the hole was everything before and after.
+        //
+        // So the function is pinned in full, signature to closing brace, in the
+        // normalised spelling. Any statement added anywhere inside it fails
+        // here, whatever it is spelled with.
+        assert!(
+            production.contains(
+                "pub(crate) fn time_minhook<T>(&mut self, call: impl FnOnce() -> T) -> T \
+                 { let started = Instant::now(); let outcome = call(); \
+                 let span = started.elapsed(); if let Some(timing) = self.timing.as_mut() \
+                 { timing.note_minhook(span); } outcome }"
+            ),
+            "`time_minhook` is no longer exactly the four statements this module \
+             pins. Everything in it runs with the whole process suspended, so a \
+             statement added there is a statement added to the stopped window -- \
+             and a wait added there is the deleted bounded wait, whatever it is \
+             built out of"
+        );
+        // AND THE GUARD FOLLOWS THE WINDOW OUT OF THIS FILE.
+        //
+        // `time_minhook` calls `FreezeTiming::note_minhook`, and `enable_batch`
+        // and its siblings call `FreezeTiming::note_entry`, both from INSIDE the
+        // frozen window and both DEFINED in `freeze_census.rs`. Pinning
+        // `time_minhook` says nothing about what the function it calls does. The
+        // closing review defeated the guard exactly there: `for _ in 0..1 {
+        // std::hint::spin_loop(); }` inside `note_minhook` spins inside every
+        // MinHook-timed window and leaves every assertion above intact.
+        //
+        // So the census module's production half is scanned with the same ban
+        // list, and the two functions reachable from inside the window are
+        // pinned whole.
+        let census = code_only(&census_production_code());
+        for blocking in [
+            concat!("Sle", "ep("),
+            concat!("sle", "ep("),
+            concat!("yield_", "now"),
+            concat!("park", "("),
+            concat!("SwitchTo", "Thread"),
+            concat!("WaitForSingle", "Object"),
+            concat!("WaitForMultiple", "Objects"),
+            concat!("Sleep", "Ex"),
+            concat!("Duration::", "from"),
+            concat!("spin_", "loop"),
+            concat!(".lo", "ck()"),
+        ] {
+            assert!(
+                !census.contains(blocking),
+                "the freeze census module contains `{blocking}`; two of its \
+                 functions are called with every other thread in the process \
+                 suspended, so a wait or a lock in there is a wait or a lock in \
+                 the frozen window"
+            );
+        }
+        for inside_the_window in [
+            "pub(crate) fn note_entry(&mut self, entry_point: FreezeEntryPoint, \
+             label: &'static str, target_count: u32) { self.entry_point = entry_point; \
+             self.label = label; self.target_count = target_count; }",
+            "pub(crate) fn note_minhook(&mut self, span: std::time::Duration) \
+             { self.minhook_us = saturating_micros(span); }",
+            // REACHED THROUGH `note_minhook`, and unpinned until the closing
+            // review walked one call deeper: `let _leaked = Box::leak(Box::new(
+            // span));` here allocates inside every timed frozen window while
+            // leaving both functions above untouched. A ban list would have had
+            // to enumerate the spellings of "allocate", and this module's other
+            // production function -- `freeze_windows` -- legitimately allocates,
+            // so a module-wide ban would be a false positive. Pinning the whole
+            // body forbids EVERYTHING instead of a list.
+            "fn saturating_micros(span: std::time::Duration) -> u32 \
+             { u32::try_from(span.as_micros()).unwrap_or(u32::MAX) }",
+        ] {
+            assert!(
+                census.contains(inside_the_window),
+                "a freeze-census function called from inside the frozen window \
+                 is no longer exactly what this module pins: `{inside_the_window}`"
+            );
+        }
+        // AND THE OTHER END OF THE WINDOW: `Drop` runs with every thread still
+        // suspended until its resume loop finishes, so a statement added BEFORE
+        // that loop -- an allocation, a lock, a wait -- is a statement added to
+        // the stopped window, and the second bypass the closing review named.
+        // Pinned whole, resume loop and census row together, because the ORDER
+        // is the load-bearing part: the row is taken after the resumes, and a
+        // reordering here would put the census inside the thing it measures.
+        assert!(
+            production.contains(
+                "impl Drop for ProcessFreeze { fn drop(&mut self) \
+                 { for entry in self.accounted.drain(..).rev() { unsafe \
+                 { if entry.suspended { ResumeThread(entry.handle); } \
+                 CloseHandle(entry.handle); } } if let Some(timing) = self.timing.take() \
+                 { crate::freeze_census::record(timing.close(Instant::now(), self.passes)); } } }"
+            ),
+            "`ProcessFreeze::drop` is no longer exactly the resume loop followed \
+             by the census row. Everything before that loop finishes runs with \
+             the process still stopped, and reordering the row into it would \
+             measure the measurement"
+        );
     }
 
     /// Falsifiable: fails if the frozen-window handle table can be sized
@@ -3456,6 +3760,78 @@ mod tests {
         source
             .split_once("#[cfg(test)]\nmod tests {")
             .expect("freeze.rs has a test module")
+            .0
+            .to_string()
+    }
+
+    /// Every `fn` this module DEFINES, by name, from its normalised production
+    /// text.
+    ///
+    /// Names only: the call closure needs somewhere to start, and a name is what
+    /// a call site spells. Generic parameters and `impl` blocks are irrelevant
+    /// here because the closure is keyed on the name appearing followed by `(`.
+    fn production_fn_names(production: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = production;
+        while let Some(at) = rest.find("fn ") {
+            let after = &rest[at + 3..];
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            let name = &after[..end];
+            if !name.is_empty() && after[end..].starts_with(['(', '<']) && !names.iter().any(|seen: &String| seen == name) {
+                names.push(name.to_string());
+            }
+            rest = after;
+        }
+        names
+    }
+
+    /// One named `fn`'s body from the normalised production text, brace-matched.
+    ///
+    /// `None` when the name is not defined here, which is how a call to
+    /// something this module does not own -- a Win32 import, a `std` method --
+    /// leaves the closure rather than being followed into text that is not there.
+    fn production_fn_body(production: &str, name: &str) -> Option<String> {
+        // BOTH SPELLINGS. `fn helper(` and `fn helper<T>(` are the same
+        // definition to a caller, and searching only the first left every
+        // generic helper unscanned -- review round 7. A generic helper is
+        // exactly where somebody would put a `Box::new` and not notice.
+        let at = production
+            .find(&format!("fn {name}("))
+            .or_else(|| production.find(&format!("fn {name}<")))?;
+        let open = production[at..].find('{')? + at;
+        let mut depth = 0usize;
+        for (offset, character) in production[open..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(production[open + 1..open + offset].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The census module's production half, scanned by the same blocking guard.
+    ///
+    /// IT IS NOT THIS FILE, AND THAT IS THE POINT. The closing review found the
+    /// guard defeatable a third time: `FreezeTiming::note_minhook` is CALLED
+    /// from inside the frozen window but DEFINED in `freeze_census.rs`, which
+    /// `production_code()` does not reach -- so `for _ in 0..1 {
+    /// std::hint::spin_loop(); }` added there would spin inside every
+    /// MinHook-timed window while every assertion in this file still passed.
+    ///
+    /// A guard on the frozen window has to follow the window, not the file.
+    fn census_production_code() -> String {
+        let source = include_str!("freeze_census.rs").replace("\r\n", "\n");
+        source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("freeze_census.rs has a test module")
             .0
             .to_string()
     }
@@ -3944,6 +4320,103 @@ mod tests {
                  allocator's lock may be held by one of them and there is nobody \
                  left to release it"
             );
+        }
+        // AND THE HELPERS IT CALLS, TO A FIXED POINT.
+        //
+        // The comment above used to say this scan "cannot see a helper that
+        // allocates inside itself, and no substring pass can". The first half was
+        // true and the second was not, and review round 6 found the hole by
+        // walking one call deeper: `account_for` runs inside the window at two
+        // call sites and was never scanned, so `String::from("x")` at the top of
+        // it allocates with every thread suspended and passes every assertion
+        // above.
+        //
+        // What closes it is not a longer roster of helpers -- that is the same
+        // mistake one level up -- but the CALL CLOSURE. Every `fn` of this module
+        // whose name appears in the frozen region is scanned with the same list,
+        // then every `fn` named in THOSE bodies, until nothing new is reached. A
+        // helper added to the window is covered the moment it is called, with
+        // nobody having to remember to add it here.
+        //
+        // It is still a substring pass over one module: a helper in another
+        // crate, or a trait method reached through a generic, is outside it. What
+        // it now covers is every allocation this crate could put in the window by
+        // an ordinary edit, at any call depth.
+        let production_all = code_only(&production_code());
+        let mut reachable: Vec<String> = Vec::new();
+        let mut frontier = vec![frozen_region.to_string()];
+        while let Some(body) = frontier.pop() {
+            for candidate in production_fn_names(&production_all) {
+                if reachable.iter().any(|seen| *seen == candidate) {
+                    continue;
+                }
+                // `helper(` AND `helper::<T>(`. The turbofish is the call form
+                // a generic helper takes, and matching only the first meant a
+                // generic call site was never followed (review round 7).
+                if !body.contains(&format!("{candidate}("))
+                    && !body.contains(&format!("{candidate}::<"))
+                {
+                    continue;
+                }
+                let Some(callee) = production_fn_body(&production_all, &candidate) else {
+                    continue;
+                };
+                reachable.push(candidate);
+                frontier.push(callee);
+            }
+        }
+        assert!(
+            reachable.iter().any(|name| name == "account_for"),
+            "the call closure did not reach `account_for`, which the frozen \
+             window calls twice; a closure that reaches nothing is a guard that \
+             asserts nothing"
+        );
+        // WHAT THIS STILL IS NOT, stated here rather than left to be discovered.
+        //
+        // It is a substring pass over ONE module's text, closed over that
+        // module's own calls. It cannot follow an `impl Fn` parameter to the
+        // closure that will be passed -- `walk_for_each`'s `visit` and
+        // `what_the_roster_names_that_we_do_not_hold`'s `is_held` are both such
+        // parameters, both invoked inside the window, and both currently given
+        // harmless closures. It cannot enter another crate. It cannot enumerate
+        // every spelling of "allocate": review round 7 offered four this roster
+        // did not have, they were added, and a fifth exists. And a construct
+        // behind `#[cfg(not(test))]` is visible to this scan but compiled out of
+        // every behavioural test.
+        //
+        // What it IS, is the difference between a guard that stops at one
+        // function's text and one that follows every call that function makes.
+        // The defect it was extended for -- an allocation in `account_for`, two
+        // call sites deep inside the window -- is caught, and so is the same
+        // defect at any depth this module can reach on its own.
+        for helper in &reachable {
+            let body = production_fn_body(&production_all, helper)
+                .expect("a reachable helper has a body");
+            for allocating in [
+                concat!("Vec::", "new"),
+                concat!("Default::", "default"),
+                concat!("reser", "ve("),
+                concat!("with_cap", "acity"),
+                concat!("coll", "ect"),
+                concat!("form", "at!"),
+                concat!("to_st", "ring"),
+                concat!("to_o", "wned"),
+                concat!("to_v", "ec"),
+                concat!(".clo", "ne("),
+                concat!("Box::", "new"),
+                concat!("String::", "from"),
+                concat!("Vec::", "from"),
+                concat!("vec", "!["),
+                concat!("print", "ln!"),
+                concat!("lo", "ck("),
+            ] {
+                assert!(
+                    !body.contains(allocating),
+                    "`{helper}` is reachable from inside the frozen window and \
+                     contains `{allocating}`, which can allocate or block while \
+                     every other thread in the process is suspended"
+                );
+            }
         }
         // The walk is resolved OUTSIDE the window, and that is not cosmetic:
         // `GetProcAddress` takes the loader lock, which a suspended thread may

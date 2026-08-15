@@ -72,6 +72,15 @@ pub enum PayloadError {
     InvalidGameHour(i32),
     /// The active hook count exceeded the authenticated allowlist count.
     HookCountExceedsAllowlist { active: u16, allowed: u16 },
+    /// READY reported live INLINE DETOURS with an install freeze count of zero.
+    ///
+    /// Patching live code requires stopping the process, so this is never a
+    /// property of the capture: it is the producer's freeze counter not being
+    /// wired to its receipt. Refused rather than decoded, because a zero here
+    /// is indistinguishable from the months in which the counter existed and
+    /// nothing read it -- and a census built on it would report a capture that
+    /// stopped the game a dozen times as one that never did.
+    UncountedInstallFreezes { active: u16, import_only: u16 },
     /// READY declared a pinned production roster of a different SIZE than this
     /// build's [`crate::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1`].
     ///
@@ -141,6 +150,17 @@ impl core::fmt::Display for PayloadError {
             Self::HookCountExceedsAllowlist { active, allowed } => write!(
                 f,
                 "capture-ready active hook count {active} exceeds allowlist count {allowed}"
+            ),
+            Self::UncountedInstallFreezes {
+                active,
+                import_only,
+            } => write!(
+                f,
+                "capture-ready reports {active} active hooks with an install freeze count of \
+                 zero; only the {import_only} bootstrap import slots can be patched without \
+                 stopping the process, so at least one inline detour was installed under a \
+                 freeze this receipt did not count -- the collector's freeze counter is not \
+                 wired to its READY payload"
             ),
             Self::ProductionHookContractSkew { declared, required } => write!(
                 f,
@@ -619,6 +639,39 @@ pub struct CaptureReadyV2 {
     pub scheduler_worker_count: u16,
     pub allowed_hook_count: u16,
     pub active_hook_count: u16,
+    /// How many freezes this collector ATTEMPTED to install its detours.
+    ///
+    /// Counted as a delta CLOSED WHEN THE INSTALL FINISHED, not read when READY
+    /// is built: a value read here would also absorb anything that froze between
+    /// the two. An upper bound on the number of times it stopped the game -- see
+    /// the paragraph below.
+    ///
+    /// Occupies the `u16` at offset 50 that was previously
+    /// reserved-must-be-zero, exactly as `collector_features` took the reserved
+    /// `u32` at offset 20: the payload LENGTH and every offset after it are
+    /// unchanged.
+    ///
+    /// WHY IT IS ON THE WIRE AT ALL. `inline_detour::freeze_attempts()` has
+    /// existed for months with ZERO consumers in `collector/` or
+    /// `recorder_host/`, so no receipt and no recording carried it, and the
+    /// question "how many times does a real attach freeze the process" could not
+    /// be answered from a capture -- which is the question lane JU's
+    /// recommendation to spend a lane on `MinHook::apply_queued` turns on. Every
+    /// per-attach figure JU could have published would have been this count,
+    /// resolved to actual stopped windows by the census, multiplied by
+    /// a per-window measurement, and it refused to publish one because the count
+    /// was unverified. This is the count.
+    ///
+    /// IT IS ATTEMPTS, NOT STOPPED WINDOWS, and the difference is real rather
+    /// than pedantic. `freeze_attempts` counts every entry to the freeze,
+    /// refusals included, and a refusal comes in two shapes: one that never
+    /// reached its first `SuspendThread` and stopped nothing, and one that
+    /// suspended threads and then gave up, which DID stop the game. So this is
+    /// an upper bound on the number of times the game was stopped to install,
+    /// and the per-window rows are what resolve it exactly. An earlier version
+    /// of this comment asserted that a refusal suspends nothing; it was wrong,
+    /// and the census exists partly because nothing could have caught that.
+    pub install_freeze_count: u16,
     pub clock_hour_raw: i32,
     /// Collector-owned ordinal of the stable read-only clock observation.
     /// This is not an engine tick.
@@ -660,7 +713,7 @@ impl CaptureReadyV2 {
         out.extend_from_slice(&self.scheduler_worker_count.to_le_bytes());
         out.extend_from_slice(&self.allowed_hook_count.to_le_bytes());
         out.extend_from_slice(&self.active_hook_count.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&self.install_freeze_count.to_le_bytes());
         out.extend_from_slice(&self.clock_hour_raw.to_le_bytes());
         out.extend_from_slice(&self.clock_observation_ordinal.to_le_bytes());
         out.extend_from_slice(&self.target_executable_sha256);
@@ -694,9 +747,6 @@ impl CaptureReadyV2 {
             &bytes[CAPTURE_READY_AUTH_OFFSET..],
         )?;
         check_capture_prefix(bytes, CAPTURE_READY_MAGIC, CAPTURE_READY_LEN)?;
-        if read_u16(bytes, 50) != 0 {
-            return Err(PayloadError::NonZeroReserved);
-        }
         let value = Self {
             flags: CaptureReadyFlags::from_bits(read_u32(bytes, 12))?,
             pid: read_u32(bytes, 16),
@@ -708,6 +758,7 @@ impl CaptureReadyV2 {
             scheduler_worker_count: read_u16(bytes, 44),
             allowed_hook_count: read_u16(bytes, 46),
             active_hook_count: read_u16(bytes, 48),
+            install_freeze_count: read_u16(bytes, 50),
             clock_hour_raw: read_i32(bytes, 52),
             clock_observation_ordinal: read_u64(bytes, 56),
             target_executable_sha256: read_bytes32(bytes, 64),
@@ -899,6 +950,33 @@ fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
         return Err(PayloadError::HookCountExceedsAllowlist {
             active: value.active_hook_count,
             allowed: value.allowed_hook_count,
+        });
+    }
+    // A LIVE INLINE DETOUR MEANS THE GAME WAS STOPPED, and this is where the
+    // freeze count stops being a field anybody can forget to fill.
+    //
+    // The pinned roster's `bootstrap.*` entries are import-slot swaps: one
+    // aligned pointer store into hoi4.exe's IAT, no code rewritten, no thread
+    // suspended. Every OTHER entry is an inline detour, and `inline_detour` is
+    // the only way one is patched -- enforced by that crate's own
+    // `no_direct_minhook_enable_outside_this_crate` -- which takes a process
+    // freeze before it calls MinHook, on every path including the failure path.
+    // So an `active_hook_count` above the import count with a freeze count of
+    // zero is not a degraded capture, it is a producer whose count is not
+    // wired to its freezes.
+    //
+    // THIS IS THE CHECK THAT MAKES THE FIELD NON-VACUOUS. Without it a
+    // regression that stopped stamping the counter would publish zeroes, and a
+    // zero is exactly what the field looked like for the whole time the counter
+    // had no consumers -- the defect this closes would have re-opened silently
+    // and every t55-style census would have read "no freezes" off a capture
+    // that stopped the game a dozen times.
+    if value.install_freeze_count == 0
+        && value.active_hook_count > crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1
+    {
+        return Err(PayloadError::UncountedInstallFreezes {
+            active: value.active_hook_count,
+            import_only: crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1,
         });
     }
     if crate::calendar::hour_index_from_raw(value.clock_hour_raw).is_none() {
@@ -1304,6 +1382,7 @@ mod tests {
             scheduler_worker_count: 8,
             allowed_hook_count: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
             active_hook_count: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
+            install_freeze_count: 13,
             clock_hour_raw: 60_800_276,
             clock_observation_ordinal: 9_876,
             target_executable_sha256: crate::passive_ready::PINNED_A729_TARGET_EXECUTABLE_SHA256,
@@ -1474,7 +1553,16 @@ mod tests {
                     CollectorFeatureBits::RANGE_TRACER,
                 ),
             ),
-            (50, 1, PayloadError::NonZeroReserved),
+            // Offset 50 is no longer reserved either: it is the install freeze
+            // count. Its refusal is not "nonzero" -- a count IS nonzero on
+            // every real capture -- it is ZERO beside live inline detours, so
+            // the mutation that has to be caught here is the one that erases
+            // it. Written as a whole-u16 clear because a single-byte write
+            // could not reach a two-byte field's high half.
+            (50, 0, PayloadError::UncountedInstallFreezes {
+                active: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
+                import_only: crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1,
+            }),
         ];
         for &(offset, replacement, expected) in mutations {
             let mut bad = wire.clone();
@@ -1487,6 +1575,21 @@ mod tests {
                 "offset {offset}"
             );
         }
+        // AND THE FIELD IS A FULL `u16`, not a byte with a spare beside it. A
+        // decoder that read only the low byte would report 1 for a capture that
+        // froze 257 times and would pass every assertion above, because the
+        // fixture's count fits in one byte. This is the only assertion that
+        // fails on that mistake.
+        let mut wide = ready_fields();
+        wide.install_freeze_count = 0x0102;
+        let wide_wire = wide.encode_authenticated(token).unwrap();
+        assert_eq!(
+            CaptureReadyV2::decode_authenticated(&wide_wire, token)
+                .unwrap()
+                .install_freeze_count,
+            0x0102
+        );
+        assert_eq!(read_u16(&wide_wire, 50), 0x0102);
         let mut unknown_flag = wire.clone();
         unknown_flag[15] |= 0x80;
         let tag = hmac_sha256(token, &unknown_flag[..CAPTURE_READY_AUTH_OFFSET]);
