@@ -2295,6 +2295,20 @@ try {
             "-File $portablePackageSelfTest"
         )
     }
+    # The same rule for the WORKSPACE, which the mode check above did not cover.
+    # The block that honours this switch is inside `$Workspace -in @("All",
+    # "Extractor")`, so `-Mode Final -Workspace Replay -RunPackageSelfTest` did
+    # not run the self-test AND did not print the SKIPPED BY POLICY notice
+    # either --- the caller asked for the gate by name and was told nothing at
+    # all, which is the exact silent skip the paragraph above refuses.
+    if ($RunPackageSelfTest -and $Workspace -notin @("All", "Extractor")) {
+        throw (
+            "-RunPackageSelfTest requires -Workspace All or -Workspace Extractor; " +
+            "workspace '$Workspace' does not reach the portable-product package " +
+            "self-test. Run it on its own instead: powershell.exe -NoProfile " +
+            "-ExecutionPolicy Bypass -File $portablePackageSelfTest"
+        )
+    }
 
     # WHY EVERY GATE FROM HERE TO THE CARGO RUNS IS IN THE PARALLEL HALF
     #
@@ -2772,10 +2786,10 @@ try {
             $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
             if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
                 [string]$packageSelfTestResult.status -cne 'PASS' -or
-                # 61 + 13. Five are the three pinned manifest-graph cases, the
+                # 61 + 16. Five are the three pinned manifest-graph cases, the
                 # case that the derived fixture reaches exactly the delegating unit
                 # closure the committed baseline accepts, and the case that a
-                # drifted accepted-inventory pin is rejected. The other eight cover
+                # drifted accepted-inventory pin is rejected. Eight cover
                 # the ways this authority can go blind without failing: a
                 # suspending code mutation whose freeze and patch sit on opposite
                 # sides of a dependency edge (in this repository, and outside it
@@ -2783,14 +2797,41 @@ try {
                 # name-definition case that must NOT count), a reachability flag
                 # pinned as a string, and a lane leaving the manifest walk that
                 # decides which files are scanned at all.
-                [int]$packageSelfTestResult.cases -ne 74) {
+                #
+                # The last three are the retired-evidence-feature
+                # reintroduction cases. TWO are in $cargoMutations -- a retired
+                # `unshipped-*` feature redeclared in the collector's OWN
+                # [features] table, and the same reintroduction wearing an
+                # ordinary-looking name that forwards a retired lane fixture
+                # hook -- and they are the only mutations in that table that
+                # reach Assert-CollectorRetiredEvidenceFeatureAbsence.
+                #
+                # The THIRD is 'retired lane fixture hook feature cannot be
+                # redeclared', which until this lane was dispatched to the
+                # builder pool and never asserted: its verdict was computed and
+                # discarded, so the builder could have ACCEPTED the
+                # reintroduction with this self-test still reporting PASS. That
+                # is why the count moves 76 -> 77 rather than 74 -> 76, and it
+                # was only found because repairing this pin was the first reason
+                # in a long time to read the count at all.
+                #
+                # WHY THIS NUMBER WAS WRONG UNTIL NOW: it read 74 while the
+                # self-test emitted 76 (77 once the orphaned verdict above is
+                # actually read), so the gate threw "returned no
+                # authority" every time it ran. It ran almost never. The switch
+                # is opt-in, so a developer's routine Final skips it, and the
+                # only standing caller is the GitHub Actions battery -- which
+                # had never once been green, and so had never reached this line.
+                # Lane JY's cloud port is what finally executed it and exposed
+                # the drift, after 68 minutes of otherwise-green battery.
+                [int]$packageSelfTestResult.cases -ne 77) {
                 throw "portable-product package builder/verifier self-tests returned no authority"
             }
         }
         else {
             Write-Host (
                 'SKIPPED BY POLICY: portable-product package builder/verifier ' +
-                'self-tests (Test-PortableProductPackageSelfTest.ps1, 66 cases) ' +
+                'self-tests (Test-PortableProductPackageSelfTest.ps1, 77 cases) ' +
                 'did NOT run. This validation carries no package ' +
                 'builder/verifier authority. Re-run this command with ' +
                 '-RunPackageSelfTest, or run the test on its own: ' +

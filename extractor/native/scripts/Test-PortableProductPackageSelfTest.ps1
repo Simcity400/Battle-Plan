@@ -3714,6 +3714,22 @@ pub fn observer_only() {}
     Assert-Case 'protected lane forbidden hook cannot enter default features' (
         [bool]$pooledBuilderVerdicts['protected lane forbidden hook cannot enter default features']
     )
+    # THIS ASSERTION WAS MISSING, AND ITS ABSENCE WAS SILENT.
+    #
+    # The mutation is built and dispatched to the builder pool with its two
+    # neighbours in the same `$singleCase` list, and the pool duly recorded
+    # whether the builder rejected it --- but nothing ever read the verdict, so
+    # the name appeared exactly once in this file. A mutation whose result is
+    # computed and thrown away proves nothing: the builder could have ACCEPTED a
+    # retired lane fixture-hook feature redeclaration and this self-test would
+    # still have reported PASS, which is the precise failure mode the whole
+    # mutation table exists to prevent.
+    #
+    # Found while repairing this authority's stale case-count pin, which is the
+    # only reason anyone was reading the count at all.
+    Assert-Case 'retired lane fixture hook feature cannot be redeclared' (
+        [bool]$pooledBuilderVerdicts['retired lane fixture hook feature cannot be redeclared']
+    )
 
     # As with the binary roster above, the first symbol of every role is driven
     # through the whole package builder and the rest are driven through the

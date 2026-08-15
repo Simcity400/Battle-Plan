@@ -6,6 +6,10 @@ on:
     branches:
       - master
       - ExtractorV2
+      # Lane branches. A lane's battery is the expensive local gate that keeps
+      # this machine busy for ~22 minutes; running the same gate here on every
+      # lane push is the point of the cloud port.
+      - 'lane-*'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +28,54 @@ jobs:
     timeout-minutes: 240
     env:
       CARGO_TERM_COLOR: always
+      # THIS IS WHAT MAKES THE SKIPS NAMED, and it costs nothing.
+      #
+      # Tests needing the game install, a user directory or a capture corpus are
+      # gated at BUILD time by `replay_test_gates` and carry
+      # `#[cfg_attr(not(<gate>), ignore = "<reason>")]`, so on this runner they
+      # report `ignored` instead of silently passing. But nextest's default
+      # status level prints only a COUNT --- "10 tests run: 10 passed, 3
+      # skipped" --- so a reader of a green cloud run could not see WHICH
+      # coverage the cloud never had.
+      #
+      # `skip` makes every nextest invocation the battery performs print each
+      # one by name:
+      #
+      #     SKIP [ ] game_ui::production_renderer admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
+      #     SKIP [ ] game_ui::production_renderer frame_owned_xui23_carrier_reaches_the_actual_production_renderer
+      #
+      # It is set as an ENV VAR rather than an argument because the battery
+      # script owns its own cargo invocations and this workflow must not fork
+      # them --- one gate definition, two entry points. It changes verbosity
+      # only: no test selection, no pass/fail, no exit code. The names land in
+      # the step log and in the uploaded artifact, from the REAL run, with no
+      # second authority to drift and no extra compilation.
+      NEXTEST_STATUS_LEVEL: skip
     steps:
+      # MUST run before the checkout, because the checkout is what applies it.
+      #
+      # The development machine this battery mirrors has core.autocrlf=true, so
+      # every text file not pinned by .gitattributes sits in the working tree as
+      # CRLF there. Tests in this repository read their own sources (source-ban
+      # sweeps, markup laws, include_str! digests), so the checkout
+      # representation is an INPUT to the gate, not a cosmetic detail. Leaving
+      # this to the runner image's default means the cloud gate and the local
+      # gate are testing different bytes and can disagree for a reason that has
+      # nothing to do with the change under test. It is set explicitly to the
+      # local value rather than assumed.
+      #
+      # Files whose exact bytes are hash-pinned are already forced by
+      # .gitattributes (`text eol=lf` / `-text`) and are unaffected by this.
+      - name: Pin checkout line endings to the development-machine setting
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf true
+          $observed = (& git config --global --get core.autocrlf | Out-String).Trim()
+          if ($observed -cne 'true') {
+            throw "core.autocrlf must be 'true' for this checkout; observed '$observed'"
+          }
+          Write-Host "core.autocrlf=$observed (matches the development machine)"
+
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -61,6 +112,81 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
           key: rust-sources-${{ runner.os }}-1.96.0-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      # THIS STEP IS WHY THE BATTERY NEVER REACHED GREEN IN CI.
+      #
+      # The battery resolves its partition with `cargo metadata --offline`
+      # (BatteryPartition.ps1) so that no gate can reach the network mid-run.
+      # `--offline` needs every dependency already present in the local Cargo
+      # registry. On a fresh runner that registry is empty, so the very first
+      # cargo invocation died with
+      #
+      #     error: no matching package named `minhook` found
+      #     note: offline mode (via `--offline`) can sometimes cause surprising
+      #           resolution failures
+      #
+      # and the run failed at ~80 seconds. The cache that was supposed to supply
+      # the registry was saved only `if: success()`, and the run could never
+      # succeed without it: the cache could not be written until a run passed,
+      # and no run could pass until the cache was written. Every push since the
+      # workflow was added failed here, which is why this is the first green
+      # battery on this repository.
+      #
+      # Fetching populates the registry from the network ONCE, up front, in a
+      # step that is allowed to use it. The battery still runs fully offline;
+      # its --offline guarantee is unchanged and is not weakened by this. Roots
+      # are discovered from the tracked lockfiles rather than restated here:
+      # duplicating the runner's own root list in the workflow is exactly the
+      # harness-authority drift this port is supposed to avoid, and a root added
+      # later would silently stop being fetched.
+      - name: Populate the Cargo registry for the offline battery
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $locks = & git -C '${{ github.workspace }}' ls-files '*/Cargo.lock' 'Cargo.lock'
+          $lsFilesExit = $LASTEXITCODE
+          if ($lsFilesExit -ne 0) {
+            throw "git ls-files failed with exit code $lsFilesExit; cargo roots are unknown"
+          }
+          $locks = @($locks | Where-Object { $_ })
+          if ($locks.Count -eq 0) {
+            throw "no tracked Cargo.lock found; the cargo-root discovery is broken"
+          }
+          # Over-coverage is deliberate and safe: roots the battery does not run
+          # cost only their (already-cached) fetch. UNDER-coverage is the
+          # dangerous direction, because it reintroduces the offline failure for
+          # exactly one root and does it quietly.
+          #
+          # --locked is not incidental. It fails when a tracked lockfile no
+          # longer describes its manifest, and the first run of this step found
+          # a real instance: the hook_harness lock predated two path
+          # dependencies its own path dependencies had grown.
+          Write-Host "Cargo roots discovered from tracked lockfiles: $($locks.Count)"
+          foreach ($lock in $locks) {
+            $root = Split-Path -Parent (Join-Path '${{ github.workspace }}' $lock)
+            Write-Host "::group::cargo fetch --locked in $root"
+            & cargo fetch --locked --manifest-path (Join-Path $root 'Cargo.toml')
+            $fetchExit = $LASTEXITCODE
+            Write-Host '::endgroup::'
+            if ($fetchExit -ne 0) {
+              throw "cargo fetch --locked failed in $root with exit code $fetchExit; the offline battery cannot resolve its dependency graph"
+            }
+          }
+
+      # Saved HERE, immediately after the fetch, and not after the battery.
+      # Gating the save on the whole battery passing is what created the
+      # deadlock described above: the cache is an input to the battery, so it
+      # has to be written as soon as it is correct, independently of whether the
+      # tests that consume it pass. Pull requests still never write the cache.
+      - name: Save trusted Cargo source cache
+        if: github.event_name == 'push' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
 
       - name: Run deterministic Python contract tests
         shell: pwsh
@@ -102,23 +228,182 @@ jobs:
             }
           }
 
+      # THE SAME SCRIPT THE DEVELOPER RUNS, WITH THE SAME ARGUMENTS.
+      #
+      # There is deliberately no CI-only battery here. Invoke-CentralRustValidation.ps1
+      # is the single gate definition; this job is a second entry point into it,
+      # not a second implementation of it. Anything this workflow decided for
+      # itself about which tests matter would drift away from the local gate
+      # silently, and the drift would only ever be discovered by a lane landing
+      # something the cloud said was fine.
+      #
+      # -RunPackageSelfTest is passed, and the gate behind it works again.
+      #
+      # The package builder/verifier self-test is opt-in so a developer's
+      # routine Final does not pay for it, which makes this workflow its only
+      # standing caller. That is exactly how it rotted: the gate pinned an
+      # exact case count of 74 while the self-test emitted 76, and the mismatch
+      # threw "returned no authority" every time it ran --- but it had not run,
+      # because this battery had never once been green. The first cloud run to
+      # survive 68 minutes is what executed it and found the drift.
+      #
+      # THE CURRENT PIN IS 77, not 76. 76 was an intermediate reading. Chasing
+      # the stale pin meant reading the count properly for the first time in a
+      # long while, and that turned up a case in the self-test whose verdict was
+      # computed and then never asserted --- the builder could have ACCEPTED a
+      # retired lane fixture-hook feature reintroduction with the self-test
+      # still reporting PASS. Reading that verdict is the 77th case.
+      #
+      # All of it is corrected in Invoke-CentralRustValidation.ps1 in this same
+      # lane: the pin, the case-count comment (now 61 + 16), and the SKIPPED BY
+      # POLICY text, which had been stale at 66 --- a THIRD wrong number, and
+      # its own evidence that neither branch had been exercised. Measured, not
+      # guessed; Test-PortableProductPackageSelfTest.ps1 run directly returns
+      # {"status":"PASS","cases":76} before the missing assertion and
+      # {"status":"PASS","cases":77} after it, both retained in
+      # extractor/native/runs/jy_cloud_battery/.
+      #
+      # Keeping the switch here is the point. A gate whose only caller is a
+      # workflow that cannot go green is a gate that silently stops holding,
+      # and this repository has now paid for that twice.
       - name: Run the authorized centralized validation
+        id: battery
         shell: pwsh
-        # -RunPackageSelfTest is passed explicitly. The package builder/verifier
-        # self-test is opt-in in the runner so a developer's routine Final does
-        # not pay for it, but CI is where that gate belongs and its cadence is
-        # unchanged here: dropping the switch would silently retire the gate.
-        run: >-
-          powershell.exe -NoProfile -ExecutionPolicy Bypass
-          -File "${{ github.workspace }}\extractor\native\scripts\Invoke-CentralRustValidation.ps1"
-          -Mode Final -Workspace All -CacheMode Iterative -RunPackageSelfTest
+        run: |
+          # THE LOG MUST NOT LIVE INSIDE THE CHECKOUT. This is not tidiness.
+          #
+          # The first version wrote it to the workspace root as battery.log, and
+          # the run that finally captured real output failed a test because of
+          # it: recorder_host's citation-integrity gate scans the working tree
+          # for `file.rs:<line>` references, the battery's own 3.98 MB of output
+          # is full of them, and the gate reported
+          #
+          #     citation integrity check: FAIL: 3866 unresolved citation(s):
+          #       battery.log:133: <a source path with a line number> is a new
+          #                        free-text line number...
+          #
+          # (The example is written that way on purpose. Quoting a real
+          # `<path>.rs:<line>` here would add a 3,867th unresolved citation, in
+          # this file, describing the bug --- the verifier scans .github/
+          # workflows too, and it caught exactly that on the first attempt.)
+          #
+          # Every one of those 3,866 citations was the log quoting the battery
+          # that was still running. A gate that reads the working tree cannot be
+          # handed a file the gate's own run is writing into that tree.
+          # RUNNER_TEMP is outside the checkout, so the tree the battery
+          # validates is exactly the tree that was checked out.
+          $log = Join-Path '${{ runner.temp }}' 'battery.log'
+          # `*>` is a REDIRECTION, not a pipeline. That distinction is the whole
+          # design of this step:
+          #
+          #   * the exit code of the battery is what this job exists to report,
+          #     and `$LASTEXITCODE` is read on the very next line with nothing
+          #     between --- no Tee-Object, no Select-String, no `|` of any kind.
+          #     A grep placed between a runner and its exit code is how a
+          #     failing build gets reported green, and this repository has paid
+          #     for that once already.
+          #   * the first version of this step used Start-Transcript, and the
+          #     uploaded artifact came back 208 bytes containing nothing but the
+          #     transcript header and footer. A transcript records what the
+          #     PARENT PowerShell host writes; the battery is a child
+          #     powershell.exe whose stdout goes straight to the console handle
+          #     and never passes through the parent host at all. Redirection
+          #     captures the child, a transcript does not.
+          #
+          # The cost is that the battery's output is not streamed live --- it
+          # appears in this step's log in one block when the run ends. That is
+          # accepted: the full text still reaches both the step log below and
+          # the uploaded artifact, and it is printed BEFORE the throw so a
+          # failure is never silent.
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File "${{ github.workspace }}\extractor\native\scripts\Invoke-CentralRustValidation.ps1" `
+            -Mode Final -Workspace All -CacheMode Iterative -RunPackageSelfTest *> $log
+          $batteryExit = $LASTEXITCODE
+          if (Test-Path -LiteralPath $log) {
+            Get-Content -LiteralPath $log
+            # Free disclosure: re-print, in one block, the lines where the
+            # battery itself said something did not run. These come from the
+            # gate's own output --- nextest's per-invocation skip counts and the
+            # runner's "SKIPPED BY POLICY" notices --- so this is a re-read of
+            # what the gate reported, not a second opinion about it. Everything
+            # here is downstream of the exit code, which was already captured
+            # above, so no pipeline on this path can affect the verdict.
+            Write-Host '::group::what this runner did not execute (from the battery''s own output)'
+            Select-String -LiteralPath $log -Pattern 'SKIPPED BY POLICY','skipped','ignored' |
+              ForEach-Object { $_.Line.Trim() } |
+              Select-Object -Unique
+            Write-Host '::endgroup::'
+          }
+          Write-Host "central validation exit code: $batteryExit"
+          if ($batteryExit -ne 0) {
+            throw "the central validation battery failed with exit code $batteryExit"
+          }
 
-      - name: Save trusted Cargo source cache
-        if: github.event_name == 'push' && success() && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      # WHAT THIS RUNNER COULD NOT RUN, NAMED.
+      #
+      # Tests needing the game install, a user directory, a capture corpus or a
+      # mined evidence store are gated by `replay_test_gates` at BUILD time and
+      # carry `#[cfg_attr(not(<gate>), ignore = "<reason>")]`. On this runner
+      # none of those resources exist, so those tests report `ignored` with
+      # their reason rather than silently passing --- that mechanism predates
+      # this workflow and is not weakened here.
+      #
+      # What was missing was any RECORD of it: the battery summary prints an
+      # ignored COUNT, so a reader of a green cloud run had no way to see which
+      # named tests the cloud never executed. This step lists them from the test
+      # binaries the battery just built, so the list is the compiled truth and
+      # not a hand-maintained restatement of it. `cargo nextest list` after the
+      # battery is a freshness check over an already-built tree.
+      #
+      # It never fails the job: it is a disclosure, and a disclosure that can
+      # turn a red battery green (or a green one red) is worse than none.
+      #
+      # IT IS OPT-IN, because it is expensive and the assumption behind it was
+      # wrong. The intent was that `cargo nextest list` after the battery would
+      # be a cheap freshness check over an already-built tree. Measured on the
+      # first full cloud run, it took TWENTY-TWO MINUTES and its log begins
+      # `Compiling cfg-if`, `Compiling version_check`, ... --- it rebuilt from
+      # scratch. `--workspace` here does not select the same unit set the
+      # battery built, so nothing was cached for it. On a private repository
+      # Windows minutes bill at 2x, so that disclosure cost more than twice the
+      # entire setup phase, on every run, forever.
+      #
+      # Making it opt-in does NOT cost the named skips. `NEXTEST_STATUS_LEVEL:
+      # skip` in this job's env (see the top of the job) already makes every
+      # nextest invocation the battery performs print each ignored test by name
+      # into the step log and the artifact, from the real run, for free. What
+      # this step adds over that is the ability to list ignored tests WITHOUT
+      # running the battery at all, which is a debugging convenience and is not
+      # worth 44 billed minutes on every lane push.
+      #
+      # Run it deliberately with `gh workflow run` when the named list is
+      # wanted. It is also skipped when the battery step was skipped, so an
+      # early setup failure never triggers a from-scratch build.
+      - name: Print the tests this runner could not execute
+        if: always() && github.event_name == 'workflow_dispatch' && steps.battery.conclusion != 'skipped'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $roots = @(
+            'extractor\native',
+            'replay_interface\native'
+          )
+          foreach ($root in $roots) {
+            $path = Join-Path '${{ github.workspace }}' $root
+            Write-Host "::group::ignored tests in $root (no game install, no user dir, no capture corpus)"
+            & cargo nextest list --manifest-path (Join-Path $path 'Cargo.toml') `
+              --workspace --offline --run-ignored ignored-only
+            Write-Host "cargo nextest list exit code: $LASTEXITCODE"
+            Write-Host '::endgroup::'
+          }
+
+      - name: Upload the battery log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+          name: central-battery-log-${{ github.run_id }}-${{ github.run_attempt }}
+          # Outside the checkout on purpose --- see the battery step. A log
+          # inside the working tree is an input to the tree-scanning gates.
+          path: ${{ runner.temp }}/battery.log
+          if-no-files-found: warn
+          retention-days: 30
