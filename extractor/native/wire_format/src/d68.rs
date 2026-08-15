@@ -1,8 +1,8 @@
 //! d68 `session_header_live` — the campaign's top-level save/session header.
 //!
-//! Derived from `world_fold.rs:13672`-`:13802`
+//! Derived from `world_fold.rs:13653`-`:13787`
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
-// @world-fold-authority domain=68 functions=fold_session_header lines=13672-13802 sha256=1b4d863946a4f3ea1da94395d91ed01fcb5707eec005aeddd871c12254ae89c1 closure=eaed4d7e7e8969b703237696fa152fdbb37d9343518af8f7c3e56f0cc8cf35fc
+// @world-fold-authority domain=68 functions=fold_session_header lines=13653-13787 sha256=435065b56b7b527e05c2a15aac7c47b014814e64bbfc73faa3609a259a23b98b closure=95d12d24ded823f1ce43949a57b4588f186612dc8b6ea4540fdc18ff9a29371b
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
 //! `world_fold.rs::build_session_header_value`, and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
@@ -211,36 +211,41 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:224`-`:253` and `:10040`-`:10139`. ---
 
-/// `SESSION_HEADER_HEADER_LEN`, `world_fold.rs::SESSION_HEADER_HEADER_LEN`.
-pub const HEADER_LEN: usize = 16;
-/// `SESSION_HEADER_SCALAR_BLOCK_LEN`, `world_fold.rs::SESSION_HEADER_SCALAR_BLOCK_LEN`.
-pub const SCALAR_BLOCK_LEN: usize = 20;
+// THE LAYOUT BELOW IS NOT RESTATED HERE ANY MORE.
+//
+// This module used to declare its own copy of the two block lengths, the eight
+// presence bits and the token ceiling, and `parse_update` was a line-for-line
+// transcription of `fold_session_header`. That is the shape that failed for d13
+// on 2026-08-14: a tail was added at the producer and one reader, and the other
+// readers were still transcriptions of the old grammar. This port now EXECUTES
+// `d68_grammar` -- the same crate the producer, the fold and the authority
+// validator execute -- and keeps only its own semantic layer and its own
+// diagnostics. The constants stay `pub` under their original names because
+// this crate's tests and its schema are written against them.
+
+/// `d68_grammar::HEADER_LEN`.
+pub const HEADER_LEN: usize = d68_grammar::HEADER_LEN;
+/// `d68_grammar::SCALAR_BLOCK_LEN`.
+pub const SCALAR_BLOCK_LEN: usize = d68_grammar::SCALAR_BLOCK_LEN;
 /// Where the three length-prefixed strings begin — the stopped slice runs from
-/// here to the end of the payload (`world_fold.rs::fold_session_header`).
-pub const STRING_BLOCK_OFFSET: usize = HEADER_LEN + SCALAR_BLOCK_LEN;
+/// here to the end of the payload (`d68_grammar::STRING_BLOCK_OFFSET`).
+pub const STRING_BLOCK_OFFSET: usize = d68_grammar::STRING_BLOCK_OFFSET;
 
-pub const FLAG_PLAYER: u32 = 1 << 0;
-pub const FLAG_DLCS: u32 = 1 << 1;
-pub const FLAG_START_DATE: u32 = 1 << 2;
-pub const FLAG_SAVE_VERSION: u32 = 1 << 3;
-pub const FLAG_SESSION: u32 = 1 << 4;
-pub const FLAG_IDEOLOGY: u32 = 1 << 5;
-pub const FLAG_COSMETIC_TAG: u32 = 1 << 6;
-pub const FLAG_VERSION: u32 = 1 << 7;
-/// `SESSION_HEADER_KNOWN_FLAGS`, `world_fold.rs::SESSION_HEADER_KNOWN_FLAGS`. Any other bit is a hard
-/// error (`:10047`) — an unrecognised presence word means the payload is not this
-/// grammar, so no bit in it can be trusted.
-pub const KNOWN_FLAGS: u32 = FLAG_PLAYER
-    | FLAG_DLCS
-    | FLAG_START_DATE
-    | FLAG_SAVE_VERSION
-    | FLAG_SESSION
-    | FLAG_IDEOLOGY
-    | FLAG_COSMETIC_TAG
-    | FLAG_VERSION;
+pub const FLAG_PLAYER: u32 = d68_grammar::Field::Player.flag();
+pub const FLAG_DLCS: u32 = d68_grammar::Field::Dlcs.flag();
+pub const FLAG_START_DATE: u32 = d68_grammar::Field::StartDate.flag();
+pub const FLAG_SAVE_VERSION: u32 = d68_grammar::Field::SaveVersion.flag();
+pub const FLAG_SESSION: u32 = d68_grammar::Field::Session.flag();
+pub const FLAG_IDEOLOGY: u32 = d68_grammar::Field::Ideology.flag();
+pub const FLAG_COSMETIC_TAG: u32 = d68_grammar::Field::CosmeticTag.flag();
+pub const FLAG_VERSION: u32 = d68_grammar::Field::Version.flag();
+/// `d68_grammar::KNOWN_FLAGS`. Any other bit is a hard error — an unrecognised
+/// presence word means the payload is not this grammar, so no bit in it can be
+/// trusted. The RULE is still this port's; only the mask is shared.
+pub const KNOWN_FLAGS: u32 = d68_grammar::KNOWN_FLAGS;
 
-/// `SESSION_HEADER_MAX_STRING_LEN`, `world_fold.rs::SESSION_HEADER_MAX_STRING_LEN`.
-pub const MAX_STRING_LEN: usize = 128;
+/// `d68_grammar::MAX_TOKEN_LEN`.
+pub const MAX_STRING_LEN: usize = d68_grammar::MAX_TOKEN_LEN;
 /// `SESSION_HEADER_MAX_PLAYER_TAG_DB_ID`, `world_fold.rs`.
 ///
 /// Was `2_048`, a guess at the vanilla-plus-DLC country count.
@@ -337,18 +342,62 @@ pub struct PayloadHeader {
 /// folds nothing from, and refusing it here would refuse a stream the recorder
 /// reads happily.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u8]), String> {
-    if payload.len() < HEADER_LEN {
-        return Err(format!(
-            "session_header payload {} shorter than the {HEADER_LEN}-byte header",
-            payload.len()
-        ));
+    let header = d68_grammar::read_header(payload).map_err(session_header_violation)?;
+    Ok((
+        PayloadHeader {
+            elapsed_wall_ms: header.elapsed_wall_ms,
+            presence: header.presence,
+            status_flags: header.status_flags,
+        },
+        &payload[HEADER_LEN..],
+    ))
+}
+
+/// This port's spelling of a `d68_grammar` refusal.
+///
+/// The leaf carries operands and no text, because the four d68 sites spell the
+/// same refusal four different ways. Every arm reproduces the message this
+/// module produced before the walk moved into the leaf. No wildcard arm: a new
+/// structural refusal does not compile until this port has decided how to say
+/// it.
+fn session_header_violation(violation: d68_grammar::Violation) -> String {
+    use d68_grammar::{Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section: Section::Header,
+            needed,
+            available,
+        } => format!("session_header payload {available} shorter than the {needed}-byte header"),
+        ViolationKind::Need {
+            section: Section::ScalarBlock,
+            needed,
+            available,
+        } => format!(
+            "session_header payload {available} shorter than the {needed}-byte scalar block"
+        ),
+        ViolationKind::Need {
+            section: Section::TokenPrefix(field),
+            ..
+        } => format!(
+            "session_header {} length prefix truncated",
+            field.diagnostic_name()
+        ),
+        ViolationKind::Need {
+            section: Section::TokenBytes(field),
+            ..
+        } => format!("session_header {} bytes truncated", field.diagnostic_name()),
+        ViolationKind::TokenTooLong { field, len, .. } => format!(
+            "session_header {} length {len} out of range",
+            field.diagnostic_name()
+        ),
+        ViolationKind::TrailingBytes {
+            consumed,
+            available,
+        } => format!("session_header trailing bytes: consumed {consumed} of {available}"),
+        ViolationKind::OffsetOverflow { at, len, .. } => {
+            format!("session_header offset {at} + {len} overflows")
+        }
     }
-    let header = PayloadHeader {
-        elapsed_wall_ms: u64::from_le_bytes(payload[0..8].try_into().expect("8 bytes")),
-        presence: u32_at(payload, 8),
-        status_flags: u32_at(payload, 12),
-    };
-    Ok((header, &payload[HEADER_LEN..]))
 }
 
 /// One frame's parsed **update** — the fields whose presence bits are set. Not a
@@ -386,27 +435,16 @@ pub fn parse_update(payload: &[u8]) -> core::result::Result<Update, String> {
         ));
     }
     // `:10052` — the scalar block's own length check, AFTER the presence check.
-    if payload.len() < STRING_BLOCK_OFFSET {
-        return Err(format!(
-            "session_header payload {} shorter than the {STRING_BLOCK_OFFSET}-byte scalar block",
-            payload.len()
-        ));
-    }
-
-    let player_tag_db_id = u32_at(payload, HEADER_LEN);
-    let dlcs = u32_at(payload, HEADER_LEN + 4);
-    let start_date_raw = u32_at(payload, HEADER_LEN + 8);
-    let save_version = u32_at(payload, HEADER_LEN + 12);
-    let session = u32_at(payload, HEADER_LEN + 16);
+    let [player_tag_db_id, dlcs, start_date_raw, save_version, session] =
+        d68_grammar::read_scalar_block(payload)
+            .map_err(session_header_violation)?
+            .words();
 
     let has_player = presence & FLAG_PLAYER != 0;
     let has_dlcs = presence & FLAG_DLCS != 0;
     let has_start_date = presence & FLAG_START_DATE != 0;
     let has_save_version = presence & FLAG_SAVE_VERSION != 0;
     let has_session = presence & FLAG_SESSION != 0;
-    let has_ideology = presence & FLAG_IDEOLOGY != 0;
-    let has_cosmetic = presence & FLAG_COSMETIC_TAG != 0;
-    let has_version = presence & FLAG_VERSION != 0;
 
     // `:10073`-`:10095`: an absent scalar must pack a zero, and a present
     // `player_tag_db_id` must be in `1..=MAX_PLAYER_TAG_DB_ID`.
@@ -433,48 +471,55 @@ pub fn parse_update(payload: &[u8]) -> core::result::Result<Update, String> {
 
     // `:10097`-`:10133`: three length-prefixed UTF-8 strings, each present in the
     // blob regardless of its flag (an absent field packs len 0).
-    let mut cursor = STRING_BLOCK_OFFSET;
-    let mut read_token =
-        |flag_present: bool, name: &str| -> core::result::Result<Option<String>, String> {
-            if cursor + 2 > payload.len() {
-                return Err(format!("session_header {name} length prefix truncated"));
+    // `d68_grammar` delimits the three tokens; UTF-8 validity and the
+    // flag/emptiness pair are this port's semantics and keep the fold's
+    // fatality (the port refuses, exactly as the fold does).
+    let mut ideology = None;
+    let mut cosmetic_tag = None;
+    let mut version = None;
+    let mut cursor = d68_grammar::TokenCursor::new();
+    let end = loop {
+        match cursor.next(payload).map_err(session_header_violation)? {
+            d68_grammar::TokenStep::Token { field, bytes } => {
+                let name = field.diagnostic_name();
+                let value = if bytes.is_empty() {
+                    None
+                } else {
+                    Some(
+                        core::str::from_utf8(bytes)
+                            .map_err(|_| format!("session_header {name} not utf8"))?
+                            .to_string(),
+                    )
+                };
+                let flag_present = field.is_present(presence);
+                if !flag_present && value.is_some() {
+                    return Err(format!("session_header {name} bytes without flag"));
+                }
+                if flag_present && value.is_none() {
+                    return Err(format!("session_header {name} flag set but empty"));
+                }
+                // No wildcard arm: a ninth token field does not compile until
+                // this port has decided what it means.
+                match field {
+                    d68_grammar::Field::Ideology => ideology = value,
+                    d68_grammar::Field::CosmeticTag => cosmetic_tag = value,
+                    d68_grammar::Field::Version => version = value,
+                    d68_grammar::Field::Player
+                    | d68_grammar::Field::Dlcs
+                    | d68_grammar::Field::StartDate
+                    | d68_grammar::Field::SaveVersion
+                    | d68_grammar::Field::Session => {
+                        return Err(format!(
+                            "session_header scalar field {name} delimited as a token"
+                        ))
+                    }
+                }
             }
-            let len = u16_at(payload, cursor) as usize;
-            cursor += 2;
-            if len > MAX_STRING_LEN {
-                return Err(format!("session_header {name} length {len} out of range"));
-            }
-            if cursor + len > payload.len() {
-                return Err(format!("session_header {name} bytes truncated"));
-            }
-            let value = if len == 0 {
-                None
-            } else {
-                Some(
-                    core::str::from_utf8(&payload[cursor..cursor + len])
-                        .map_err(|_| format!("session_header {name} not utf8"))?
-                        .to_string(),
-                )
-            };
-            cursor += len;
-            if !flag_present && value.is_some() {
-                return Err(format!("session_header {name} bytes without flag"));
-            }
-            if flag_present && value.is_none() {
-                return Err(format!("session_header {name} flag set but empty"));
-            }
-            Ok(value)
-        };
-    let ideology = read_token(has_ideology, "ideology")?;
-    let cosmetic_tag = read_token(has_cosmetic, "cosmetic_tag")?;
-    let version = read_token(has_version, "version")?;
+            d68_grammar::TokenStep::End(at) => break at,
+        }
+    };
     // `:10134`: the three strings must account for every remaining byte.
-    if cursor != payload.len() {
-        return Err(format!(
-            "session_header trailing bytes: consumed {cursor} of {}",
-            payload.len()
-        ));
-    }
+    d68_grammar::exact_consumption(end, payload.len()).map_err(session_header_violation)?;
 
     Ok(Update {
         player_tag_db_id: has_player.then_some(player_tag_db_id),
@@ -716,9 +761,8 @@ fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
 
-fn u16_at(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
-}
+// `u16_at` lost its last reader when the token walk moved into
+// `d68_grammar`: this module no longer reads a length prefix itself.
 
 #[cfg(test)]
 mod tests {

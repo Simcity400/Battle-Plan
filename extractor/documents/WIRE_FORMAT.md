@@ -1173,6 +1173,22 @@ No field names. No self-describing types. No sentinels. No per-frame compression
 container's job over multi-hour blocks, and a frame compressed alone forfeits the cross-hour
 redundancy that dominates this workload.
 
+## 12a. Per-domain payload grammars have ONE decoder
+
+A compact domain's DATA payload used to be walked independently at four sites — the collector's
+packer, `world_fold`'s `fold_*`, `domain_data_authority`'s `decode_compact_*_data_payload` and
+this document's `wire_format::dNN` port. On 2026-08-14 a tail was added to d13 at the producer and
+one reader; the other two went stale the same day and one refused 59 of 59 live records of the
+domain. Owner ruling 2026-08-15: **every domain gets one zero-dependency leaf crate that owns its
+whole structural walk and its encoder**, executed by all four sites, so a new tail is a compile
+error at all four.
+
+Converted so far: `d13_grammar` (lane KC), `d68_grammar` and `d24_grammar` (lane KO).
+**The queue, the crate-shape decision, the playbook and the per-domain hazards for the rest live
+in `extractor/native/runs/ko_domain_grammars/PHASE_PLAN.md`**, with the ranked survey beside it in
+`survey.md`. A domain's leaf is the authority for its widths, offsets and flag masks; this
+document remains the authority for what the bytes MEAN.
+
 ## 13. Open
 
 These are why this document is not yet the fan-out contract. The reference domain (pattern §10)

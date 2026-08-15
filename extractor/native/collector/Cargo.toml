@@ -21,6 +21,11 @@ compact_contract = { path = "../compact_contract" }
 # D13 domain. Emitting through the leaf makes the section inventory one
 # declaration for the writer and all three readers.
 d13_grammar = { path = "../d13_grammar" }
+# D68's payload grammar (lane KO). Same ruling, same shape: one leaf crate per
+# domain, so a converted domain never enters an unrelated consumer's closure.
+d68_grammar = { path = "../d68_grammar" }
+# D24's payload grammar (lane KO).
+d24_grammar = { path = "../d24_grammar" }
 direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }

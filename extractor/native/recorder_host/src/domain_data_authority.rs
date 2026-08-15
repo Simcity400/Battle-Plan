@@ -473,25 +473,25 @@ pub const COMPACT_COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN: usize = 12;
 pub const COMPACT_COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN: usize = 128;
 
 pub const COMPACT_DOMAIN_SESSION_HEADER_LIVE: u16 = 68;
-pub const COMPACT_SESSION_HEADER_HEADER_LEN: usize = 16;
-pub const COMPACT_SESSION_HEADER_SCALAR_BLOCK_LEN: usize = 20;
-pub const COMPACT_SESSION_HEADER_FLAG_PLAYER: u32 = 1 << 0;
-pub const COMPACT_SESSION_HEADER_FLAG_DLCS: u32 = 1 << 1;
-pub const COMPACT_SESSION_HEADER_FLAG_START_DATE: u32 = 1 << 2;
-pub const COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION: u32 = 1 << 3;
-pub const COMPACT_SESSION_HEADER_FLAG_SESSION: u32 = 1 << 4;
-pub const COMPACT_SESSION_HEADER_FLAG_IDEOLOGY: u32 = 1 << 5;
-pub const COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG: u32 = 1 << 6;
-pub const COMPACT_SESSION_HEADER_FLAG_VERSION: u32 = 1 << 7;
-pub const COMPACT_SESSION_HEADER_KNOWN_FLAGS: u32 = COMPACT_SESSION_HEADER_FLAG_PLAYER
-    | COMPACT_SESSION_HEADER_FLAG_DLCS
-    | COMPACT_SESSION_HEADER_FLAG_START_DATE
-    | COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION
-    | COMPACT_SESSION_HEADER_FLAG_SESSION
-    | COMPACT_SESSION_HEADER_FLAG_IDEOLOGY
-    | COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG
-    | COMPACT_SESSION_HEADER_FLAG_VERSION;
-pub const COMPACT_SESSION_HEADER_MAX_STRING_LEN: usize = 128;
+// The block lengths, the eight presence bits and the token ceiling used to be
+// restated here, a third time. They are `d68_grammar`'s now -- this validator,
+// the fold, the wire port and the producer all EXECUTE that crate instead of
+// transcribing it. `KNOWN_FLAGS` is re-exported rather than rebuilt because the
+// POLICY it drives (an unassigned presence bit is recorded here and is fatal in
+// the fold) is still this file's.
+pub const COMPACT_SESSION_HEADER_KNOWN_FLAGS: u32 = d68_grammar::KNOWN_FLAGS;
+// The eight bits keep their names because this crate's own suite builds
+// payloads out of them. They are ALIASES now, not declarations: there is one
+// statement of which bit is which field, in `d68_grammar::Field::flag`, and
+// these re-export it so no existing test had to be edited.
+pub const COMPACT_SESSION_HEADER_FLAG_PLAYER: u32 = d68_grammar::Field::Player.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_DLCS: u32 = d68_grammar::Field::Dlcs.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_START_DATE: u32 = d68_grammar::Field::StartDate.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION: u32 = d68_grammar::Field::SaveVersion.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_SESSION: u32 = d68_grammar::Field::Session.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_IDEOLOGY: u32 = d68_grammar::Field::Ideology.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG: u32 = d68_grammar::Field::CosmeticTag.flag();
+pub const COMPACT_SESSION_HEADER_FLAG_VERSION: u32 = d68_grammar::Field::Version.flag();
 pub const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 
 pub const COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE: u16 = 69;
@@ -855,8 +855,8 @@ pub const COMPACT_MAP_PROVINCE_ROW_LEN: usize = 16;
 pub const COMPACT_MAP_DETAIL_STATE_ROW_LEN: usize = 28;
 pub const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
 pub const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
-pub const COMPACT_WEATHER_REGION_ROW_LEN: usize = 32;
-pub const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = 32;
+pub const COMPACT_WEATHER_REGION_ROW_LEN: usize = d24_grammar::REGION_ROW_LEN;
+pub const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = d24_grammar::PROVINCE_ROW_LEN;
 // The wire-side twins of the collector's 1 000-state / 10 000-province map
 // floors are gone. This decoder is STRUCTURAL: the payload length is required
 // to equal `32 + state_count * ROW + province_count * ROW` exactly, and every
@@ -918,42 +918,30 @@ pub const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
 // envelope. Authority site and engine proof:
 // `collector/src/attach_log/offsets.rs::WEATHER_MANAGER_MAX_WATER_RAW_OFF`.
 pub const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
-pub const COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT: u32 = 1;
-pub const COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY: u32 = 1 << 1;
-pub const COMPACT_WEATHER_REGION_FLAG_SNOW: u32 = 1 << 2;
-pub const COMPACT_WEATHER_REGION_FLAG_BLIZZARD: u32 = 1 << 3;
-pub const COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER: u32 = 1 << 4;
-pub const COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL: u32 = 1 << 5;
-pub const COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE: u32 = 1 << 6;
-pub const COMPACT_WEATHER_REGION_FLAG_SANDSTORM: u32 = 1 << 7;
-pub const COMPACT_WEATHER_REGION_KNOWN_FLAGS: u32 = COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT
-    | COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY
-    | COMPACT_WEATHER_REGION_FLAG_SNOW
-    | COMPACT_WEATHER_REGION_FLAG_BLIZZARD
-    | COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER
-    | COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL
-    | COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE
-    | COMPACT_WEATHER_REGION_FLAG_SANDSTORM;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 = 1;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 = 1 << 1;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 = 1 << 2;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT: u32 = 1 << 3;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT: u32 = 1 << 4;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE: u32 = 1 << 5;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = 1 << 6;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED: u32 = 1 << 7;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER: u32 = 1 << 8;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER: u32 = 1 << 9;
-pub const COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS: u32 = COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE
-    | COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT
-    | COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED
-    | COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER
-    | COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER;
+// The eighteen flag bits and the two row widths keep their names because this
+// crate's suite and its callers are written against them. They are ALIASES now,
+// not declarations: there is one statement of which bit is which, in
+// `d24_grammar`, and these re-export it so no existing test had to be edited.
+pub const COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT: u32 = d24_grammar::RegionFlag::RainLight.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY: u32 = d24_grammar::RegionFlag::RainHeavy.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_SNOW: u32 = d24_grammar::RegionFlag::Snow.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_BLIZZARD: u32 = d24_grammar::RegionFlag::Blizzard.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER: u32 = d24_grammar::RegionFlag::ArcticWater.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL: u32 = d24_grammar::RegionFlag::ActiveSignal.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE: u32 = d24_grammar::RegionFlag::PhenomenonActive.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_SANDSTORM: u32 = d24_grammar::RegionFlag::Sandstorm.bit();
+pub const COMPACT_WEATHER_REGION_KNOWN_FLAGS: u32 = d24_grammar::REGION_KNOWN_FLAGS;
+pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 = d24_grammar::ProvinceFlag::TempPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 = d24_grammar::ProvinceFlag::TempChangePresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 = d24_grammar::ProvinceFlag::WaterPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT: u32 = d24_grammar::ProvinceFlag::SnowPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT: u32 = d24_grammar::ProvinceFlag::MudPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE: u32 = d24_grammar::ProvinceFlag::MudActive.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = d24_grammar::ProvinceFlag::CustomModifierCountPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED: u32 = d24_grammar::ProvinceFlag::StructValidated.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER: u32 = d24_grammar::ProvinceFlag::MapRecolor.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER: u32 = d24_grammar::ProvinceFlag::DynamicLut.bit();
+pub const COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS: u32 = d24_grammar::PROVINCE_KNOWN_FLAGS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Domain57ScalarEvidence {
@@ -13525,6 +13513,91 @@ fn decode_compact_country_dynamic_modifiers_data_payload(
 // a fixed 20-byte scalar block (player_tag u32, dlcs u32, start_date u32,
 // save_version u32, session u32), then three length-prefixed utf8 strings
 // (ideology, cosmetic_tag, version), each a u16 length + bytes.
+/// This validator's spelling of a `d24_grammar` refusal.
+///
+/// Every arm reproduces the message this validator produced before the walk
+/// moved into the leaf, including its `offset {offset}: ` prefix and its
+/// "N byte(s), expected M" phrasing, which is not the fold's phrasing and never
+/// was. No wildcard arm.
+fn weather_violation(offset: usize, violation: d24_grammar::Violation) -> String {
+    use d24_grammar::{Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section: Section::Header,
+            needed,
+            available,
+        } => format!(
+            "offset {offset}: weather data payload is {available} byte(s), expected at least {needed}"
+        ),
+        ViolationKind::Need {
+            section: Section::Body | Section::RegionRow | Section::ProvinceRow,
+            needed,
+            available,
+        } => format!(
+            "offset {offset}: weather data payload is {available} byte(s), expected {needed}"
+        ),
+        ViolationKind::LengthMismatch {
+            expected,
+            available,
+        } => format!(
+            "offset {offset}: weather data payload is {available} byte(s), expected {expected}"
+        ),
+        // Unreachable on a 64-bit host; the old walk used `saturating_mul` and
+        // reported an overflow as a length mismatch against a saturated number.
+        ViolationKind::LengthOverflow { count, unit, .. } => {
+            format!("offset {offset}: weather row count {count} x {unit} overflows")
+        }
+    }
+}
+
+/// This validator's spelling of a `d68_grammar` refusal.
+///
+/// The leaf carries operands and no text. Every arm reproduces the message this
+/// validator produced before the walk moved into the leaf, including its
+/// `offset {offset}: ` prefix and its "N byte(s), expected at least M" phrasing,
+/// which is not the fold's phrasing and never was. No wildcard arm.
+fn session_header_violation(offset: usize, violation: d68_grammar::Violation) -> String {
+    use d68_grammar::{Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section: Section::Header | Section::ScalarBlock,
+            needed,
+            available,
+        } => format!(
+            "offset {offset}: session_header payload is {available} byte(s), expected at least {needed}"
+        ),
+        ViolationKind::Need {
+            section: Section::TokenPrefix(field),
+            ..
+        } => format!(
+            "offset {offset}: session_header {} length prefix truncated",
+            field.diagnostic_name()
+        ),
+        ViolationKind::Need {
+            section: Section::TokenBytes(field),
+            ..
+        } => format!(
+            "offset {offset}: session_header {} bytes truncated",
+            field.diagnostic_name()
+        ),
+        ViolationKind::TokenTooLong { field, len, .. } => format!(
+            "offset {offset}: session_header {} length {len} out of range",
+            field.diagnostic_name()
+        ),
+        ViolationKind::TrailingBytes {
+            consumed,
+            available,
+        } => format!(
+            "offset {offset}: session_header trailing bytes: consumed {consumed} of {available}"
+        ),
+        // Unreachable on a 64-bit host; it had no message before, because the
+        // old walk added the lengths unchecked.
+        ViolationKind::OffsetOverflow { at, len, .. } => {
+            format!("offset {offset}: session_header offset {at} + {len} overflows")
+        }
+    }
+}
+
 fn decode_compact_session_header_data_payload(
     offset: usize,
     payload: &[u8],
@@ -13535,16 +13608,22 @@ fn decode_compact_session_header_data_payload(
         .session_header_records_seen
         .saturating_add(1);
     let errors_before = summary.parse_errors.len();
-    if payload.len() < COMPACT_SESSION_HEADER_HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: session_header payload is {} byte(s), expected at least {}",
-            payload.len(),
-            COMPACT_SESSION_HEADER_HEADER_LEN
-        ));
-        return;
-    }
-    let presence = read_u32_le(payload, 8);
-    let status_flags = read_u32_le(payload, 12);
+    // The structural walk is `d68_grammar`'s, shared with the producer, the
+    // fold and the wire port. This validator's own behaviour -- recording each
+    // violated field rule and CONTINUING where the fold returns -- is unchanged,
+    // and it must be: this gates the fold, and a rule that is merely STRICTER
+    // here deletes the domain instead of correcting it.
+    let header = match d68_grammar::read_header(payload) {
+        Ok(header) => header,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(session_header_violation(offset, violation));
+            return;
+        }
+    };
+    let presence = header.presence;
+    let status_flags = header.status_flags;
     add_decoder_status(summary, status_flags);
     if let Some(domain) = summary
         .per_domain
@@ -13557,28 +13636,21 @@ fn decode_compact_session_header_data_payload(
             "offset {offset}: session_header unknown presence flags {presence:#x}"
         ));
     }
-    let scalars_end = COMPACT_SESSION_HEADER_HEADER_LEN + COMPACT_SESSION_HEADER_SCALAR_BLOCK_LEN;
-    if payload.len() < scalars_end {
-        summary.parse_errors.push(format!(
-            "offset {offset}: session_header payload is {} byte(s), expected at least {scalars_end}",
-            payload.len()
-        ));
-        return;
-    }
-    let scalars_base = COMPACT_SESSION_HEADER_HEADER_LEN;
-    let player_tag_db_id = read_u32_le(payload, scalars_base);
-    let dlcs = read_u32_le(payload, scalars_base + 4);
-    let start_date_raw = read_u32_le(payload, scalars_base + 8);
-    let save_version = read_u32_le(payload, scalars_base + 12);
-    let session = read_u32_le(payload, scalars_base + 16);
-    let has_player = presence & COMPACT_SESSION_HEADER_FLAG_PLAYER != 0;
-    let has_dlcs = presence & COMPACT_SESSION_HEADER_FLAG_DLCS != 0;
-    let has_start_date = presence & COMPACT_SESSION_HEADER_FLAG_START_DATE != 0;
-    let has_save_version = presence & COMPACT_SESSION_HEADER_FLAG_SAVE_VERSION != 0;
-    let has_session = presence & COMPACT_SESSION_HEADER_FLAG_SESSION != 0;
-    let has_ideology = presence & COMPACT_SESSION_HEADER_FLAG_IDEOLOGY != 0;
-    let has_cosmetic = presence & COMPACT_SESSION_HEADER_FLAG_COSMETIC_TAG != 0;
-    let has_version = presence & COMPACT_SESSION_HEADER_FLAG_VERSION != 0;
+    let [player_tag_db_id, dlcs, start_date_raw, save_version, session] =
+        match d68_grammar::read_scalar_block(payload) {
+            Ok(block) => block.words(),
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(session_header_violation(offset, violation));
+                return;
+            }
+        };
+    let has_player = d68_grammar::Field::Player.is_present(presence);
+    let has_dlcs = d68_grammar::Field::Dlcs.is_present(presence);
+    let has_start_date = d68_grammar::Field::StartDate.is_present(presence);
+    let has_save_version = d68_grammar::Field::SaveVersion.is_present(presence);
+    let has_session = d68_grammar::Field::Session.is_present(presence);
     if !has_player && player_tag_db_id != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: session_header player_tag_db_id without flag"
@@ -13612,59 +13684,71 @@ fn decode_compact_session_header_data_payload(
         ));
     }
     // Three length-prefixed utf8 tokens must consume the payload exactly.
-    let mut cursor = scalars_end;
-    for (flag_present, name) in [
-        (has_ideology, "ideology"),
-        (has_cosmetic, "cosmetic_tag"),
-        (has_version, "version"),
-    ] {
-        if cursor + 2 > payload.len() {
-            summary.parse_errors.push(format!(
-                "offset {offset}: session_header {name} length prefix truncated"
-            ));
-            return;
-        }
-        let len = read_u16_le(payload, cursor) as usize;
-        cursor += 2;
-        if len > COMPACT_SESSION_HEADER_MAX_STRING_LEN {
-            summary.parse_errors.push(format!(
-                "offset {offset}: session_header {name} length {len} out of range"
-            ));
-            return;
-        }
-        if cursor + len > payload.len() {
-            summary.parse_errors.push(format!(
-                "offset {offset}: session_header {name} bytes truncated"
-            ));
-            return;
-        }
-        let has_bytes = if len == 0 {
-            false
-        } else if std::str::from_utf8(&payload[cursor..cursor + len]).is_err() {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: session_header {name} not utf8"));
-            true
-        } else {
-            true
+    // `d68_grammar` delimits them; UTF-8 validity and the flag/emptiness pair
+    // are this validator's, and stay non-fatal here exactly as before.
+    let mut cursor = d68_grammar::TokenCursor::new();
+    let end = loop {
+        let step = match cursor.next(payload) {
+            Ok(step) => step,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(session_header_violation(offset, violation));
+                return;
+            }
         };
-        cursor += len;
-        if !flag_present && has_bytes {
-            summary.parse_errors.push(format!(
-                "offset {offset}: session_header {name} bytes without flag"
-            ));
+        match step {
+            d68_grammar::TokenStep::Token { field, bytes } => {
+                // No wildcard arm: a fourth token field does not compile until
+                // this validator has decided what it means. The three arms are
+                // identical today because the rules below are uniform across
+                // the tokens -- binding each variant is what makes that a
+                // DECISION rather than an accident of a generic loop.
+                let name = match field {
+                    d68_grammar::Field::Ideology
+                    | d68_grammar::Field::CosmeticTag
+                    | d68_grammar::Field::Version => field.diagnostic_name(),
+                    d68_grammar::Field::Player
+                    | d68_grammar::Field::Dlcs
+                    | d68_grammar::Field::StartDate
+                    | d68_grammar::Field::SaveVersion
+                    | d68_grammar::Field::Session => {
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: session_header scalar field {} delimited as a token",
+                            field.diagnostic_name()
+                        ));
+                        return;
+                    }
+                };
+                let has_bytes = if bytes.is_empty() {
+                    false
+                } else if std::str::from_utf8(bytes).is_err() {
+                    summary
+                        .parse_errors
+                        .push(format!("offset {offset}: session_header {name} not utf8"));
+                    true
+                } else {
+                    true
+                };
+                let flag_present = field.is_present(presence);
+                if !flag_present && has_bytes {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: session_header {name} bytes without flag"
+                    ));
+                }
+                if flag_present && !has_bytes {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: session_header {name} flag set but empty"
+                    ));
+                }
+            }
+            d68_grammar::TokenStep::End(at) => break at,
         }
-        if flag_present && !has_bytes {
-            summary.parse_errors.push(format!(
-                "offset {offset}: session_header {name} flag set but empty"
-            ));
-        }
-    }
-    if cursor != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: session_header trailing bytes: consumed {cursor} of {}",
-            payload.len()
-        ));
+    };
+    if let Err(violation) = d68_grammar::exact_consumption(end, payload.len()) {
+        summary
+            .parse_errors
+            .push(session_header_violation(offset, violation));
     }
     // Commit identity witnesses only after the complete payload grammar has
     // validated and only for an effective-success row. Failure/partial status
@@ -17122,27 +17206,43 @@ fn decode_compact_weather_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    if payload.len() < 48 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: weather data payload is {} byte(s), expected at least 48",
-            payload.len()
-        ));
-        return;
-    }
-    let region_count = read_u32_le(payload, 8) as usize;
-    let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
-    let province_count = read_u32_le(payload, 20) as usize;
-    let observed_region_rows = read_u32_le(payload, 24) as usize;
-    let observed_province_rows = read_u32_le(payload, 28) as usize;
-    let scale_raw = read_u32_le(payload, 32);
-    let active_region_count = read_u32_le(payload, 36) as usize;
+    // The structural walk is `d24_grammar`'s, shared with the producer, the
+    // fold and the wire port. This validator's own behaviour -- recording each
+    // violated row rule and CONTINUING where the fold returns -- is unchanged.
+    let header = match d24_grammar::read_header(payload) {
+        Ok(header) => header,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(weather_violation(offset, violation));
+            return;
+        }
+    };
+    // Destructured, not read word by word: `HeaderWord::ALL`'s LENGTH is the
+    // compile error that stops a new header word from being added at the
+    // producer and ignored here.
+    let [
+        region_count_raw,
+        changed_rows_raw,
+        status_flags,
+        province_count_raw,
+        observed_region_rows_raw,
+        observed_province_rows_raw,
+        scale_raw,
+        active_region_count_raw,
+        max_water_raw_word,
+        max_snow_raw_word,
+    ] = header.words();
+    let region_count = region_count_raw as usize;
+    let changed_rows = changed_rows_raw as usize;
+    let province_count = province_count_raw as usize;
+    let observed_region_rows = observed_region_rows_raw as usize;
+    let observed_province_rows = observed_province_rows_raw as usize;
+    let active_region_count = active_region_count_raw as usize;
     // Header words `+40` / `+44`: the two ENGINE precipitation ceilings the
     // producer discovered for this record, in the slots that used to be reserved
     // zeros. See `COMPACT_WEATHER_MAX_TEMPERATURE_RAW`'s neighbourhood for why
     // the constant they replaced is gone.
-    let max_water_raw_word = read_u32_le(payload, 40);
-    let max_snow_raw_word = read_u32_le(payload, 44);
     add_decoder_status(summary, status_flags);
     let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
     let failed = compact_contract::compact_status_is_failure(
@@ -17150,16 +17250,15 @@ fn decode_compact_weather_data_payload(
     );
     let emitted_rows = region_count.saturating_add(province_count);
 
-    let expected_len = 48usize
-        .saturating_add(region_count.saturating_mul(COMPACT_WEATHER_REGION_ROW_LEN))
-        .saturating_add(province_count.saturating_mul(COMPACT_WEATHER_PROVINCE_ROW_LEN));
-    if payload.len() != expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: weather data payload is {} byte(s), expected {expected_len}",
-            payload.len()
-        ));
-        return;
-    }
+    let layout = match d24_grammar::body_layout(payload, &header) {
+        Ok(layout) => layout,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(weather_violation(offset, violation));
+            return;
+        }
+    };
     if !failed
         && !(COMPACT_WEATHER_MIN_REGION_ROWS..=COMPACT_WEATHER_MAX_REGION_ROWS)
             .contains(&observed_region_rows)
@@ -17271,19 +17370,43 @@ fn decode_compact_weather_data_payload(
         active_region_count,
     );
 
-    let mut cursor = 48usize;
+    let mut region_cursor = d24_grammar::RegionCursor::new(&layout);
     let mut seen_regions = BTreeSet::new();
     let mut computed_active_regions = 0usize;
-    for row_index in 0..region_count {
-        let region_id = read_u32_le(payload, cursor);
-        let flags = read_u32_le(payload, cursor + 4);
-        let temperature_raw = read_i32_le(payload, cursor + 8);
-        let phenomenon = read_u32_le(payload, cursor + 12);
-        let next_weather_change_raw = read_u32_le(payload, cursor + 16);
-        let active_modifier_count = read_u32_le(payload, cursor + 20);
-        let intensity = read_u32_le(payload, cursor + 24);
-        let row_reserved = read_u32_le(payload, cursor + 28);
-        cursor += COMPACT_WEATHER_REGION_ROW_LEN;
+    // Explicit, not `while let Ok(..)`: `body_layout` above already sized
+    // the payload, so a cursor error is unreachable -- and swallowing it
+    // would validate fewer rows than the header declared and say nothing.
+    loop {
+        let step = match region_cursor.next(payload) {
+            Ok(step) => step,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(weather_violation(offset, violation));
+                return;
+            }
+        };
+        let d24_grammar::RowStep::Row {
+            index: row_index,
+            view,
+        } = step
+        else {
+            break;
+        };
+        // Destructured: `RegionField::ALL`'s LENGTH is the compile error that
+        // stops a new row field from being written by the producer and ignored
+        // by this validator.
+        let [
+            region_id,
+            flags,
+            temperature_word,
+            phenomenon,
+            next_weather_change_raw,
+            active_modifier_count,
+            intensity,
+            row_reserved,
+        ] = view.words();
+        let temperature_raw = temperature_word as i32;
         // Bounded by the region table's OWN length, which the header states.
         // This was the constant 304, i.e. the vanilla count minus one.
         if region_id as usize >= observed_region_rows {
@@ -17376,17 +17499,43 @@ fn decode_compact_weather_data_payload(
         ));
     }
 
+    let mut province_cursor = d24_grammar::ProvinceCursor::new(&layout);
     let mut seen_provinces = BTreeSet::new();
-    for row_index in 0..province_count {
-        let province_id = read_u32_le(payload, cursor);
-        let flags = read_u32_le(payload, cursor + 4);
-        let temperature_raw = read_i32_le(payload, cursor + 8);
-        let temperature_change_raw = read_i32_le(payload, cursor + 12);
-        let water_raw = read_i32_le(payload, cursor + 16);
-        let snow_raw = read_i32_le(payload, cursor + 20);
-        let custom_modifier_count = read_u32_le(payload, cursor + 24);
-        let row_reserved = read_u32_le(payload, cursor + 28);
-        cursor += COMPACT_WEATHER_PROVINCE_ROW_LEN;
+    // Explicit, not `while let Ok(..)`: `body_layout` above already sized
+    // the payload, so a cursor error is unreachable -- and swallowing it
+    // would validate fewer rows than the header declared and say nothing.
+    loop {
+        let step = match province_cursor.next(payload) {
+            Ok(step) => step,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(weather_violation(offset, violation));
+                return;
+            }
+        };
+        let d24_grammar::RowStep::Row {
+            index: row_index,
+            view,
+        } = step
+        else {
+            break;
+        };
+        // Destructured, for the same reason the region row is.
+        let [
+            province_id,
+            flags,
+            temperature_word,
+            temperature_change_word,
+            water_word,
+            snow_word,
+            custom_modifier_count,
+            row_reserved,
+        ] = view.words();
+        let temperature_raw = temperature_word as i32;
+        let temperature_change_raw = temperature_change_word as i32;
+        let water_raw = water_word as i32;
+        let snow_raw = snow_word as i32;
 
         if observed_province_rows != 0 && province_id as usize >= observed_province_rows {
             summary.parse_errors.push(format!(

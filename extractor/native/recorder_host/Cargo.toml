@@ -25,6 +25,11 @@ compact_stream = { path = "../compact_stream" }
 # a day when a tail was added, and one of them excluded 100% of a live capture's
 # D13 records.
 d13_grammar = { path = "../d13_grammar" }
+# D68's payload grammar (lane KO). Same ruling, same shape: one leaf crate per
+# domain, so a converted domain never enters an unrelated consumer's closure.
+d68_grammar = { path = "../d68_grammar" }
+# D24's payload grammar (lane KO).
+d24_grammar = { path = "../d24_grammar" }
 compact_contract = { path = "../compact_contract" }
 # The admission bounds this fold shares with the replay consumer. Both cargo
 # workspaces path-depend on this crate so each bound has one home; see

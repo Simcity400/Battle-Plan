@@ -12,6 +12,17 @@ members = [
     # recorder dependency; `recorder_host` takes no wire dependency) and only a
     # leaf can be shared without reversing either.
     "d13_grammar",
+    # D68's payload grammar (lane KO, phase 1 of the same ruling). One leaf
+    # crate PER DOMAIN, not one shared grammar crate: a shared crate would put
+    # every converted domain into every consumer's dependent closure, so a d43
+    # edit would invalidate `wire_format` even though d43 has no wire port
+    # (Codex thread 01a0056e-5193-7001-be11-b124736b4b5d, round 1).
+    "d68_grammar",
+    # D24's payload grammar (lane KO). Its header words at `+40`/`+44` recently
+    # stopped being reserved zeros and became the producer's two discovered
+    # precipitation ceilings -- the exact kind of change that leaves a reader
+    # behind, at a domain whose layout was restated four times.
+    "d24_grammar",
     "snapshot",
     "collector",
     "recorder_host",
