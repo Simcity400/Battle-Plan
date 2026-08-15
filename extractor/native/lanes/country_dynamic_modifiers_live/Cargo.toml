@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
-minhook = "0.9.0"
+minhook = { package = "minhook_h4", path = "../../minhook_h4" }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_Debug",

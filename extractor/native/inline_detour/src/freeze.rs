@@ -52,50 +52,48 @@
 //! does not hold refuses the freeze rather than being patched around. Both holes
 //! and the confirmation are set out under "The walk's own fail-open" below.
 //!
-//! When the freeze succeeds, MinHook's `Freeze()` runs against a process where
-//! every other live thread is already suspended by us, on a handle the kernel
-//! told us carries at least [`FREEZE_THREAD_ACCESS`]. Two things follow, and
-//! they are NOT equally certain.
+//! # WHAT MINHOOK DOES INSIDE THIS WINDOW, AND WHAT IT NO LONGER DOES
 //!
-//! Its `SuspendThread` does not fail, unconditionally, and only because this
-//! module makes room for it: `SuspendThread` fails rather than increment past
-//! `MAXIMUM_SUSPEND_COUNT`, so a thread we suspend to exactly that ceiling is
-//! one MinHook cannot suspend, and MinHook's answer to that is its fail-open
-//! branch. Our suspension therefore refuses unless MinHook's own would still fit
-//! on top of it.
+//! It no longer suspends anything, and it no longer moves an instruction
+//! pointer. `minhook_h4` is this workspace's fork of MinHook and the deletion is
+//! in the C: `Freeze`, `Unfreeze`, `EnumerateThreads`, `ProcessThreadIPs`,
+//! `FindOldIP` and `FindNewIP` are gone, with `tlhelp32.h` and the
+//! instruction-boundary tables only they read. What is left inside the window is
+//! `VirtualProtect`, `memcpy` and a cache flush, under a lock this freeze
+//! already holds.
 //!
-//! Its `OpenThread` is only EXPECTED to succeed, and that half is the weaker
-//! claim of the two -- stated as an expectation because it is not established,
-//! and nothing in this file establishes it. What was verified is the access on
-//! OUR handle, at the moment the walk opened it; MinHook opens a SECOND handle
-//! afterwards. Absent a descriptor rewritten in between and absent resource
-//! failure that open succeeds -- and both exclusions are reachable:
+//! THIS PARAGRAPH USED TO SAY THE OPPOSITE, and the shape of what it said is
+//! worth keeping because it is the reason the fork exists. Upstream MinHook
+//! suspended every thread a SECOND time inside our window, and both halves of
+//! that were hazards this module could only narrow:
 //!
-//!  * the thread's security descriptor was rewritten in between, which nothing
-//!    in this process does and which an external actor could equally use to
-//!    defeat our own open one line earlier;
-//!  * the open failed for a reason that has nothing to do with security at all
-//!    -- an exhausted handle table, or a kernel allocation failure.
+//!  * its `SuspendThread` could fail on a thread we had already suspended to
+//!    `MAXIMUM_SUSPEND_COUNT`, and its answer to a failed suspend was to strike
+//!    the thread off and patch anyway;
+//!  * its second `OpenThread` could fail for a reason nothing here can exclude
+//!    -- an exhausted handle table, a kernel allocation failure -- with the same
+//!    answer;
+//!  * and `ProcessThreadIPs` relocated a parked thread by reading and writing
+//!    its context, returned silently when the READ failed, ignored a failed
+//!    WRITE, and patched the bytes regardless. A thread it failed to move
+//!    resumed into a half-old, half-new instruction stream.
 //!
-//! MinHook's response to either is its fail-open branch: it strikes the thread
-//! off, skips `ProcessThreadIPs`, and rewrites the bytes anyway, and the thread
-//! resumes into them when our freeze drops.
+//! None of those paths exists any more. The question `ProcessThreadIPs` answered
+//! by relocating is now answered BEFORE anything is patched, by this module:
+//! [`ProcessFreeze::refuse_if_a_thread_is_in`] and
+//! [`ProcessFreeze::refuse_if_a_thread_is_in_a_queued_patch`] ask MinHook for
+//! the exact bytes an operation would rewrite -- and, for a removal, the
+//! trampoline slot it would free -- and REFUSE the whole operation
+//! ([`FreezeRefusal::TargetExecuting`]) if any held thread is stopped inside
+//! them. Nothing is patched, the freeze drops, the game runs on, and the caller
+//! may try again. That is strictly stronger than relocating a thread whose
+//! context the library might have failed to read.
 //!
-//! Closing it is a change to the vendored library, not to this file, and it is
-//! NOT simply "abort on the first failure". `Freeze()` calls `ProcessThreadIPs`
-//! for each thread as it succeeds, so a failure on thread N leaves threads 1..N
-//! with instruction pointers already RELOCATED for a patch that then never
-//! lands -- aborting there resumes them at addresses that mean nothing. The real
-//! fix is two-phase: prove every handle, suspension and context first, relocate
-//! nothing until all of them hold, or else save and roll back every context it
-//! changed. That is another pass over the thread list or a context backup, not
-//! another system snapshot. It is recorded here as what it is: the last
-//! fail-open this module narrows but does not remove.
-//!
-//! So: for every thread this module accounted for, MinHook's fail-open branch is
-//! unreachable absent one of the failures above, and `ProcessThreadIPs` now runs
-//! for threads it previously skipped. That is a narrowing, not an elimination,
-//! and the list above says exactly what is left.
+//! AND ITS LOCK IS OURS BEFORE ANYTHING STOPS. Every MinHook entry point
+//! requires a lock whose acquisition sleeps on contention; entered inside a
+//! frozen window, a lock held by a suspended thread is a permanent hang. This
+//! freeze takes it before its first `SuspendThread` and releases it after its
+//! last resume -- see [`FreezeRefusal::MinHookLock`].
 //!
 //! # "Accounted for" means suspended or PROVEN gone
 //!
@@ -817,6 +815,11 @@ pub fn freeze_attempts_on_this_thread() -> u64 {
 }
 
 /// How many of those attempts refused, leaving the target untouched.
+pub fn resume_failures() -> u64 {
+    RESUME_FAILURES.load(Ordering::Acquire)
+}
+
+/// How many freezes were REFUSED.
 pub fn freeze_refusals() -> u64 {
     FREEZE_REFUSALS.load(Ordering::Acquire)
 }
@@ -973,6 +976,39 @@ pub enum FreezeRefusal {
     /// the one failure mode that is strictly worse than refusing. So this
     /// refuses instead, and the reservation is a BOUND rather than a hope.
     CapacityExceeded { buffer: &'static str, capacity: usize },
+    /// MinHook's library-wide lock could not be taken BEFORE the first
+    /// suspension.
+    ///
+    /// # Why the lock is part of the freeze at all
+    ///
+    /// Every MinHook entry point requires that lock, and its acquisition is the
+    /// only call in that library that can WAIT. Taken inside a frozen window --
+    /// which is where it used to be taken, by the MinHook call this freeze was
+    /// wrapped around -- a lock held by a thread this freeze has suspended is a
+    /// permanent hang of the game: the contention path sleeps, and there is
+    /// nobody left to release it.
+    ///
+    /// So the freeze takes it here, with every thread still RUNNING, and holds
+    /// it until after the last resume. No thread this freeze suspends can then
+    /// be inside MinHook at all. The wait that used to be fatal is now a wait
+    /// on a moving process, and it is bounded by the work of whichever thread
+    /// holds it -- a `create_hook`, which allocates a trampoline and returns.
+    ///
+    /// Reaching this refusal means the lock was already held BY THIS THREAD,
+    /// which is a caller freezing inside a freeze, or MinHook failed to
+    /// initialise. Neither is retryable here and neither patches anything.
+    MinHookLock(minhook::MH_STATUS),
+    /// A held thread is stopped inside bytes this operation would rewrite, or
+    /// inside a trampoline slot it would free.
+    ///
+    /// NOT AN ERROR IN THE PROCESS -- a transient position. The game is running
+    /// again the moment this refusal drops the freeze, the thread leaves the
+    /// prologue it was in, and the same call succeeds on a later attempt. What
+    /// it must never do is what upstream MinHook did: patch anyway.
+    TargetExecuting { ranges: usize },
+    /// MinHook could not report what an operation would rewrite, so the check
+    /// above could not be made and nothing was patched.
+    MinHookQuery(minhook::MH_STATUS),
 }
 
 impl fmt::Display for FreezeRefusal {
@@ -1067,6 +1103,25 @@ impl fmt::Display for FreezeRefusal {
                  held, and growing it would take the allocator's lock that a \
                  suspended thread may hold; no target byte was touched"
             ),
+            Self::MinHookLock(status) => write!(
+                f,
+                "detour patch refused: MinHook's library lock could not be taken                  before the freeze ({status:?}); it is taken with the process                  still running precisely so that no suspended thread can be                  holding it, and no target byte was touched"
+            ),
+            Self::TargetExecuting { ranges } => write!(
+                f,
+                "detour patch refused: a thread of this process is stopped \
+                 inside one of the {ranges} byte ranges this operation would \
+                 rewrite or free, so patching would resume it into a half-old, \
+                 half-new instruction stream; no target byte was touched and \
+                 the attempt can be repeated once the game has run on"
+            ),
+            Self::MinHookQuery(status) => write!(
+                f,
+                "detour patch refused: MinHook could not report which bytes the \
+                 operation would rewrite ({status:?}), so the check that no \
+                 thread is stopped inside them could not be made; no target \
+                 byte was touched"
+            ),
         }
     }
 }
@@ -1115,16 +1170,25 @@ pub(crate) fn walk_stop_is_end_of_list(status: i32) -> bool {
     status == STATUS_NO_MORE_ENTRIES
 }
 
-/// Does our suspension leave room for the one MinHook still has to take?
+/// Is a suspension that lands on this count still safe to keep?
 ///
-/// `SuspendThread` returns the target's PREVIOUS suspend count and fails
-/// rather than increment past `MAXIMUM_SUSPEND_COUNT`. A successful suspension
-/// of ours is therefore not enough: MinHook's `Freeze()` suspends the same
-/// thread again inside the window we hold, and when THAT fails MinHook strikes
-/// the thread off its resume list, skips `ProcessThreadIPs`, and rewrites the
-/// bytes anyway. Landing exactly on the ceiling hands MinHook its fail-open
-/// branch on a thread that is genuinely live -- the one case this whole module
-/// exists to make unreachable.
+/// # The rule outlived its reason, and the reason is stated as history
+///
+/// It was written when MinHook suspended every thread a SECOND time inside our
+/// window: `SuspendThread` fails rather than increment past
+/// `MAXIMUM_SUSPEND_COUNT`, so a thread we suspended to exactly the ceiling was
+/// one MinHook could not suspend, and its answer to a failed suspend was to
+/// strike the thread off and patch anyway. Leaving room was how this module kept
+/// that fail-open unreachable.
+///
+/// THE FORK NO LONGER SUSPENDS ANYTHING, so that consumer is gone. The headroom
+/// is KEPT, deliberately, and it is now a conservative rule rather than a
+/// derived one: a thread sitting one below the ceiling is one no other component
+/// of this process -- ours or the game's -- can suspend again, and refusing a
+/// capture is the cheap outcome where being wrong is a thread that never
+/// resumes. Relaxing it by one is a behaviour change to a shipped attach path
+/// and belongs with whoever needs the case, not with the lane that removed its
+/// original reason.
 pub(crate) fn leaves_room_for_minhooks_suspension(previous_count: u32) -> bool {
     previous_count
         .saturating_add(1)
@@ -1191,6 +1255,58 @@ pub(crate) fn classify_suspend_failure(signalled: bool) -> ThreadDisposition {
 /// owns.
 static FREEZE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Threads this process suspended and could not prove it resumed.
+///
+/// # Why a counter and not a refusal
+///
+/// By the time this can happen the freeze is already over: `Drop` is resuming.
+/// There is nothing left to refuse and nothing to roll back -- the only
+/// question is whether the failure is SAID. A thread left suspended is a game
+/// that never runs again, and the code this replaced called `ResumeThread` and
+/// closed the handle without looking at the result, so that outcome and a clean
+/// resume were the same silence.
+///
+/// A non-zero value means exactly one thing: a thread of this process was
+/// suspended by a freeze, could not be resumed in [`RESUME_ATTEMPTS`] tries,
+/// and was not observed terminated. Every other disposition -- resumed, or
+/// terminated while suspended, which cannot be resumed and does not need to be
+/// -- leaves it alone.
+static RESUME_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a resume is retried before the thread is probed for
+/// termination.
+///
+/// Retried WITHOUT WAITING between attempts, and the bound is small because
+/// there is no reason to expect a second try to differ: the handle is one this
+/// freeze opened with `THREAD_SUSPEND_RESUME` and has held ever since. The
+/// retries are here for a transient kernel refusal, not for a wait -- a sleep
+/// in this loop would be a sleep with the rest of the process still stopped.
+/// Resume a thread this freeze suspended, and COUNT it if it cannot be resumed.
+///
+/// The one place a resume is performed, so the retry, the termination probe and
+/// the counter cannot be present on one path and missing on another -- which is
+/// exactly what review round 2 found: `Drop` had them and the two construction
+/// rollbacks did not, and the threads those rollbacks resume are never entered
+/// into `accounted`, so `Drop` could not cover them either.
+///
+/// Retried WITHOUT WAITING between attempts. A thread that TERMINATED while
+/// suspended cannot be resumed and does not need to be; that is what the
+/// zero-timeout probe separates from a real failure.
+unsafe fn resume_or_count(handle: HANDLE) {
+    let mut attempts = RESUME_ATTEMPTS;
+    while unsafe { ResumeThread(handle) } == u32::MAX {
+        attempts -= 1;
+        if attempts == 0 {
+            if unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0 {
+                RESUME_FAILURES.fetch_add(1, Ordering::AcqRel);
+            }
+            break;
+        }
+    }
+}
+
+const RESUME_ATTEMPTS: u32 = 3;
+
 /// Every other LIVE thread this freeze could establish, suspended until this
 /// value is dropped -- established by the roster confirmation that ends the
 /// freeze, not by the walk that found them, and no wider than what that
@@ -1243,6 +1359,21 @@ pub struct ProcessFreeze {
     /// Held for the lifetime of the freeze, and released only once the buffers
     /// above are gone.
     _serialisation: MutexGuard<'static, ()>,
+    /// The patch footprints a check inside the window fills, reserved before
+    /// the first suspension for the same reason every other buffer here is:
+    /// growing it with threads held calls the allocator, whose lock one of them
+    /// may own. Exhausting it REFUSES.
+    footprints: Vec<(usize, usize)>,
+    /// MinHook's library lock, taken BEFORE the first suspension and released
+    /// AFTER the last resume -- see [`FreezeRefusal::MinHookLock`] for why the
+    /// freeze owns it.
+    ///
+    /// DECLARED LAST ON PURPOSE. Fields drop in declaration order after
+    /// `Drop::drop` has run, so this is released after the buffers are freed
+    /// and after `_serialisation`: acquire MinHook then the freeze lock, release
+    /// the freeze lock then MinHook. One global order, so two freezers cannot
+    /// take them in opposite orders.
+    _minhook_lock: minhook::MinHookLock,
     /// Enumeration passes it took to reach the fixed point.
     passes: u32,
     /// What this stopped window is costing, in flight.
@@ -1324,6 +1455,18 @@ impl ProcessFreeze {
         self.passes
     }
 
+    /// MinHook's library lock, which this freeze took before it suspended
+    /// anything.
+    ///
+    /// Every MinHook operation performed inside the window borrows it, so the
+    /// type system carries the fact that the lock is held: there is no way to
+    /// call one of those operations from inside a window without naming the
+    /// freeze that owns the lock, and no way to acquire it a second time --
+    /// [`minhook::MinHookLock`] is not reentrant and refuses.
+    pub(crate) fn minhook_lock(&self) -> &minhook::MinHookLock {
+        &self._minhook_lock
+    }
+
     /// Name which entry point took this window, and over how many targets.
     ///
     /// A freeze nobody names is recorded as `freeze_process`, which is what a
@@ -1349,9 +1492,12 @@ impl ProcessFreeze {
     /// the queueing loop or the rollback would answer a different question than
     /// the one the census is for. Two `Instant::now()` reads bracket exactly the
     /// call and are the only work this adds inside the frozen window.
-    pub(crate) fn time_minhook<T>(&mut self, call: impl FnOnce() -> T) -> T {
+    pub(crate) fn time_minhook<T>(
+        &mut self,
+        call: impl FnOnce(&minhook::MinHookLock) -> T,
+    ) -> T {
         let started = Instant::now();
-        let outcome = call();
+        let outcome = call(&self._minhook_lock);
         let span = started.elapsed();
         if let Some(timing) = self.timing.as_mut() {
             timing.note_minhook(span);
@@ -1409,6 +1555,149 @@ impl ProcessFreeze {
             }
         })?;
         Ok(found)
+    }
+
+    /// REFUSE if any held thread is stopped in bytes a queued apply would
+    /// rewrite.
+    ///
+    /// # What replaced the relocation, and why this is stronger
+    ///
+    /// Upstream MinHook answered this question by MOVING the parked thread's
+    /// instruction pointer into the trampoline -- and it returned silently when
+    /// it could not read the thread's context, ignored a failed write, and
+    /// patched the bytes anyway. A thread it failed to move resumed into a
+    /// half-old, half-new instruction stream. The fork deleted that path; this
+    /// is what stands in its place, and it REFUSES instead of relocating:
+    /// nothing is patched, the freeze is dropped, the game runs on, and the
+    /// caller may try again -- by which time the thread has moved.
+    ///
+    /// # Why the QUEUED set rather than the caller's targets
+    ///
+    /// MinHook's queue is library-global and an apply patches every entry whose
+    /// queued state diverges from its live state, including one an earlier
+    /// caller left behind. Asking about the caller's own slice would be asking
+    /// about the wrong set.
+    ///
+    /// Allocation-free: the ranges go into the buffer reserved before the first
+    /// suspension, and exhausting it refuses.
+    pub(crate) fn refuse_if_a_thread_is_in_a_queued_patch(
+        &mut self,
+    ) -> Result<(), FreezeRefusal> {
+        let mut ordinal = 0u32;
+        let mut ranges = core::mem::take(&mut self.footprints);
+        ranges.clear();
+        let filled = loop {
+            match minhook::MinHook::pending_footprint(&self._minhook_lock, ordinal) {
+                Ok(None) => break Ok(()),
+                Ok(Some((_target, footprint))) => {
+                    if ranges.len() == ranges.capacity() {
+                        break Err(FreezeRefusal::CapacityExceeded {
+                            buffer: "patch footprint table",
+                            capacity: ranges.capacity(),
+                        });
+                    }
+                    ranges.push(footprint.patch);
+                    ordinal = ordinal.saturating_add(1);
+                }
+                Err(status) => break Err(FreezeRefusal::MinHookQuery(status)),
+            }
+        };
+        let answer = filled.and_then(|()| self.refuse_if_a_thread_is_in_any_of(&ranges));
+        self.footprints = ranges;
+        answer
+    }
+
+    /// REFUSE if any held thread is stopped in bytes an operation on these
+    /// targets would rewrite, or -- when the operation FREES the trampoline --
+    /// inside a trampoline slot.
+    ///
+    /// The remove path passes `include_trampolines`: `MH_RemoveHook` restores
+    /// the target's bytes and then frees the slot, so a thread parked in the
+    /// slot is a use-after-free the moment it resumes.
+    pub(crate) fn refuse_if_a_thread_is_in(
+        &mut self,
+        targets: impl Iterator<Item = *mut c_void>,
+        include_trampolines: bool,
+    ) -> Result<(), FreezeRefusal> {
+        let mut ranges = core::mem::take(&mut self.footprints);
+        ranges.clear();
+        let filled = (|| {
+            for target in targets {
+                let footprint = match minhook::MinHook::patch_footprint(
+                    &self._minhook_lock,
+                    target,
+                ) {
+                    Ok(footprint) => footprint,
+                    // NO HOOK, NO BYTES. A target MinHook does not know is one
+                    // this operation will refuse on its own terms
+                    // (`MH_ERROR_NOT_CREATED`, which the release paths read as
+                    // already-released), and turning that into a freeze refusal
+                    // here would rewrite a success into a failure. It
+                    // contributes no range, which is exactly true: nothing will
+                    // be rewritten at it.
+                    Err(minhook::MH_STATUS::MH_ERROR_NOT_CREATED) => continue,
+                    Err(status) => return Err(FreezeRefusal::MinHookQuery(status)),
+                };
+                let wanted = if include_trampolines { 2 } else { 1 };
+                if ranges.capacity() - ranges.len() < wanted {
+                    return Err(FreezeRefusal::CapacityExceeded {
+                        buffer: "patch footprint table",
+                        capacity: ranges.capacity(),
+                    });
+                }
+                ranges.push(footprint.patch);
+                if include_trampolines {
+                    ranges.push(footprint.trampoline);
+                }
+            }
+            Ok(())
+        })();
+        let answer = filled.and_then(|()| self.refuse_if_a_thread_is_in_any_of(&ranges));
+        self.footprints = ranges;
+        answer
+    }
+
+    /// The shared tail of both checks, reachable from a test with ranges it
+    /// chooses.
+    ///
+    /// Test-only, and it adds NO production behaviour: it forwards to the same
+    /// function both production checks end in. It exists because the ranges
+    /// production passes are MinHook's answer about a real hook, and a test
+    /// that wanted to observe the refusal would otherwise have to park a thread
+    /// inside five specific bytes of a live function -- which is not something
+    /// a test can arrange deterministically.
+    #[cfg(test)]
+    pub(crate) fn refuse_if_a_thread_is_in_ranges(
+        &self,
+        ranges: &[(usize, usize)],
+    ) -> Result<(), FreezeRefusal> {
+        self.refuse_if_a_thread_is_in_any_of(ranges)
+    }
+
+    /// The shared tail of both checks.
+    fn refuse_if_a_thread_is_in_any_of(
+        &self,
+        ranges: &[(usize, usize)],
+    ) -> Result<(), FreezeRefusal> {
+        if ranges.is_empty() {
+            // Nothing to patch is not a reason to skip the settle: every path
+            // that rewrites bytes under this freeze completes its suspensions
+            // first, and an empty set must not be the one that does not.
+            return self.settle_suspensions();
+        }
+        if self.any_instruction_pointer_in(ranges)? {
+            // WHICH range is not reported, and that is deliberate rather than
+            // lazy: `any_instruction_pointer_in` reads every held thread and
+            // answers once, because short-circuiting would leave the threads
+            // past the hit unsettled. Naming the range would mean either a
+            // second pass or a per-thread channel out of that read, and the
+            // caller's response -- unfreeze, let the game run, try again -- is
+            // the same for every range.
+            return Err(FreezeRefusal::TargetExecuting {
+                ranges: ranges.len(),
+            });
+        }
+        Ok(())
     }
 
     /// Force every held suspension to COMPLETE, and answer nothing else.
@@ -1547,7 +1836,13 @@ impl Drop for ProcessFreeze {
         for entry in self.accounted.drain(..).rev() {
             unsafe {
                 if entry.suspended {
-                    ResumeThread(entry.handle);
+                    // THE RETURN IS READ, and that is the difference from the
+                    // loop this replaces. `ResumeThread` answers `u32::MAX` on
+                    // failure, and the old loop discarded it and closed the
+                    // handle -- so a thread this freeze had suspended and could
+                    // not resume was indistinguishable from one it resumed, and
+                    // the game it belongs to never runs again.
+                    resume_or_count(entry.handle);
                 }
                 CloseHandle(entry.handle);
             }
@@ -2204,6 +2499,12 @@ fn account_for(
 }
 
 fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
+    // FIRST, AND BEFORE THE FREEZE LOCK. This is the one acquisition order the
+    // process may use; taking the freeze lock first and MinHook's second would
+    // let two freezers deadlock against each other. It is also the reason this
+    // is here rather than in the patch wrappers above: a freeze that does not
+    // hold it can suspend a thread that does, and then nobody can proceed.
+    let minhook_lock = minhook::MinHookLock::acquire().map_err(FreezeRefusal::MinHookLock)?;
     // Taken before the first enumeration: a competing freezer must be either
     // entirely before us or entirely after us, never interleaved.
     let serialisation = FREEZE_LOCK
@@ -2258,11 +2559,29 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         });
     }
     roster.resize(roster_bytes, 0);
+    // AND THE FOOTPRINT BUFFER. Two ranges per hook -- the bytes a patch
+    // rewrites and the trampoline slot a remove frees -- for every hook the
+    // library holds, which is the bound on any set a single window can be asked
+    // about. Asked HERE, under the lock and before the first suspension.
+    let hooks_held = minhook::MinHook::hook_count(&minhook_lock)
+        .map_err(FreezeRefusal::MinHookLock)? as usize;
+    let mut footprints: Vec<(usize, usize)> = Vec::new();
+    if footprints
+        .try_reserve(hooks_held.saturating_mul(2).saturating_add(8))
+        .is_err()
+    {
+        return Err(FreezeRefusal::CapacityExceeded {
+            buffer: "patch footprint table",
+            capacity: footprints.capacity(),
+        });
+    }
 
     let mut freeze = ProcessFreeze {
         accounted,
         roster,
         _serialisation: serialisation,
+        footprints,
+        _minhook_lock: minhook_lock,
         passes: 0,
         timing: None,
     };
@@ -2400,7 +2719,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
                 // and refuse: proceeding would hand MinHook its fail-open
                 // branch on a thread that is provably still live.
                 unsafe {
-                    ResumeThread(handle);
+                    resume_or_count(handle);
                     CloseHandle(handle);
                 }
                 return Err(FreezeRefusal::SuspendCeiling {
@@ -2453,7 +2772,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             // refusal path resumes only what the table already holds.
             if let Err(refusal) = account_for(&mut freeze, thread_id, handle, true) {
                 unsafe {
-                    ResumeThread(handle);
+                    resume_or_count(handle);
                     CloseHandle(handle);
                 }
                 return Err(refusal);
@@ -3277,10 +3596,20 @@ mod tests {
         // wait sit beside it.
         assert_eq!(
             production.matches("WaitForSingleObject").count(),
-            2,
+            // Three: the import, the suspend path's termination probe, and
+            // the resume path's. `Drop` reads `ResumeThread`'s result now,
+            // and probes a thread it could not resume for termination
+            // before counting it as a failure -- the same question the
+            // suspend path asks, asked at the other end of the window.
+            3,
             "this module names WaitForSingleObject somewhere other than its \
-             import and its one zero-timeout probe; a second wait blocks the \
+             import and its two zero-timeout probes; another wait blocks the \
              freezing thread with every other thread already suspended"
+        );
+        assert!(
+            production.contains("WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0"),
+            "the resume path's probe must be a ZERO-timeout wait too: it runs \
+             while every thread after it in the resume loop is still suspended"
         );
         assert!(
             production.contains("WaitForSingleObject(handle, 0) == WAIT_OBJECT_0"),
@@ -3415,8 +3744,8 @@ mod tests {
         // here, whatever it is spelled with.
         assert!(
             production.contains(
-                "pub(crate) fn time_minhook<T>(&mut self, call: impl FnOnce() -> T) -> T \
-                 { let started = Instant::now(); let outcome = call(); \
+                "pub(crate) fn time_minhook<T>(&mut self, call: impl FnOnce(&minhook::MinHookLock) -> T) -> T \
+                 { let started = Instant::now(); let outcome = call(&self._minhook_lock); \
                  let span = started.elapsed(); if let Some(timing) = self.timing.as_mut() \
                  { timing.note_minhook(span); } outcome }"
             ),
@@ -3495,7 +3824,7 @@ mod tests {
             production.contains(
                 "impl Drop for ProcessFreeze { fn drop(&mut self) \
                  { for entry in self.accounted.drain(..).rev() { unsafe \
-                 { if entry.suspended { ResumeThread(entry.handle); } \
+                 { if entry.suspended { resume_or_count(entry.handle); } \
                  CloseHandle(entry.handle); } } if let Some(timing) = self.timing.take() \
                  { crate::freeze_census::record(timing.close(Instant::now(), self.passes)); } } }"
             ),
@@ -4296,6 +4625,7 @@ mod tests {
             .expect("the freeze iterates to a fixed point")
             .1;
         for allocating in [
+            concat!("MinHookLock::", "acquire"),
             concat!("Vec::", "new"),
             concat!("Default::", "default"),
             concat!("reser", "ve("),
@@ -4393,6 +4723,7 @@ mod tests {
             let body = production_fn_body(&production_all, helper)
                 .expect("a reachable helper has a body");
             for allocating in [
+                concat!("MinHookLock::", "acquire"),
                 concat!("Vec::", "new"),
                 concat!("Default::", "default"),
                 concat!("reser", "ve("),
@@ -6077,4 +6408,186 @@ mod tests {
             "the churn never advanced again after the freezes were dropped, so              the held-window observation above proved nothing"
         );
     }
+
+    /// A RESUME THAT FAILS IS COUNTED, not swallowed.
+    ///
+    /// `Drop` used to call `ResumeThread` and close the handle without reading
+    /// the result, so a thread this freeze had suspended and could not resume
+    /// -- a game that never runs again -- looked exactly like a clean resume.
+    /// It is now retried, probed for termination, and counted.
+    ///
+    /// What production change would make this fail? Dropping the return check
+    /// again, or counting a terminated thread as a failure (which would make
+    /// this counter fire on every capture that ends a thread while frozen).
+    /// EVERY RESUME GOES THROUGH THE COUNTED HELPER.
+    ///
+    /// The behavioural test below drives only successful resumes, and no test
+    /// can make `ResumeThread` fail on a live thread this process holds a
+    /// handle to without corrupting the freeze it is testing. What CAN be
+    /// asserted is that there is exactly one place a resume happens, so a
+    /// failure cannot be swallowed on one path while being counted on another
+    /// -- which is the defect review round 2 found in the two construction
+    /// rollbacks.
+    ///
+    /// What production change would make this fail? A bare `ResumeThread` added
+    /// anywhere in this module.
+    #[test]
+    fn every_resume_in_this_module_is_the_counted_one() {
+        let production = code_only(&production_code());
+        assert_eq!(
+            production.matches("ResumeThread(").count(),
+            1,
+            "exactly one call, and it is the helper's own"
+        );
+        let helper = production
+            .split_once("unsafe fn resume_or_count(handle: HANDLE)")
+            .expect("the counted resume exists")
+            .1;
+        let helper = &helper[..helper.find("} /").unwrap_or(helper.len().min(600))];
+        assert!(
+            helper.contains("ResumeThread(handle)"),
+            "the one call must be the helper's own"
+        );
+        assert_eq!(
+            production.matches("resume_or_count(").count(),
+            4,
+            "the helper is defined once and called from the three places that \
+             resume: `Drop`, the suspend-ceiling rollback and the capacity \
+             rollback"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_freeze_resumes_everything_it_suspended() {
+        let _suspend = os_suspend_state_guard();
+        let before = resume_failures();
+        for _ in 0..3 {
+            let frozen = freeze_process().expect("freeze");
+            assert!(frozen.frozen_thread_count() >= 1, "the harness has threads");
+            drop(frozen);
+        }
+        assert_eq!(
+            resume_failures(),
+            before,
+            "a freeze that resumed everything it suspended must not count a              resume failure"
+        );
+    }
+
+    /// AND THE ORDER IT IS TAKEN IN, pinned against the source because no
+    /// offline test can observe the deadlock it prevents.
+    ///
+    /// TWO properties, and both are load-bearing:
+    ///
+    /// * MinHook's lock is acquired BEFORE `FREEZE_LOCK`. One global order, so
+    ///   two freezers cannot take the pair in opposite orders and wedge each
+    ///   other -- which is a deadlock with the process stopped, not a slow path.
+    /// * It is acquired ONCE, in the freeze, and nowhere else in this module. A
+    ///   second acquisition anywhere would be a caller taking it with threads
+    ///   already suspended, which is the hang this lane closed.
+    ///
+    /// What production change would make this fail? Moving the acquisition
+    /// after the freeze lock, or adding another one.
+    #[test]
+    fn minhooks_lock_is_taken_once_and_before_the_freeze_lock() {
+        let production = code_only(&production_code());
+        assert_eq!(
+            production.matches("MinHookLock::acquire()").count(),
+            1,
+            "exactly one acquisition, and it belongs to the freeze"
+        );
+        let acquire = production
+            .find("MinHookLock::acquire()")
+            .expect("the freeze acquires MinHook's lock");
+        let freeze_lock = production
+            .find("FREEZE_LOCK.lock()")
+            .expect("the freeze takes its own serialisation lock");
+        assert!(
+            acquire < freeze_lock,
+            "MinHook's lock must be taken BEFORE the freeze lock; one global              order is what keeps two freezers from deadlocking"
+        );
+        // And before anything is suspended, which is the whole point.
+        let first_suspend = production
+            .find("SuspendThread(")
+            .expect("the freeze suspends threads");
+        assert!(
+            acquire < first_suspend,
+            "MinHook's lock must be taken before the first suspension: a lock              taken after it may already be held by a thread that can no longer run"
+        );
+    }
+
+    /// THE HANG DEFECT, CLOSED: the freeze owns MinHook's lock for the whole
+    /// window, so no thread it suspends can be holding it.
+    ///
+    /// Before this, every MinHook call this crate made took that lock INSIDE
+    /// the freeze -- and MinHook's acquisition sleeps on contention, with
+    /// nobody left to run and release it. The lock is now taken before the
+    /// first `SuspendThread` and released after the last resume.
+    ///
+    /// What production change would make this fail? Moving the acquisition
+    /// out of `freeze_other_threads_inner` -- back to the individual MinHook
+    /// calls, which is exactly where it used to be.
+    #[test]
+    fn the_freeze_holds_minhooks_lock_for_the_whole_window() {
+        let _suspend = os_suspend_state_guard();
+        // Free before the freeze...
+        let probe = minhook::MinHookLock::acquire().expect("the lock is free");
+        drop(probe);
+        let frozen = freeze_process().expect("freeze");
+        // ...and HELD BY THIS THREAD while the freeze lives. A second
+        // acquisition from the owning thread is refused rather than spinning,
+        // which is what proves the freeze is the owner.
+        assert_eq!(
+            minhook::MinHookLock::acquire().unwrap_err(),
+            minhook::MH_STATUS::MH_ERROR_LOCK_HELD,
+            "the freeze must hold MinHook's lock while it holds the process"
+        );
+        drop(frozen);
+        // And released again with the resume, so the next caller is not wedged.
+        let after = minhook::MinHookLock::acquire().expect("the lock is free again");
+        drop(after);
+    }
+
+    /// THE CRASH DEFECT, CLOSED: a held thread inside the bytes an operation
+    /// would rewrite REFUSES the operation, by name, having patched nothing.
+    ///
+    /// MinHook used to relocate such a thread's instruction pointer and patch
+    /// regardless of whether the relocation had worked. The fork deleted that
+    /// path; this is the check that replaced it, driven with a range that
+    /// certainly contains every held thread's instruction pointer.
+    ///
+    /// What production change would make this fail? Returning `Ok` from
+    /// `refuse_if_a_thread_is_in_any_of` when `any_instruction_pointer_in`
+    /// answers true -- which is the fail-open this lane removed.
+    #[test]
+    fn a_thread_inside_the_bytes_a_patch_would_rewrite_refuses_it() {
+        let _suspend = os_suspend_state_guard();
+        let frozen = freeze_process().expect("freeze");
+        let refusal = frozen
+            .refuse_if_a_thread_is_in_ranges(&[(0, usize::MAX)])
+            .expect_err("every held thread's instruction pointer is in this range");
+        assert!(
+            matches!(refusal, FreezeRefusal::TargetExecuting { ranges: 1 }),
+            "{refusal:?}"
+        );
+        // The refusal is a NAMED one that says nothing was touched.
+        let said = refusal.to_string();
+        assert!(said.contains("no target byte was touched"), "{said}");
+        // And an empty-range question still settles the suspensions rather
+        // than short-circuiting.
+        assert!(frozen.refuse_if_a_thread_is_in_ranges(&[]).is_ok());
+        drop(frozen);
+    }
+
+    /// A range no thread is inside does not refuse, so the guard above is not
+    /// simply refusing everything.
+    #[test]
+    fn a_range_no_thread_is_inside_does_not_refuse() {
+        let _suspend = os_suspend_state_guard();
+        let frozen = freeze_process().expect("freeze");
+        // One byte at an address no code can be executing: the null page is
+        // never mapped executable in this process.
+        assert!(frozen.refuse_if_a_thread_is_in_ranges(&[(1, 2)]).is_ok());
+        drop(frozen);
+    }
+
 }

@@ -321,52 +321,77 @@ unsafe fn write_code(address: usize, expected: &[u8], replacement: &[u8]) -> Res
     // truncated enumeration and iterates to a fixed point instead.
     let suspended = inline_detour::freeze_process()
         .map_err(|refusal| format!("A31 inline patch refused: {refusal}"))?;
-    if suspended
-        .any_instruction_pointer_in(&[(address, address + replacement.len())])
-        .map_err(|refusal| format!("A31 inline patch refused: {refusal}"))?
-    {
+
+    // NOTHING BELOW THIS LINE UNTIL `drop(suspended)` MAY ALLOCATE.
+    //
+    // Every other thread of the game is stopped here, so a call into the
+    // allocator can wait on a lock one of them holds with nobody left to
+    // release it -- a permanent hang of the player's game, not a slow path.
+    // This function used to build FIVE `String`s in here, all of them on
+    // failure paths, which is the worst place for it: the hang would happen
+    // exactly when something had already gone wrong. What the window produces
+    // now is a `&'static str` reason and a copied refusal; the message is built
+    // after the resume. `frozen_window_audit_tests` in this crate's `lib.rs`
+    // fails if that changes.
+    let mut freeze_refusal = None;
+    let mut refusal: Option<&'static str> = None;
+    match suspended.any_instruction_pointer_in(&[(address, address + replacement.len())]) {
+        Err(refused) => freeze_refusal = Some(refused),
+        Ok(true) => refusal = Some("a thread is executing inside the site"),
+        Ok(false) => {
+            let mut old = 0;
+            if unsafe {
+                VirtualProtect(
+                    address as *mut c_void,
+                    replacement.len(),
+                    PAGE_EXECUTE_READWRITE,
+                    &mut old,
+                )
+            } == 0
+            {
+                refusal = Some("protection change failed");
+            } else {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        replacement.as_ptr(),
+                        address as *mut u8,
+                        replacement.len(),
+                    )
+                };
+                let mut ignored = 0;
+                if unsafe {
+                    VirtualProtect(
+                        address as *mut c_void,
+                        replacement.len(),
+                        old,
+                        &mut ignored,
+                    )
+                } == 0
+                {
+                    refusal = Some("protection restore failed");
+                } else if unsafe {
+                    FlushInstructionCache(
+                        GetCurrentProcess(),
+                        address as *const c_void,
+                        replacement.len(),
+                    )
+                } == 0
+                {
+                    refusal = Some("instruction-cache flush failed");
+                }
+            }
+        }
+    }
+    drop(suspended);
+
+    if let Some(refused) = freeze_refusal {
+        return Err(format!("A31 inline patch refused: {refused}"));
+    }
+    if let Some(reason) = refusal {
         return Err(format!(
-            "A31 inline patch refused: a thread is executing inside {address:#x}..{:#x}",
+            "A31 inline patch refused: {reason} at {address:#x}..{:#x}",
             address + replacement.len()
         ));
-    }
-
-    let mut old = 0;
-    if unsafe {
-        VirtualProtect(
-            address as *mut c_void,
-            replacement.len(),
-            PAGE_EXECUTE_READWRITE,
-            &mut old,
-        )
-    } == 0
-    {
-        return Err("A31 inline patch protection change failed".into());
-    }
-    unsafe {
-        ptr::copy_nonoverlapping(replacement.as_ptr(), address as *mut u8, replacement.len())
-    };
-    let mut ignored = 0;
-    if unsafe {
-        VirtualProtect(
-            address as *mut c_void,
-            replacement.len(),
-            old,
-            &mut ignored,
-        )
-    } == 0
-    {
-        return Err("A31 inline patch protection restore failed".into());
-    }
-    if unsafe {
-        FlushInstructionCache(
-            GetCurrentProcess(),
-            address as *const c_void,
-            replacement.len(),
-        )
-    } == 0
-    {
-        return Err("A31 inline patch instruction-cache flush failed".into());
     }
     Ok(())
 }

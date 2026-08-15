@@ -16,7 +16,7 @@ snapshot = { path = "../../snapshot" }
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
-minhook = "0.9.0"
+minhook = { package = "minhook_h4", path = "../../minhook_h4" }
 windows-sys = { version = "0.61.2", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
@@ -26,3 +26,6 @@ windows-sys = { version = "0.61.2", features = [
 [[bin]]
 name = "supply_logistics_attrition_replay_pack_proof"
 path = "src/bin/replay_pack_proof.rs"
+
+[dev-dependencies]
+freeze_window_audit = { path = "../../freeze_window_audit" }

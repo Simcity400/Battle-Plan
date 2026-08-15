@@ -1,0 +1,30 @@
+[package]
+name = "minhook_h4"
+version = "0.1.0"
+edition = "2021"
+
+# The MinHook fork this product patches through.
+#
+# WHY A FORK EXISTS, in one paragraph, because a vendored third-party library is
+# a cost nobody should pay by accident. Upstream MinHook suspends the process's
+# threads ITSELF, inside every enable/disable/remove/apply, and does three
+# things this product cannot ship: it enters a spin lock whose contention path
+# calls `Sleep` -- reached, in our design, with every other thread already
+# suspended by our own freeze, so a suspended lock holder is a permanent hang of
+# the player's game; it moves a parked thread's instruction pointer and IGNORES
+# every failure to read or write that thread's context, then patches the bytes
+# anyway; and its unfreeze ignores a failed `ResumeThread`, which can leave a
+# game thread suspended forever. This fork deletes the suspension and the
+# relocation entirely and hands both obligations to `inline_detour`'s freeze,
+# which already performs them with a fixed point, a roster confirmation and
+# fail-closed context reads.
+#
+# The vendored C is `vendor/`, MIT, unmodified except where a comment says
+# `FORK ADDITION` or the transform in
+# `runs/kq_attach_hang_defects/fork_hook_c.py` names the edit.
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1"

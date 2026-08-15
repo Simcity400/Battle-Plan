@@ -50,6 +50,13 @@ static ORIGINAL_FORMATTER: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+/// Are the detours allowed to do their work?
+///
+/// Closed BEFORE any teardown drains, so the drain measures a set that is
+/// emptying rather than one that keeps refilling. A detour with admission closed
+/// still calls the original -- it must, the game is waiting on it -- and does
+/// nothing else.
+static ADMISSION_OPEN: AtomicBool = AtomicBool::new(false);
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NEXT_HOOK_EPOCH: AtomicU64 = AtomicU64::new(1);
 static ACTIVE_HOOK_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -69,6 +76,63 @@ struct OpenObservation {
     tick: i64,
     remaining_supply_raw: Option<i64>,
     duplicate_sink: bool,
+}
+
+/// How many yields a rollback spends waiting for in-flight callbacks to leave
+/// before it gives up and RETAINS instead of freeing.
+///
+/// Bounded, because the alternative is this thread spinning forever on a
+/// callback that is itself blocked. Exhausting it is not a failure: it selects
+/// the conservative disposition, where the trampoline stays allocated for the
+/// life of the process and nothing is freed underneath a thread.
+const QUIESCE_YIELDS: u32 = 4096;
+
+/// Take `target` down, and FREE its trampoline only if no callback can be
+/// inside the detour.
+///
+/// # The defect this exists for
+///
+/// `inline_detour::remove` restores the target's bytes and then FREES the
+/// trampoline. It refuses if a frozen thread is stopped in either of those, but
+/// it cannot see a thread stopped inside the DETOUR BODY -- here, inside
+/// `hook_formatter` before its call through `ORIGINAL_FORMATTER`. That thread
+/// resumes and calls a trampoline the removal has freed.
+///
+/// The install-failure rollbacks used to remove immediately, so a formatter that
+/// had been LIVE while the producer's enable was refused was freed with
+/// callbacks possibly in flight. The full teardown drained first; the rollback
+/// path did not. Returns true when the target was removed, false when it was
+/// disabled and RETAINED.
+unsafe fn take_down_freeing_only_when_quiet(target: usize) -> bool {
+    // ADMISSION FIRST. Nothing new may enter the detour while this drains, or
+    // the drain is measuring a set that keeps refilling.
+    ADMISSION_OPEN.store(false, Ordering::Release);
+    // THE DISABLE'S ANSWER IS READ. A refused disable leaves the detour LIVE,
+    // and a live detour means callbacks keep arriving -- so an
+    // `ACTIVE_CALLBACKS == 0` observed afterwards is not stable, and freeing on
+    // it frees a trampoline a thread is about to call (review round 2, HIGH).
+    // Only a target that is genuinely off may be freed.
+    let off = matches!(
+        unsafe { inline_detour::disable(target as *mut c_void) },
+        Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED))
+    );
+    if !off {
+        return false;
+    }
+    for _ in 0..QUIESCE_YIELDS {
+        if ACTIVE_CALLBACKS.load(Ordering::Acquire) == 0 {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    if ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        // RETAINED. The detour is off the target so nothing new can enter it,
+        // and the trampoline stays allocated for whoever is still inside.
+        return false;
+    }
+    unsafe { inline_detour::remove(target as *mut c_void) }.is_ok()
 }
 
 struct CallbackLease;
@@ -119,17 +183,23 @@ pub fn install() -> Result<(), String> {
     // Enable the nested sink before the outer producer so no opened trace can
     // run without its authenticated sink.
     if let Err(status) = unsafe { inline_detour::enable(formatter as *mut c_void) } {
-        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
+        // Both go down the quiescent route: nothing is freed while a
+        // thread may still be inside the detour body, which is the one
+        // place `inline_detour::remove` cannot see.
+        let _ = unsafe { take_down_freeing_only_when_quiet(formatter) };
+        let _ = unsafe { take_down_freeing_only_when_quiet(producer) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("supply tooltip formatter hook enable failed: {status}"));
     }
     if let Err(status) = unsafe { inline_detour::enable(producer as *mut c_void) } {
-        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
+        // THE FORMATTER WAS LIVE. A game thread can be inside
+        // `hook_formatter` right now, between its entry and its call
+        // through `ORIGINAL_FORMATTER`, and the trampoline this would
+        // free is exactly what that call returns into.
+        let _ = unsafe { take_down_freeing_only_when_quiet(formatter) };
+        let _ = unsafe { take_down_freeing_only_when_quiet(producer) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -137,10 +207,11 @@ pub fn install() -> Result<(), String> {
     }
     let state = STATE.get_or_init(|| Mutex::new(VecDeque::new()));
     let Ok(mut queue) = state.lock() else {
-        let _ = unsafe { inline_detour::disable(producer as *mut c_void) };
-        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
+        // BOTH WERE LIVE here, so both wait for their callbacks to leave before
+        // anything is freed: a thread inside `hook_formatter` returns through a
+        // trampoline this would otherwise have released underneath it.
+        let _ = unsafe { take_down_freeing_only_when_quiet(producer) };
+        let _ = unsafe { take_down_freeing_only_when_quiet(formatter) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
@@ -151,16 +222,21 @@ pub fn install() -> Result<(), String> {
     DROPPED_ROWS.store(0, Ordering::Release);
     let hook_epoch = NEXT_HOOK_EPOCH.fetch_add(1, Ordering::AcqRel);
     if hook_epoch == 0 {
-        let _ = unsafe { inline_detour::disable(producer as *mut c_void) };
-        let _ = unsafe { inline_detour::disable(formatter as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(producer as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(formatter as *mut c_void) };
+        // BOTH WERE LIVE here, so both wait for their callbacks to leave before
+        // anything is freed: a thread inside `hook_formatter` returns through a
+        // trampoline this would otherwise have released underneath it.
+        let _ = unsafe { take_down_freeing_only_when_quiet(producer) };
+        let _ = unsafe { take_down_freeing_only_when_quiet(formatter) };
         ORIGINAL_PRODUCER.store(0, Ordering::Release);
         ORIGINAL_FORMATTER.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
         return Err("supply tooltip hook epoch exhausted".into());
     }
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
+    // ADMISSION OPENS LAST, after every piece of state a callback reads is
+    // published. It closes first on the way out, which is what lets a teardown
+    // drain a set that is emptying rather than one that keeps refilling.
+    ADMISSION_OPEN.store(true, Ordering::Release);
     INSTALLED.store(true, Ordering::Release);
     Ok(())
 }
@@ -185,24 +261,38 @@ pub fn drain() -> Result<ExactProvinceSupplyTooltipBatch, String> {
 pub fn uninstall() -> Result<(), String> {
     let _lock = LIFECYCLE.lock().map_err(|_| "supply tooltip hook lifecycle poisoned")?;
     if !INSTALLED.swap(false, Ordering::AcqRel) { return Ok(()); }
-    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 { std::thread::yield_now(); }
+    // ADMISSION FIRST, THEN THE DRAIN, and the drain is BOUNDED.
+    //
+    // The loop this replaces waited for `ACTIVE_CALLBACKS == 0` with the
+    // detours still LIVE, so new callbacks kept entering and the wait had no
+    // bound at all; and even a zero it did observe was stale by the time the
+    // disable ran (review round 2, HIGH). Closing admission first makes the set
+    // one that empties. The remaining residency -- a thread already inside the
+    // detour body -- is what `take_down_freeing_only_when_quiet` refuses to free
+    // underneath.
+    ADMISSION_OPEN.store(false, Ordering::Release);
     let base = MODULE_BASE.swap(0, Ordering::AcqRel);
     let targets = [base + PRODUCER_RVA as usize, base + FORMATTER_RVA as usize];
     let mut errors = Vec::new();
     for target in targets {
-        match unsafe { inline_detour::disable(target as *mut c_void) } {
-            Ok(())
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
-            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("disable {target:#x}: {status}")),
-        }
-        match unsafe { inline_detour::remove(target as *mut c_void) } {
-            Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => errors.push(format!("remove {target:#x}: {status}")),
+        if !unsafe { take_down_freeing_only_when_quiet(target) } {
+            // RETAINED, and named. Nothing was freed, the detour is off or was
+            // refused, and the trampoline and originals stay valid for the life
+            // of the process.
+            errors.push(format!(
+                "{target:#x} retained: the detour could not be taken down and freed \
+                 while callbacks may still be inside it"
+            ));
         }
     }
-    ORIGINAL_PRODUCER.store(0, Ordering::Release);
-    ORIGINAL_FORMATTER.store(0, Ordering::Release);
+    // THE ORIGINALS SURVIVE A RETAINED TEARDOWN. A callback still inside a
+    // retained detour reads these to call through; zeroing them makes it take
+    // the `== 0` branch and return a wrong answer instead of the engine's
+    // (review round 2, HIGH). They are cleared only when nothing is retained.
+    if errors.is_empty() {
+        ORIGINAL_PRODUCER.store(0, Ordering::Release);
+        ORIGINAL_FORMATTER.store(0, Ordering::Release);
+    }
     ACTIVE_HOOK_EPOCH.store(0, Ordering::Release);
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
 }
@@ -211,6 +301,13 @@ unsafe extern "system" fn hook_producer(province: usize, builder: usize) {
     let _lease = CallbackLease::enter();
     let original_addr = ORIGINAL_PRODUCER.load(Ordering::Acquire);
     if original_addr == 0 { return; }
+    if !ADMISSION_OPEN.load(Ordering::Acquire) {
+        // Admission is closed for a teardown. The engine is still waiting on
+        // this call, so the original runs; nothing is observed.
+        let original: ProducerFn = mem::transmute(original_addr);
+        original(province, builder);
+        return;
+    }
     let original: ProducerFn = mem::transmute(original_addr);
     let opened = open_observation(province);
     if let Some(open) = opened { OPEN.with(|stack| stack.borrow_mut().push(open)); }
@@ -237,7 +334,8 @@ unsafe extern "system" fn hook_producer(province: usize, builder: usize) {
 
 unsafe extern "system" fn hook_formatter(dst: usize, raw: i64, decimals: u32) -> usize {
     let _lease = CallbackLease::enter();
-    if decimals == DISPLAY_DECIMALS && immediate_game_return_rva() == Some(FORMATTER_RETURN_RVA) {
+    if ADMISSION_OPEN.load(Ordering::Acquire)
+        && decimals == DISPLAY_DECIMALS && immediate_game_return_rva() == Some(FORMATTER_RETURN_RVA) {
         OPEN.with(|stack| {
             if let Some(open) = stack.borrow_mut().last_mut() {
                 if open.remaining_supply_raw.replace(raw).is_some() { open.duplicate_sink = true; }

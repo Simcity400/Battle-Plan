@@ -27,4 +27,5 @@ compact_contract = { path = "../../compact_contract" }
 inline_detour = { path = "../../inline_detour" }
 
 [dev-dependencies]
+freeze_window_audit = { path = "../../freeze_window_audit" }
 scripted_state_flags_variables_live_lane = { path = "../scripted_state_flags_variables_live", features = ["test-support"] }

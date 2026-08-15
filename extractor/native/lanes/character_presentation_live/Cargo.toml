@@ -19,7 +19,7 @@ default = []
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
-minhook = "0.9.0"
+minhook = { package = "minhook_h4", path = "../../minhook_h4" }
 production_hook_receipt = { path = "../production_hook_receipt" }
 runtime_text_inputs_live_lane = { path = "../runtime_text_inputs_live" }
 windows-sys = { version = "0.61.2", features = [

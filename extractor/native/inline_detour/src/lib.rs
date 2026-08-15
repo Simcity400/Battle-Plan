@@ -76,7 +76,7 @@ mod windows_impl {
     use crate::freeze_census::FreezeEntryPoint;
     use crate::release_ledger::ReleaseOperation;
     use core::ffi::c_void;
-    use minhook::{MinHook, MH_STATUS};
+    use minhook::{MinHook, MinHookLock, MH_STATUS};
     use std::fmt;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -281,16 +281,14 @@ mod windows_impl {
     /// first and pinning second would leave exactly that window open.
     ///
     /// If the process cannot be frozen, the target is not patched either.
-    /// MinHook suspends threads itself but ignores every failure to do so and
-    /// rewrites the bytes regardless; a thread executing inside those bytes
-    /// then resumes into a half-old, half-new instruction stream. Holding the
-    /// freeze across the MinHook call is what makes MinHook's suspension
-    /// EXPECTED to succeed rather than be skipped -- it NARROWS that fail-open,
-    /// it does not remove it. What is left, and why, is documented on
-    /// [`freeze`]: MinHook's own second `OpenThread` can still fail. A thread
-    /// this process cannot open AT ALL is no longer part of that list -- the
-    /// freeze's roster confirmation names it without opening it and REFUSES --
-    /// but a thread another process inserts after the last pass still is.
+    /// MinHook no longer suspends anything -- `minhook_h4` deleted that, and the
+    /// instruction-pointer relocation with it -- so the freeze is not a
+    /// narrowing of somebody else's fail-open any more. It is the whole of the
+    /// protection: this call refuses unless every other thread of the process is
+    /// held, and refuses AGAIN if any held thread is stopped inside the exact
+    /// bytes the patch would rewrite. What is left, and why, is documented on
+    /// [`freeze`]: a thread another process inserts after the last pass is
+    /// outside any user-mode fixed point.
     ///
     /// # Safety
     ///
@@ -302,9 +300,19 @@ mod windows_impl {
             let mut frozen = freeze_other_threads()?;
             // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
             frozen.note_entry(FreezeEntryPoint::Enable, "", 1);
-            let outcome = frozen.time_minhook(|| unsafe { MinHook::enable_hook(target) });
+            // REFUSE BEFORE A BYTE MOVES if a held thread is stopped inside the
+            // bytes this enable rewrites. MinHook used to answer that by moving
+            // the thread's instruction pointer and patching regardless of
+            // whether it could; the fork deleted that and this stands in its
+            // place.
+            let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), false) {
+                Ok(()) => frozen
+                    .time_minhook(|lock| unsafe { MinHook::enable_hook(lock, target) })
+                    .map_err(InlineDetourEnableError::MinHook),
+                Err(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+            };
             drop(frozen);
-            outcome.map_err(InlineDetourEnableError::MinHook)
+            outcome
         })?;
         ENABLED_DETOURS.fetch_add(1, Ordering::AcqRel);
         Ok(())
@@ -334,8 +342,14 @@ mod windows_impl {
     ///
     /// As [`enable`].
     pub unsafe fn queue_enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
-        run_pinned(pin_containing_module, || unsafe {
-            MinHook::queue_enable_hook(target)
+        run_pinned(pin_containing_module, || {
+            // NO FREEZE, because queueing patches nothing -- but it does touch
+            // MinHook's table, so it takes MinHook's lock, and it takes it here
+            // with every thread of the process still RUNNING. That is the only
+            // place an acquisition is safe: inside a frozen window it could
+            // wait forever on a thread that cannot run.
+            let lock = MinHookLock::acquire()?;
+            unsafe { MinHook::queue_enable_hook(&lock, target) }
         })
     }
 
@@ -372,9 +386,18 @@ mod windows_impl {
             // one; the census reads a zero here as "not stated" for exactly the
             // reason this function's own doc gives.
             frozen.note_entry(FreezeEntryPoint::ApplyQueued, "", 0);
-            let outcome = frozen.time_minhook(|| unsafe { MinHook::apply_queued() });
+            // The QUEUED set is what this patches, and it is exactly the set the
+            // check asks about -- including any entry an earlier caller left
+            // queued, which this call would otherwise patch with nobody having
+            // checked it.
+            let outcome = match frozen.refuse_if_a_thread_is_in_a_queued_patch() {
+                Ok(()) => frozen
+                    .time_minhook(|lock| unsafe { MinHook::apply_queued(lock) })
+                    .map_err(InlineDetourEnableError::MinHook),
+                Err(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+            };
             drop(frozen);
-            outcome.map_err(InlineDetourEnableError::MinHook)
+            outcome
         })
     }
 
@@ -492,9 +515,21 @@ mod windows_impl {
                         .collect()
                 }
 
-                /// True when every target in the batch succeeded.
+                /// True when every target in the batch succeeded AND the batch
+                /// itself was not refused.
+                ///
+                /// THE SECOND HALF IS LOAD-BEARING and was missing. A target's
+                /// own outcome is `Ok` when the completion pass mapped
+                /// `MH_ERROR_ENABLED` to success -- which is correct, that
+                /// target IS patched -- while `apply_refusal` carries a failure
+                /// that belongs to the whole batch, such as a protection
+                /// restore or an instruction-cache flush that did not complete.
+                /// Reporting "all succeeded" over that is how an installer
+                /// accepts a roster whose bytes are written but not coherently
+                /// published (review round 2, HIGH).
                 pub fn all_succeeded(&self) -> bool {
-                    self.outcomes.iter().all(|(_, result)| result.is_ok())
+                    self.apply_refusal.is_none()
+                        && self.outcomes.iter().all(|(_, result)| result.is_ok())
                 }
 
                 /// How many targets the batch covered.
@@ -648,7 +683,81 @@ mod windows_impl {
     /// # Safety
     ///
     /// As [`enable`], for every target, plus the precondition above.
+    /// How many times a batch is re-attempted when a thread was parked in the
+    /// bytes it was about to rewrite.
+    ///
+    /// # Why a retry exists at all, and why it is this small
+    ///
+    /// The refusal is a POSITION, not an error: a game thread happened to be
+    /// stopped inside a five-byte prologue at the instant of the freeze. Across
+    /// a roster of ~55 targets that is not vanishingly rare, and a single-shot
+    /// refusal would throw away an otherwise valid attach because of it. Each
+    /// attempt is a WHOLE new freeze, so between attempts the game RUNS and the
+    /// thread leaves the prologue -- which is the only thing that can change the
+    /// answer. Three attempts is therefore not a timeout dressed as a loop; it
+    /// is "give the game a moment to move, twice".
+    ///
+    /// It is bounded because the alternative is an engine wait: a thread parked
+    /// in a prologue because it is BLOCKED there will never move, and retrying
+    /// it forever is a capture that never starts and never says why.
+    const PARKED_RETRIES: u32 = 3;
+
+    /// How many times this thread yields between parked attempts.
+    ///
+    /// Not a duration and not a wait: the freeze is already dropped, so the
+    /// game is running throughout. It exists because a retry that reacquires
+    /// the locks and re-suspends everything before the scheduler has run the
+    /// parked thread observes the same instruction pointer and learns nothing.
+    const PARKED_RETRY_YIELDS: u32 = 64;
+
+    /// Is this report a refusal that a later attempt might not repeat?
+    fn refused_because_a_thread_was_parked(refusal: &Option<InlineDetourEnableError>) -> bool {
+        matches!(
+            refusal,
+            Some(InlineDetourEnableError::FreezeRefused(
+                super::freeze::FreezeRefusal::TargetExecuting { .. }
+            ))
+        )
+    }
+
+    /// Enable every target under ONE process freeze, retrying a batch that was
+    /// refused because a thread was parked in the bytes it would rewrite.
+    ///
+    /// # Safety
+    ///
+    /// As [`enable_batch_once`].
     pub unsafe fn enable_batch(
+        targets: &[(&'static str, *mut c_void)],
+    ) -> BatchEnableReport {
+        let mut attempts = PARKED_RETRIES;
+        let mut freezes = 0u64;
+        loop {
+            let mut report = enable_batch_once(targets);
+            attempts -= 1;
+            // EVERY ATTEMPT'S FREEZES ARE CARRIED. Each attempt measures only
+            // its own, and reporting the last one would tell a three-attempt
+            // refusal it cost one freeze -- which is what the census reads
+            // (review round 2, LOW).
+            freezes = freezes.saturating_add(report.freezes);
+            report.freezes = freezes;
+            if attempts == 0 || !refused_because_a_thread_was_parked(&report.apply_refusal) {
+                return report;
+            }
+            // AND THE GAME IS GIVEN A CHANCE TO MOVE. Dropping the freeze makes
+            // the parked thread RUNNABLE; it does not make it RUN, and this
+            // thread can reacquire both locks and suspend everything again
+            // before the scheduler has looked at it -- so the same instruction
+            // pointer is observed three times and the retry bought nothing
+            // (review round 2, MED). Yielding is the whole of the fix: it is
+            // not a wait, the game is already running, and nothing here is
+            // holding a freeze.
+            for _ in 0..PARKED_RETRY_YIELDS {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    fn enable_batch_once(
         targets: &[(&'static str, *mut c_void)],
     ) -> BatchEnableReport {
         let freezes_before = super::freeze::freeze_attempts_on_this_thread();
@@ -702,6 +811,11 @@ mod windows_impl {
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
         let mut rollback_failed: Vec<bool> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
+        // Set when a held thread was stopped inside bytes the apply would have
+        // rewritten. It is carried out of the window so every target's outcome
+        // can name it: nothing was patched, so no target's own MinHook status
+        // describes what happened to it.
+        let mut parked_refusal = None;
         let rolled_back;
         let mut attempted_rollback = false;
         match freeze_other_threads() {
@@ -716,16 +830,36 @@ mod windows_impl {
                     targets.len() as u32,
                 );
                 for &(_, target) in targets {
-                    statuses.push(unsafe { MinHook::queue_enable_hook(target) });
+                    statuses.push(unsafe {
+                        MinHook::queue_enable_hook(frozen.minhook_lock(), target)
+                    });
                 }
-                let queued_any = statuses.iter().any(|status| status.is_ok());
+                let mut queued_any = statuses.iter().any(|status| status.is_ok());
+                // NOTHING IS PATCHED UNTIL THIS PASSES. A held thread stopped
+                // inside any byte the apply would rewrite refuses the whole
+                // batch: `queued_any` goes false, so the normalisation loop
+                // below un-queues every target, the freeze is dropped with the
+                // game exactly as it was found, and every target reports the
+                // refusal. Retrying is the caller's -- by then the game has run
+                // on and the thread has left the prologue.
                 if queued_any {
-                    if let Err(apply) = frozen.time_minhook(|| unsafe { MinHook::apply_queued() }) {
+                    if let Err(refusal) = frozen.refuse_if_a_thread_is_in_a_queued_patch() {
+                        parked_refusal = Some(refusal);
+                        apply_refusal = Some(InlineDetourEnableError::FreezeRefused(refusal));
+                        queued_any = false;
+                    }
+                }
+                if queued_any {
+                    if let Err(apply) = frozen.time_minhook(|lock| unsafe {
+                        MinHook::apply_queued(lock)
+                    }) {
                         apply_refusal =
                             Some(InlineDetourEnableError::MinHook(apply));
                         for (index, &(_, target)) in targets.iter().enumerate() {
                             if statuses[index].is_ok() {
-                                statuses[index] = match unsafe { MinHook::enable_hook(target) } {
+                                statuses[index] = match unsafe {
+                                    MinHook::enable_hook(frozen.minhook_lock(), target)
+                                } {
                                     // The apply reached it before it stopped.
                                     // Under the not-already-enabled
                                     // precondition, that is this batch's own
@@ -747,7 +881,9 @@ mod windows_impl {
                     let mut failed_undo = false;
                     if undo {
                         attempted_rollback = true;
-                        failed_undo = unsafe { MinHook::disable_hook(target) }.is_err();
+                        failed_undo =
+                            unsafe { MinHook::disable_hook(frozen.minhook_lock(), target) }
+                                .is_err();
                     }
                     rollback_failed.push(failed_undo);
                     // Leave `queueEnable` equal to `isEnabled` for every
@@ -772,7 +908,8 @@ mod windows_impl {
                     // on a test.
                     let enabled_now = live && (!undo || failed_undo);
                     if !enabled_now {
-                        let _ = unsafe { MinHook::queue_disable_hook(target) };
+                        let _ =
+                            unsafe { MinHook::queue_disable_hook(frozen.minhook_lock(), target) };
                     }
                 }
                 // `rolled_back` is the CLAIM that nothing is live, so it holds
@@ -802,7 +939,12 @@ mod windows_impl {
         }
         let mut enabled = 0u64;
         for (index, &(name, _)) in targets.iter().enumerate() {
-            let outcome = statuses[index].map_err(InlineDetourEnableError::MinHook);
+            let outcome = match parked_refusal {
+                // The batch was refused before it patched anything, so no
+                // target's queue status is an account of what happened to it.
+                Some(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+                None => statuses[index].map_err(InlineDetourEnableError::MinHook),
+            };
             // Counted when the target is LIVE now, which after a rollback is
             // only the ones the rollback could not take back down. The
             // completion pass calls MinHook directly and does not bump the
@@ -888,6 +1030,10 @@ mod windows_impl {
         }
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
+        // Set when a held thread was stopped inside bytes this release would
+        // have restored. Nothing is unpatched then, so no target's own MinHook
+        // status is an account of what happened to it.
+        let mut parked_refusal = None;
         let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
             Err(refusal) => {
@@ -919,10 +1065,50 @@ mod windows_impl {
             targets.len() as u32,
         );
         for &(_, target) in targets {
-            statuses.push(unsafe { MinHook::queue_disable_hook(target) });
+            statuses.push(unsafe {
+                MinHook::queue_disable_hook(frozen.minhook_lock(), target)
+            });
         }
-        if statuses.iter().any(|status| status.is_ok()) {
-            if let Err(apply) = frozen.time_minhook(|| unsafe { MinHook::apply_queued() }) {
+        let mut queued_any = statuses.iter().any(|status| status.is_ok());
+        // THE SAME REFUSAL AS THE INSTALL DIRECTION, and it matters just as
+        // much: restoring a target's original bytes underneath a thread stopped
+        // inside the patch tears its instruction stream exactly as installing
+        // does. A refusal here unpatches nothing, so every target is still live
+        // and every one is reported retained.
+        if queued_any {
+            if let Err(refusal) = frozen.refuse_if_a_thread_is_in_a_queued_patch() {
+                parked_refusal = Some(refusal);
+                apply_refusal = Some(InlineDetourReleaseError::FreezeRefused(refusal));
+                queued_any = false;
+                // PUT THE QUEUE BACK, HERE, and not through the normalisation
+                // loop below -- which reads a queue status of `Ok` as "this
+                // target was disabled" and would leave `queueEnable` FALSE
+                // against an `isEnabled` that is still TRUE. Nothing was
+                // applied, so every target this batch queued is still live and
+                // must be queued as such; a divergent entry is a patch some
+                // later, unrelated `apply_queued` performs inside a freeze
+                // nobody accounted for (review round 1, MED).
+                for &(_, target) in targets.iter() {
+                    // FROM THE LIVE STATE, not from the queue call's status: a
+                    // queue call answers OK for a target that was ALREADY
+                    // disabled, and re-queuing that one for enabling hands a
+                    // later, unrelated apply a patch nobody asked for (review
+                    // round 2, MED). A target whose state cannot be read is left
+                    // queued-disabled, which is the direction that patches
+                    // nothing.
+                    let live = MinHook::hook_is_enabled(frozen.minhook_lock(), target);
+                    if matches!(live, Ok(true)) {
+                        let _ = unsafe {
+                            MinHook::queue_enable_hook(frozen.minhook_lock(), target)
+                        };
+                    }
+                }
+            }
+        }
+        if queued_any {
+            if let Err(apply) = frozen.time_minhook(|lock| unsafe {
+                MinHook::apply_queued(lock)
+            }) {
                 apply_refusal = Some(InlineDetourReleaseError::MinHook(apply));
                 // STOP AT THE FIRST REFUSAL, IN SLICE ORDER, and put back
                 // whatever the apply released after it.
@@ -944,14 +1130,16 @@ mod windows_impl {
                     if refused_at.is_some() {
                         // Behind the refusal: restore it if the apply took it
                         // down. `MH_ERROR_ENABLED` means it never did.
-                        let restored = unsafe { MinHook::enable_hook(target) };
+                        let restored =
+                            unsafe { MinHook::enable_hook(frozen.minhook_lock(), target) };
                         statuses[index] = match restored {
                             Ok(()) | Err(MH_STATUS::MH_ERROR_ENABLED) => Err(apply),
                             Err(status) => Err(status),
                         };
                         continue;
                     }
-                    statuses[index] = unsafe { MinHook::disable_hook(target) };
+                    statuses[index] =
+                        unsafe { MinHook::disable_hook(frozen.minhook_lock(), target) };
                     if let Err(status) = statuses[index] {
                         if !InlineDetourReleaseError::MinHook(status).already_released() {
                             refused_at = Some(index);
@@ -971,13 +1159,19 @@ mod windows_impl {
                 Err(status) => !InlineDetourReleaseError::MinHook(status).already_released(),
             };
             if still_enabled {
-                let _ = unsafe { MinHook::queue_enable_hook(target) };
+                let _ = unsafe { MinHook::queue_enable_hook(frozen.minhook_lock(), target) };
             }
         }
         drop(frozen);
         let mut retained = 0u64;
         for (index, &(name, target)) in targets.iter().enumerate() {
-            let raw = statuses[index].map_err(InlineDetourReleaseError::MinHook);
+            let raw = match parked_refusal {
+                // Refused before anything was unpatched: the target's queue
+                // status says nothing about what happened to it, and what
+                // happened to it is that it is still live.
+                Some(refusal) => Err(InlineDetourReleaseError::FreezeRefused(refusal)),
+                None => statuses[index].map_err(InlineDetourReleaseError::MinHook),
+            };
             // The RAW status is what the ledger records: it is the account of
             // what MinHook was asked and what it answered, per target and not
             // per batch.
@@ -1024,13 +1218,16 @@ mod windows_impl {
     /// once per target.
     ///
     /// Holding it across N MinHook calls does not push any thread past
-    /// `MAXIMUM_SUSPEND_COUNT`. `MH_RemoveHook` suspends and RESUMES inside
-    /// each call, so the depth never exceeds ours plus the one
-    /// `SUSPENSIONS_STILL_TO_COME` already accounts for, however many calls
-    /// follow.
+    /// `MAXIMUM_SUSPEND_COUNT`: `MH_RemoveHook` no longer suspends anything at
+    /// all, so N removals under one freeze add nothing to any thread's suspend
+    /// depth beyond the one this freeze took. The sentence this replaces
+    /// described the vendored library before `minhook_h4` deleted its
+    /// suspension.
     ///
-    /// FAIL-CLOSED like [`remove`]: a refused freeze removes NOTHING, every
-    /// target is reported retained, and no trampoline is freed.
+    /// EVERY TARGET'S TRAMPOLINE IS IN THE PRE-PATCH CHECK, because a removal
+    /// FREES it: a thread stopped inside a slot this call would free resumes
+    /// into freed memory, and that refuses the whole batch before anything is
+    /// removed.
     ///
     /// # Safety
     ///
@@ -1094,16 +1291,51 @@ mod windows_impl {
         // so this window's MinHook cost is N removals rather than one apply. The
         // target count is on the row beside it, so a reader divides rather than
         // being told a per-call figure that was never measured.
-        let statuses_ref = &mut statuses;
-        frozen.time_minhook(|| {
-            for &(_, target) in targets {
-                statuses_ref.push(
-                    unsafe { MinHook::remove_hook(target) }
-                        .map_err(InlineDetourReleaseError::MinHook),
-                );
-            }
-        });
+        // BOTH RANGES, because a remove frees the trampoline as well as
+        // restoring the target: a thread stopped in either resumes into torn
+        // bytes or into freed memory. There is no queue to ask about -- removal
+        // is per target and has no queued form -- so the caller's own targets
+        // are the set, which is exact here for the same reason it would have
+        // been wrong for an apply.
+        let parked_refusal = frozen
+            .refuse_if_a_thread_is_in(targets.iter().map(|&(_, target)| target), true)
+            .err();
+        if parked_refusal.is_none() {
+            let statuses_ref = &mut statuses;
+            frozen.time_minhook(|lock| {
+                for &(_, target) in targets {
+                    statuses_ref.push(
+                        unsafe { MinHook::remove_hook(lock, target) }
+                            .map_err(InlineDetourReleaseError::MinHook),
+                    );
+                }
+            });
+        }
         drop(frozen);
+        if let Some(refusal) = parked_refusal {
+            // Nothing was removed and nothing was freed. Every target keeps its
+            // trampoline and its patch, which is what `detour_retained` means.
+            let retained = InlineDetourReleaseError::FreezeRefused(refusal);
+            RETAINED_DETOURS.fetch_add(targets.len() as u64, Ordering::AcqRel);
+            let outcomes = targets
+                .iter()
+                .map(|&(name, target)| {
+                    crate::release_ledger::record_release_attempt(
+                        target as usize,
+                        ReleaseOperation::Remove,
+                        Err(retained),
+                    );
+                    (name, Err(retained))
+                })
+                .collect();
+            return BatchReleaseReport {
+                outcomes,
+                apply_refusal: Some(retained),
+                already_released: Vec::new(),
+                freezes: super::freeze::freeze_attempts_on_this_thread()
+                    .saturating_sub(freezes_before),
+            };
+        }
         let mut already_released = Vec::new();
         let outcomes = targets
             .iter()
@@ -1176,13 +1408,17 @@ mod windows_impl {
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(FreezeEntryPoint::Disable, "", 1);
-        let outcome = frozen.time_minhook(|| unsafe { MinHook::disable_hook(target) });
+        // A disable rewrites the same bytes an enable does, so it refuses on the
+        // same question. The trampoline is NOT in the check: a disable leaves it
+        // allocated, and a thread inside it stays valid.
+        let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), false) {
+            Ok(()) => frozen
+                .time_minhook(|lock| unsafe { MinHook::disable_hook(lock, target) })
+                .map_err(InlineDetourReleaseError::MinHook),
+            Err(refusal) => Err(InlineDetourReleaseError::FreezeRefused(refusal)),
+        };
         drop(frozen);
-        record_release(
-            target,
-            ReleaseOperation::Disable,
-            outcome.map_err(InlineDetourReleaseError::MinHook),
-        )
+        record_release(target, ReleaseOperation::Disable, outcome)
     }
 
     /// Record one release attempt in the process-wide ledger and hand the
@@ -1232,13 +1468,17 @@ mod windows_impl {
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(FreezeEntryPoint::Remove, "", 1);
-        let outcome = frozen.time_minhook(|| unsafe { MinHook::remove_hook(target) });
+        // THE TRAMPOLINE IS IN THE CHECK HERE, and that is the difference from
+        // [`disable`]: `MH_RemoveHook` frees the slot, so a thread stopped
+        // inside it resumes into freed memory.
+        let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), true) {
+            Ok(()) => frozen
+                .time_minhook(|lock| unsafe { MinHook::remove_hook(lock, target) })
+                .map_err(InlineDetourReleaseError::MinHook),
+            Err(refusal) => Err(InlineDetourReleaseError::FreezeRefused(refusal)),
+        };
         drop(frozen);
-        record_release(
-            target,
-            ReleaseOperation::Remove,
-            outcome.map_err(InlineDetourReleaseError::MinHook),
-        )
+        record_release(target, ReleaseOperation::Remove, outcome)
     }
 
     /// How many releases were refused, leaving a live detour installed.
@@ -2569,6 +2809,77 @@ mod batch_tests {
         destroy_victims(&targets);
     }
 
+    /// EVERY PATH THAT PATCHES ASKS FIRST, asserted against the source.
+    ///
+    /// The behavioural proof of the refusal itself lives in `freeze.rs`
+    /// (`a_thread_inside_the_bytes_a_patch_would_rewrite_refuses_it`), driven
+    /// with a range that certainly contains a held thread. What that test
+    /// CANNOT show is that production is wired to it -- deleting the check from
+    /// `enable` would leave it green (review round 1, MED). This is that half:
+    /// every window that calls a MinHook operation which REWRITES BYTES must
+    /// first call one of the two refusals, and the call must come before it.
+    ///
+    /// What production change would make this fail? Removing
+    /// `refuse_if_a_thread_is_in`/`refuse_if_a_thread_is_in_a_queued_patch`
+    /// from any patch path, or moving it after the patch -- which is where the
+    /// rejected first design put it.
+    #[test]
+    fn every_patching_window_refuses_before_it_patches() {
+        let source = include_str!("lib.rs").replace("
+", "
+");
+        let marker = concat!("// FROZEN WI", "NDOW:");
+        let closer = concat!("drop(fro", "zen);");
+        // The operations that rewrite live bytes. Queueing does not.
+        let patching = [
+            concat!("MinHook::", "apply_queued("),
+            concat!("MinHook::", "enable_hook("),
+            concat!("MinHook::", "disable_hook("),
+            concat!("MinHook::", "remove_hook("),
+        ];
+        let checks = [
+            "refuse_if_a_thread_is_in(",
+            "refuse_if_a_thread_is_in_a_queued_patch(",
+        ];
+        let mut windows = 0;
+        let mut cursor = 0usize;
+        while let Some(at) = source[cursor..].find(closer) {
+            let end = cursor + at;
+            let opened = source[..end]
+                .rfind(marker)
+                .expect("every freeze drop has a window marker");
+            let window = &source[opened..end];
+            cursor = end + closer.len();
+            let first_patch = patching
+                .iter()
+                .filter_map(|call| window.find(call))
+                .min();
+            let Some(first_patch) = first_patch else {
+                continue;
+            };
+            windows += 1;
+            let first_check = checks
+                .iter()
+                .filter_map(|call| window.find(call))
+                .min()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a window patches live bytes without asking whether a                          thread is stopped inside them:
+{window}"
+                    )
+                });
+            assert!(
+                first_check < first_patch,
+                "the check must come BEFORE the patch, not after it:
+{window}"
+            );
+        }
+        assert!(
+            windows >= 5,
+            "the scan found only {windows} patching window(s); it is not              reaching them"
+        );
+    }
+
     /// THE FREEZE-WINDOW LAW, asserted against the source because nothing
     /// available offline can observe it.
     ///
@@ -2605,6 +2916,13 @@ mod batch_tests {
             concat!("to_st", "ring()"),
             concat!("release_ledger::", "record_release_attempt"),
             concat!(".lo", "ck()"),
+            // THE ONE ADDED BY THE MINHOOK FORK. Acquiring MinHook's lock is
+            // the only call in that library that can wait, and a wait inside a
+            // held freeze is the hang this lane closed. Every window takes the
+            // lock from the freeze that already holds it
+            // (`frozen.minhook_lock()`), and an acquisition written here would
+            // be the defect coming back.
+            concat!("MinHookLock::", "acquire"),
         ];
         // Each window is delimited by an explicit marker and its `drop`, and
         // EVERY `drop(frozen)` must have a marker before it -- so a new freeze

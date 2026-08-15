@@ -1,0 +1,22 @@
+[package]
+name = "freeze_window_audit"
+version = "0.1.0"
+edition = "2021"
+
+# The frozen-window guard, as ONE implementation instead of four.
+#
+# `inline_detour` scans its own held-freeze windows for constructs that allocate
+# or block, because a suspended thread may hold the allocator's lock and there
+# is nobody left to release it. Four other crates take
+# `inline_detour::freeze_process()` directly and had no such guard at all -- and
+# every one of them had the defect. This is that scan, taken out of
+# `inline_detour` so those crates can run it too.
+#
+# DEV-ONLY BY CONSTRUCTION: nothing links it except `[dev-dependencies]`. It
+# reads source text and has no runtime behaviour, so it must never be reachable
+# from a shipped build.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

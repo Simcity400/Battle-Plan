@@ -15,3 +15,6 @@ snapshot = { path = "../../snapshot" }
 
 [target.'cfg(windows)'.dependencies]
 inline_detour = { path = "../../inline_detour" }
+
+[dev-dependencies]
+freeze_window_audit = { path = "../../freeze_window_audit" }

@@ -21,7 +21,7 @@ path = "src/bin/capture_harness.rs"
 
 [dependencies]
 inline_detour = { path = "../inline_detour" }
-minhook = "0.9.0"
+minhook = { package = "minhook_h4", path = "../minhook_h4" }
 # The engine calendar this module stamps onto captured records is the same
 # calendar the recorder and the replay consumer apply; it has one home.
 portable_admission = { path = "../../../portable_replay/native/admission" }

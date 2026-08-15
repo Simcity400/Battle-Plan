@@ -2,6 +2,13 @@
 resolver = "2"
 members = [
     "inline_detour",
+    # The MinHook fork this product patches through. It exists because upstream
+    # suspends threads and moves instruction pointers inside our own frozen
+    # window; see the crate manifest for the three defects that bought it.
+    "minhook_h4",
+    # The frozen-window guard the four direct-freeze crates share. Dev-only:
+    # nothing links it except `[dev-dependencies]`.
+    "freeze_window_audit",
     "wire_format",
     "wire_product",
     "compact_stream",
