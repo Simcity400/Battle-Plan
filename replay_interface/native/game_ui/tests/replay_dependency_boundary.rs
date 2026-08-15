@@ -274,25 +274,25 @@ fn names_extractor_path(code: &str) -> bool {
 
 /// Every reach that is allowed to survive, keyed on the exact surviving text.
 fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
-    // XUI27 is repository certification tooling, not a Replay product runtime.
-    // It is required to invoke the repository's one canonical validation
-    // wrapper, which is owned by the acquisition tree, and it also carries
-    // negative assertions that exclude acquisition sources from Replay's
-    // content-addressed closure. Keep this exception lexical and narrow: it
-    // admits only that wrapper or the explicit negative-test spellings.
-    if relative.starts_with("replay_interface/re_evidence/rendering_laws/xui27/") {
-        let validator = format!(
-            "{ACQUISITION_TREE}/native/scripts/Invoke-CentralRustValidation.ps1"
-        );
-        let prefix_check = format!("startswith(\"{ACQUISITION_TREE}/\")");
-        let exclusion_check = format!("\"{ACQUISITION_TREE}/\" not in");
-        let nested_check = format!("\"/{ACQUISITION_TREE}/\" in");
-        let refusal_fixture = format!("REPO / \"{ACQUISITION_TREE}\" / \"pass.json\"");
-        return code.contains(&validator)
-            || code.contains(&prefix_check)
-            || code.contains(&exclusion_check)
-            || code.contains(&nested_check)
-            || code.contains(&refusal_fixture);
+    // XUI27 is the external producer dependency ledger's checker, not a Replay
+    // product runtime, and it carries one negative assertion that refuses a
+    // ledger binding pointing into the acquisition tree.
+    //
+    // Lane KK (2026-08-15) narrowed this from five admitted spellings to one.
+    // The other four -- the validation-wrapper path, a `startswith` prefix
+    // test, a nested-path test, and a refusal fixture -- all lived in the
+    // replay-owned freeze chain that lane KK deleted, so admitting them now
+    // would only hold the door open for a reach nothing needs. Keep it lexical
+    // and keep it at one: this exception must shrink with its subject, never
+    // outlive it.
+    // Keyed on the one file and the one exact line, not on the directory and a
+    // substring. `contains` over a whole subtree would admit a real reach that
+    // happened to share a line with the negative assertion, and it would admit
+    // it from any file added to XUI27 later.
+    if relative == "replay_interface/re_evidence/rendering_laws/xui27/external_dependency_ledger.py"
+    {
+        let exclusion_check = format!("require(\"{ACQUISITION_TREE}/\" not in relative.lower(),");
+        return code.trim() == exclusion_check;
     }
     match relative {
         // Module-docstring prose. Python docstrings are scanned rather than

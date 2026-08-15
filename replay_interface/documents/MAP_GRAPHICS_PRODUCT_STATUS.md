@@ -39,9 +39,13 @@ copy volatile row counts.
 
 ## Completion boundary
 
-Replay owns and certifies the consumer schemas, effective-VFS admission,
-rendering laws, native execution, ordering, lifecycle, receipts, and
-feature-local failure behavior. Replay certification does not claim that an
-external producer is implemented and does not use exhaustive framebuffer byte
-identity as its completion standard. Exact engine/game-file behavior is the
+Replay owns and continuously tests the consumer schemas, effective-VFS
+admission, rendering laws, native execution, ordering, lifecycle, receipts, and
+feature-local failure behavior. "Continuously tests" is the exact claim: the
+gates are the Rust battery over the current tree plus the ledger checker in
+`XUI27/external_dependency_ledger.py`, not a frozen certification receipt. The
+receipt that used to back the stronger word was retired by lane KK on
+2026-08-15 as machinery no gate invoked. Replay does not claim that an external
+producer is implemented and does not use exhaustive framebuffer byte identity as
+its completion standard. Exact engine/game-file behavior is the
 standard; fabricated or visually fitted substitutes are forbidden.

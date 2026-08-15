@@ -289,6 +289,26 @@ $gapLedgerExpansionTests = Join-Path $PSScriptRoot "Test-GapLedgerExpansion.ps1"
 # This suite proves the corpus is source-only and that the committed map is
 # what this tree produces; the failure names the rows that moved.
 $domainFileMapTests = Join-Path $PSScriptRoot "test_map_files_to_domains.py"
+# The Replay-side pair. `external_producer_dependencies.json` is the machine
+# authority eleven current documents cite for what Replay still needs from a
+# producer, and `EXTRACTOR_INPUT_RESIDUALS.md` is its generated human view.
+# The checker also requires the renderer's own `PROMOTED_EXTERNAL_DEPENDENCY_
+# PACKETS` table to BE that ledger, row for row and in order, and requires each
+# shipping row to bind exactly one behavior test.
+#
+# None of this was gated before. Lane KK (2026-08-15) found the checker green,
+# correct and invoked by nothing at all: it sat inside a replay-owned freeze
+# receipt chain that no gate ran and that had been red on master for 337
+# commits. The chain is deleted; these two are what it was worth keeping, and
+# they are cheap - pure Python, no cargo, no game, about a second.
+$replayDependencyLedgerRoot =
+    Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\XUI27"
+$replayDependencyLedger =
+    Join-Path $replayDependencyLedgerRoot "external_dependency_ledger.py"
+$replayFixtureProvenance =
+    Join-Path $replayDependencyLedgerRoot "fixture_provenance.py"
+$replayDependencyLedgerTests =
+    Join-Path $replayDependencyLedgerRoot "test_external_dependency_ledger.py"
 $c07TreeLibraryGenerator = Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py"
 $c07TreeLibraryPinSource = Join-Path $repoRoot "portable_replay\native\render_stream\src\c07_tree_content_hashes.rs"
 $expectedRustVersion = "1.96.0"
@@ -2431,6 +2451,33 @@ try {
             $repoRoot,
             "--full"
         )
+    }
+
+    # The Replay-owned source gate. It is deliberately NOT in the Extractor
+    # block above: its inputs are `production_renderer.rs`, the Replay
+    # dependency ledger and two committed Replay test fixtures, so a
+    # `-Workspace Replay` run is exactly the run that can break it and exactly
+    # the run that must catch it. Gating it on Extractor would have left the
+    # Replay lane unable to see its own drift.
+    #
+    # Both are parallel-safe on the same terms as the verifiers above: they read
+    # this worktree's source and write nothing into it. Every scratch file the
+    # self-tests create lives under the system temporary directory, so a hard
+    # kill mid-battery cannot leave debris in a tracked path.
+    #
+    # Evidence and Soak are in the list because they compile and run Replay
+    # source, which is the whole criterion: the run that can break this gate is
+    # the run that must catch it. Lock and Stats are out because they do not.
+    if ($Workspace -in @("All", "Replay") -and
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test",
+                    "Final", "Release", "Evidence", "Soak")) {
+        # The suites first: they are what proves the two gates below still fail
+        # when they should, rather than passing because they stopped looking.
+        Invoke-Checked -Program "python" -Arguments @($replayDependencyLedgerTests)
+        # --check-doc, never --write-doc. A gate that regenerates the document
+        # it is checking cannot report drift; it would launder it.
+        Invoke-Checked -Program "python" -Arguments @($replayDependencyLedger, "--check-doc")
+        Invoke-Checked -Program "python" -Arguments @($replayFixtureProvenance)
     }
 
     # The passive capture-policy gate runs over a WIDER mode set than the source

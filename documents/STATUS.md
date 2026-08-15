@@ -33,11 +33,22 @@ Passive clock capture writes `PASSIVE_CLOCK_INTERVALS_V2.json` as its interval
 authority. Its direct-displacement writer census is an enumerated set rather than a proved exhaustive one;
 interior-pointer and bulk-copy writes remain outside that search claim.
 
-Replay certification proves the exact Replay source closure, packet authorities,
-external dependency identities, omission audits, and selected shipping behavior.
-It does not certify external producer implementation or measured end-to-end
-framebuffer equality. The current terminal receipt is authoritative only for the
-exact source identity it names.
+What the Replay gates prove, as of lane KK (2026-08-15): the central battery
+validates the external-producer dependency ledger against current shipping
+source tokens, requires the production renderer's own promoted-dependency table
+to be that ledger row for row, requires exactly one behavior test per shipping
+row, requires the generated human view to match, and binds the two committed
+Replay fixtures that a generator cannot reproduce to their provenance records.
+The Rust battery tests current Replay behavior; `replay_fixture_gen` regenerates
+the whole committed fixture corpus from a fixed seed and compares it byte for
+byte.
+
+They do NOT freeze the Replay source closure, do not certify packet authorities
+by blob identity, and do not claim measured end-to-end framebuffer equality or
+external producer implementation. The frozen terminal receipt that used to make
+the first two of those claims was retired: no gate had ever invoked it, and it
+had been red on master for 337 commits. See
+`extractor/native/runs/kk_xui27_receipt/`.
 
 Machine-local evidence remains under `C:\hoi4_evidence\` and is indexed there.
 Git history is the development chronology; dated handoffs and copied status
