@@ -62,10 +62,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# FAILED UNTIL PROVEN OTHERWISE, and this is the FIRST executable statement of
-# the file for that reason.
+# FAILED UNTIL PROVEN OTHERWISE. This is the first statement of the file that can
+# fail or be skipped - only `Set-StrictMode` and `$ErrorActionPreference`, which
+# are unconditional interpreter settings, run before it - and it is placed here
+# for that reason.
 #
-# This repo's own gate instructions end with
+# This repo's `-Command` gate launcher ends with
 #
 #     & './Invoke-CentralRustValidation.ps1' ...; exit $LASTEXITCODE
 #
@@ -82,15 +84,48 @@ $ErrorActionPreference = "Stop"
 # helpers, anything inside the main try, and the cleanup in its finally - exit
 # nonzero, whether or not it is caught.
 #
-# THE ONE CASE THIS CANNOT REACH is a PARAMETER-BINDING failure (a bad -Mode, a
-# missing mandatory value): attribute validation runs before any statement of
+# THE ONE CASE THIS CANNOT REACH is a PARAMETER-BINDING failure (a bad -Mode, an
+# unknown parameter name): attribute validation runs before any statement of
 # this file, so nothing here has executed and $LASTEXITCODE still holds whatever
-# the caller left. Closing that needs the launcher itself to test PowerShell
-# success - `& ./Invoke-CentralRustValidation.ps1 ...; if (-not $?) { exit 1 };
-# exit $LASTEXITCODE` - which is a change to this repo's documented gate
-# spelling and therefore an owner call, not this file's to make. Case C9 in
-# runs/jm_compile_cache/Test-CompileCacheFallback.ps1 pins the residual so it
-# cannot change unnoticed.
+# the caller left. Only the LAUNCHER can close that, and as of lane KL it does:
+# the `-Command` spelling seeds the same failure BEFORE the call, so a runner
+# that never started is a runner that never cleared it.
+#
+#     powershell.exe -NoProfile -ExecutionPolicy Bypass -Command
+#       "$global:LASTEXITCODE = 1; Set-Location '<scripts>';
+#        & './Invoke-CentralRustValidation.ps1' <args>; exit $LASTEXITCODE"
+#
+# WHY THE SEED AND NOT `if (-not $?) { exit 1 }`, which this note used to
+# propose. Honestly: not because the `$?` spelling is broken. Lane KL first
+# argued the seed was strictly wider, and MEASURED THAT CLAIM TO BE FALSE -
+# `if (-not $?) { exit 1 }` also exits 1 for a binding failure, for a runner path
+# that does not resolve, and for a failed `Set-Location`, and `$?` comes back
+# True after a successful run (`probe_launcher_exit.txt`, "the $? spelling"
+# section). Either spelling closes the hole.
+#
+# The seed is preferred for one reason that survives measurement: it does not
+# depend on `$?` at all, so it cannot be perturbed by what this file writes to
+# its error stream, and it adds no CONDITIONAL after the call. The trailing
+# `exit $LASTEXITCODE` is still required either way; what the seed avoids is a
+# second guard clause between the call and that exit, which is the part a
+# copy-pasted launcher most easily loses. It also composes with the seed above
+# rather than sitting beside it: both say "failed until proven otherwise", and
+# the single zero at the end of the outer `finally` is the only thing that
+# clears either.
+#
+# The seed must go AFTER anything native in the payload, because a successful
+# native command writes 0 over it - the same trap that made the seed below
+# insufficient on its own. Case F pins the direction that matters: a successful
+# run still exits 0 with the seed in place.
+#
+# The `-File` spelling used by this repo's README/ACCEPTANCE examples was never
+# affected: powershell.exe -File exits 1 on a binding failure by itself
+# (case I). Only the `-Command` form - which lanes need, because -Package is
+# [string[]] and only -Command gets an array into it - requires the seed.
+#
+# Case C9 in runs/jm_compile_cache/Test-CompileCacheFallback.ps1 pins BOTH
+# spellings: the unguarded one still exits 0, which is why the seed exists, and
+# the guarded one exits nonzero.
 $global:LASTEXITCODE = 1
 $script:centralValidationFailed = $false
 
@@ -2166,13 +2201,14 @@ function Add-SerialPhaseAction {
         powershell -File Invoke-CentralRustValidation.ps1 ...   -> found
         powershell -Command "& './Invoke-CentralRustValidation.ps1' ..."  -> NOT found
 
-    Under the second form - the spelling in this repo's own gate instructions -
-    every queued step died with "The term 'Invoke-CheckedNextestWithCensus' is
-    not recognized", and because the failure is a terminating error rather than
-    a native exit code, `; exit $LASTEXITCODE` then reported the LAST NATIVE
-    COMMAND's status: the battery announced exit 0 having run NONE of its
-    machine-serial tests. A gate that reports green after running nothing is the
-    worst failure this script can have.
+    Under the second form - the spelling lanes must use, because -Package is
+    [string[]] and only -Command gets an array into it - every queued step died
+    with "The term 'Invoke-CheckedNextestWithCensus' is not recognized", and
+    because the failure is a terminating error rather than a native exit code,
+    `; exit $LASTEXITCODE` then reported the LAST NATIVE COMMAND's status: the
+    battery announced exit 0 having run NONE of its machine-serial tests. A gate
+    that reports green after running nothing is the worst failure this script
+    can have.
 
     A plain script block stays bound to this script's session state, so it sees
     these functions under either spelling. Passing the captured values as one
@@ -3773,7 +3809,7 @@ catch {
     # process tree, a rejected receipt, a partition that covers nothing - is a
     # PowerShell terminating error, which does not touch it. So after any cargo
     # or python step had succeeded, a later throw returned to the caller with
-    # $LASTEXITCODE still 0, and this repo's own gate instructions end with
+    # $LASTEXITCODE still 0, and this repo's `-Command` gate launcher ends with
     #
     #     & './Invoke-CentralRustValidation.ps1' ...; exit $LASTEXITCODE
     #

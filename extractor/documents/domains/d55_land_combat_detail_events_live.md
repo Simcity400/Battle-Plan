@@ -94,7 +94,7 @@ Production code verifies these hashes. They stay where they are.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (17)
+### Code (16)
 
 - `extractor/native/Cargo.toml`
 - `extractor/native/collector/Cargo.toml`
@@ -111,5 +111,4 @@ Production code verifies these hashes. They stay where they are.
 - `extractor/native/recorder_host/src/world_fold.rs`
 - `extractor/native/recorder_host/src/world_fold/tests.rs`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/combat_binding.rs`
 - `replay_interface/native/replay_core/src/world.rs`

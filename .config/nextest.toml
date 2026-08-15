@@ -3,7 +3,7 @@ default-filter = '''
 not (
   binary(soak)
   | binary(soak_f2)
-  | binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+  | binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
   | test(/(?x)(^|::)(
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
@@ -70,7 +70,7 @@ default-filter = '''
 not (
   binary(soak)
   | binary(soak_f2)
-  | binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+  | binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
   | test(/(?x)(^|::)(
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
@@ -145,7 +145,7 @@ slow-timeout = "5m"
 
 [profile.evidence]
 default-filter = '''
-binary(/^(alerts_binding|combat_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters|xui22_installed_game_evidence)$/)
+binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters|xui22_installed_game_evidence)$/)
 | test(/(?x)(^|::)(
     admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
     | captured_pixel_shader_prefilter_covers_full_family_classifiers

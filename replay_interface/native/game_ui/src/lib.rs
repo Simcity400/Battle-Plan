@@ -5,7 +5,6 @@ pub(crate) mod authenticated_semantic_provider;
 pub mod authored_role_index;
 pub mod binding;
 pub mod character_ui;
-pub mod combat_binding;
 pub mod combat_detail_canvas;
 pub mod compose;
 pub mod content_interpreter;

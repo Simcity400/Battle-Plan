@@ -137,8 +137,14 @@ fn composed_route_measures_and_draws_from_one_engine_text_plan() {
     let compose_start = hud
         .find("pub(crate) fn compose_prepared_tooltip_layer(")
         .expect("composed tooltip raster path");
+    // The closing anchor used to be the doc comment of
+    // `plan_authenticated_tooltip_lines`, the frozen captured-d72 compatibility
+    // planner. Lane JL removed its production route, and lane KL deleted the
+    // dead body; the anchor is now the next production item in hud.rs. The slice
+    // this bounds is unchanged - `compose_prepared_tooltip_layer` was, and still
+    // is, the last item before it.
     let compose_end = hud[compose_start..]
-        .find("\n/// The production tooltip's entire text-placement law")
+        .find("\npub fn compose_hud(")
         .map(|offset| compose_start + offset)
         .expect("composed raster path boundary");
     let compose = &hud[compose_start..compose_end];
