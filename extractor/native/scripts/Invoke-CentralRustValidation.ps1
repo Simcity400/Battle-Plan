@@ -248,6 +248,12 @@ $clockBaselineSummaryTests = Join-Path $PSScriptRoot "test_clock_baseline_summar
 # reaches only one of them fails here rather than on a promoted capture.
 $gapLedgerTests = Join-Path $PSScriptRoot "test_gap_ledger.py"
 $gapLedgerExpansionTests = Join-Path $PSScriptRoot "Test-GapLedgerExpansion.ps1"
+# The domain axis (`coverage_audit/reference_ledger/domain_file_map.csv`) is a
+# generated inventory that nothing regenerated for 25 domains, because its
+# generator used to scan its own output and so had no meaningful "re-run it".
+# This suite proves the corpus is source-only and that the committed map is
+# what this tree produces; the failure names the rows that moved.
+$domainFileMapTests = Join-Path $PSScriptRoot "test_map_files_to_domains.py"
 $c07TreeLibraryGenerator = Join-Path $repoRoot "replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py"
 $c07TreeLibraryPinSource = Join-Path $repoRoot "portable_replay\native\render_stream\src\c07_tree_content_hashes.rs"
 $expectedRustVersion = "1.96.0"
@@ -2300,7 +2306,9 @@ try {
     #  * the python verifiers and unit suites read this worktree's source and
     #    write only into it (--repo-root $repoRoot), and the one that writes -
     #    verify_citation_integrity.py's allowance file - writes a per-worktree
-    #    path;
+    #    path; test_map_files_to_domains.py is stricter still, since its repo
+    #    half runs the generator in --check, which writes nothing at all, and
+    #    its synthetic half builds a throwaway git tree under TemporaryDirectory;
     #  * Test-PassiveCapturePolicy.ps1 and Test-HeadlessRawCaptureUnits.ps1 build
     #    their scratch under GetTempPath() with $PID / a fresh GUID in the name;
     #  * the C07 gate runs --verify, which writes nothing at all and reports the
@@ -2322,6 +2330,7 @@ try {
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
         Invoke-Checked -Program "python" -Arguments @($gapLedgerTests)
+        Invoke-Checked -Program "python" -Arguments @($domainFileMapTests)
         Invoke-Checked -Program "powershell.exe" -Arguments @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
