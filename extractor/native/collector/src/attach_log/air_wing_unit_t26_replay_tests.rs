@@ -663,3 +663,41 @@ fn the_fold_model_matches_the_shipped_worlds_rules() {
          other rule this model assumes"
     );
 }
+
+/// The live producer's air-wing equipment-bank bounds are pinned to the exact
+/// values the OFFLINE consumer refuses banks against.
+///
+/// `read_air_wing_equipment_bank_refs` is the only writer of an exact d32
+/// bank, and `replay_core::leaf_exact_air_wing_loadout` refuses any bank those
+/// rules could not have produced, via `portable_admission::air_wing_bank_rejection`.
+/// The two live in different workspaces and this crate cannot depend on the
+/// shared one, so the coupling is held by pinning the literals on both sides:
+/// `portable_admission::AIR_WING_BANK_MAX_VARIANT_ID`,
+/// `AIR_WING_BANK_MAX_AMOUNT_RAW` and `AIR_WING_BANK_MAX_ROWS` carry the same
+/// three numbers and are pinned by that crate's own
+/// `a_bank_the_producer_could_not_have_written_is_refused`.
+///
+/// Loosening any of these here without moving the mirror makes the consumer
+/// refuse hours this producer legitimately writes; tightening one makes the
+/// consumer admit banks it should refuse. Either way this test is the tripwire.
+///
+/// kills: changing any of the three producer caps in `offsets.rs` without
+/// changing the shared mirror.
+#[test]
+fn the_air_wing_bank_producer_bounds_match_the_consumers_refusal_rule() {
+    assert_eq!(
+        super::offsets::MAX_DIVISION_EQUIPMENT_VARIANT_ID,
+        i32::MAX as u32,
+        "portable_admission::AIR_WING_BANK_MAX_VARIANT_ID mirrors this"
+    );
+    assert_eq!(
+        super::offsets::MAX_AIR_WING_EQUIPMENT_AMOUNT_RAW,
+        1_000_000_000_000_000,
+        "portable_admission::AIR_WING_BANK_MAX_AMOUNT_RAW mirrors this"
+    );
+    assert_eq!(
+        super::offsets::MAX_AIR_WING_EQUIPMENT_BANK_ROWS,
+        512,
+        "portable_admission::AIR_WING_BANK_MAX_ROWS mirrors this"
+    );
+}

@@ -1,8 +1,8 @@
 //! d32 `air_wing_loadouts` — per-air-wing air-base placement and equipment banks.
 //!
-//! Derived from `world_fold.rs:19706`-`:19847`
+//! Derived from `world_fold.rs:18942`-`:19083`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
-// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=19706-19847 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=3b922b0bf0f1af867c22d3e4521ca4ea050ca821ce22657c811e0f1d24cf5296
+// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=18942-19083 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=ad77279668f133b463fda478fb36c42d7661e9a3fb3c67293cdbd3eee30b5e07
 //! accumulator's JSON projection (`world_fold.rs::build_order_of_battle`), the end-of-hour orphan prune
 //! that also writes that accumulator (`world_fold.rs::prune_air_wing_loadout_orphans_for_current_hour`), and the collector read
 //! and packer that produce the rows
@@ -1601,6 +1601,32 @@ mod tests {
                 "reserved bit {bit}"
             );
         }
+    }
+
+    /// The FOLD's tolerance and the live PRODUCER's rules are different sets,
+    /// and the offline consumer holds the producer's.
+    ///
+    /// This module documents what the fold accepts, which is deliberately
+    /// looser than what `read_air_wing_equipment_bank_refs` in the collector
+    /// emits -- see the test directly below, which pins `entry_row(0, 0)` and
+    /// `entry_row(u32::MAX, i64::MIN)` as folded. Reading that looseness as the
+    /// contract is what would let a consumer sum a bank no recording can
+    /// contain, so `portable_admission` carries the producer's tighter bounds
+    /// and `replay_core::leaf_exact_air_wing_loadout` refuses against those.
+    /// This asserts the one bound both layers name, so the two cannot drift.
+    ///
+    /// kills: changing `PRODUCER_MAX_AMOUNT_RAW` here or
+    /// `AIR_WING_BANK_MAX_AMOUNT_RAW` in the shared crate without the other.
+    #[test]
+    fn the_producer_amount_bound_matches_the_shared_refusal_rule() {
+        assert_eq!(
+            PRODUCER_MAX_AMOUNT_RAW,
+            portable_admission::AIR_WING_BANK_MAX_AMOUNT_RAW
+        );
+        // And the looseness this module documents is real, not a mistake: the
+        // shared rule refuses exactly what the fold tolerates here.
+        assert!(portable_admission::air_wing_bank_rejection(vec![(0u32, 0i64)]).is_some());
+        assert!(portable_admission::air_wing_bank_rejection(vec![(1u32, 0i64)]).is_none());
     }
 
     #[test]

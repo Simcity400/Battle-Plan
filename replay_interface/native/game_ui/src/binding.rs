@@ -1712,6 +1712,7 @@ mod tests {
             operation_instances: Leaf::Absent,
             operation_token_memberships: Leaf::Absent,
             intel_levels: Leaf::Absent,
+            air_disclosure: Leaf::Absent,
             intel_network_graphs: Leaf::Absent,
             subject_autonomy_current: Leaf::Measured(rows),
             agency_upgrade_controller_refresh: Leaf::Absent,

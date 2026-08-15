@@ -684,6 +684,7 @@ mod tests {
             plane_definition: Leaf::Absent,
             effective_planes: Leaf::Measured(90),
             equipment: Leaf::Absent,
+            exact_equipment: Leaf::Absent,
         };
         let view = air_wing_view_from_row(&row, true);
         assert_eq!(view.display_name.as_deref(), Some("Fighter Wing"));

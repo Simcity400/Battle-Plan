@@ -31,6 +31,8 @@ replay_interface/re_evidence/rendering_laws/XN15L/stage_so_census.json text eol=
 replay_interface/re_evidence/rendering_laws/M02/production_interleave_closure/contract.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json text eol=lf
 replay_interface/re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.sha256 text eol=lf
+replay_interface/re_evidence/air_disclosure/canonical_air_disclosure_envelope.json text eol=lf
+replay_interface/re_evidence/air_disclosure/canonical_air_disclosure_envelope.sha256 text eol=lf
 # XUI08's committed producer contract and evidence manifest are compiled in with
 # `include_bytes!` and hash-checked against the constants in
 # `replay_core/src/peace_conference_presentation.rs`. Without this line the

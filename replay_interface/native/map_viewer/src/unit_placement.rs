@@ -696,6 +696,7 @@ mod tests {
             plane_definition: Leaf::Absent,
             effective_planes: Leaf::Absent,
             equipment: Leaf::Absent,
+            exact_equipment: Leaf::Absent,
         };
         let input = wing_placement_input_from_world_row(&row);
         assert_eq!(input.location_province, Some(6508));

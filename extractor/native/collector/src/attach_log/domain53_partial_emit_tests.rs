@@ -441,3 +441,63 @@ fn full_mode_unaffected_on_partial() {
         "full mode resets the seeded sentinel"
     );
 }
+
+// The air-disclosure threshold rides EVERY emitted frame, including deltas.
+//
+// The recorder's per-hour accumulator resets at each hour boundary, so a
+// threshold carried only on full frames would be missing from every hour whose
+// first d53 record is a delta -- which, once the delta baseline is seeded, is
+// essentially every hour. The whole air-disclosure row would then read "not
+// known" in production while reading correctly in every offline fixture, and
+// the intel map it is compared against is carried on the same delta frames.
+//
+// kills: dropping `air_disclosure_threshold_raw` from the delta emission in
+// `compact_domain53_apply_emit_mode` (the delta frame's threshold falls back to
+// the struct default `None`), and any change that emits it only when the frame
+// is full.
+#[test]
+fn the_air_disclosure_threshold_rides_delta_frames_too() {
+    fn rows_with_threshold(
+        opinions: Vec<OpinionRow>,
+        threshold_raw: Option<i64>,
+    ) -> ExtractedDomain53Rows {
+        ExtractedDomain53Rows {
+            opinions,
+            air_disclosure_threshold_raw: threshold_raw,
+            ..Default::default()
+        }
+    }
+
+    let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
+    // Frame 1 seeds the baseline and is emitted in full.
+    let (seed, seed_status) = apply(
+        rows_with_threshold(vec![op(1, 2, 5)], Some(30_000)),
+        CLEAN,
+        &mut tracker,
+    );
+    assert!(!is_delta(seed_status), "the first frame is not a delta");
+    assert_eq!(seed.air_disclosure_threshold_raw, Some(30_000));
+
+    // Frame 2 IS a delta -- and still carries the threshold.
+    let (delta, delta_status) = apply(
+        rows_with_threshold(vec![op(1, 2, 6)], Some(30_000)),
+        CLEAN,
+        &mut tracker,
+    );
+    assert!(is_delta(delta_status), "the second frame is a delta");
+    assert_eq!(
+        delta.air_disclosure_threshold_raw,
+        Some(30_000),
+        "a delta frame must carry the gate's right-hand side, not only its left"
+    );
+
+    // A delta frame whose define could not be read carries nothing, which is
+    // the only spelling of "not read" -- never a substituted default.
+    let (unread, unread_status) = apply(
+        rows_with_threshold(vec![op(1, 2, 7)], None),
+        CLEAN,
+        &mut tracker,
+    );
+    assert!(is_delta(unread_status));
+    assert_eq!(unread.air_disclosure_threshold_raw, None);
+}
