@@ -33,6 +33,15 @@ RESOLUTION_SCHEMA = "extractor.live_binding_resolution.v1"
 UI14_ENGINE_VFS_SCHEMA = "extractor.ui14_engine_vfs.v1"
 SOURCE_INVENTORY_SCHEMA = "extractor.live_binding_source_inventory.v3"
 EXPECTED_EXE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+ENGINE_RUNTIME_ARTIFACTS_SCHEMA = "extractor.engine_runtime_artifacts.v1"
+ENGINE_RUNTIME_ARTIFACTS_CLASS = "engine_written_install_root_sink"
+ENGINE_RUNTIME_ARTIFACTS_BUILD_ID = "a729"
+ENGINE_RUNTIME_ARTIFACTS_PATH = Path(__file__).resolve().with_name(
+    "engine_runtime_artifacts.json"
+)
+ENGINE_RUNTIME_ARTIFACTS_SHA256 = (
+    "6df6c7b0110265751c5564a8d09627770560e37d493431e34ff0ddc6207115d0"
+)
 
 
 def _load_ui14_engine_vfs(
@@ -161,6 +170,212 @@ def _normalize_vfs_relpath(raw_name: str, label: str) -> str:
     if not parts:
         raise ResolutionError(f"empty {label}: {raw_name!r}")
     return "/".join(parts)
+
+
+_HEX_ADDRESS_RE = re.compile(r"^0x[0-9a-f]{6,16}$")
+_RUNTIME_ARTIFACT_EVIDENCE_FIELDS = {
+    "string_address",
+    "string_pointer_address",
+    "reference_addresses",
+    "reference_census",
+    "sink_binding_function",
+    "writer_function",
+    "access",
+    "write_mode",
+    "write_mode_string_address",
+    "note",
+}
+
+
+def _required_hex_address(value: Any, field: str, *, optional: bool = False) -> str | None:
+    if optional and value is None:
+        return None
+    if not isinstance(value, str) or not _HEX_ADDRESS_RE.match(value):
+        raise ResolutionError(f"engine runtime artifact {field} is not a lowercase hex address")
+    return value
+
+
+def load_engine_runtime_artifacts(path: Path | None = None) -> dict[str, Any]:
+    """Load the ONE authority naming the engine's own install-root write sinks.
+
+    THE PROBLEM THIS SOLVES.  ``hash_tree`` builds the base namespace by walking
+    the install directory, but the base namespace is supposed to BE the
+    effective-VFS base layer, and the engine does not reach every file in that
+    directory through the VFS.  Three of them it opens by bare
+    working-directory-relative name with raw stream I/O, as sinks it writes:
+    playing one console command rewrites ``console_history.txt`` in place, which
+    moved the base content digest, which moved the load-order base row, the
+    namespace digest and the row digest -- three of the six inputs to every
+    product-modset key.  The same player, same DLC, same mods, got a different
+    product key for having typed into the console (owner ruling 2026-08-15: this
+    class is out of the key domain).
+
+    WHY THIS IS AN AUTHORITY AND NOT A FILENAME LIST.  Membership is decided by
+    the a729 image's own string reference: each row carries the address of the
+    literal, the addresses that reference it, and the function that opens it.
+    Nothing here is a convention -- not the ``.txt``/``.ini`` extension, not the
+    install-root position, not the word "history" or "log".  A future artifact
+    joins this class by being found in the executable, and its evidence is
+    checked structurally on every load, so a bare filename cannot be slipped in.
+
+    FAIL-CLOSED ON AMBIGUITY.  Every relpath must be a single bare filename: the
+    class is "opened relative to the working directory", and anything with a
+    directory component would sit inside a namespace the VFS really does resolve,
+    where "runtime artifact" and "shipped content" stop being distinguishable
+    from the outside.  Such a row is refused rather than guessed at, and so is a
+    row for a different engine build, a different executable, a duplicate path,
+    or an incomplete evidence record.  Refusing means no inventory and no key at
+    all, never a silently wider or narrower exclusion.
+    """
+    resolved = Path(path if path is not None else ENGINE_RUNTIME_ARTIFACTS_PATH).resolve()
+    digest = SB.sha256_file(resolved)
+    if digest != ENGINE_RUNTIME_ARTIFACTS_SHA256:
+        raise ResolutionError(
+            "engine runtime artifact authority is not the canonical repository digest"
+        )
+    value = SB.load_object(resolved, "engine runtime artifact authority")
+    if set(value) != {
+        "schema",
+        "engine_build_id",
+        "executable_sha256",
+        "class",
+        "class_definition",
+        "artifacts",
+    } or value.get("schema") != ENGINE_RUNTIME_ARTIFACTS_SCHEMA:
+        raise ResolutionError("engine runtime artifact authority has unsupported schema or fields")
+    if value.get("class") != ENGINE_RUNTIME_ARTIFACTS_CLASS:
+        raise ResolutionError("engine runtime artifact authority names an unimplemented class")
+    if value.get("engine_build_id") != ENGINE_RUNTIME_ARTIFACTS_BUILD_ID:
+        raise ResolutionError(
+            "engine runtime artifact authority names a build whose sinks are not the RE'd ones"
+        )
+    if SB._required_sha(
+        value.get("executable_sha256"), "engine runtime artifact authority executable_sha256"
+    ) != EXPECTED_EXE_SHA256:
+        raise ResolutionError(
+            "engine runtime artifact authority is not evidenced against the resolved executable"
+        )
+    SB._required_string(value.get("class_definition"), "engine runtime artifact class_definition")
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ResolutionError("engine runtime artifact authority declares no artifacts")
+    normalized: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    seen_sinks: set[str] = set()
+    for index, row in enumerate(artifacts):
+        if not isinstance(row, dict) or set(row) != {"relpath", "sink", "evidence"}:
+            raise ResolutionError(f"engine runtime artifact {index} is malformed")
+        relpath = SB._required_string(row.get("relpath"), f"runtime artifact {index}.relpath")
+        if _normalize_vfs_relpath(relpath, f"runtime artifact {index}.relpath") != relpath:
+            raise ResolutionError(f"engine runtime artifact {index} relpath is not normalized")
+        if "/" in relpath:
+            raise ResolutionError(
+                f"engine runtime artifact {index} relpath is not a bare working-directory name"
+            )
+        if _ascii_fold(relpath) != relpath:
+            raise ResolutionError(
+                f"engine runtime artifact {index} relpath is not its own case-folded spelling"
+            )
+        if relpath in seen_paths:
+            raise ResolutionError(f"engine runtime artifact authority repeats {relpath}")
+        seen_paths.add(relpath)
+        sink = SB._required_string(row.get("sink"), f"runtime artifact {index}.sink")
+        if sink in seen_sinks:
+            raise ResolutionError(f"engine runtime artifact authority repeats sink {sink}")
+        seen_sinks.add(sink)
+        evidence = row.get("evidence")
+        if not isinstance(evidence, dict) or set(evidence) != _RUNTIME_ARTIFACT_EVIDENCE_FIELDS:
+            raise ResolutionError(f"engine runtime artifact {relpath} evidence is malformed")
+        _required_hex_address(evidence.get("string_address"), f"{relpath}.string_address")
+        _required_hex_address(
+            evidence.get("string_pointer_address"), f"{relpath}.string_pointer_address",
+            optional=True,
+        )
+        _required_hex_address(
+            evidence.get("sink_binding_function"), f"{relpath}.sink_binding_function"
+        )
+        # writer_function is OPTIONAL on purpose.  Where the open site reaches
+        # the path through a library's sink FIELD rather than through the
+        # literal, no address for it has been read out of the image, and
+        # claiming one would be asserting more than the evidence shows.  What is
+        # never optional is the census below, which is the property the class
+        # actually rests on.
+        _required_hex_address(
+            evidence.get("writer_function"), f"{relpath}.writer_function", optional=True
+        )
+        _required_hex_address(
+            evidence.get("write_mode_string_address"), f"{relpath}.write_mode_string_address",
+            optional=True,
+        )
+        references = evidence.get("reference_addresses")
+        if not isinstance(references, list) or not references:
+            raise ResolutionError(f"engine runtime artifact {relpath} cites no reference address")
+        for position, reference in enumerate(references):
+            _required_hex_address(reference, f"{relpath}.reference_addresses[{position}]")
+        if len(references) != len({*references}):
+            raise ResolutionError(f"engine runtime artifact {relpath} repeats a reference address")
+        # THE COMPLETENESS CLAIM.  The census is the total number of references
+        # to this literal found in the image sweep, and every one of them must be
+        # named above (plus the pointer slot).  What THIS check can prove is
+        # internal consistency only: a row that named two of five real references
+        # and declared a census of two would pass here while leaving three
+        # unexamined sites, any of which could be a content read that makes the
+        # file real product content.  The independent half lives in
+        # tests/test_product_modset_admission.py::
+        # test_every_census_matches_the_retained_string_xref_sweep, which
+        # re-derives both the address set and the count from the raw Ghidra sweep
+        # retained in runs/jq_console_key/ and requires exact equality.
+        census = evidence.get("reference_census")
+        accounted = len(references) + (1 if evidence.get("string_pointer_address") else 0)
+        if not isinstance(census, int) or isinstance(census, bool) or census != accounted:
+            raise ResolutionError(
+                f"engine runtime artifact {relpath} reference census does not account for "
+                "every reference it names"
+            )
+        SB._required_string(evidence.get("access"), f"{relpath}.access")
+        SB._required_string(evidence.get("note"), f"{relpath}.note")
+        write_mode = evidence.get("write_mode")
+        if write_mode is not None:
+            SB._required_string(write_mode, f"{relpath}.write_mode")
+        normalized.append({"relpath": relpath, "sink": sink})
+    if [row["relpath"] for row in normalized] != sorted(
+        row["relpath"] for row in normalized
+    ):
+        raise ResolutionError("engine runtime artifact authority is not in canonical path order")
+    return {
+        "path": resolved,
+        "sha256": digest,
+        "schema": ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
+        "class": ENGINE_RUNTIME_ARTIFACTS_CLASS,
+        "engine_build_id": ENGINE_RUNTIME_ARTIFACTS_BUILD_ID,
+        "artifacts": normalized,
+    }
+
+
+def engine_runtime_artifact_relpaths(path: Path | None = None) -> frozenset[str]:
+    """The excluded install-root names, as the enumeration compares them."""
+    return frozenset(row["relpath"] for row in load_engine_runtime_artifacts(path)["artifacts"])
+
+
+def observe_engine_runtime_artifacts(
+    vanilla: Path, path: Path | None = None
+) -> list[dict[str, Any]]:
+    """Account for which excluded sinks the base layer actually carried.
+
+    "Partial data still seals -- exclude and account."  The account is
+    deliberately NAMES ONLY: this host has a console history and that one does
+    not, so recording their digests, sizes, or even their presence anywhere a
+    key-bearing digest can reach would put back exactly the variance the
+    exclusion removes.  It rides in the resolution report, which no key input
+    reads.
+    """
+    authority = load_engine_runtime_artifacts(path)
+    root = Path(vanilla).resolve()
+    return [
+        {"relpath": row["relpath"], "sink": row["sink"]}
+        for row in authority["artifacts"]
+        if (root / row["relpath"]).is_file()
+    ]
 
 
 def parse_descriptor(path: Path) -> dict[str, Any]:
@@ -394,11 +609,23 @@ def hash_tree(
     layer_kind: str,
     layer_id: str,
     exclude_top: set[str] | None = None,
+    exclude_relpaths: frozenset[str] | None = None,
     allow_empty: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
+    """Hash one content namespace's tree.
+
+    ``exclude_relpaths`` drops whole-path matches only, never prefixes: a file
+    named ``console_history.txt`` sitting inside ``common/`` is content that the
+    engine resolves through the VFS and stays in the digest.  Callers pass the
+    engine runtime artifact set for the BASE namespace alone, so a mod that
+    ships a file of the same name at its own root keeps it as that layer's
+    content.  Both restrictions are the fail-closed direction: an unrecognized
+    file is content.
+    """
     if not root.is_dir():
         raise ResolutionError(f"missing content root: {root}")
     exclude_top = {_ascii_fold(name) for name in (exclude_top or set())}
+    exclude_relpaths = {_ascii_fold(name) for name in (exclude_relpaths or frozenset())}
     def enumerate_files() -> list[tuple[str, Path, tuple[int, int]]]:
         found: list[tuple[str, Path, tuple[int, int]]] = []
         seen: set[str] = set()
@@ -407,6 +634,8 @@ def hash_tree(
                 continue
             rel = path.relative_to(root).as_posix()
             if _ascii_fold(rel.split("/", 1)[0]) in exclude_top:
+                continue
+            if _ascii_fold(rel) in exclude_relpaths:
                 continue
             if (
                 "\\" in rel
@@ -600,6 +829,7 @@ def recompute_source_inventory(
         allow_empty: bool = False,
         archive: bool = False,
         exclude_top: set[str] | None = None,
+        exclude_relpaths: frozenset[str] | None = None,
         binding: str = "asset_only",
         binding_content_sha256: str | None = None,
     ) -> None:
@@ -615,6 +845,7 @@ def recompute_source_inventory(
                 layer_id=layer_id,
                 allow_empty=allow_empty,
                 exclude_top=exclude_top,
+                exclude_relpaths=exclude_relpaths,
             )
             source_container_sha256 = None
             source_container_bytes = None
@@ -634,9 +865,14 @@ def recompute_source_inventory(
         })
         rows.extend({"namespace_ordinal": ordinal, **row} for row in inventory)
 
+    # The base namespace is the only one the engine mounts from its own working
+    # directory, so it is the only one whose walk can pick up the executable's
+    # write sinks.  Every other namespace is passed nothing: a mod or DLC layer
+    # that happens to contain a file of the same name owns it as content.
     add_namespace(
         "vanilla", "vanilla", "vanilla", vanilla,
-        allow_empty=False, exclude_top={"dlc", "integrated_dlc"}, binding="base"
+        allow_empty=False, exclude_top={"dlc", "integrated_dlc"},
+        exclude_relpaths=engine_runtime_artifact_relpaths(), binding="base"
     )
 
     integrated_root = vanilla / "integrated_dlc"
@@ -1487,6 +1723,12 @@ def resolve_live_bindings(
         "effective_launch_dlc_ids": enabled_dlc_ids,
         "descriptorless_asset_layers": [],
         "excluded_descriptorless_asset_layers": excluded_descriptorless_asset_layers,
+        "engine_runtime_artifacts": {
+            "schema": ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
+            "class": ENGINE_RUNTIME_ARTIFACTS_CLASS,
+            "authority_sha256": ENGINE_RUNTIME_ARTIFACTS_SHA256,
+            "observed_in_base_layer": observe_engine_runtime_artifacts(vanilla),
+        },
         "binding_identity": identity,
         "source_inventory_rows": len(source_inventory["rows"]),
         "source_inventory_sha256": source_inventory["inventory_sha256"],

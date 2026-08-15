@@ -356,6 +356,12 @@ def _offline_preparation_fixture(tmp_path: Path) -> tuple[Path, Path]:
             "requested_profile_dlc_ids": [],
             "effective_launch_dlc_ids": [],
             "descriptorless_asset_layers": [],
+            "engine_runtime_artifacts": {
+                "schema": LR.ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
+                "class": LR.ENGINE_RUNTIME_ARTIFACTS_CLASS,
+                "authority_sha256": LR.ENGINE_RUNTIME_ARTIFACTS_SHA256,
+                "observed_in_base_layer": LR.observe_engine_runtime_artifacts(vanilla),
+            },
             "binding_identity": mod_state["identity"],
             "source_inventory_rows": len(inventory["rows"]),
             "source_inventory_sha256": inventory["inventory_sha256"],
@@ -497,11 +503,41 @@ def _fake_product_bundle_build(**kwargs):
     return {"schema": B.BUILD_SCHEMA, "passed": True}
 
 
+def _rebind_runtime_artifact_authority(
+    tmp_path: Path, exe: Path, bindings: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-evidence the excluded install-root class against this fake engine.
+
+    The engine runtime artifact authority names the executable its addresses
+    were read out of, and this fixture substitutes a fabricated exe for the
+    whole preparation path (see the two engine-digest patches beside this
+    call).  Under that substitution the real a729 authority genuinely does not
+    apply, and refusing it is the rule working -- so the simulation is completed
+    here rather than the rule being relaxed.  ONLY the executable binding is
+    rewritten: the path rows and their evidence are the shipped ones, so the
+    admission mirror against ``IMPLEMENTED_RUNTIME_ARTIFACTS`` still bites.
+    """
+    document = json.loads(LR.ENGINE_RUNTIME_ARTIFACTS_PATH.read_text(encoding="utf-8"))
+    document["executable_sha256"] = SB.sha256_file(exe)
+    path = tmp_path / "engine_runtime_artifacts.json"
+    path.write_bytes(json.dumps(document, indent=2).encode("utf-8") + b"\n")
+    monkeypatch.setattr(LR, "ENGINE_RUNTIME_ARTIFACTS_PATH", path)
+    monkeypatch.setattr(LR, "ENGINE_RUNTIME_ARTIFACTS_SHA256", SB.sha256_file(path))
+    # The report must name the authority the resolution ran under, which under
+    # this simulation is the rebound one.  Admission refuses any other, and that
+    # refusal is what makes every pre-ruling capture stop opening.
+    report_path = bindings / "resolution_report.json"
+    report = SB.load_object(report_path, "fixture resolution report")
+    report["engine_runtime_artifacts"]["authority_sha256"] = SB.sha256_file(path)
+    _write_json(report_path, report)
+
+
 def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     exe, bindings = _offline_preparation_fixture(tmp_path)
     monkeypatch.setattr(PREPARE.LR, "EXPECTED_EXE_SHA256", SB.sha256_file(exe))
+    _rebind_runtime_artifact_authority(tmp_path, exe, bindings, monkeypatch)
     _retain_process_bound_ui14_evidence(exe, bindings)
     monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
 

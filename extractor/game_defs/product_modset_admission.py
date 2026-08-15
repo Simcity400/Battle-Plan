@@ -30,16 +30,31 @@ import live_binding_resolver as LR
 import static_bundle as SB
 
 
-# v3: the load-order base row now carries the effective-VFS base namespace
-# digest (load_order.v2), so admission joins it instead of recording that it
-# could not.  Every product-modset key changes with that derivation, and a v2
-# policy or receipt names a mechanism this module no longer implements.
-POLICY_SCHEMA = "extractor.product_modset_admission_policy.v3"
-ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v3"
+# v4: the effective-VFS base namespace no longer collects the engine's own
+# install-root write sinks (owner ruling 2026-08-15).  The base walk used to
+# pick up console_history.txt, so playing one console command moved the base
+# content digest, the load-order base row, the namespace digest and the row
+# digest -- and the same player, same DLC, same mods, got a different product
+# key for having typed into the console.  Every product-modset key changes with
+# that derivation, and a v3 policy or receipt names a domain this module no
+# longer implements.
+POLICY_SCHEMA = "extractor.product_modset_admission_policy.v4"
+ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v4"
 POLICY_NAME = "live_resolution_provenance"
 DEFAULT_POLICY = Path(__file__).resolve().with_name("product_modset_admission_policy.json")
 CANONICAL_POLICY_SHA256 = (
-    "ba5905b205ea83eec7557aa79dd078cab82baa31238f8ef68102d7db20452915"
+    "6f2e5724de5b256705caa2186004ff7d99a37a2a9f18774ea02e5f3c3ced1505"
+)
+
+# The exact excluded class, mirrored from the authority the resolver enumerates
+# with.  Both files are digest-pinned, and this tuple is checked against the
+# authority on every admission, so the key domain cannot be widened or narrowed
+# by editing only one of them -- which is the whole reason the class is one
+# authority instead of a filename check at each site that walks a tree.
+IMPLEMENTED_RUNTIME_ARTIFACTS: tuple[str, ...] = (
+    "console_history.txt",
+    "imgui.ini",
+    "imgui_log.txt",
 )
 
 # The exact obligations this module enforces.  A policy that names a different
@@ -50,6 +65,7 @@ IMPLEMENTED_PROVENANCE: tuple[str, ...] = (
     "engine_activated_dlc_roster",
     "engine_activated_mod_roster",
     "engine_mount_order_reproduced",
+    "engine_runtime_artifacts_excluded",
     "base_layer_content_digest_joined",
     "effective_vfs_namespace_coverage",
     "binding_identity_agreement",
@@ -119,6 +135,7 @@ def normalize_policy(value: dict[str, Any]) -> dict[str, Any]:
         "resolution_report_schema",
         "source_inventory_schema",
         "product_modset_key_schema",
+        "engine_runtime_artifacts_schema",
         "binding_schemas",
     }:
         raise SB.BundleError(
@@ -156,11 +173,121 @@ def normalize_policy(value: dict[str, Any]) -> dict[str, Any]:
         raise SB.BundleError(
             "policy required_provenance is not the exact implemented obligation list"
         )
+    # The policy names the excluded class's SCHEMA, never its digest: the
+    # authority is already digest-pinned in ``live_binding_resolver`` and
+    # mirrored path-for-path below, so a third copy here would add no guarantee
+    # and would put a digest into the one document that is required to carry
+    # none (a policy holding digests is how a single machine's content becomes
+    # everyone's product definition).
+    if mechanism.get("engine_runtime_artifacts_schema") != _runtime_artifact_authority()["schema"]:
+        raise SB.BundleError(
+            "policy resolution_mechanism.engine_runtime_artifacts_schema does not name the "
+            "implemented schema"
+        )
     return {
         "policy": POLICY_NAME,
         "engine_build_id": engine_build_id,
         "binding_schemas": dict(implemented_bindings),
         "required_provenance": list(IMPLEMENTED_PROVENANCE),
+    }
+
+
+def _runtime_artifact_authority() -> dict[str, Any]:
+    """The excluded install-root class, loaded and cross-checked against code.
+
+    ``LR.load_engine_runtime_artifacts`` already pins the file's digest and
+    validates every row's engine evidence.  What is added here is the mirror:
+    the exact path tuple must equal ``IMPLEMENTED_RUNTIME_ARTIFACTS``, so
+    replacing the authority with a wider one (say, one that also drops a
+    ``common/`` file and quietly stops the key from noticing a content change)
+    fails admission instead of silently redefining the product.
+    """
+    try:
+        authority = LR.load_engine_runtime_artifacts()
+    except LR.ResolutionError as exc:
+        raise SB.BundleError(f"engine runtime artifact authority is unusable: {exc}") from exc
+    paths = tuple(row["relpath"] for row in authority["artifacts"])
+    if paths != IMPLEMENTED_RUNTIME_ARTIFACTS:
+        raise SB.BundleError(
+            "engine runtime artifact authority is not the exact implemented excluded class"
+        )
+    return authority
+
+
+def _engine_runtime_artifacts_excluded(
+    source_inventory: dict[str, Any], report: dict[str, Any]
+) -> dict[str, Any]:
+    """Prove the key domain really excluded the engine's own write sinks.
+
+    Two independent halves, because either alone has a blind spot:
+
+    * THE INVENTORY.  No row of the BASE namespace may name an excluded path.  A
+      resolver that skipped the exclusion produces exactly such a row, and it is
+      refused here by name.  Only the base namespace is checked -- a mod layer
+      carrying a file of that name owns it as content, and refusing it would be
+      this obligation deleting real content from a modded product.
+    * THE REPORT.  A clean install has no console history, so the inventory
+      check passes vacuously on it; the report must therefore state which
+      authority the resolution ran under.  A capture resolved under a different
+      excluded class -- including every capture recorded before this change --
+      names a different digest and is refused, rather than joining a product key
+      that means something else.
+
+    The report's observation is names only, and admission requires it to be a
+    subset of the authority: it can say WHICH sinks this host had, never their
+    bytes, so nothing about console use can reach a digest through it.
+    """
+    authority = _runtime_artifact_authority()
+    excluded = {row["relpath"] for row in authority["artifacts"]}
+    sink_by_path = {row["relpath"]: row["sink"] for row in authority["artifacts"]}
+
+    base_ordinals = {
+        namespace["ordinal"]
+        for namespace in source_inventory["namespaces"]
+        if namespace["binding"] == "base"
+    }
+    for row in source_inventory["rows"]:
+        if row["namespace_ordinal"] in base_ordinals and LR._ascii_fold(row["relpath"]) in excluded:
+            raise SB.BundleError(
+                "effective-VFS base namespace still carries the engine runtime artifact "
+                f"{row['relpath']}: this inventory was built by a resolver that did not "
+                "exclude the engine's own install-root write sinks"
+            )
+
+    declared = report.get("engine_runtime_artifacts")
+    if not isinstance(declared, dict) or set(declared) != {
+        "schema", "class", "authority_sha256", "observed_in_base_layer"
+    }:
+        raise SB.BundleError(
+            "live resolution report does not state its engine runtime artifact domain"
+        )
+    if declared.get("schema") != authority["schema"] or declared.get("class") != authority["class"]:
+        raise SB.BundleError(
+            "live resolution report names a different engine runtime artifact mechanism"
+        )
+    if declared.get("authority_sha256") != authority["sha256"]:
+        raise SB.BundleError(
+            "live resolution ran under a different engine runtime artifact authority"
+        )
+    observed = declared.get("observed_in_base_layer")
+    if not isinstance(observed, list):
+        raise SB.BundleError("live resolution report runtime artifact observation is malformed")
+    seen: set[str] = set()
+    for row in observed:
+        if not isinstance(row, dict) or set(row) != {"relpath", "sink"}:
+            raise SB.BundleError(
+                "live resolution report runtime artifact observation row is malformed"
+            )
+        relpath = row["relpath"]
+        if relpath not in excluded or row["sink"] != sink_by_path[relpath] or relpath in seen:
+            raise SB.BundleError(
+                "live resolution report observed a runtime artifact outside the authority"
+            )
+        seen.add(relpath)
+    return {
+        "authority_sha256": authority["sha256"],
+        "excluded_class": list(IMPLEMENTED_RUNTIME_ARTIFACTS),
+        "observed_in_base_layer": sorted(seen),
     }
 
 
@@ -404,6 +531,12 @@ def admit(
     ordered_sources = _engine_activated_mods(
         documents["mod_state"], resolution_report, runtime
     )
+    # engine_runtime_artifacts_excluded runs BEFORE the base row's content
+    # digest is joined below, because it decides what that digest was allowed to
+    # cover.  Joining a digest first and asking afterwards what it measured is
+    # how the previous domain error survived: the join was sound, the domain was
+    # not.
+    runtime_artifacts = _engine_runtime_artifacts_excluded(inventory, resolution_report)
     engine_mount_order = _engine_mount_order(
         documents["load_order"], ordered_sources, inventory
     )
@@ -464,6 +597,7 @@ def admit(
         # mod named like a path would otherwise refuse an honest player's
         # preparation.  Descriptor ids are normalized relative VFS paths.
         "enabled_mod_ids": _sorted_ids(row["id"] for row in enabled_mods),
+        "engine_runtime_artifacts": runtime_artifacts,
         "engine_mount_order": engine_mount_order,
         "enabled_dlc_ids": enabled_dlc_ids,
         "launcher_profile_conflict_dlc_ids": conflict_dlc_ids,

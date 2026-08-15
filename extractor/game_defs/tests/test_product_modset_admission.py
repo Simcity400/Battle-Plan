@@ -11,6 +11,7 @@ that provenance chain fails closed with a named reason.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,13 @@ def _redigest(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
+# Descriptor ids deliberately out of mount order: the a729 planner sorts them.
+_MODDED_SPECS: list[tuple[str, str]] = [
+    ("mod/zz-synthetic-last.mod", "Synthetic Zed Mod"),
+    ("mod/aa-synthetic-first.mod", "Synthetic Alpha Mod"),
+]
+
+
 class SyntheticModset:
     """One fabricated, fully cross-validated six-document binding corpus."""
 
@@ -61,6 +69,17 @@ class SyntheticModset:
         self.vanilla = root / "vanilla"
         self.userdir = root / "userdir"
         _write(self.vanilla / "common" / "base.txt", "synthetic vanilla payload")
+
+        # The corpus carries the engine's own install-root write sinks, because
+        # a fixture without them cannot tell "excluded" from "absent" -- the
+        # same blindness that let the v1 base derivation live untested.  Two of
+        # the three are present so the observation is a strict subset, and a
+        # deeper file of the SAME NAME is content: the exclusion is a whole-path
+        # match in the base namespace, not a basename filter, and only this row
+        # can fail if that is ever loosened.
+        _write(self.vanilla / "console_history.txt", "tag fra\ninstantconstruction\n")
+        _write(self.vanilla / "imgui.ini", "[Window][Debug##Default]\nPos=60,60\n")
+        _write(self.vanilla / "common" / "console_history.txt", "authored content, not a sink")
 
         # Every real install carries integrated_dlc layers (4 on the host this
         # was developed against), and the corpus must too.  Without one, the
@@ -242,6 +261,16 @@ class SyntheticModset:
             "effective_launch_dlc_ids": list(self.active_dlc_ids),
             "descriptorless_asset_layers": [],
             "excluded_descriptorless_asset_layers": [],
+            # Derived exactly as production derives it, over this corpus's own
+            # root, rather than transcribed: a fixture that hand-writes the
+            # observation cannot notice the resolver and the authority drifting
+            # apart.
+            "engine_runtime_artifacts": {
+                "schema": LR.ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
+                "class": LR.ENGINE_RUNTIME_ARTIFACTS_CLASS,
+                "authority_sha256": LR.ENGINE_RUNTIME_ARTIFACTS_SHA256,
+                "observed_in_base_layer": LR.observe_engine_runtime_artifacts(self.vanilla),
+            },
             "binding_identity": self.identity,
             "source_inventory_rows": len(self.inventory["rows"]),
             "source_inventory_sha256": self.inventory["inventory_sha256"],
@@ -296,13 +325,7 @@ class ProvenanceAdmissionTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
 
     def _modded(self) -> SyntheticModset:
-        return SyntheticModset(
-            self.root / "modded",
-            mod_specs=[
-                ("mod/zz-synthetic-last.mod", "Synthetic Zed Mod"),
-                ("mod/aa-synthetic-first.mod", "Synthetic Alpha Mod"),
-            ],
-        )
+        return SyntheticModset(self.root / "modded", mod_specs=list(_MODDED_SPECS))
 
     def _vanilla(self) -> SyntheticModset:
         return SyntheticModset(self.root / "vanilla-only", mod_specs=[])
@@ -688,6 +711,391 @@ class MechanismPolicyTests(unittest.TestCase):
         value["entries"] = [{"id": "anything", "product_modset_sha256": "e" * 64}]
         with self.assertRaisesRegex(SB.BundleError, "unknown or missing fields"):
             PMA.normalize_policy(value)
+
+
+class EngineRuntimeArtifactDomainTests(unittest.TestCase):
+    """The install-root class that is OUT of the product-modset key domain.
+
+    the game opens three bare working-directory-relative filenames as sinks it
+    writes: ``console_history.txt`` (appended once per accepted console
+    command) and ImGui's ``imgui.ini`` / ``imgui_log.txt``.  None is reached
+    through the Clausewitz layered VFS, so none is content of the base
+    namespace -- but the base namespace was built by walking the install
+    directory, so all three landed in it, and typing one console command moved
+    every product-modset key on the machine.
+    """
+
+    def _authority(self) -> dict[str, Any]:
+        return json.loads(LR.ENGINE_RUNTIME_ARTIFACTS_PATH.read_text(encoding="utf-8"))
+
+    def _load_edited(self, value: dict[str, Any]) -> None:
+        """Load an edited authority past its digest pin, to reach the rest."""
+        with tempfile.TemporaryDirectory(prefix="runtime-artifacts-") as raw:
+            path = Path(raw) / "engine_runtime_artifacts.json"
+            path.write_bytes(json.dumps(value, indent=2).encode("utf-8") + b"\n")
+            original = LR.ENGINE_RUNTIME_ARTIFACTS_SHA256
+            LR.ENGINE_RUNTIME_ARTIFACTS_SHA256 = SB.sha256_file(path)
+            try:
+                LR.load_engine_runtime_artifacts(path)
+            finally:
+                LR.ENGINE_RUNTIME_ARTIFACTS_SHA256 = original
+
+    def test_authority_is_the_exact_implemented_excluded_class(self) -> None:
+        # kills: adding or removing a row in the JSON without moving the code
+        # mirror -- i.e. redefining what the product key measures by editing one
+        # file.  Also kills the digest pin being dropped.
+        authority = LR.load_engine_runtime_artifacts()
+        self.assertEqual(
+            tuple(row["relpath"] for row in authority["artifacts"]),
+            PMA.IMPLEMENTED_RUNTIME_ARTIFACTS,
+        )
+        self.assertEqual(
+            authority["sha256"], SB.sha256_file(LR.ENGINE_RUNTIME_ARTIFACTS_PATH)
+        )
+        self.assertEqual(
+            LR.engine_runtime_artifact_relpaths(),
+            frozenset(PMA.IMPLEMENTED_RUNTIME_ARTIFACTS),
+        )
+
+    def test_every_census_matches_the_retained_string_xref_sweep(self) -> None:
+        """The census is only a completeness proof if something checks it.
+
+        `load_engine_runtime_artifacts` can only verify that a row's declared
+        census accounts for the addresses that row NAMES -- internal
+        consistency.  A row could name two references, declare a census of two,
+        and leave three real ones unexamined, and the loader would pass it.
+        This closes that by re-deriving the census from the RAW GHIDRA SWEEP
+        retained beside this lane, which is the artifact the numbers actually
+        came from, and requiring exact address-set equality.
+
+        If the retained evidence is ever deleted, this fails rather than skips:
+        the authority's central claim -- "every reference to this literal in the
+        image is named here, and none of them is a content read" -- stops being
+        provable at that moment, and a silent skip would hide that.
+        """
+        # kills: adding a row whose census was copied from another row, trimming
+        # a row's reference list, or pruning the raw sweep the class rests on.
+        evidence_dir = GAME_DEFS.parent / "native/runs/jq_console_key"
+        sweeps = sorted(evidence_dir.glob("re_string_xrefs*.txt"))
+        self.assertTrue(sweeps, f"the retained string-xref sweep is missing from {evidence_dir}")
+        swept: dict[str, set[str]] = {}
+        literal: str | None = None
+        for path in sweeps:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                header = re.match(r'^== "(.+)" ==$', line.strip())
+                if header:
+                    literal = header.group(1)
+                    swept.setdefault(literal, set())
+                    continue
+                if literal is None:
+                    continue
+                found = re.match(r"^\s*(?:occurrence @|ref from )([0-9a-f]+)\b", line)
+                if found:
+                    swept[literal].add("0x" + found.group(1))
+
+        authority = json.loads(LR.ENGINE_RUNTIME_ARTIFACTS_PATH.read_text(encoding="utf-8"))
+        for row in authority["artifacts"]:
+            relpath = row["relpath"]
+            evidence = row["evidence"]
+            self.assertIn(relpath, swept, f"no retained sweep covers {relpath}")
+            declared = set(evidence["reference_addresses"])
+            if evidence["string_pointer_address"]:
+                declared.add(evidence["string_pointer_address"])
+            # The sweep also lists the literal's own occurrence address, which
+            # is the string, not a reference to it.
+            declared.add(evidence["string_address"])
+            self.assertEqual(
+                declared,
+                swept[relpath],
+                f"{relpath}: the authority and the raw sweep name different addresses",
+            )
+            self.assertEqual(
+                evidence["reference_census"],
+                len(swept[relpath]) - 1,
+                f"{relpath}: declared census is not the swept reference count",
+            )
+
+    def test_edited_authority_is_refused_by_its_digest_pin(self) -> None:
+        # kills: removing the digest pin, which is the only thing standing
+        # between "one authority" and "a file anyone can widen".
+        with tempfile.TemporaryDirectory(prefix="runtime-artifacts-") as raw:
+            path = Path(raw) / "engine_runtime_artifacts.json"
+            path.write_bytes(LR.ENGINE_RUNTIME_ARTIFACTS_PATH.read_bytes() + b"\n")
+            with self.assertRaisesRegex(
+                LR.ResolutionError, "canonical repository digest"
+            ):
+                LR.load_engine_runtime_artifacts(path)
+
+    def test_a_nested_path_cannot_join_the_class(self) -> None:
+        # kills: relaxing the bare-name rule.  A relpath with a directory
+        # component sits inside a namespace the VFS really does resolve, where
+        # an exclusion would delete real content from the key without trace.
+        value = self._authority()
+        value["artifacts"][0]["relpath"] = "common/console_history.txt"
+        with self.assertRaisesRegex(
+            LR.ResolutionError, "not a bare working-directory name"
+        ):
+            self._load_edited(value)
+
+    def test_an_unevidenced_path_cannot_join_the_class(self) -> None:
+        # kills: dropping the evidence validation, which is what makes this an
+        # engine-derived class instead of a filename list.
+        value = self._authority()
+        del value["artifacts"][0]["evidence"]["writer_function"]
+        with self.assertRaisesRegex(LR.ResolutionError, "evidence is malformed"):
+            self._load_edited(value)
+        value = self._authority()
+        value["artifacts"][0]["evidence"]["string_address"] = "the console file"
+        with self.assertRaisesRegex(LR.ResolutionError, "hex address"):
+            self._load_edited(value)
+
+    def test_authority_for_another_engine_build_is_refused(self) -> None:
+        # kills: carrying these addresses forward across an engine bump, where
+        # the sinks are re-proved or they are not this class.
+        value = self._authority()
+        value["engine_build_id"] = "a730"
+        with self.assertRaisesRegex(LR.ResolutionError, "sinks are not the RE'd ones"):
+            self._load_edited(value)
+        value = self._authority()
+        value["executable_sha256"] = "f" * 64
+        with self.assertRaisesRegex(LR.ResolutionError, "not evidenced against"):
+            self._load_edited(value)
+
+    def test_using_the_console_does_not_move_the_product_modset_key(self) -> None:
+        """The whole point, end to end over the synthetic corpus."""
+        # kills: the exclusion not reaching the key -- remove the
+        # exclude_relpaths argument at the base namespace and the second key
+        # differs, because the sink feeds the base content digest, the
+        # load-order base row, the namespace digest and the row digest.
+        with tempfile.TemporaryDirectory(prefix="console-key-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            before = fixture.product()["product_modset_sha256"]
+            self.assertEqual(fixture.admit()["product_modset_sha256"], before)
+
+            history = fixture.vanilla / "console_history.txt"
+            history.write_text(
+                history.read_text(encoding="utf-8") + "annex fra\n", encoding="utf-8"
+            )
+            (fixture.vanilla / "imgui_log.txt").write_text("debug ui\n", encoding="utf-8")
+            rebuilt = SyntheticModset.__new__(SyntheticModset)
+            rebuilt.__dict__.update(fixture.__dict__)
+            rebuilt.inventory = LR.recompute_source_inventory(
+                fixture.vanilla,
+                fixture.sources,
+                fixture.active_dlc_ids,
+                [],
+                fixture.identity,
+            )
+            rebuilt.documents_wire = rebuilt._build_documents()
+            rebuilt.report = rebuilt._build_report()
+            self.assertEqual(rebuilt.product()["product_modset_sha256"], before)
+            self.assertEqual(rebuilt.admit()["product_modset_sha256"], before)
+            # The account followed the install: the third sink appeared.
+            self.assertEqual(
+                rebuilt.admit()["engine_runtime_artifacts"]["observed_in_base_layer"],
+                ["console_history.txt", "imgui.ini", "imgui_log.txt"],
+            )
+
+    def test_real_content_of_the_same_name_still_moves_the_key(self) -> None:
+        # kills: widening the exclusion to a basename filter, which would stop
+        # the key from noticing an edit to authored content.
+        with tempfile.TemporaryDirectory(prefix="console-key-content-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            before = fixture.product()["product_modset_sha256"]
+            nested = fixture.vanilla / "common" / "console_history.txt"
+            nested.write_text("authored content, EDITED", encoding="utf-8")
+            after = LR.recompute_source_inventory(
+                fixture.vanilla,
+                fixture.sources,
+                fixture.active_dlc_ids,
+                [],
+                fixture.identity,
+            )
+            self.assertNotEqual(after["rows_sha256"], fixture.inventory["rows_sha256"])
+            fixture.inventory = after
+            fixture.documents_wire = fixture._build_documents()
+            self.assertNotEqual(fixture.product()["product_modset_sha256"], before)
+
+    def test_a_mod_layer_keeps_a_file_of_the_same_name(self) -> None:
+        # kills: applying the exclusion to every namespace instead of the base
+        # alone, which would silently drop a modder's file from the key.
+        with tempfile.TemporaryDirectory(prefix="console-key-mod-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            before = fixture.product()["product_modset_sha256"]
+            content = Path(fixture.sources[0]["content_path"])
+            (content / "console_history.txt").write_text("mod payload", encoding="utf-8")
+            content_sha, _rows = LR.hash_tree(
+                content, layer_kind="mod", layer_id=fixture.sources[0]["id"]
+            )
+            fixture.sources[0]["content_sha256"] = content_sha
+            fixture.inventory = LR.recompute_source_inventory(
+                fixture.vanilla,
+                fixture.sources,
+                fixture.active_dlc_ids,
+                [],
+                fixture.identity,
+            )
+            self.assertIn(
+                "console_history.txt",
+                {
+                    row["relpath"]
+                    for row in fixture.inventory["rows"]
+                    if row["layer_kind"] == "mod"
+                },
+            )
+            fixture.documents_wire = fixture._build_documents()
+            self.assertNotEqual(fixture.product()["product_modset_sha256"], before)
+
+    def test_a_differently_cased_spelling_on_disk_is_still_excluded(self) -> None:
+        # kills: removing `_ascii_fold` from either side of the hash_tree
+        # comparison.  Windows filesystems are case-insensitive, so the same
+        # sink can appear on disk under any spelling; a case-sensitive compare
+        # would let `Console_History.TXT` back into the base digest on one host
+        # and not another, which is a platform-dependent product key.
+        with tempfile.TemporaryDirectory(prefix="console-key-case-") as raw:
+            root = Path(raw) / "vanilla"
+            _write(root / "common" / "base.txt", "payload")
+            _write(root / "Console_History.TXT", "tag fra\n")
+            excluded, _rows = LR.hash_tree(
+                root,
+                layer_kind="vanilla",
+                layer_id="vanilla",
+                exclude_relpaths=LR.engine_runtime_artifact_relpaths(),
+            )
+            (root / "Console_History.TXT").unlink()
+            absent, _rows = LR.hash_tree(root, layer_kind="vanilla", layer_id="vanilla")
+            self.assertEqual(excluded, absent)
+
+    def test_a_differently_cased_base_row_is_still_refused_by_admission(self) -> None:
+        # kills: removing the fold from the admission obligation's row check,
+        # which would let a stale inventory through on its spelling alone.
+        with tempfile.TemporaryDirectory(prefix="console-key-case-admit-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            stale = deepcopy(fixture.inventory)
+            base = next(
+                namespace
+                for namespace in stale["namespaces"]
+                if namespace["binding"] == "base"
+            )
+            stale["rows"].append(
+                {
+                    "namespace_ordinal": base["ordinal"],
+                    "layer_kind": "vanilla",
+                    "layer_id": "vanilla",
+                    "relpath": "Console_History.TXT",
+                    "bytes": 8,
+                    "sha256": "a" * 64,
+                    "storage_kind": "directory",
+                    "source_container_sha256": None,
+                    "source_byte_offset": 0,
+                    "source_byte_count": 8,
+                    "source_range_sha256": "a" * 64,
+                }
+            )
+            with self.assertRaisesRegex(
+                SB.BundleError, "still carries the engine runtime artifact"
+            ):
+                PMA._engine_runtime_artifacts_excluded(stale, fixture.report)
+
+    def test_the_production_capture_driver_pins_the_current_admission_schema(self) -> None:
+        # kills: bumping ADMISSION_SCHEMA without updating the PowerShell
+        # capture driver.  That driver hard-compares the schema string, so a
+        # stale pin means every production capture runs a SUCCESSFUL admission
+        # and is then thrown away as "noncanonical" -- a failure no Python or
+        # Rust gate in this repository can see, because the join is in a shell
+        # script.  Found by review after this lane bumped v3 -> v4.
+        driver = (
+            GAME_DEFS.parent / "native/scripts/Start-Hoi4ProductionCaptureSafe.ps1"
+        ).resolve()
+        text = driver.read_text(encoding="utf-8-sig")
+        pinned = set(
+            re.findall(r"extractor\.product_modset_policy_admission\.v\d+", text)
+        )
+        self.assertTrue(pinned, f"{driver} names no admission schema at all")
+        self.assertEqual(pinned, {PMA.ADMISSION_SCHEMA})
+
+    def test_the_base_namespace_never_lists_a_sink(self) -> None:
+        # kills: the enumeration-side exclusion, directly.
+        with tempfile.TemporaryDirectory(prefix="console-key-rows-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            base = {
+                namespace["ordinal"]
+                for namespace in fixture.inventory["namespaces"]
+                if namespace["binding"] == "base"
+            }
+            base_paths = {
+                row["relpath"]
+                for row in fixture.inventory["rows"]
+                if row["namespace_ordinal"] in base
+            }
+            self.assertFalse(base_paths & set(PMA.IMPLEMENTED_RUNTIME_ARTIFACTS))
+            self.assertIn("common/console_history.txt", base_paths)
+
+    def test_an_inventory_built_without_the_exclusion_is_refused(self) -> None:
+        # kills: the admission obligation.  This is the shape a resolver that
+        # predates the ruling emits, and it must be refused by name rather than
+        # admitted into a key that means something else.
+        with tempfile.TemporaryDirectory(prefix="console-key-refuse-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            stale = LR.recompute_source_inventory(
+                fixture.vanilla,
+                fixture.sources,
+                fixture.active_dlc_ids,
+                [],
+                fixture.identity,
+            )
+            base = next(
+                namespace
+                for namespace in stale["namespaces"]
+                if namespace["binding"] == "base"
+            )
+            stale["rows"].append(
+                {
+                    "namespace_ordinal": base["ordinal"],
+                    "layer_kind": "vanilla",
+                    "layer_id": "vanilla",
+                    "relpath": "console_history.txt",
+                    "bytes": 8,
+                    "sha256": "a" * 64,
+                    "storage_kind": "directory",
+                    "source_container_sha256": None,
+                    "source_byte_offset": 0,
+                    "source_byte_count": 8,
+                    "source_range_sha256": "a" * 64,
+                }
+            )
+            with self.assertRaisesRegex(
+                SB.BundleError, "still carries the engine runtime artifact"
+            ):
+                PMA._engine_runtime_artifacts_excluded(stale, fixture.report)
+
+    def test_a_report_from_another_excluded_class_is_refused(self) -> None:
+        # kills: the report half of the obligation.  A clean install has no
+        # console history at all, so the row check above passes vacuously on it
+        # and only this refuses a capture resolved under a different domain --
+        # which is every capture recorded before this change.
+        with tempfile.TemporaryDirectory(prefix="console-key-report-") as raw:
+            fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
+            report = deepcopy(fixture.report)
+            report["engine_runtime_artifacts"]["authority_sha256"] = "b" * 64
+            with self.assertRaisesRegex(
+                SB.BundleError, "different engine runtime artifact authority"
+            ):
+                PMA._engine_runtime_artifacts_excluded(fixture.inventory, report)
+
+            report = deepcopy(fixture.report)
+            del report["engine_runtime_artifacts"]
+            with self.assertRaisesRegex(
+                SB.BundleError, "does not state its engine runtime artifact domain"
+            ):
+                PMA._engine_runtime_artifacts_excluded(fixture.inventory, report)
+
+            report = deepcopy(fixture.report)
+            report["engine_runtime_artifacts"]["observed_in_base_layer"] = [
+                {"relpath": "settings.txt", "sink": "console_command_history"}
+            ]
+            with self.assertRaisesRegex(SB.BundleError, "outside the authority"):
+                PMA._engine_runtime_artifacts_excluded(fixture.inventory, report)
 
 
 if __name__ == "__main__":

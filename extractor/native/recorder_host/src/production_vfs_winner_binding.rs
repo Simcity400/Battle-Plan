@@ -17,8 +17,150 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 const SOURCE_INVENTORY_SCHEMA: &str = "extractor.live_binding_source_inventory.v3";
+
+/// The engine runtime artifact authority, embedded from the SAME file the
+/// Python resolver enumerates with.
+///
+/// Both sides must agree on what the product-modset key domain excludes, and
+/// the cheapest way to be wrong about that is to write the class down twice.
+/// This is not a Rust copy of the list: it is the one document, compiled in, so
+/// a row added on the extractor side is a row this refusal already knows about
+/// and a hand-edited copy cannot exist. [`ENGINE_RUNTIME_ARTIFACTS_SHA256`]
+/// pins it so an edit that the recorder side has not been rebuilt against is a
+/// test failure rather than a silent divergence.
+const ENGINE_RUNTIME_ARTIFACTS_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../game_defs/engine_runtime_artifacts.json"
+));
+const ENGINE_RUNTIME_ARTIFACTS_SHA256: &str =
+    "6df6c7b0110265751c5564a8d09627770560e37d493431e34ff0ddc6207115d0";
+const ENGINE_RUNTIME_ARTIFACTS_SCHEMA: &str = "extractor.engine_runtime_artifacts.v1";
+const ENGINE_RUNTIME_ARTIFACTS_CLASS: &str = "engine_written_install_root_sink";
+
+/// The excluded install-root class, parsed once: canonical relpath -> sink.
+///
+/// The sink is carried, not just the path, because the Python obligation
+/// requires an observation row to name the RIGHT sink for its path and this
+/// side has to accept exactly what that side accepts. Returns an error rather
+/// than an empty map when the authority is unreadable: an empty map would
+/// silently admit exactly the documents this refuses.
+///
+/// Keys are the authority's own spelling, which its Python loader already
+/// requires to be case-folded and free of any directory component.
+fn engine_runtime_artifacts() -> Result<&'static BTreeMap<String, String>, String> {
+    static PARSED: OnceLock<Result<BTreeMap<String, String>, String>> = OnceLock::new();
+    PARSED
+        .get_or_init(|| {
+            let digest = Sha256::digest(ENGINE_RUNTIME_ARTIFACTS_JSON.as_bytes());
+            if format!("{digest:x}") != ENGINE_RUNTIME_ARTIFACTS_SHA256 {
+                return Err("engine runtime artifact authority digest is not the pinned one".into());
+            }
+            let document: Value = serde_json::from_str(ENGINE_RUNTIME_ARTIFACTS_JSON)
+                .map_err(|error| format!("decode engine runtime artifact authority: {error}"))?;
+            if document.get("schema").and_then(Value::as_str) != Some(ENGINE_RUNTIME_ARTIFACTS_SCHEMA)
+            {
+                return Err("engine runtime artifact authority schema is unsupported".into());
+            }
+            let rows = document
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .filter(|rows| !rows.is_empty())
+                .ok_or("engine runtime artifact authority declares no artifacts")?;
+            let mut paths = BTreeMap::new();
+            for row in rows {
+                let relpath = row
+                    .get("relpath")
+                    .and_then(Value::as_str)
+                    .filter(|path| {
+                        !path.is_empty()
+                            && !path.contains('/')
+                            && !path.contains('\\')
+                            && *path == path.to_ascii_lowercase()
+                    })
+                    .ok_or("engine runtime artifact relpath is not a canonical bare name")?;
+                let sink = row
+                    .get("sink")
+                    .and_then(Value::as_str)
+                    .filter(|sink| !sink.is_empty())
+                    .ok_or("engine runtime artifact row names no sink")?;
+                if paths.insert(relpath.to_string(), sink.to_string()).is_some() {
+                    return Err("engine runtime artifact authority repeats a path".into());
+                }
+            }
+            Ok(paths)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// Require a live resolution report to declare the excluded install-root class
+/// it resolved under, and to declare OURS.
+///
+/// The row refusal in [`validate_inventory`] is blind on a clean installation:
+/// a machine whose console has never been opened has no such row, so a report
+/// produced before the 2026-08-15 ruling passes it while carrying a base digest
+/// that measured a different domain. That is exactly the document one side
+/// accepts and the other refuses. This is the other half, and it mirrors
+/// `product_modset_admission._engine_runtime_artifacts_excluded` on the Python
+/// side field for field -- same schema, same class, same authority digest, and
+/// the same rule that the observation may only name paths the authority knows.
+pub(crate) fn require_engine_runtime_artifact_declaration(report: &Value) -> Result<(), String> {
+    let known = engine_runtime_artifacts()?;
+    let declared = report
+        .get("engine_runtime_artifacts")
+        .and_then(Value::as_object)
+        .ok_or("live resolution report does not state its engine runtime artifact domain")?;
+    if declared.len() != 4
+        || declared.get("schema").and_then(Value::as_str) != Some(ENGINE_RUNTIME_ARTIFACTS_SCHEMA)
+        || declared.get("class").and_then(Value::as_str) != Some(ENGINE_RUNTIME_ARTIFACTS_CLASS)
+    {
+        return Err("live resolution report names a different engine runtime artifact mechanism"
+            .into());
+    }
+    if declared.get("authority_sha256").and_then(Value::as_str)
+        != Some(ENGINE_RUNTIME_ARTIFACTS_SHA256)
+    {
+        return Err(
+            "live resolution ran under a different engine runtime artifact authority".into(),
+        );
+    }
+    let observed = declared
+        .get("observed_in_base_layer")
+        .and_then(Value::as_array)
+        .ok_or("live resolution report runtime artifact observation is malformed")?;
+    let mut seen = BTreeSet::new();
+    for row in observed {
+        // Exactly {relpath, sink}, the authority's own spelling, and the RIGHT
+        // sink for that path. Anything looser and this side accepts a document
+        // the Python obligation rejects -- a mixed-case alias, a mismatched
+        // sink, or an extra field -- which is the same
+        // one-side-accepts-one-side-refuses split the report half exists to
+        // close, only inverted.
+        let fields = row
+            .as_object()
+            .ok_or("live resolution report runtime artifact observation row is malformed")?;
+        let relpath = fields
+            .get("relpath")
+            .and_then(Value::as_str)
+            .ok_or("live resolution report runtime artifact observation row is malformed")?;
+        let sink = fields
+            .get("sink")
+            .and_then(Value::as_str)
+            .ok_or("live resolution report runtime artifact observation row is malformed")?;
+        if fields.len() != 2
+            || known.get(relpath).map(String::as_str) != Some(sink)
+            || !seen.insert(relpath)
+        {
+            return Err(
+                "live resolution report observed a runtime artifact outside the authority".into(),
+            );
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -240,6 +382,32 @@ fn validate_inventory(inventory: &SourceInventoryV3) -> Result<(), String> {
         || inventory.inventory_sha256 != sha_json(&core)?
     {
         return Err("source inventory v3 digest mismatch".into());
+    }
+
+    // The engine's own install-root write sinks are outside the product-modset
+    // key domain (owner ruling 2026-08-15), and the Python resolver drops them
+    // from the base namespace at enumeration time. This side never walks that
+    // tree, so it cannot repeat the exclusion -- it checks the RESULT instead:
+    // a base row naming one means the inventory in front of us was produced by
+    // a resolver with a different key domain, and its digests describe a
+    // different product than ours do. Only the base namespace is checked: a mod
+    // layer carrying such a filename owns it as that layer's content.
+    let runtime_artifacts = engine_runtime_artifacts()?;
+    let base_ordinals = inventory
+        .namespaces
+        .iter()
+        .filter(|namespace| namespace.binding == "base")
+        .map(|namespace| namespace.ordinal)
+        .collect::<BTreeSet<_>>();
+    if inventory.rows.iter().any(|row| {
+        base_ordinals.contains(&row.namespace_ordinal)
+            && runtime_artifacts.contains_key(&row.relpath.to_ascii_lowercase())
+    }) {
+        return Err(
+            "source inventory v3 base namespace carries an engine runtime artifact: it was built \
+             with a different product-modset key domain"
+                .into(),
+        );
     }
 
     let mut seen_labels = BTreeSet::new();
@@ -607,5 +775,234 @@ mod tests {
             &"a".repeat(64)
         )
         .is_err());
+    }
+
+    /// Re-seal a mutated fixture so the digest checks pass and the runtime
+    /// artifact refusal is the only thing that can reject it.
+    fn reseal(inventory: &mut SourceInventoryV3) {
+        for namespace in &mut inventory.namespaces {
+            let content_rows = inventory
+                .rows
+                .iter()
+                .filter(|row| row.namespace_ordinal == namespace.ordinal)
+                .map(|row| {
+                    json!({
+                        "relpath": row.relpath,
+                        "bytes": row.bytes,
+                        "sha256": row.sha256,
+                    })
+                })
+                .collect::<Vec<_>>();
+            namespace.file_count = content_rows.len() as u64;
+            namespace.content_sha256 = sha_json(&content_rows).unwrap();
+        }
+        inventory.namespace_sha256 = sha_json(&inventory.namespaces).unwrap();
+        inventory.rows_sha256 = sha_json(&inventory.rows).unwrap();
+        inventory.inventory_sha256 = sha_json(&json!({
+            "schema": inventory.schema,
+            "identity": inventory.identity,
+            "namespaces": inventory.namespaces,
+            "rows": inventory.rows,
+            "namespace_sha256": inventory.namespace_sha256,
+            "rows_sha256": inventory.rows_sha256,
+        }))
+        .unwrap();
+    }
+
+    fn runtime_artifact_row(namespace_ordinal: u32, kind: &str, id: &str) -> SourceRowV3 {
+        let payload = b"tag fra\n";
+        SourceRowV3 {
+            namespace_ordinal,
+            layer_kind: kind.into(),
+            layer_id: id.into(),
+            relpath: "console_history.txt".into(),
+            bytes: payload.len() as u64,
+            sha256: payload_sha(payload),
+            storage_kind: "directory".into(),
+            source_container_sha256: None,
+            source_byte_offset: 0,
+            source_byte_count: payload.len() as u64,
+            source_range_sha256: payload_sha(payload),
+        }
+    }
+
+    #[test]
+    fn the_embedded_runtime_artifact_authority_is_the_extractor_side_one() {
+        // kills: the include_str path drifting off the file the Python resolver
+        // enumerates with, and the pinned digest not being updated when a sink
+        // is added -- either of which would leave the two sides disagreeing
+        // about what the product-modset key measures, silently.
+        let paths = engine_runtime_artifacts().expect("authority parses");
+        assert_eq!(
+            paths
+                .iter()
+                .map(|(path, sink)| (path.as_str(), sink.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("console_history.txt", "console_command_history"),
+                ("imgui.ini", "imgui_io_ini_filename"),
+                ("imgui_log.txt", "imgui_io_log_filename"),
+            ],
+        );
+        assert!(ENGINE_RUNTIME_ARTIFACTS_JSON.contains("\"0x142ae28e8\""));
+    }
+
+    #[test]
+    fn a_base_row_naming_an_engine_runtime_artifact_is_refused() {
+        // kills: the refusal itself. This is the shape a resolver that predates
+        // the 2026-08-15 ruling emits: its base digest covers the console
+        // history, so its key describes a different product than ours, and
+        // accepting it would join two incompatible key domains without a word.
+        let root = TestRoot::new("runtime-artifact-base");
+        let path = root.0.join("source_inventory.json");
+        let mut stale = inventory();
+        stale.rows.push(runtime_artifact_row(0, "vanilla", "vanilla"));
+        reseal(&mut stale);
+        write_inventory(&path, &stale);
+        let error = build_effective_vfs_winner_binding_from_inventory(
+            &path,
+            &ordered_layers(),
+            7,
+            &"a".repeat(64),
+        )
+        .expect_err("stale key domain must be refused");
+        assert!(
+            error.contains("engine runtime artifact"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn a_differently_cased_base_row_is_refused_too() {
+        // kills: dropping the ASCII fold in the row comparison. Windows
+        // filesystems are case-insensitive, so a stale inventory can name the
+        // same sink under any spelling; a case-sensitive compare would refuse
+        // it on one host and admit it on another.
+        let root = TestRoot::new("runtime-artifact-case");
+        let path = root.0.join("source_inventory.json");
+        let mut stale = inventory();
+        let mut row = runtime_artifact_row(0, "vanilla", "vanilla");
+        row.relpath = "Console_History.TXT".into();
+        stale.rows.push(row);
+        reseal(&mut stale);
+        write_inventory(&path, &stale);
+        let error = build_effective_vfs_winner_binding_from_inventory(
+            &path,
+            &ordered_layers(),
+            7,
+            &"a".repeat(64),
+        )
+        .expect_err("case variants must be refused too");
+        assert!(
+            error.contains("engine runtime artifact"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    fn declaring_report(observed: Value) -> Value {
+        json!({
+            "engine_runtime_artifacts": {
+                "schema": ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
+                "class": ENGINE_RUNTIME_ARTIFACTS_CLASS,
+                "authority_sha256": ENGINE_RUNTIME_ARTIFACTS_SHA256,
+                "observed_in_base_layer": observed,
+            }
+        })
+    }
+
+    #[test]
+    fn a_report_that_resolved_under_another_key_domain_is_refused() {
+        // kills: the report half of the check on this side. A CLEAN install has
+        // no console history, so the row refusal above has nothing to catch and
+        // this is the only thing standing between a pre-2026-08-15 resolution
+        // and a finalized portable manifest whose base digest measured a
+        // different product. Without it the recorder accepts exactly the corpus
+        // Python admission refuses.
+        require_engine_runtime_artifact_declaration(&declaring_report(json!([
+            { "relpath": "console_history.txt", "sink": "console_command_history" }
+        ])))
+        .expect("a report from this domain is accepted");
+
+        assert!(
+            require_engine_runtime_artifact_declaration(&json!({ "passed": true }))
+                .unwrap_err()
+                .contains("does not state its engine runtime artifact domain")
+        );
+
+        let mut wrong = declaring_report(json!([]));
+        wrong["engine_runtime_artifacts"]["authority_sha256"] =
+            Value::String("b".repeat(64));
+        assert!(require_engine_runtime_artifact_declaration(&wrong)
+            .unwrap_err()
+            .contains("different engine runtime artifact authority"));
+
+        assert!(require_engine_runtime_artifact_declaration(&declaring_report(json!([
+            { "relpath": "settings.txt", "sink": "console_command_history" }
+        ])))
+        .unwrap_err()
+        .contains("outside the authority"));
+    }
+
+    #[test]
+    fn an_observation_row_is_accepted_here_only_if_python_would_accept_it() {
+        // kills: loosening this side's row shape below the Python obligation's.
+        // Each row below is one Python refuses; if any is accepted here, the two
+        // sides disagree about the same document, which is the exact defect the
+        // report half exists to prevent -- inverted, but no less real.
+        for row in [
+            // a case alias: Python compares against the authority's canonical
+            // spelling with no fold on the observation
+            json!({ "relpath": "Console_History.TXT", "sink": "console_command_history" }),
+            // the right path with the wrong sink
+            json!({ "relpath": "imgui.ini", "sink": "console_command_history" }),
+            // an extra field: Python requires the key set to be exactly two
+            json!({ "relpath": "imgui.ini", "sink": "imgui_io_ini_filename", "bytes": 66 }),
+            // a missing field
+            json!({ "relpath": "imgui.ini" }),
+        ] {
+            assert!(
+                require_engine_runtime_artifact_declaration(&declaring_report(json!([row])))
+                    .is_err(),
+                "accepted a row Python refuses"
+            );
+        }
+        // ... and a case-alias pair must not slip past the duplicate check by
+        // being spelled differently.
+        assert!(require_engine_runtime_artifact_declaration(&declaring_report(json!([
+            { "relpath": "imgui.ini", "sink": "imgui_io_ini_filename" },
+            { "relpath": "IMGUI.INI", "sink": "imgui_io_ini_filename" },
+        ])))
+        .is_err());
+    }
+
+    #[test]
+    fn a_mod_row_of_the_same_name_is_still_that_layers_content() {
+        // kills: applying the refusal to every namespace. The exclusion is a
+        // property of the base layer only -- the engine writes into its own
+        // install root, not into a mod folder -- so a mod shipping this
+        // filename is ordinary content and refusing it would break an honest
+        // modded product.
+        let root = TestRoot::new("runtime-artifact-mod");
+        let path = root.0.join("source_inventory.json");
+        let mut modded = inventory();
+        let mut row = runtime_artifact_row(1, "mod", "mod/override.mod");
+        row.storage_kind = "zip_archive".into();
+        row.source_container_sha256 = Some("c".repeat(64));
+        row.source_byte_offset = 60;
+        row.source_byte_count = 8;
+        modded.rows.push(row);
+        reseal(&mut modded);
+        write_inventory(&path, &modded);
+        let binding = build_effective_vfs_winner_binding_from_inventory(
+            &path,
+            &ordered_layers(),
+            7,
+            &"a".repeat(64),
+        )
+        .expect("mod content of this name is admitted");
+        assert!(binding
+            .ordered_rows
+            .iter()
+            .any(|winner| winner.content.logical_path == "console_history.txt"));
     }
 }

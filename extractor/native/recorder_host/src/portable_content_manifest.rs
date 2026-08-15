@@ -2278,6 +2278,11 @@ fn verify_live_resolution_report(
     {
         return Err("live binding report executable hash differs from launch binding".into());
     }
+    // The report must name the product-modset key domain it resolved under. On
+    // a clean install the inventory-row refusal has nothing to catch, so this
+    // is the only thing that stops a pre-ruling resolution from being finalized
+    // into a portable manifest whose base digest measured something else.
+    crate::production_vfs_winner_binding::require_engine_runtime_artifact_declaration(&report)?;
     let runtime_version = report
         .pointer("/runtime/version")
         .and_then(serde_json::Value::as_str)
@@ -2603,6 +2608,26 @@ mod tests {
 
     fn sha(byte: char) -> String {
         byte.to_string().repeat(64)
+    }
+
+    /// The excluded install-root class declaration a current resolver emits.
+    ///
+    /// Built from the embedded authority rather than transcribed, so a fixture
+    /// can never assert a domain the production check would reject -- which is
+    /// the failure mode these fixtures existed in before the check was added.
+    fn engine_runtime_artifact_declaration() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "extractor.engine_runtime_artifacts.v1",
+            "class": "engine_written_install_root_sink",
+            "authority_sha256": Sha256::hex(
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../game_defs/engine_runtime_artifacts.json"
+                ))
+                .as_bytes()
+            ),
+            "observed_in_base_layer": [],
+        })
     }
 
     fn namespace_content(path: &str, marker: char) -> UsedContentKey {
@@ -3440,6 +3465,9 @@ mod tests {
         let report = serde_json::json!({
             "schema":"extractor.live_binding_resolution.v1",
             "passed":true,
+            // Fixtures resolve under the CURRENT excluded install-root class;
+            // verify_live_resolution_report now requires the report to say so.
+            "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process":{"exe_sha256":sha('9')},
             "runtime":{"version":"1.19.2.0.a729"},
             "binding_identity":{"profile_id":"profile:hud","playset_id":"playset:hud"}
@@ -3689,6 +3717,9 @@ mod tests {
         let report = serde_json::json!({
             "schema": "extractor.live_binding_resolution.v1",
             "passed": true,
+            // Fixtures resolve under the CURRENT excluded install-root class;
+            // verify_live_resolution_report now requires the report to say so.
+            "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process": {"exe_sha256": sha('9')},
             "runtime": {"version": "1.19.2.0.a729"},
             "binding_identity": {
@@ -4120,6 +4151,9 @@ mod tests {
         let report = serde_json::json!({
             "schema": "extractor.live_binding_resolution.v1",
             "passed": true,
+            // Fixtures resolve under the CURRENT excluded install-root class;
+            // verify_live_resolution_report now requires the report to say so.
+            "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process": { "exe_sha256": launch.executable_sha256 },
             "runtime": { "version": "Stella Polaris v1.19.2.0.a729" },
             "binding_identity": {
@@ -4129,7 +4163,25 @@ mod tests {
         });
         fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
         let result = verify_live_resolution_report(&path, &manifest, &launch);
-        fs::remove_file(&path).unwrap();
         result.unwrap();
+
+        // kills: deleting the require_engine_runtime_artifact_declaration call
+        // from verify_live_resolution_report. Testing that function directly
+        // proves it works; only this proves it is WIRED IN. Without the call, an
+        // otherwise perfect report from a resolver that predates the
+        // 2026-08-15 key-domain ruling is finalized into a portable manifest
+        // whose base digest measured a different product -- and on a clean
+        // install nothing else on this side would notice.
+        let mut undeclared = report.clone();
+        undeclared
+            .as_object_mut()
+            .unwrap()
+            .remove("engine_runtime_artifacts");
+        fs::write(&path, serde_json::to_vec(&undeclared).unwrap()).unwrap();
+        let refused = verify_live_resolution_report(&path, &manifest, &launch);
+        fs::remove_file(&path).unwrap();
+        assert!(refused
+            .unwrap_err()
+            .contains("engine runtime artifact domain"));
     }
 }

@@ -53,6 +53,13 @@ extractor/save_oracle/test_parse_combats.py text eol=crlf
 extractor/save_oracle/test_parse_intel_peace.py text eol=lf
 extractor/coverage_audit/atlas_input_manifest.json text eol=lf
 extractor/game_defs/product_modset_admission_policy.json text eol=lf
+# The engine runtime artifact authority is the ONE definition of what the
+# product-modset key domain excludes, and both sides hash it: Python pins it
+# with sha256_file, and recorder_host `include_str!`s the same file and pins the
+# same digest. Without this line core.autocrlf decides the bytes, the two pins
+# describe a checkout representation rather than the document, and the same
+# commit fails on any host whose EOL setting differs (the XUI08 failure above).
+extractor/game_defs/engine_runtime_artifacts.json text eol=lf
 # Lane JA's synthetic modset corpus: every file's SHA-256 is recorded in the
 # committed source_inventory.json beside it, so the bytes must survive checkout
 # unchanged or the retained admission receipt stops describing them.
