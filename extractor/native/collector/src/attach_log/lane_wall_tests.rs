@@ -234,6 +234,175 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
     }
 }
 
+/// The country bundle's sub-reads reach the wire under their OWN tags, and do
+/// so through a channel that is not a lane span.
+///
+/// WHAT THIS EXISTS FOR. `LW_TAG_COUNTRY_BUNDLE` is one gated worker, so
+/// `lw_d200_crit_us` and the lane units price the WHOLE bundle. On t55
+/// (2026-08-15, live, speed 5, 1944 world) that one tag was 99.2% of a 238 ms
+/// critical path against a 76 ms hour, and no counter anywhere said which of
+/// the bundle's seven sub-reads it was. `lw_cb{tag}_us` is that counter.
+///
+/// The recording is deliberately not a lane span, and this test pins both
+/// halves of that: the sub-reads must NOT appear in `spans` (they run inside
+/// the parent's span, so counting them there would push a lane's busy time past
+/// its wall), and they must still reach the probe record.
+///
+/// kills: `country_lane_attribution` keying on `specs.last()` instead of
+/// `specs.first()` -> the focus+tech read reports as `lw_cb13_us` and the
+/// vector equality fails; dropping any returned read -> that tag's entry
+/// disappears; last-write-wins instead of summing -> the repeated tag reports
+/// 30 rather than 130; recording the sub-reads as lane spans instead ->
+/// `spans` is non-empty here and lane busy exceeds lane wall in production;
+/// routing them through `lw_domain_crit_unit_name` -> the emitted name is
+/// `lw_d12_crit_us`, which the host folds into
+/// `per_domain_critical_path_us_total` and double-counts against
+/// `lw_d200_crit_us`.
+#[test]
+fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
+    // The shape `read_compact_country_domain_bundles_parallel` returns: one
+    // read per sub-lane, each carrying the specs THAT LANE read. The focus+tech
+    // lane carries two specs and is identified by the first.
+    let specs = compact_country_domain_specs();
+    let spec_of = |id: u16| {
+        *specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("country spec")
+    };
+    let read = |spec_ids: &[u16], read_time_us: u64| CompactBundleRead {
+        specs: spec_ids.iter().copied().map(spec_of).collect(),
+        rows: Vec::new(),
+        read_time_us,
+        row_count: 0,
+        status_flags: 0,
+        technology_ids: Arc::new(TechnologyIdDictionary::default()),
+    };
+    let country_lanes = country_lane_attribution(&[
+        read(&[COMPACT_DOMAIN_FUEL], 4_100),
+        read(&[COMPACT_DOMAIN_POLITICS], 100),
+        // Focus+tech is ONE sub-read over two specs, published under the first.
+        read(&[COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH], 91_000),
+        // A second read under one tag, as the serial arm's shape allows.
+        read(&[COMPACT_DOMAIN_POLITICS], 30),
+        // A read naming no spec names no sub-lane and must not invent one.
+        read(&[], 500_000),
+    ]);
+    assert_eq!(
+        country_lanes,
+        vec![
+            (COMPACT_DOMAIN_FUEL, 4_100),
+            (COMPACT_DOMAIN_FOCUS, 91_000),
+            (COMPACT_DOMAIN_POLITICS, 130),
+        ]
+    );
+    // Not a lane span, so no lane's busy time moves and nothing is recorded on
+    // a worker's thread.
+    let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    assert!(
+        tracker.take_spans().is_empty(),
+        "a sub-read runs inside the bundle's own lane span and must not record \
+         a second span on it"
+    );
+
+    assert_eq!(lw_country_lane_unit_name(12), "lw_cb12_us");
+    assert!(std::ptr::eq(
+        lw_country_lane_unit_name(12),
+        lw_country_lane_unit_name(12)
+    ));
+
+    let mut summary = summarize_lane_spans(&[LaneSpan {
+        tag: LW_TAG_COUNTRY_BUNDLE,
+        lane: 0,
+        start_us: 0,
+        end_us: 95_000,
+    }]);
+    summary.country_lanes = country_lanes;
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        123,
+        5,
+        900,
+        125,
+        Some(2),
+        FrameHourAge::default(),
+        &[],
+        &BTreeSet::new(),
+        MapTopologyShareCounts::default(),
+        130,
+        700,
+        0,
+        &OutsideBuildSpans::default(),
+        &summary,
+        FrameCpuSplit::default(),
+    );
+    let text = String::from_utf8_lossy(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..])
+        .into_owned();
+    for name in ["lw_cb10_us", "lw_cb12_us", "lw_cb14_us"] {
+        assert!(text.contains(name), "missing unit {name}");
+    }
+    // The whole is still published under the bundle's own tag, undisturbed.
+    assert!(text.contains("lw_d200_crit_us"));
+    // And the parts did NOT go to the critical-path family, whose shares are
+    // divided by the critical wall.
+    for name in ["lw_d10_crit_us", "lw_d12_crit_us", "lw_d14_crit_us"] {
+        assert!(!text.contains(name), "sub-read leaked into {name}");
+    }
+}
+
+/// The frame builder actually CALLS the attribution, and carries its result to
+/// the lane-wall summary.
+///
+/// The behavioural test above can only reach the pure function; building a real
+/// frame here is not possible, so deleting the one production call site — or
+/// replacing it with `Vec::new()` — left every assertion in it green (Codex
+/// gate finding, round 2). This pins the call site the way this file already
+/// pins other single-site production structure: against the collector's own
+/// source text.
+///
+/// It also pins the PLACEMENT, which is the round-2 defect itself. The
+/// attribution must be taken from the same drain that emits the bundle's
+/// records — after the last clock bracket of the frame — so it cannot delay a
+/// bracket opening. A call site that drifts back above the drain fails here.
+///
+/// kills: deleting the call site, replacing it with an empty vector, assigning
+/// `lane_wall.country_lanes` from anything else, or moving the call above the
+/// `country_reads.drain(..)` it must sit on.
+#[test]
+fn the_frame_builder_takes_the_country_attribution_off_the_bundle_drain() {
+    let source = super::tests::collector_source_lf();
+    let call = "let country_lane_us = country_lane_attribution(&country_reads);";
+    assert_eq!(
+        source.matches(call).count(),
+        1,
+        "the frame builder must call the attribution exactly once"
+    );
+    let assign = "lane_wall.country_lanes = country_lane_us;";
+    assert_eq!(
+        source.matches(assign).count(),
+        1,
+        "the summary's country lanes must come from that call and nothing else"
+    );
+    // ON THE DRAIN, and above it by exactly one statement: the drain consumes
+    // `country_reads`, so the attribution cannot follow it, and every clock
+    // bracket in the frame has closed by the time the drain runs.
+    let drain = "for read in country_reads.drain(..) {";
+    assert_eq!(source.matches(drain).count(), 1);
+    let call_at = source.find(call).expect("call site");
+    let drain_at = source.find(drain).expect("drain site");
+    assert!(call_at < drain_at, "the attribution must precede the drain");
+    let between = &source[call_at + call.len()..drain_at];
+    assert!(
+        between.trim().is_empty(),
+        "nothing may sit between the attribution and the drain it is taken \
+         off; found: {between:?}"
+    );
+    // And the assignment is downstream of both.
+    assert!(source.find(assign).expect("assign site") > drain_at);
+}
+
 /// A gated worker's OWN cycles are folded into the frame's split, and the
 /// frame's process term covers the fan-out.
 ///
