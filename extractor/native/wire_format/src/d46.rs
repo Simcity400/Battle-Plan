@@ -2,9 +2,9 @@
 //! table, plus the `ACE1` air-ace-roster trailer that ships inside the same
 //! record.
 //!
-//! Derived from `world_fold.rs:21119`-`:21341`
+//! Derived from `world_fold.rs:21217`-`:21439`
 //! (`fold_air_variant_archetypes`, dispatched at `:4723`), the row grammar and
-// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=21119-21341 sha256=4436a62252b4f0f0b2c3716ab07adadcb4686ff7fb351b704527f367896aeaab closure=819a68526945de613fa89ee1797df0c7b39661b7b157122115bcde9898e2a226
+// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=21217-21439 sha256=4436a62252b4f0f0b2c3716ab07adadcb4686ff7fb351b704527f367896aeaab closure=8670781330c64685e5739cf93cca662a8865aef8643fec72936316e95d85a293
 //! bounds in
 //! `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs`
 //! (authority #2 — production's status-independent payload check), the trailer
