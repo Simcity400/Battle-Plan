@@ -3,6 +3,11 @@
 //! Derived from `world_fold.rs:17539`-`:17942`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
 // @world-fold-authority domain=13 functions=fold_tech lines=17539-17942 sha256=3c67f3bd440442e719fd9c225dbb0985ade107814daa7533e8c29cbe185e0966 closure=424b8242c49805f3c1e1b1320d50c330c60a3dfeef309040f00068576f67e463
+// The structural half of that fold no longer lives in `world_fold.rs`: it is the
+// shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
+// The closure above cannot follow it across the crate boundary, so the leaf's
+// own source is pinned here instead.
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=25f1c76e67752b9361fd14ce964dee9a78c33842e07d918ced7b8de4eb15369b
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the

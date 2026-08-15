@@ -69,6 +69,61 @@ The two ports which also transcribe a capture-lane payload decoder (d51 and d52)
 carry a second marker.  That marker hashes the original decoder, not the
 transcription, so a changed production authority cannot be approved by tests of
 the stale copy.
+
+LEAF SOURCE AUTHORITY -- WHAT COVERS A GRAMMAR THAT LEFT THIS FILE.  A closure
+follows calls inside ONE file, so the day a shared walk moves into its own crate
+the closure shrinks and the digest stops covering it.  That is not hypothetical
+either: lane KC moved domain 13's structural walk into ``d13_grammar`` and d13's
+closure went from 80 names to 73, after which a changed section length, flag
+mask or field offset inside the leaf was invisible to every marker in the tree.
+Compilation catches API drift across a crate boundary; it does not catch
+behaviour drift inside the leaf.
+
+``// @leaf-source-authority crate=<name> root=<dir> files=<n> sha256=<digest>``
+restores it.  The digest is over the crate's attested SOURCE -- its manifest and
+every Rust file under it, each contributing its path and its own digest -- and
+the marker is repeated at EVERY site that walks or writes that grammar, so
+editing the leaf without re-attesting at each consumer fails here exactly as
+editing a cited fold does.
+
+A DIGEST OVER FILES IS ONLY AN ATTESTATION IF THOSE FILES ARE WHAT RUNS, so
+three checks stand beside it and each answers a question the hashes cannot.
+``verify_leaf_is_sealed`` refuses a leaf whose behaviour can come from anywhere
+else -- a build script, a redirected ``[lib] path`` or ``#[path]`` module, an
+``include!``, ``OUT_DIR``, ``env!``, a dependency (whose version a lockfile or a
+patch decides) or a ``feature`` (which any crate in the graph can turn on).
+``verify_leaf_consumers_bind_to_it`` requires each consumer's own package to
+depend on the registered root BY PATH, because a marker says "I execute this
+crate" and only Cargo decides which crate that is.  And
+``verify_no_unregistered_users`` looks from the other end -- every file that
+names the crate in code must be a registered consumer or a recorded const-only
+user (recorded by IDENTIFIER, so it cannot grow a walk) -- because a marker scan
+finds markers and can never find a consumer nobody marked.
+
+``leaf_source_authority.json`` records which files each leaf attests.  What that
+catches is precise and worth stating: a file deleted, renamed, or moved out of
+the root, and a re-stamp that would otherwise accept a smaller set without
+comment.  What it does NOT catch on its own is delegation -- ``lib.rs`` staying
+put and calling a new crate -- and that hole is closed by the seal above, which
+refuses a leaf with dependencies at all.  A repository-wide scan makes a marker
+at an unregistered site a failure too, because a marker nothing is required to
+keep current still reads as an attestation.
+
+ADOPTING IT FOR A NEW LEAF (this is the whole procedure).  The crate must be
+sealable: no dependencies, no features, no build script, no ``[lib] path``, no
+``#[path]``/``include!``/``OUT_DIR``/``env!``.  Add one row to
+``REQUIRED_LEAF_AUTHORITIES``: the crate's name, its repo-relative root, every
+site that walks or writes its grammar and holds its own semantic layer over it
+(the readers AND the producer), and -- only where a file reads NAMED constants
+and walks nothing -- a ``const_only`` entry listing the identifiers it may name.
+Paste the marker line beside the code it attests at each site with a placeholder
+digest (``files=0 sha256=0`` is enough; PLACEMENT is the one thing the tooling
+must not guess, because a marker that drifts away from the code it attests is a
+comment nobody reads -- and mind that a marker inserted into ``world_fold.rs``
+moves the ``lines=`` of every dNN marker below it, so replace a blank line
+rather than adding one).  Then run ``restamp_world_fold_citations.py``, which
+fills in ``files=``/``sha256=`` at every site and records the attested file set.
+Nothing else is per-crate.
 """
 
 from __future__ import annotations
@@ -77,12 +132,15 @@ import argparse
 import bisect
 import hashlib
 import json
+import posixpath
 import re
+import stat
 import sys
+import tomllib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 
@@ -121,6 +179,83 @@ LANE_MARKER_RE = re.compile(
     r"lines=(?P<start>\d+)-(?P<end>\d+) "
     r"sha256=(?P<sha256>[0-9a-f]{64})$",
     re.MULTILINE,
+)
+# INDENTATION IS PART OF THE MARKER.  A leaf marker sits beside the code it
+# attests, and that code is often inside an `impl` block -- `fold_tech` is.
+# Forcing column 0 would either put the marker somewhere else in the file or
+# put a column-0 comment in the middle of an indented body; the indent is
+# captured instead, and the re-stamper writes it back.
+LEAF_MARKER_RE = re.compile(
+    r"^(?P<indent>[ \t]*)// @leaf-source-authority "
+    r"crate=(?P<crate>[A-Za-z_][A-Za-z0-9_]*) "
+    r"root=(?P<root>[A-Za-z0-9_./-]+) "
+    r"files=(?P<files>\d+) "
+    r"sha256=(?P<sha256>[0-9a-f]{64})$",
+    re.MULTILINE,
+)
+# A line that MEANS to be a leaf marker, whatever it says.  A hand-edited or
+# truncated marker must fail as a broken attestation, not silently read as an
+# absent one.
+#
+# It is deliberately narrower than the token: prose about the mechanism (this
+# repository's design documents, the Rust test that runs this gate, and the
+# leading `//!` docs of the modules that carry a marker) writes
+# `@leaf-source-authority` inside a sentence, and a sentence is not a failed
+# marker.  What is caught is a line whose comment BEGINS with the token.
+LEAF_MARKER_ATTEMPT_RE = re.compile(
+    r"(?m)^[ \t]*// @leaf-source-authority.*$"
+)
+# WHAT AN ATTESTABLE LEAF MAY BE.  A digest over a crate's files only means
+# something if those files are the whole of what the crate executes, so the
+# shapes that reach outside them are REFUSED rather than hashed around.  Each
+# of these lets a leaf's behaviour change with every attested byte identical:
+# a build script (runs arbitrary code, reads the environment), a redirected
+# `[lib] path` or `#[path]` module (the source is somewhere else), `include!`
+# and friends (likewise), `OUT_DIR` (generated source), `env!`/`option_env!`
+# (a build-time value), a dependency or a proc macro (behaviour from another
+# crate, which a later lockfile or patch can move), and a non-test `feature`
+# (a consumer, or any crate in the graph, selecting a different branch).
+#
+# It is a narrow definition on purpose.  A leaf is a shared GRAMMAR: the whole
+# reason d13_grammar could be shared at all is that it has no dependencies
+# (its manifest says so), and a leaf that needs any of the above is not one
+# this gate can honestly attest.
+LEAF_FORBIDDEN_SOURCE_RE = (
+    # ANY attribute carrying `path =`, not only a bare `#[path]`:
+    # `#[cfg_attr(windows, path = "../../outside.rs")]` redirects a module
+    # exactly as well and reads nothing like the simple spelling.
+    (
+        re.compile(r"#\s*!?\s*\[[^\]]*\bpath\s*="),
+        "an attribute that redirects a module's path",
+    ),
+    (re.compile(r"\binclude(?:_str|_bytes)?\s*!"), "an `include!`-family macro"),
+    (re.compile(r"\b(?:option_env|env)\s*!"), "a build-time `env!` value"),
+    # A leaf may not DEFINE macros. Not because a macro is bad, but because the
+    # four rules above read source text: a `macro_rules!` that expands an
+    # identifier into `include!` puts the forbidden construct somewhere no
+    # regex over this file can see it. `OUT_DIR` needs no rule of its own --
+    # the only ways to reach it are `env!` and `include!`, both refused above.
+    (re.compile(r"\bmacro_rules\s*!"), "a macro definition"),
+)
+# `#[cfg(test)]` is the one conditional a leaf may carry: it excludes the
+# crate's own proof, and `test` is set by the test harness rather than chosen by
+# whoever builds the consumers.  Every other `cfg` predicate -- a feature, a
+# target, a bare `--cfg` from RUSTFLAGS -- selects between branches of the
+# attested source, so which branch RAN stops being a function of the digest.
+# `#[path = "..."]` on a module, in a CONSUMER (a leaf may not carry one at all).
+MODULE_PATH_ATTRIBUTE_RE = re.compile(
+    r"#\s*\[\s*path\s*=\s*\"(?P<path>[^\"]+)\"\s*\]"
+)
+LEAF_PERMITTED_CFG = frozenset({"test", "not(test)"})
+LEAF_CFG_RE = re.compile(r"#\s*!?\s*\[\s*cfg\s*\((?P<predicate>[^\]]*)\)\s*\]")
+# `#[cfg]` is not the only conditional. `#[cfg_attr(windows, repr(C, packed))]`
+# changes a type's LAYOUT -- the thing a byte grammar is -- from outside the
+# attested source, and `cfg!(..)` branches at run time on the same inputs.
+# Neither has a form this gate could permit narrowly without parsing Rust, and a
+# leaf that needs either is not one whose behaviour is a function of its digest.
+LEAF_FORBIDDEN_CONDITIONAL_RE = (
+    (re.compile(r"\bcfg_attr\s*[(!]"), "a `cfg_attr` conditional attribute"),
+    (re.compile(r"\bcfg\s*!\s*\("), "a `cfg!` conditional expression"),
 )
 FUNCTION_RE = re.compile(
     r"(?m)^[ \t]*(?:(?:pub(?:\([^)\r\n]*\))?|unsafe|async|const|extern"
@@ -161,6 +296,111 @@ REQUIRED_LANE_AUTHORITIES = frozenset(
         ),
     }
 )
+
+# THE LEAF REGISTRY.  ``crate name -> (crate root, the sites that must attest)``.
+#
+# A LEAF is a crate that exists to be the ONE implementation of a payload
+# grammar several otherwise-independent trees share.  d13_grammar is the first:
+# domain 13's structural walk lived in four places, two of them went stale in a
+# day and one refused 59 of 59 D13 records of a live capture, and lane KC moved
+# the walk into a zero-dependency crate all four could call.
+#
+# That move COST COVERAGE, which is why this registry exists.  d13's
+# @world-fold-authority closure shrank from 80 names to 73 the moment the walk
+# left `world_fold.rs`: the closure follows calls inside ONE file, so logic that
+# leaves the file leaves every digest.  Compilation catches API drift across the
+# crate boundary and nothing catches BEHAVIOUR drift -- a changed section
+# length, flag mask or field offset inside the leaf is invisible to all 45
+# markers.  A leaf marker restores the property the closure had: editing the
+# shared grammar without re-attesting at each consumer fails this gate.
+#
+# WHICH SITES BELONG HERE.  Every site that WALKS or WRITES the leaf's byte
+# grammar and holds its own semantic layer over it -- the readers and the
+# producer.  A file that only re-exports a `const` from the leaf does not:
+# compilation already binds it to the value, and there is no second spelling to
+# drift (`collector/src/attach_log/offsets.rs` is that case).
+#
+# ADOPTING IT FOR ANOTHER LEAF: add the row, run
+# `restamp_world_fold_citations.py` (it stamps the marker line into every listed
+# site and records the attested file set), and commit.  Nothing else is
+# per-crate -- the digest, the membership record, the stray-marker scan and the
+# report clause are all driven from this table.
+@dataclass(frozen=True)
+class LeafAuthority:
+    """One shared grammar crate and everything that is allowed to touch it.
+
+    ``consumers`` carry the marker.  ``const_only`` is the narrow exception: a
+    file that reads NAMED constants out of the leaf and walks nothing.  It
+    records the identifiers, not just the file, so a const-only user cannot
+    quietly grow into an unattested walker.
+    """
+
+    root: str
+    consumers: tuple[str, ...]
+    const_only: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+REQUIRED_LEAF_AUTHORITIES = {
+    "d13_grammar": LeafAuthority(
+        root="extractor/native/d13_grammar",
+        consumers=(
+            "extractor/native/collector/src/attach_log.rs",
+            "extractor/native/collector/src/attach_log/domain13_tech_delta_tests.rs",
+            "extractor/native/recorder_host/src/domain_data_authority.rs",
+            "extractor/native/recorder_host/src/world_fold.rs",
+            "extractor/native/wire_format/src/d13.rs",
+        ),
+        const_only={
+            # Two `const` aliases and nothing else. Compilation already binds
+            # them to the leaf's values, so there is no second spelling to
+            # drift -- but the identifiers are recorded, so this file cannot
+            # start walking the grammar without failing the gate.
+            "extractor/native/collector/src/attach_log/offsets.rs": (
+                "TECH_LIVE_SCALE_RAW",
+                "TECH_PROGRESS_SCALE_RAW",
+            ),
+        },
+    ),
+}
+# The membership half of a leaf authority, as CLOSURE_INVENTORY is for the
+# fold: the marker's digest proves the attested SOURCE did not change, and this
+# file proves the attested SET did not quietly shrink -- a file deleted,
+# renamed, or moved out of the root, and a re-stamp that would otherwise record
+# fewer files without comment.
+#
+# It does not, by itself, catch the other shape of the same event: `lib.rs`
+# staying where it is and delegating to a new crate, where no file leaves at
+# all.  `verify_leaf_is_sealed` is what closes that -- a leaf may not have
+# dependencies, so there is nothing for it to delegate TO.
+LEAF_INVENTORY = Path("extractor/native/scripts/leaf_source_authority.json")
+# Where a leaf marker, a leaf user or a leaf dependency is looked for: the WHOLE
+# repository.  It was `extractor/native` alone, which is where every consumer
+# happens to live today -- and a package under `replay_interface` that
+# path-depends on the leaf and walks it was invisible to the scan while the gate
+# reported PASS.  A completeness claim scoped to the directory the current
+# consumers happen to sit in is not a completeness claim.
+LEAF_MARKER_SCAN_ROOTS = (Path("."),)
+# Evidence trees and build output are not source.  `runs/` is append-only by
+# AGENTS.md -- a marker quoted inside a completed run's notes is a record of
+# what was true, not a claim about this tree.
+LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
+    {"runs", "target", ".git", "re_evidence", ".cargo-target", "node_modules"}
+)
+# MANIFESTS are skipped in fewer places than sources.  An evidence tree is
+# append-only prose and a marker quoted inside one is a record, not a claim --
+# but a CARGO PACKAGE under `runs/` is not prose: it compiles, it can take the
+# leaf as a dependency and walk it, and there are three such probe crates in
+# this repository today.  A package that depends on a leaf is therefore found
+# wherever it lives, and refused if it lives where this gate cannot read its
+# sources.
+LEAF_MANIFEST_SKIP_DIRECTORIES = frozenset(
+    {"target", ".git", ".cargo-target", "node_modules"}
+)
+# A leaf's attested files: its manifest and every Rust source under it, wherever
+# it sits (`src/`, `tests/`, `benches/`, a `build.rs`).  The set is what the
+# crate compiles plus what decides how it compiles.
+LEAF_ATTESTED_SUFFIXES = (".rs",)
+LEAF_ATTESTED_NAMES = ("Cargo.toml",)
 
 
 class VerificationError(RuntimeError):
@@ -1479,6 +1719,1000 @@ def load_closure_inventory(repo_root: Path) -> dict[str, list[str]]:
     return domains
 
 
+def leaf_attested_files(repo_root: Path, root: str) -> list[str]:
+    """Every file a leaf crate's authority covers, repo-relative and sorted.
+
+    THE WHOLE FILE, NOT THE REACHABLE ITEMS.  The fold's authority hashes a
+    callee closure because ``world_fold.rs`` is 38,551 lines of which one domain
+    owns a few hundred; a leaf crate is the opposite shape -- it exists only to
+    be the shared grammar, so there is no residual to exclude and nothing in it
+    a consumer does not rely on.  Hashing the files also covers what an item
+    walk cannot: crate attributes (``#![no_std]``, ``#![forbid(unsafe_code)]``),
+    ``use`` items, ``#[cfg]`` gates, the doc comments the byte goldens were
+    written from, and the manifest's dependency table -- a leaf growing a
+    dependency is a change to every consumer that took it BECAUSE it had none.
+    The cost is that a comment or a test in the leaf re-stamps every consumer;
+    that direction is deliberate, and it is the one the closure walk already
+    chose for its single-candidate fallback: a redundant member costs a
+    re-stamp, a missing one costs the coverage.
+
+    ``tests.rs`` is attested for the same reason.  A leaf's drift-killer test is
+    part of what its consumers rely on -- ``d13_grammar``'s is the only thing
+    standing between a new tail and four readers that silently disagree about
+    where a row ends -- so weakening it is a change a consumer should have to
+    re-attest, not a change nothing records.
+    """
+    base = repo_root / root
+    if not base.is_dir():
+        raise VerificationError(
+            f"leaf authority root {root} is not a directory; a leaf whose "
+            f"source cannot be found would attest to nothing"
+        )
+    if _is_reparse_point(base):
+        # The root itself, not only what is under it: a linked root means the
+        # whole attested tree is somewhere else.
+        raise VerificationError(
+            f"leaf authority root {root} is a link; the source it attests is "
+            f"not where the registry says it is"
+        )
+    attested: list[str] = []
+    manifest = False
+    for path in sorted(base.rglob("*")):
+        if _is_reparse_point(path):
+            # A link resolves somewhere the digest never reads, and on this
+            # platform a junction does the same thing without looking like a
+            # link in review.
+            raise VerificationError(
+                f"leaf authority root {root} contains a link "
+                f"({path.relative_to(base).as_posix()}); what it points at is "
+                f"outside every digest"
+            )
+        if not path.is_file():
+            continue
+        relative = path.relative_to(base)
+        if any(part in LEAF_SCAN_SKIP_DIRECTORIES for part in relative.parts[:-1]):
+            continue
+        if path.name in LEAF_ATTESTED_NAMES:
+            manifest = True
+        elif path.suffix not in LEAF_ATTESTED_SUFFIXES:
+            continue
+        attested.append(path.relative_to(repo_root).as_posix())
+    if not manifest:
+        # A crate with no manifest is not a crate.  Reporting a digest over
+        # whatever `.rs` files happened to be under a mistyped root is the
+        # vacuous pass this whole gate exists to refuse.
+        raise VerificationError(
+            f"leaf authority root {root} carries no "
+            f"{'/'.join(LEAF_ATTESTED_NAMES)}; it is not a crate root"
+        )
+    return sorted(attested)
+
+
+def leaf_manifest_digest(repo_root: Path, attested: Iterable[str]) -> str:
+    """A digest of a leaf's attested source, keyed by path.
+
+    Each file contributes its PATH and the digest of its newline-normalized
+    bytes, so the digest moves when a file's contents change, when a file is
+    added or removed, and when one is renamed -- and does not move when the
+    checkout's line endings differ (``_read_utf8`` reads with universal
+    newlines, which is the normalization).
+    """
+    digest = hashlib.sha256()
+    for relative in sorted(attested):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\n")
+        digest.update(
+            hashlib.sha256(
+                _read_utf8(repo_root / relative).encode("utf-8")
+            ).hexdigest().encode("ascii")
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _read_manifest(path: Path, label: str) -> dict:
+    try:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise VerificationError(f"cannot read {label} manifest {path}: {error}") from error
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """A link by any name, including a Windows junction.
+
+    ``Path.is_symlink()`` returns False for a junction, and a junction points
+    outside the attested tree exactly as well as a symlink does -- on the
+    platform this repository is developed on, which is the one where the check
+    would otherwise be missing.
+    """
+    try:
+        status = path.lstat()
+    except OSError as error:
+        # FAIL CLOSED.  A child this walk enumerated and then could not stat is
+        # not a file to skip quietly: `is_file()` would say False for the same
+        # reason and the entry would leave the attested set without a word.
+        raise VerificationError(
+            f"cannot read the metadata of {path}: {error}; a leaf's attested "
+            f"set may not be decided by a failed stat"
+        ) from error
+    attributes = getattr(status, "st_file_attributes", None)
+    if attributes is not None:
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return path.is_symlink()
+
+
+def _declared_target_paths(manifest: dict) -> Iterable[tuple[str, str]]:
+    """Every source path a manifest names, build script included.
+
+    Cargo runs `package.build` exactly as it compiles `[lib]`, so a package
+    that names either from somewhere this gate does not read has a walker this
+    gate cannot see -- which is the whole reason the paths are inspected.
+    """
+    package = manifest.get("package")
+    if isinstance(package, dict) and isinstance(package.get("build"), str):
+        yield "the build script", package["build"]
+    for table in ("lib", "bin", "test", "bench", "example"):
+        targets = manifest.get(table)
+        targets = [targets] if isinstance(targets, dict) else targets
+        if not isinstance(targets, list):
+            continue
+        for target in targets:
+            declared = target.get("path") if isinstance(target, dict) else None
+            if isinstance(declared, str):
+                yield f"[{table}]", declared
+
+
+def _dependency_tables(manifest: dict) -> Iterable[tuple[str, dict]]:
+    """Every dependency table in a manifest, target-conditional ones included.
+
+    `[target.'cfg(windows)'.dependencies]` is a dependency table that a
+    top-level scan does not see, and a leaf that grows one has grown behaviour
+    from another crate on one platform only -- the hardest kind to notice.
+    """
+    for table in ("dependencies", "build-dependencies", "dev-dependencies"):
+        entry = manifest.get(table)
+        if isinstance(entry, dict):
+            yield table, entry
+    targets = manifest.get("target")
+    if isinstance(targets, dict):
+        for selector, tables in targets.items():
+            if not isinstance(tables, dict):
+                continue
+            for table in ("dependencies", "build-dependencies", "dev-dependencies"):
+                entry = tables.get(table)
+                if isinstance(entry, dict):
+                    yield f"target.{selector}.{table}", entry
+
+
+def verify_leaf_is_sealed(repo_root: Path, crate: str, root: str, attested: Iterable[str]) -> None:
+    """Refuse a leaf whose behaviour can change with its files unchanged.
+
+    A digest over a crate's source is only an attestation if the source is the
+    whole of what the crate executes.  Every shape refused here breaks that:
+    the code that runs comes from a build script, another path, a generated
+    file, the environment, or another crate whose version a lockfile decides.
+    None of them can be hashed around -- a gate that tried would be claiming to
+    cover a build system it does not read -- so they are refused, and a leaf
+    stays what the name says: source, and nothing else.
+    """
+    manifest_path = repo_root / root / "Cargo.toml"
+    manifest = _read_manifest(manifest_path, f"leaf {crate}")
+    package = manifest.get("package")
+    if not isinstance(package, dict) or package.get("name") != crate:
+        raise VerificationError(
+            f"{crate}: {root}/Cargo.toml declares package "
+            f"{package.get('name') if isinstance(package, dict) else None!r}; a "
+            f"marker naming another crate attests a package nobody builds"
+        )
+    if package.get("build") is not None:
+        raise VerificationError(
+            f"{crate}: declares a build script; a build script runs code and "
+            f"reads inputs no source digest covers"
+        )
+    if (repo_root / root / "build.rs").is_file():
+        raise VerificationError(
+            f"{crate}: carries build.rs, which Cargo runs implicitly; a leaf's "
+            f"behaviour must come from its attested source alone"
+        )
+    library = manifest.get("lib")
+    if isinstance(library, dict) and library.get("path") is not None:
+        raise VerificationError(
+            f"{crate}: sets [lib] path={library['path']!r}; the crate's source "
+            f"would be somewhere the attested set does not reach"
+        )
+    if not (repo_root / root / "src" / "lib.rs").is_file():
+        # With no `[lib] path` and no `src/lib.rs`, there is no library here at
+        # all: a manifest-only directory would otherwise be stamped, digested
+        # and reported as an attested leaf.
+        raise VerificationError(
+            f"{crate}: has no src/lib.rs and declares no [lib] path; there is "
+            f"no library here for a consumer to execute"
+        )
+    for table, declared in _dependency_tables(manifest):
+        if declared:
+            raise VerificationError(
+                f"{crate}: declares [{table}] ({sorted(declared)}); behaviour "
+                f"that arrives through another crate is behaviour a later "
+                f"lockfile or patch can change with every attested byte "
+                f"identical. A shared grammar leaf has no dependencies -- that "
+                f"is what lets every consumer take it."
+            )
+    features = manifest.get("features")
+    if isinstance(features, dict) and features:
+        raise VerificationError(
+            f"{crate}: declares [features] ({sorted(features)}); any crate in "
+            f"the build graph can turn one on, so the code that runs stops "
+            f"being a function of the attested source"
+        )
+    for relative in attested:
+        if not relative.endswith(".rs"):
+            continue
+        source = sanitize_rust(_read_utf8(repo_root / relative))
+        for pattern, what in LEAF_FORBIDDEN_SOURCE_RE:
+            if pattern.search(source):
+                raise VerificationError(
+                    f"{crate}: {relative} uses {what}; the code that runs would "
+                    f"not be the code this digest covers"
+                )
+        for pattern, what in LEAF_FORBIDDEN_CONDITIONAL_RE:
+            if pattern.search(source):
+                raise VerificationError(
+                    f"{crate}: {relative} uses {what}; what the crate does "
+                    f"would depend on how the consumers are built rather than "
+                    f"on the source this digest covers"
+                )
+        for match in LEAF_CFG_RE.finditer(source):
+            predicate = "".join(match.group("predicate").split())
+            if predicate not in LEAF_PERMITTED_CFG:
+                raise VerificationError(
+                    f"{crate}: {relative} carries #[cfg({predicate})]; which "
+                    f"branch of the attested source runs would depend on how "
+                    f"the consumers are built, not on the digest. Only "
+                    f"{sorted(LEAF_PERMITTED_CFG)} are permitted in a leaf."
+                )
+
+
+def _nearest_manifest(repo_root: Path, relative: str) -> Path | None:
+    """The Cargo.toml Cargo reads for a source file: the nearest one above it."""
+    for parent in (repo_root / relative).parents:
+        candidate = parent / "Cargo.toml"
+        if candidate.is_file():
+            return candidate
+        if parent == repo_root:
+            break
+    return None
+
+
+def verify_leaf_dependency_edges(
+    repo_root: Path,
+    crate: str,
+    root: str,
+    consumers: Iterable[str],
+    const_only: Iterable[str],
+    scanned: Iterable[Path],
+    failures: list[str],
+) -> set[str]:
+    """Every package that can reach the leaf is bound to it, and named it.
+
+    Returns the repo-relative directories of the packages that DEPEND on the
+    leaf, which is the set `verify_no_hidden_modules` then has to look inside.
+
+    Two things are checked here, and they are the same check from both ends.
+
+    FROM THE CONSUMER: a marker says "I execute this crate", and only Cargo
+    decides which crate that is.  A site whose package re-points the dependency
+    at a registry version, a vendored copy or a fork keeps compiling, keeps its
+    marker green, and stops executing the attested source.
+
+    FROM THE MANIFESTS: any package that depends on the leaf can walk it, and a
+    package with no registered site is one whose files the marker scan and the
+    source scan both pass over.  A Cargo ALIAS is what makes that invisible --
+    ``grammar = { package = "d13_grammar" }`` and the source never spells the
+    crate's name at all -- so the dependency must be spelled with the crate's
+    own name, everywhere.  That one restriction is what makes the source scan
+    in ``verify_no_unregistered_users`` mean what it says, and the three
+    packages that take d13_grammar already spell it that way.
+    """
+    leaf_directory = (repo_root / root).resolve()
+    dependent: set[str] = set()
+    owning: dict[str, Path] = {}
+    for relative in sorted(set(consumers) | set(const_only)):
+        manifest_path = _nearest_manifest(repo_root, relative)
+        if manifest_path is None:
+            failures.append(
+                f"{relative}: no Cargo.toml above it, so nothing binds this "
+                f"site to {crate}"
+            )
+            continue
+        owning[relative] = manifest_path
+
+    # EVERY manifest under the scan roots, found by walking for manifests --
+    # not by asking which manifest owns each scanned `.rs`.  A crate can name a
+    # library `[lib] path = "source.rust"`, which Cargo compiles happily and a
+    # `*.rs` walk never sees; deriving the manifest set from the sources it
+    # found made that package invisible, dependency and all.
+    manifests = set(leaf_scan_manifests(repo_root))
+    manifests.update(owning.values())
+    bound_manifests = set(owning.values())
+
+    for manifest_path in sorted(manifests):
+        try:
+            manifest = _read_manifest(manifest_path, f"{crate} consumer")
+        except VerificationError as error:
+            failures.append(str(error))
+            continue
+        relative_manifest = manifest_path.relative_to(repo_root).as_posix()
+        if relative_manifest == f"{root}/Cargo.toml":
+            continue
+        # EVERY entry that could be this crate, not the first one found: a
+        # manifest carrying both a redirected `d13_grammar = { package = "fork" }`
+        # and an unused correct alias would otherwise pass on the alias while
+        # the source executes the fork.
+        matching: list[tuple[str, object]] = []
+        for table, entry in _dependency_tables(manifest):
+            for key, value in entry.items():
+                named = value.get("package") if isinstance(value, dict) else None
+                if named == crate or key == crate:
+                    matching.append((f"{table}.{key}", value))
+        if not matching:
+            continue
+        dependent.add(manifest_path.parent.relative_to(repo_root).as_posix())
+        # A package that takes the leaf must LIVE where this gate reads source.
+        # A crate under `runs/` compiles, tests and walks the grammar exactly
+        # like any other, and the source scan skips that directory as prose --
+        # so the package, its marker and its walker were all invisible while
+        # this gate said PASS.
+        package_parts = manifest_path.parent.relative_to(repo_root).parts
+        hidden = sorted(
+            {part for part in package_parts if part in LEAF_SCAN_SKIP_DIRECTORIES}
+        )
+        if hidden:
+            failures.append(
+                f"{relative_manifest}: depends on {crate} and lives under "
+                f"{hidden}, which this gate's source scan skips; nothing in "
+                f"this package can be attested, so a walker here is invisible. "
+                f"Move the package, or drop the dependency."
+            )
+        # It may not hide its source behind a target path this scan cannot read
+        # either.  `[lib] path = "source.rust"` compiles,
+        # `build = "build.rust"` runs, and `[lib] path = "runs/source.rs"` sits
+        # inside a directory this scan skips -- and every source-level check
+        # below (the marker, the re-export rule, the unregistered-user scan)
+        # steps straight over all three.
+        for table, declared_source in _declared_target_paths(manifest):
+            unreadable = None
+            if not declared_source.endswith(".rs"):
+                unreadable = "this gate's source scan reads only `.rs` files"
+            else:
+                resolved = (manifest_path.parent / declared_source).resolve()
+                try:
+                    inside = resolved.relative_to(repo_root)
+                except ValueError:
+                    unreadable = "it is outside the repository"
+                else:
+                    if any(
+                        part in LEAF_SCAN_SKIP_DIRECTORIES for part in inside.parts
+                    ):
+                        unreadable = (
+                            f"it sits under a directory this scan skips "
+                            f"({sorted(LEAF_SCAN_SKIP_DIRECTORIES)})"
+                        )
+            if unreadable is not None:
+                failures.append(
+                    f"{relative_manifest}: depends on {crate} and builds "
+                    f"{table} from {declared_source!r}, which this gate's "
+                    f"source scan does not read ({unreadable}); a walker there "
+                    f"would be invisible to every check in this file"
+                )
+        if manifest_path not in bound_manifests:
+            failures.append(
+                f"{relative_manifest}: depends on {crate} and owns no "
+                f"registered consumer or const-only site; a package that can "
+                f"walk the grammar with no attestation is the defect this "
+                f"gate exists to stop"
+            )
+        for where, value in matching:
+            key = where.rsplit(".", 1)[1]
+            named = value.get("package") if isinstance(value, dict) else None
+            if key != crate or (named is not None and named != crate):
+                failures.append(
+                    f"{relative_manifest}: declares {crate} as {where}"
+                    + (f" (package={named})" if named else "")
+                    + f"; the dependency must be spelled {crate}, because the "
+                    f"source scan that finds an unattested walker looks for "
+                    f"that name and an alias hides it"
+                )
+                continue
+            declared = value
+            if isinstance(declared, dict) and declared.get("workspace") is True:
+                failures.append(
+                    f"{relative_manifest}: inherits {crate} from the "
+                    f"workspace; the path this gate attests must be declared "
+                    f"where the dependency is, not somewhere a later workspace "
+                    f"edit can move under it"
+                )
+                continue
+            declared_path = declared.get("path") if isinstance(declared, dict) else None
+            if declared_path is None:
+                failures.append(
+                    f"{relative_manifest}: depends on {crate} without a path; "
+                    f"the attested source is this repository's copy and nothing "
+                    f"says that is what Cargo resolves"
+                )
+                continue
+            resolved = (manifest_path.parent / declared_path).resolve()
+            if resolved != leaf_directory:
+                failures.append(
+                    f"{relative_manifest}: depends on {crate} at "
+                    f"{declared_path}, which resolves outside the registered "
+                    f"root {root}"
+                )
+
+    for relative, manifest_path in sorted(owning.items()):
+        try:
+            manifest = _read_manifest(manifest_path, f"{crate} consumer")
+        except VerificationError:
+            continue  # already reported above
+        if not any(
+            key == crate or (isinstance(value, dict) and value.get("package") == crate)
+            for _, entry in _dependency_tables(manifest)
+            for key, value in entry.items()
+        ):
+            failures.append(
+                f"{relative}: {manifest_path.relative_to(repo_root).as_posix()} "
+                f"does not depend on {crate}; the marker attests a crate this "
+                f"package does not build against"
+            )
+    return dependent
+
+
+def verify_no_hidden_modules(
+    repo_root: Path,
+    crate: str,
+    dependent: Iterable[str],
+    scanned: Iterable[Path],
+    scannable: set[str],
+    failures: list[str],
+) -> None:
+    """A package that takes the leaf may not include source from outside the scan.
+
+    Cargo's target paths are not the only way to compile a file this gate does
+    not read: `#[path = "../../runs/hidden.rs"] mod hidden;` inside a perfectly
+    ordinary registered consumer pulls in a module from an evidence directory,
+    and that module can walk the grammar while every visible file is clean.
+    The redirect is refused unless it lands on a file this scan reads.
+    """
+    prefixes = tuple(f"{directory}/" for directory in sorted(dependent))
+    if not prefixes:
+        return
+    for path in sorted(scanned):
+        relative = path.relative_to(repo_root).as_posix()
+        if not relative.startswith(prefixes):
+            continue
+        # EVERY source in the package, not only the ones the leaf scan decoded:
+        # the file carrying the redirect need not mention the crate at all.
+        # `path` as a byte substring is the pre-filter; the attribute pattern
+        # below is what decides.
+        try:
+            raw = path.read_bytes()
+        except OSError as error:
+            raise VerificationError(f"cannot read {path}: {error}") from error
+        if b"path" not in raw:
+            continue
+        source = _read_utf8(path)
+        # The attribute's VALUE is a string literal, which `sanitize_rust`
+        # blanks -- so the pattern runs over the raw text, and the sanitized
+        # copy (same length, comments blanked to spaces) is what says whether
+        # the match is code or a sentence about code.
+        code = sanitize_rust(source)
+        for match in MODULE_PATH_ATTRIBUTE_RE.finditer(source):
+            if code[match.start()] != "#":
+                continue
+            declared = match.group("path")
+            # Rust resolves a `#[path]` on a module relative to the directory
+            # of the file carrying it (for a `mod.rs`/crate root; the nested
+            # form differs, and both candidates are tried before refusing).
+            here = PurePosixPath(relative).parent
+            candidates = {
+                (here / declared).as_posix(),
+                (here / PurePosixPath(relative).stem / declared).as_posix(),
+            }
+            # `posixpath.normpath`, never `os.path`: on Windows the latter
+            # returns backslashes, which then match nothing in a set of
+            # repo-relative POSIX paths and turn every redirect into a
+            # failure -- including the two legitimate ones this repository
+            # already has.
+            resolved = {posixpath.normpath(candidate) for candidate in candidates}
+            if resolved & scannable:
+                continue
+            # An INLINE module changes the base again -- `mod outer { #[path =
+            # "inner.rs"] mod inner; }` loads `outer/inner.rs` -- and this
+            # check does not parse module nesting.  So a redirect that lands on
+            # some file inside the same package is accepted: the point of the
+            # rule is a source OUTSIDE the scan, and refusing legal Rust
+            # because the base was guessed wrong would be the false failure
+            # that teaches people to route around this gate.
+            tail = "/" + posixpath.normpath(declared)
+            package = next(
+                (prefix for prefix in prefixes if relative.startswith(prefix)), None
+            )
+            if package is not None and any(
+                candidate.startswith(package) and candidate.endswith(tail)
+                for candidate in scannable
+            ):
+                continue
+            failures.append(
+                f"{relative}: takes {crate} and includes {declared!r} with a "
+                f"`#[path]` module, which this gate's source scan does not "
+                f"read; a walker there is invisible to every check in this "
+                f"file"
+            )
+
+
+def verify_no_unregistered_users(
+    crate: str,
+    consumers: Iterable[str],
+    root: str,
+    allowance: dict[str, tuple[str, ...]],
+    sources: dict[str, str],
+    failures: list[str],
+) -> None:
+    """A marker scan finds markers; it cannot find a consumer nobody marked.
+
+    So the leaf is looked for from the other end: every file that names the
+    crate must be a registered consumer, the leaf itself, or an entry in the
+    per-leaf allowance -- which records the IDENTIFIERS it may name, not merely
+    the file, so a `const`-only re-export cannot quietly grow a walk.
+
+    A RE-EXPORT would defeat it -- a registered consumer writing
+    ``pub use d13_grammar::...`` lets a downstream file walk the grammar
+    without ever naming the crate -- so a public re-export of the leaf is
+    refused wherever it appears.  Together with the "no Cargo alias" rule in
+    ``verify_leaf_dependency_edges``, that is what makes "names the crate" the
+    same set as "can reach the crate".
+
+    KNOWN LIMIT: a local module whose name equals the crate's shadows it, and
+    this reads the two the same way -- it refuses, rather than resolving names
+    the way rustc would.  A leaf crate is named after its domain; a module of
+    the same name in another crate is a collision worth a human's attention.
+    """
+    registered = set(consumers)
+    leaf_prefix = f"{root}/"
+    reference = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(crate)}\s*::\s*(?P<item>[A-Za-z_][A-Za-z0-9_]*)"
+    )
+    # EVERY OCCURRENCE OF THE NAME IN CODE COUNTS.  An earlier version asked for
+    # a `crate::` path, a `use` or an `extern crate`, which reads as the careful
+    # choice and is not: `use {d13_grammar as g};` (a grouped import) and
+    # `macro_rules! call { ($c:ident) => { $c::walk() } } call!(d13_grammar)`
+    # both reach the leaf while matching none of those, and each was measured
+    # passing this gate.  Distinguishing "names the crate" from "uses the crate"
+    # needs the name resolution rustc does; a regex that tries loses
+    # completeness, which is the whole point of this scan.  So a bare token is a
+    # use, and the cost -- a local item that shares the crate's name is refused
+    # -- is a collision worth a human's attention anyway.
+    token = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(crate)}(?![A-Za-z0-9_])")
+    # A public `use`/`extern crate` ITEM that mentions the crate, in any of its
+    # spellings: `pub use d13_grammar::walk;`, `pub use {d13_grammar::walk};`,
+    # `pub(crate) use d13_grammar as g;`, `pub extern crate d13_grammar;`.  Each
+    # lets a downstream file reach the grammar without naming the crate, which
+    # is the one route the token scan above cannot see.
+    public_item = re.compile(
+        r"(?m)^[ \t]*pub(?:\s*\([^)]*\))?\s+(?:use|extern\s+crate)\b[^;]*;"
+    )
+    for relative, source in sorted(sources.items()):
+        if relative.startswith(leaf_prefix):
+            continue
+        if crate not in source:
+            continue
+        # Comments and string literals name the crate all over this tree
+        # (including in the markers themselves); only code counts.
+        code = sanitize_rust(source)
+        for item in public_item.finditer(code):
+            if token.search(item.group(0)):
+                failures.append(
+                    f"{relative}: publicly re-exports {crate} "
+                    f"(`{' '.join(item.group(0).split())}`); a downstream file "
+                    f"could then walk the grammar without naming the crate, "
+                    f"which is the one thing this scan cannot see"
+                )
+        if relative in registered:
+            continue
+        if not token.search(code):
+            continue
+        permitted = allowance.get(relative)
+        if permitted is None:
+            failures.append(
+                f"{relative}: executes {crate} and is not a registered "
+                f"consumer. Add it to REQUIRED_LEAF_AUTHORITIES with a marker, "
+                f"or record it as a const-only user."
+            )
+            continue
+        # EVERY occurrence must be an allowed `crate::IDENT`, not merely every
+        # direct reference: `use grammar_leaf as g;` followed by `g::walk()`
+        # names no item at all, so an identifier-only check reads it as a file
+        # that touches nothing.
+        occurrences = len(token.findall(code))
+        allowed = [
+            match
+            for match in reference.finditer(code)
+            if match.group("item") in set(permitted)
+        ]
+        named = sorted(
+            {
+                match.group("item")
+                for match in reference.finditer(code)
+                if match.group("item") not in set(permitted)
+            }
+        )
+        if named or len(allowed) != occurrences:
+            failures.append(
+                f"{relative}: recorded as a const-only user of {crate}, and "
+                + (
+                    f"names {named}"
+                    if named
+                    else f"reaches it in {occurrences - len(allowed)} way(s) "
+                    f"that are not a recorded `{crate}::<const>` reference"
+                )
+                + "; a site that reads more than the recorded constants is a "
+                "consumer and needs its own attestation"
+            )
+
+
+def leaf_scan_manifests(repo_root: Path) -> list[Path]:
+    """Every Cargo manifest under the scan roots.
+
+    Found by walking for manifests, because the packages this gate most needs
+    to see are exactly the ones whose SOURCE it cannot: a crate whose library is
+    `[lib] path = "source.rust"` compiles fine and contains no file a `*.rs`
+    walk visits.
+    """
+    found: list[Path] = []
+    for root in LEAF_MARKER_SCAN_ROOTS:
+        base = repo_root / root
+        if not base.is_dir():
+            raise VerificationError(
+                f"leaf marker scan root {root.as_posix()} is missing; the scan "
+                f"that catches an unregistered marker would cover nothing"
+            )
+        for path in base.rglob("Cargo.toml"):
+            if any(
+                part in LEAF_MANIFEST_SKIP_DIRECTORIES
+                for part in path.relative_to(base).parts
+            ):
+                continue
+            found.append(path)
+    return sorted(found)
+
+
+def leaf_scan_files(repo_root: Path) -> list[Path]:
+    """Every Rust source a stray leaf marker could be hiding in."""
+    found: list[Path] = []
+    for root in LEAF_MARKER_SCAN_ROOTS:
+        base = repo_root / root
+        if not base.is_dir():
+            raise VerificationError(
+                f"leaf marker scan root {root.as_posix()} is missing; the scan "
+                f"that catches an unregistered marker would cover nothing"
+            )
+        for path in base.rglob("*.rs"):
+            # Relative parts, not the absolute path's: a checkout that happens
+            # to live under a directory called `runs` or `target` -- a lane
+            # worktree can -- would otherwise skip the entire tree and report a
+            # confident PASS over nothing.
+            if any(
+                part in LEAF_SCAN_SKIP_DIRECTORIES
+                for part in path.relative_to(base).parts
+            ):
+                continue
+            found.append(path)
+    return sorted(found)
+
+
+def load_leaf_inventory(repo_root: Path) -> dict[str, dict]:
+    """The recorded attested-file membership, or a hard failure.
+
+    Missing is NOT empty, for the reason ``load_closure_inventory`` gives: an
+    empty membership record makes the set check vacuous while the run still
+    prints PASS.
+    """
+    path = repo_root / LEAF_INVENTORY
+    if not path.is_file():
+        raise VerificationError(
+            f"the leaf source authority inventory {LEAF_INVENTORY} is missing; "
+            f"regenerate it with "
+            f"extractor/native/scripts/restamp_world_fold_citations.py"
+        )
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise VerificationError(
+            f"cannot read the leaf source authority inventory {path}: {error}"
+        ) from error
+    if not isinstance(loaded, dict):
+        raise VerificationError(f"{LEAF_INVENTORY}: expected a JSON object at the root")
+    leaves = loaded.get("leaves")
+    if not isinstance(leaves, dict):
+        raise VerificationError(f'{LEAF_INVENTORY}: expected an object under "leaves"')
+    malformed = sorted(
+        name
+        for name, record in leaves.items()
+        if not isinstance(record, dict)
+        or not isinstance(record.get("root"), str)
+        or not isinstance(record.get("files"), list)
+        or not all(isinstance(member, str) for member in record["files"])
+    )
+    if malformed:
+        raise VerificationError(
+            f"{LEAF_INVENTORY.name}: leaf/leaves {malformed} do not record a "
+            f"root and a list of attested file paths"
+        )
+    return leaves
+
+
+def validate_leaf_registry(registry: dict[str, LeafAuthority]) -> None:
+    """The registry itself is checked, not trusted.
+
+    It is a Python literal rather than a data file, which keeps a REQUIRED set
+    changing through code review exactly as ``REQUIRED_LANE_AUTHORITIES`` does
+    -- but "hand-written" is not "correct", and a duplicated consumer, a path
+    that escapes the repository or a const-only entry that is also a registered
+    consumer would each make some check below quietly weaker.  The one shape
+    this cannot see is a duplicated dict KEY, which Python resolves before this
+    function is reached; that is what review and a linter are for.
+    """
+    for crate, leaf in sorted(registry.items()):
+        if not isinstance(leaf, LeafAuthority):
+            raise VerificationError(
+                f"REQUIRED_LEAF_AUTHORITIES[{crate!r}] is not a LeafAuthority"
+            )
+        paths = [("root", leaf.root)]
+        paths += [("consumer", consumer) for consumer in leaf.consumers]
+        paths += [("const-only", relative) for relative in leaf.const_only]
+        for what, value in paths:
+            if (
+                not value
+                or value != PurePosixPath(value).as_posix()
+                or value.startswith("/")
+                or ".." in PurePosixPath(value).parts
+                or PurePosixPath(value).is_absolute()
+            ):
+                raise VerificationError(
+                    f"{crate}: {what} path {value!r} is not a normalized "
+                    f"repository-relative POSIX path"
+                )
+        if not leaf.consumers:
+            raise VerificationError(
+                f"{crate}: registers no consumer site, so nothing attests it"
+            )
+        duplicates = sorted(
+            {
+                consumer
+                for consumer in leaf.consumers
+                if leaf.consumers.count(consumer) > 1
+            }
+        )
+        if duplicates:
+            raise VerificationError(
+                f"{crate}: registers {duplicates} more than once; the marker "
+                f"count per site would be checked against the wrong total"
+            )
+        overlap = sorted(set(leaf.consumers) & set(leaf.const_only))
+        if overlap:
+            raise VerificationError(
+                f"{crate}: {overlap} are registered as consumers AND recorded "
+                f"as const-only users; a site cannot be both attested and exempt"
+            )
+        for relative, identifiers in sorted(leaf.const_only.items()):
+            if not identifiers or not all(
+                re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in identifiers
+            ):
+                raise VerificationError(
+                    f"{crate}: const-only entry {relative} must name the "
+                    f"identifiers it may read"
+                )
+
+
+def verify_leaf_authorities(
+    repo_root: Path, registry: dict[str, LeafAuthority] | None = None
+) -> tuple[int, int]:
+    """Every consumer of a shared leaf grammar attests to the leaf's source.
+
+    Returns ``(leaves, consumer sites)``.  Failures accumulate, for the reason
+    the module checks accumulate: a run that stops at the first stale marker
+    reports one site and hides the other four.
+    """
+    if registry is None:
+        # Read at CALL time, not bound as a default: the tests drive this with a
+        # synthetic registry over a synthetic tree, and a default bound at
+        # definition time would silently ignore them.
+        registry = REQUIRED_LEAF_AUTHORITIES
+    validate_leaf_registry(registry)
+    if not registry:
+        return 0, 0
+
+    recorded = load_leaf_inventory(repo_root)
+    failures: list[str] = []
+
+    orphaned = sorted(set(recorded) - set(registry))
+    if orphaned:
+        raise VerificationError(
+            f"{LEAF_INVENTORY.name} records attested files for leaf/leaves "
+            f"{orphaned}, which no consumer is required to attest; nothing "
+            f"checks those entries. Re-stamp to drop them."
+        )
+
+    # Every marker in the tree, so an unregistered or duplicated one is a
+    # failure rather than decoration.  A marker copied into a file nobody
+    # verifies is worse than no marker: it reads as an attestation.
+    #
+    # ONE PASS, AND A BYTE PRE-FILTER.  The scan set is 53 MB of Rust; decoding
+    # all of it to look for two short tokens cost more than the rest of this
+    # gate put together, and both this check and the unregistered-user scan
+    # want the same files.  Bytes are read once, the interesting ones are
+    # decoded once, and the rest are never decoded at all.
+    scanned = leaf_scan_files(repo_root)
+    scanned_relative = {path.relative_to(repo_root).as_posix() for path in scanned}
+    tokens = [b"@leaf-source-authority"] + [
+        crate.encode("utf-8") for crate in sorted(registry)
+    ]
+    sources: dict[str, str] = {}
+    for path in scanned:
+        try:
+            raw = path.read_bytes()
+        except OSError as error:
+            raise VerificationError(f"cannot read {path}: {error}") from error
+        if not any(token in raw for token in tokens):
+            continue
+        sources[path.relative_to(repo_root).as_posix()] = _read_utf8(path)
+
+    found: dict[str, list[re.Match[str]]] = {}
+    for relative, source in sorted(sources.items()):
+        if "@leaf-source-authority" not in source:
+            continue
+        markers = list(LEAF_MARKER_RE.finditer(source))
+        attempts = [
+            match.group(0).strip()
+            for match in LEAF_MARKER_ATTEMPT_RE.finditer(source)
+        ]
+        if len(attempts) != len(markers):
+            # A line that begins as a marker and does not parse is a broken
+            # attestation.  Reading it as an absent marker would report the
+            # site as un-attested at best and, where another site still carries
+            # a good marker, say nothing at all.
+            unparsed = [
+                line
+                for line in attempts
+                if not LEAF_MARKER_RE.fullmatch(line)
+            ]
+            failures.append(
+                f"{relative}: {len(unparsed)} line(s) begin as a leaf "
+                f"authority marker and do not parse as one: {unparsed}"
+            )
+            continue
+        if markers:
+            found[relative] = markers
+
+    expected_sites: dict[str, set[str]] = {}
+    for crate, leaf in sorted(registry.items()):
+        root, consumers = leaf.root, leaf.consumers
+        expected_sites[crate] = set(consumers)
+        outside = sorted(set(consumers) - scanned_relative)
+        if outside:
+            # A consumer the stray-marker scan cannot reach is a site whose
+            # marker could be duplicated somewhere this gate never looks.
+            scan_roots = [scan_root.as_posix() for scan_root in LEAF_MARKER_SCAN_ROOTS]
+            failures.append(
+                f"{crate}: registered consumer(s) {outside} are not Rust "
+                f"sources under {scan_roots}"
+            )
+        try:
+            attested = leaf_attested_files(repo_root, root)
+            digest = leaf_manifest_digest(repo_root, attested)
+        except VerificationError as error:
+            failures.append(str(error))
+            continue
+        # WHAT THE DIGEST IS A DIGEST OF. These three answer the question the
+        # file hashes cannot: are the attested files the whole of what runs
+        # (`verify_leaf_is_sealed`), is the crate a consumer builds against the
+        # one that was attested (`..._consumers_bind_to_it`), and is the
+        # registered consumer set the whole of what executes the leaf
+        # (`..._no_unregistered_users`). Without them a green marker means the
+        # attested bytes did not change, not that they are the bytes that ran.
+        try:
+            verify_leaf_is_sealed(repo_root, crate, root, attested)
+        except VerificationError as error:
+            failures.append(str(error))
+        dependent = verify_leaf_dependency_edges(
+            repo_root, crate, root, consumers, leaf.const_only, scanned, failures
+        )
+        verify_no_hidden_modules(
+            repo_root, crate, dependent, scanned, scanned_relative, failures
+        )
+        verify_no_unregistered_users(
+            crate, consumers, root, leaf.const_only, sources, failures
+        )
+
+        record = recorded.get(crate)
+        if record is None:
+            failures.append(
+                f"{crate}: no attested file membership recorded in "
+                f"{LEAF_INVENTORY.name}"
+            )
+        else:
+            if record["root"] != root:
+                failures.append(
+                    f"{crate}: {LEAF_INVENTORY.name} records root "
+                    f"{record['root']}, the registry says {root}"
+                )
+            if sorted(record["files"]) != attested:
+                dropped = sorted(set(record["files"]) - set(attested))
+                gained = sorted(set(attested) - set(record["files"]))
+                failures.append(
+                    f"{crate}: attested file membership changed; no longer "
+                    f"attested={dropped}, newly attested={gained}. A file "
+                    f"leaving a leaf is the leaf's logic leaving every "
+                    f"consumer's digest -- confirm where it went before "
+                    f"re-stamping."
+                )
+
+        for consumer in sorted(consumers):
+            markers = [
+                marker
+                for marker in found.get(consumer, [])
+                if marker.group("crate") == crate
+            ]
+            if len(markers) != 1:
+                failures.append(
+                    f"{consumer}: expected exactly one {crate} leaf authority "
+                    f"marker, found {len(markers)}"
+                )
+                continue
+            marker = markers[0]
+            if marker.group("root") != root:
+                failures.append(
+                    f"{consumer}: {crate} marker attests root "
+                    f"{marker.group('root')}, the registry says {root}"
+                )
+            if int(marker.group("files")) != len(attested):
+                failures.append(
+                    f"{consumer}: {crate} marker attests "
+                    f"{marker.group('files')} file(s), the crate has "
+                    f"{len(attested)}"
+                )
+            if marker.group("sha256") != digest:
+                failures.append(
+                    f"{consumer}: {crate} leaf authority digest changed over "
+                    f"{len(attested)} attested file(s); the shared grammar was "
+                    f"edited and this consumer has not re-attested to it. "
+                    f"Review what moved, then re-stamp."
+                )
+
+    for consumer, markers in sorted(found.items()):
+        for marker in markers:
+            crate = marker.group("crate")
+            if crate not in registry:
+                failures.append(
+                    f"{consumer}: leaf authority marker for unregistered crate "
+                    f"{crate}; nothing verifies it. Add it to "
+                    f"REQUIRED_LEAF_AUTHORITIES or remove the marker."
+                )
+            elif consumer not in expected_sites[crate]:
+                failures.append(
+                    f"{consumer}: leaf authority marker for {crate} at a site "
+                    f"the registry does not list; a marker nothing is required "
+                    f"to keep current reads as an attestation and is not one."
+                )
+
+    if failures:
+        raise VerificationError(
+            f"{len(failures)} leaf source authority failure(s): "
+            + "; ".join(failures)
+        )
+    return len(registry), sum(len(leaf.consumers) for leaf in registry.values())
+
+
 def verify_repo(
     repo_root: Path,
     *,
@@ -1710,10 +2944,15 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[3],
     )
     args = parser.parse_args(argv)
+    # BOTH halves run on every invocation, and both report.  Letting a
+    # world-fold failure skip the leaf check would hide every stale leaf marker
+    # behind one drifted line range -- the same stop-at-the-first-defect
+    # behaviour `module_failures` exists to remove, one level up.
+    failures: list[str] = []
+    counts: tuple[int, int, int, int] | None = None
+    covered: set[str] = set()
     try:
-        module_count, lane_count, grandfathered, documented = verify_repo(
-            args.repo_root
-        )
+        counts = verify_repo(args.repo_root)
         # The inventory is only trustworthy to report from BECAUSE verify_repo
         # just proved it equals the computed closure, domain by domain.
         covered = {
@@ -1722,12 +2961,24 @@ def main(argv: list[str] | None = None) -> int:
             for ident in members
         }
     except VerificationError as error:
-        print(f"world-fold citation authority check: FAIL: {error}", file=sys.stderr)
+        failures.append(str(error))
+    try:
+        leaves, leaf_sites = verify_leaf_authorities(args.repo_root.resolve())
+    except VerificationError as error:
+        failures.append(str(error))
+        leaves = leaf_sites = 0
+    if failures or counts is None:
+        print(
+            "world-fold citation authority check: FAIL: " + "; ".join(failures),
+            file=sys.stderr,
+        )
         return 1
+    module_count, lane_count, grandfathered, documented = counts
     print(
         "world-fold citation authority check: PASS "
         f"({module_count} dNN modules, {lane_count} lane authorities, "
         f"{len(covered)} world_fold.rs items inside an authority closure, "
+        f"{leaves} leaf source authorities over {leaf_sites} consumer sites, "
         f"{grandfathered} grandfathered prose line references, "
         f"{documented} grandfathered document line references)"
     )

@@ -3085,6 +3085,7 @@ fn decode_compact_focus_data_payload(
     }
 }
 
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=25f1c76e67752b9361fd14ce964dee9a78c33842e07d918ced7b8de4eb15369b
 fn decode_compact_tech_data_payload(
     offset: usize,
     payload: &[u8],

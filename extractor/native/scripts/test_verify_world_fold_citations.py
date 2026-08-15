@@ -7,11 +7,13 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+import unittest.mock
+from pathlib import Path, PurePosixPath
 
 
 def _load(name: str):
@@ -1716,8 +1718,17 @@ class RestampFidelityTests(unittest.TestCase):
         # A tree whose markers are current but whose membership record is stale
         # still fails the gate, so `--check` calling it clean would send a lane
         # into exactly the wrong diagnosis.
+        #
+        # The empty LEAF registry is a statement about the FIXTURE, not a way
+        # around a failure: `main` now re-stamps the leaf authorities too, and
+        # this synthetic tree contains none of the crates the shipped registry
+        # names. Leaving the shipped registry in place would make this test
+        # assert that `d13_grammar` is missing, which is not its subject --
+        # `LeafSourceAuthorityTests` owns that half, over a tree that has one.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
-        with temporary:
+        with temporary, unittest.mock.patch.object(
+            VERIFY, "REQUIRED_LEAF_AUTHORITIES", {}
+        ):
             fixture.add_module(1, ("fold_render",))
             fixture.write_inventory({"1": ["WorldFold::fold_render"]})
             printed = io.StringIO()
@@ -2397,6 +2408,1521 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.VerificationError, "cannot read the prose-reference allowance"
             ):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=())
+
+
+class LeafFixture:
+    """A synthetic repository with one shared grammar crate and two consumers.
+
+    The shape the leaf authority exists for: a walk that lives in a crate, and
+    sites in other crates that execute it and hold their own semantics over it.
+    Everything here sits under ``extractor/native`` because that is where the
+    gate scans for a stray marker, and a fixture outside it would be testing a
+    path the gate never walks.
+    """
+
+    CRATE = "grammar_leaf"
+    ROOT = "extractor/native/grammar_leaf"
+    CONSUMERS = (
+        "extractor/native/reader_one/src/lib.rs",
+        "extractor/native/reader_two/src/lib.rs",
+    )
+    WALK = "pub const ROW_LEN: usize = 16;\npub fn walk() -> usize { ROW_LEN }\n"
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        newline: str = "\n",
+        consumers: tuple[str, ...] | None = None,
+    ) -> None:
+        self.root = root
+        self.newline = newline
+        self.const_only: dict[str, tuple[str, ...]] = {}
+        if consumers is not None:
+            self.CONSUMERS = consumers
+        self.write(f"{self.ROOT}/Cargo.toml", '[package]\nname = "grammar_leaf"\n')
+        self.write(f"{self.ROOT}/src/lib.rs", self.WALK)
+        marker = (
+            "// @leaf-source-authority crate=grammar_leaf "
+            "root=extractor/native/grammar_leaf files=0 sha256=0\n"
+        )
+        for consumer in self.CONSUMERS:
+            # Each consumer is a package that DEPENDS on the leaf by path,
+            # because that dependency edge is half of what the gate checks: a
+            # marker says "I execute this crate" and only Cargo decides which
+            # crate that is.
+            package_dir = PurePosixPath(consumer).parent
+            while package_dir.name in ("src", "tests", "benches") or (
+                package_dir.parent.name in ("src",)
+            ):
+                package_dir = package_dir.parent
+            package = package_dir.name
+            to_leaf = os.path.relpath(self.ROOT, package_dir).replace("\\", "/")
+            self.write(
+                f"{package_dir}/Cargo.toml",
+                f'[package]\nname = "{package}"\n\n'
+                "[dependencies]\n"
+                f'grammar_leaf = {{ path = "{to_leaf}" }}\n',
+            )
+            if (self.root / consumer).is_file():
+                # A file another fixture already wrote (a dNN wire module, which
+                # carries its own world-fold marker) gains the leaf marker
+                # beside it rather than being replaced.
+                existing = self.read(consumer)
+                self.write(consumer, existing + marker)
+                continue
+            self.write(
+                consumer,
+                "// a consumer of the shared walk\n"
+                + marker
+                + "pub fn read() -> usize { grammar_leaf::walk() }\n",
+            )
+
+    @property
+    def registry(self) -> dict[str, "VERIFY.LeafAuthority"]:
+        return {
+            self.CRATE: VERIFY.LeafAuthority(
+                root=self.ROOT,
+                consumers=self.CONSUMERS,
+                const_only=dict(self.const_only),
+            )
+        }
+
+    def write(self, relative: str, text: str) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline=self.newline)
+
+    def read(self, relative: str) -> str:
+        return (self.root / relative).read_text(encoding="utf-8")
+
+    def restamp(self, *, allow_leaf_shrink: bool = False) -> tuple[int, int, bool]:
+        return RESTAMP.restamp_leaves(
+            self.root,
+            check=False,
+            allow_leaf_shrink=allow_leaf_shrink,
+            report=lambda _: None,
+            registry=self.registry,
+        )
+
+    def verify(self) -> tuple[int, int]:
+        return VERIFY.verify_leaf_authorities(self.root, self.registry)
+
+    def stamped(self) -> "LeafFixture":
+        self.restamp()
+        return self
+
+
+class LeafSourceAuthorityTests(unittest.TestCase):
+    """A shared grammar crate is covered at every site that executes it.
+
+    The hole these close: a closure follows calls inside ONE file, so the day
+    domain 13's walk moved into ``d13_grammar`` its authority closure shrank
+    from 80 names to 73 and every digest in the tree stopped covering the
+    grammar the fold executes.  Compilation catches API drift across the crate
+    boundary; nothing caught a changed section length, flag mask or field
+    offset inside the leaf.
+    """
+
+    def fixture(
+        self, **kwargs
+    ) -> tuple[tempfile.TemporaryDirectory[str], LeafFixture]:
+        temporary = tempfile.TemporaryDirectory()
+        return temporary, LeafFixture(Path(temporary.name), **kwargs)
+
+    def test_editing_the_leafs_walk_turns_every_consumer_red(self) -> None:
+        """THE PROPERTY. Production change that fails this: any edit to the
+        shared grammar's source without a re-attestation at the consumers."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            self.assertEqual(fixture.verify(), (1, 2))
+            fixture.write(
+                f"{fixture.ROOT}/src/lib.rs",
+                fixture.WALK.replace("16", "20"),
+            )
+            with self.assertRaises(VERIFY.VerificationError) as raised:
+                fixture.verify()
+            message = str(raised.exception)
+            self.assertIn("2 leaf source authority failure(s)", message)
+            for consumer in fixture.CONSUMERS:
+                self.assertIn(f"{consumer}: grammar_leaf leaf authority digest", message)
+            # Then the re-attestation, and only that, restores it.
+            fixture.restamp()
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_an_edit_outside_every_leaf_stays_green(self) -> None:
+        """A gate that fires on unrelated edits is one people re-stamp without
+        reading, which is the same as no gate."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "pub fn unrelated() -> usize { 1 }\n",
+            )
+            fixture.write(
+                fixture.CONSUMERS[0],
+                fixture.read(fixture.CONSUMERS[0]) + "// a later comment\n",
+            )
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_missing_marker_at_a_registered_consumer_is_refused(self) -> None:
+        """Deleting the marker must not be the way to silence the gate."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                fixture.CONSUMERS[1],
+                "pub fn read() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                "expected exactly one grammar_leaf leaf authority marker, found 0",
+            ):
+                fixture.verify()
+
+    def test_a_marker_at_an_unregistered_site_is_refused(self) -> None:
+        """A marker nothing is required to keep current still READS as an
+        attestation; a stale one somewhere unlisted is worse than none."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            marker = [
+                line
+                for line in fixture.read(fixture.CONSUMERS[0]).splitlines()
+                if line.startswith("// @leaf-source-authority")
+            ][0]
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                f"{marker}\npub fn read() -> usize {{ 1 }}\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "a site the registry does not list"
+            ):
+                fixture.verify()
+
+    def test_a_marker_for_an_unregistered_crate_is_refused(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "// @leaf-source-authority crate=other_leaf "
+                "root=extractor/native/other_leaf files=1 "
+                f"sha256={'0' * 64}\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "unregistered crate other_leaf"
+            ):
+                fixture.verify()
+
+    def test_two_markers_for_one_crate_in_one_file_are_refused(self) -> None:
+        """Two attestations in a file are one somebody can update and one that
+        rots, and the gate would be satisfied by the fresh one."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            marker = [
+                line
+                for line in source.splitlines()
+                if line.startswith("// @leaf-source-authority")
+            ][0]
+            fixture.write(fixture.CONSUMERS[0], f"{source}{marker}\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                "expected exactly one grammar_leaf leaf authority marker, found 2",
+            ):
+                fixture.verify()
+
+    def test_a_broken_marker_line_is_not_read_as_an_absent_one(self) -> None:
+        """A truncated or hand-edited marker must fail as a broken
+        attestation. Read as absent, it would report a site as un-attested at
+        best and say nothing at all where the crate is attested elsewhere."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            fixture.write(
+                fixture.CONSUMERS[0],
+                source.replace(" sha256=", " sha256 "),
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "do not parse as one"
+            ):
+                fixture.verify()
+
+    def test_an_indented_marker_is_read_and_its_indent_kept(self) -> None:
+        """A marker belongs beside the code it attests, and that code is often
+        inside an `impl` block -- `fold_tech` is. Refusing an indented marker
+        would push it somewhere else in the file; re-writing it at column 0
+        would leave a comment sticking out of an indented body."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            fixture.write(
+                fixture.CONSUMERS[0],
+                source.replace(
+                    "// @leaf-source-authority", "    // @leaf-source-authority"
+                ),
+            )
+            self.assertEqual(fixture.verify(), (1, 2))
+            fixture.write(f"{fixture.ROOT}/src/lib.rs", fixture.WALK.replace("16", "20"))
+            fixture.restamp()
+            self.assertEqual(fixture.verify(), (1, 2))
+            self.assertIn(
+                "    // @leaf-source-authority", fixture.read(fixture.CONSUMERS[0])
+            )
+
+    def test_prose_about_the_marker_is_not_a_marker(self) -> None:
+        """The design documents, this gate's own Rust test and the modules that
+        carry a marker all write the token inside a sentence. Treating a
+        sentence as a failed marker makes the gate impossible to document."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "//! Every consumer carries a `@leaf-source-authority` marker.\n"
+                "// see @leaf-source-authority in the sibling modules\n",
+            )
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_file_added_to_the_leaf_is_attested(self) -> None:
+        """A second module in the crate is more grammar, not less. The digest
+        must move and the membership record must gain it."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(f"{fixture.ROOT}/src/encode.rs", "pub fn write() {}\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "attested file membership changed"
+            ):
+                fixture.verify()
+            fixture.restamp()
+            self.assertEqual(fixture.verify(), (1, 2))
+            recorded = VERIFY.load_leaf_inventory(fixture.root)["grammar_leaf"]
+            self.assertIn(
+                "extractor/native/grammar_leaf/src/encode.rs", recorded["files"]
+            )
+
+    def test_a_file_leaving_the_leaf_stops_the_re_stamper(self) -> None:
+        """The event that created this mechanism, one level up: the walk moves
+        out from under the digest. A re-stamp through it hands back a green
+        tree covering less than it did, so it needs a human."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.write(f"{fixture.ROOT}/src/encode.rs", "pub fn write() {}\n")
+            fixture.stamped()
+            (fixture.root / fixture.ROOT / "src" / "encode.rs").unlink()
+            with self.assertRaises(SystemExit) as exited:
+                fixture.restamp()
+            message = str(exited.exception)
+            self.assertIn("SHRANK", message)
+            self.assertIn("grammar_leaf/src/encode.rs", message)
+            # And with the flag, it re-stamps and records the smaller set.
+            fixture.restamp(allow_leaf_shrink=True)
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_crate_root_with_no_manifest_is_refused(self) -> None:
+        """A mistyped root would otherwise hash whatever `.rs` files happened
+        to be under it and report a confident digest over the wrong tree."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            (fixture.root / fixture.ROOT / "Cargo.toml").unlink()
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "it is not a crate root"
+            ):
+                fixture.verify()
+
+    def test_a_missing_root_is_refused(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            for path in sorted(
+                (fixture.root / fixture.ROOT).rglob("*"), reverse=True
+            ):
+                path.unlink() if path.is_file() else path.rmdir()
+            (fixture.root / fixture.ROOT).rmdir()
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "is not a directory"
+            ):
+                fixture.verify()
+
+    def test_a_checkout_under_a_skipped_directory_name_still_scans(self) -> None:
+        """The skip list is `runs/` and `target/` INSIDE the tree. Matched
+        against the absolute path instead, a lane worktree that happens to live
+        under a directory called `runs` skips every file and reports a
+        confident PASS over nothing."""
+        with tempfile.TemporaryDirectory() as outer:
+            root = Path(outer) / "runs" / "checkout"
+            root.mkdir(parents=True)
+            fixture = LeafFixture(root)
+            fixture.restamp()
+            self.assertEqual(fixture.verify(), (1, 2))
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "pub fn walk_it() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "is not a registered consumer"
+            ):
+                fixture.verify()
+
+    def test_build_output_inside_the_crate_is_not_attested(self) -> None:
+        """`target/` holds generated Rust. Attesting it would move the digest
+        on every build and teach everyone to re-stamp without looking."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(f"{fixture.ROOT}/target/debug/build/generated.rs", "fn x() {}\n")
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_the_digest_does_not_depend_on_the_checkouts_line_endings(self) -> None:
+        """This checkout is CRLF and CI trees are not. A digest that moved with
+        the line endings would fail every run on one of them."""
+        with tempfile.TemporaryDirectory() as lf_root, tempfile.TemporaryDirectory() as crlf_root:
+            lf = LeafFixture(Path(lf_root), newline="\n")
+            crlf = LeafFixture(Path(crlf_root), newline="\r\n")
+            attested = VERIFY.leaf_attested_files(lf.root, lf.ROOT)
+            self.assertEqual(
+                VERIFY.leaf_manifest_digest(lf.root, attested),
+                VERIFY.leaf_manifest_digest(
+                    crlf.root, VERIFY.leaf_attested_files(crlf.root, crlf.ROOT)
+                ),
+            )
+
+    def test_the_re_stamp_preserves_a_consumers_line_endings(self) -> None:
+        """Rewriting a CRLF file through universal newlines rewrites the whole
+        file to LF: invisible in `git diff`, which normalizes, and wrong on
+        disk for every other tool."""
+        temporary, fixture = self.fixture(newline="\r\n")
+        with temporary:
+            fixture.stamped()
+            raw = (fixture.root / fixture.CONSUMERS[0]).read_bytes()
+            # NON-VACUITY: a re-stamper that wrote nothing at all would satisfy
+            # the ending assertions below, because the fixture was authored
+            # CRLF. Demand that the placeholder is gone and that the tree the
+            # re-stamp produced is one the gate accepts.
+            self.assertNotIn(b"files=0 sha256=0", raw)
+            self.assertEqual(fixture.verify(), (1, 2))
+            self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+            self.assertIn(b"\r\n", raw)
+            # And a mixed-ending file keeps every ending it had: the marker
+            # line is rewritten in place, nothing else is touched.
+            path = fixture.root / fixture.CONSUMERS[1]
+            with path.open(encoding="utf-8", newline="") as handle:
+                source = handle.read()
+            mixed = source.replace("\r\n", "\n", 1)
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(mixed)
+            fixture.write(f"{fixture.ROOT}/src/lib.rs", fixture.WALK.replace("16", "24"))
+            fixture.restamp()
+            after = path.read_bytes()
+            self.assertEqual(after.count(b"\r\n"), mixed.count("\r\n"))
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_an_inventory_leaf_no_consumer_attests_is_refused(self) -> None:
+        """A membership record nothing compares against anything accumulates
+        coverage claims no run verifies."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            path = fixture.root / VERIFY.LEAF_INVENTORY
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["leaves"]["departed_leaf"] = {"root": "x", "files": []}
+            path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "no consumer is required to attest"
+            ):
+                fixture.verify()
+
+    def test_a_missing_inventory_is_not_an_empty_one(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            (fixture.root / VERIFY.LEAF_INVENTORY).unlink()
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "inventory .* is missing"
+            ):
+                fixture.verify()
+
+    def test_a_wrong_shaped_inventory_says_so_instead_of_raising(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            path = fixture.root / VERIFY.LEAF_INVENTORY
+            for payload, expected in (
+                ("[]", "expected a JSON object at the root"),
+                ('{"leaves": []}', 'expected an object under "leaves"'),
+                ('{"leaves": {"grammar_leaf": null}}', "do not record a root"),
+                (
+                    '{"leaves": {"grammar_leaf": {"root": "x", "files": [3]}}}',
+                    "do not record a root",
+                ),
+            ):
+                path.write_text(payload, encoding="utf-8", newline="\n")
+                with self.assertRaisesRegex(VERIFY.VerificationError, expected):
+                    fixture.verify()
+
+    def test_a_corrupt_inventory_stops_the_re_stamper_with_a_message(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            (fixture.root / VERIFY.LEAF_INVENTORY).write_text(
+                "{not json", encoding="utf-8", newline="\n"
+            )
+            with self.assertRaises(SystemExit) as exited:
+                fixture.restamp()
+            self.assertIn("cannot read", str(exited.exception))
+
+    def test_the_re_stamper_will_not_guess_where_a_marker_belongs(self) -> None:
+        """Adoption pastes the line beside the code it attests. A tool that
+        inserted one would put it where nobody reading the walk ever looks."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.write(
+                fixture.CONSUMERS[0],
+                "pub fn read() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaises(SystemExit) as exited:
+                fixture.restamp()
+            self.assertIn("Paste the line beside the code it attests", str(exited.exception))
+
+    def test_the_re_stamper_will_not_re_point_a_marker_at_another_crate(self) -> None:
+        """`root=` is read, never chosen: rewriting it would silently move an
+        attestation from the crate the site executes to one it does not."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            fixture.write(
+                fixture.CONSUMERS[0],
+                source.replace(
+                    "root=extractor/native/grammar_leaf",
+                    "root=extractor/native/other_leaf",
+                ),
+            )
+            with self.assertRaises(SystemExit) as exited:
+                fixture.restamp()
+            self.assertIn("the registry says", str(exited.exception))
+
+    def test_main_runs_the_leaf_half_and_reports_both(self) -> None:
+        """The one thing a separate check function can lose: `main` forgetting
+        to call it. Both halves must report on the same run, so a world-fold
+        failure cannot hide five stale leaf markers behind it."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                f"{fixture.ROOT}/src/lib.rs", fixture.WALK.replace("16", "20")
+            )
+            stderr = io.StringIO()
+            with unittest.mock.patch.object(
+                VERIFY, "REQUIRED_LEAF_AUTHORITIES", fixture.registry
+            ), contextlib.redirect_stderr(stderr):
+                exit_code = VERIFY.main(["--repo-root", str(fixture.root)])
+            self.assertEqual(exit_code, 1)
+            reported = stderr.getvalue()
+            # The world-fold half: this fixture carries no world_fold.rs.
+            self.assertIn("world_fold.rs", reported)
+            # And the leaf half, in the same message rather than behind it.
+            self.assertIn("leaf authority digest changed", reported)
+
+    def test_every_attested_file_is_covered_not_only_the_walk(self) -> None:
+        """Each attested file, one at a time. A digest that moved for `lib.rs`
+        and not for the encoder, the drift-killer or the manifest would be
+        covering the half of the leaf somebody happened to test."""
+        for name, before, after in (
+            ("src/lib.rs", "16", "20"),
+            ("src/encode.rs", "1", "2"),
+            ("src/tests.rs", "assert", "debug_assert"),
+            ("Cargo.toml", 'name = "grammar_leaf"', 'name = "grammar_leaf"\nedition = "2021"'),
+        ):
+            with self.subTest(file=name):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.write(f"{fixture.ROOT}/src/encode.rs", "pub const W: u8 = 1;\n")
+                    fixture.write(
+                        f"{fixture.ROOT}/src/tests.rs",
+                        "#[test]\nfn t() { assert!(true); }\n",
+                    )
+                    fixture.stamped()
+                    self.assertEqual(fixture.verify(), (1, 2))
+                    source = fixture.read(f"{fixture.ROOT}/{name}")
+                    fixture.write(
+                        f"{fixture.ROOT}/{name}", source.replace(before, after, 1)
+                    )
+                    with self.assertRaisesRegex(
+                        VERIFY.VerificationError, "leaf authority digest changed"
+                    ):
+                        fixture.verify()
+
+    def test_a_control_character_does_not_collapse_into_a_newline(self) -> None:
+        """`str.splitlines()` treats form feed, vertical tab, NEL and the
+        Unicode separators as line breaks. Normalizing with it would hash two
+        different Rust string literals identically."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            attested = VERIFY.leaf_attested_files(fixture.root, fixture.ROOT)
+            fixture.write(f"{fixture.ROOT}/src/lib.rs", 'pub const S: &str = "a\fb";\n')
+            with_form_feed = VERIFY.leaf_manifest_digest(fixture.root, attested)
+            fixture.write(f"{fixture.ROOT}/src/lib.rs", 'pub const S: &str = "a\nb";\n')
+            self.assertNotEqual(
+                with_form_feed,
+                VERIFY.leaf_manifest_digest(fixture.root, attested),
+            )
+
+    def test_a_leaf_that_can_execute_code_outside_its_source_is_refused(self) -> None:
+        """The seal. Each of these changes what the crate RUNS while every
+        attested byte stays identical, so a digest over the files would be an
+        attestation of something that is not what executes."""
+        cases = (
+            (
+                "Cargo.toml",
+                '[package]\nname = "grammar_leaf"\nbuild = "make.rs"\n',
+                "declares a build script",
+            ),
+            (
+                "Cargo.toml",
+                '[package]\nname = "grammar_leaf"\n\n[lib]\npath = "../elsewhere.rs"\n',
+                r"sets \[lib\] path",
+            ),
+            (
+                "Cargo.toml",
+                '[package]\nname = "grammar_leaf"\n\n[dependencies]\nserde = "1"\n',
+                r"declares \[dependencies\]",
+            ),
+            (
+                "Cargo.toml",
+                '[package]\nname = "grammar_leaf"\n\n[features]\nstrict = []\n',
+                r"declares \[features\]",
+            ),
+            (
+                "Cargo.toml",
+                '[package]\nname = "another_crate"\n',
+                "attests a package nobody builds",
+            ),
+            (
+                "src/lib.rs",
+                '#[path = "../../elsewhere.rs"]\nmod walk;\n',
+                "an attribute that redirects a module's path",
+            ),
+            (
+                "src/lib.rs",
+                'include!("../../generated.rs");\n',
+                "include!.-family macro",
+            ),
+            (
+                "src/lib.rs",
+                'pub const D: &str = env!("SOME_BUILD_VALUE");\n',
+                "build-time `env!` value",
+            ),
+            (
+                "src/lib.rs",
+                'pub const D: &str = concat!(env!("OUT_DIR"), "/x");\n',
+                "OUT_DIR|build-time",
+            ),
+        )
+        for name, replacement, expected in cases:
+            with self.subTest(case=expected):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.stamped()
+                    fixture.write(f"{fixture.ROOT}/{name}", replacement)
+                    with self.assertRaisesRegex(VERIFY.VerificationError, expected):
+                        fixture.verify()
+
+    def test_an_implicit_build_script_is_refused(self) -> None:
+        """Cargo runs `build.rs` whether or not the manifest names it."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(f"{fixture.ROOT}/build.rs", "fn main() {}\n")
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "carries build.rs"
+            ):
+                fixture.verify()
+
+    def test_a_manifest_with_no_library_is_refused(self) -> None:
+        """No `[lib] path` and no `src/lib.rs` is not a library: a manifest-only
+        directory would otherwise be stamped, digested and reported."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            (fixture.root / fixture.ROOT / "src" / "lib.rs").unlink()
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "no library here for a consumer to execute"
+            ):
+                fixture.verify()
+
+    def test_a_macro_definition_in_the_leaf_is_refused(self) -> None:
+        """The seal's other rules read source text, and a `macro_rules!` that
+        expands an identifier into `include!` puts the forbidden construct
+        somewhere no regex over this file can see it. The cost -- a leaf may not
+        use a declarative macro to generate repetitive grammar code -- is real
+        and accepted; closing it properly needs expansion, not a regex."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                f"{fixture.ROOT}/src/lib.rs",
+                "macro_rules! rows { () => { 16 } }\n" + fixture.WALK,
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "a macro definition"
+            ):
+                fixture.verify()
+
+    def test_a_conditional_attribute_or_expression_is_refused(self) -> None:
+        """`#[cfg(..)]` is not the only conditional: `cfg_attr` changes a type's
+        LAYOUT -- the thing a byte grammar is -- and `cfg!` branches at run
+        time, both on inputs the digest does not cover. Each of these
+        re-stamped and verified before the rule existed."""
+        for name, source in (
+            (
+                "cfg_attr layout",
+                "#[cfg_attr(windows, repr(C, packed))]\npub struct Row(pub u16);\n",
+            ),
+            (
+                "cfg_attr path",
+                '#[cfg_attr(windows, path = "../../outside.rs")]\nmod walk;\n',
+            ),
+            (
+                "cfg! expression",
+                "pub fn width() -> usize { if cfg!(windows) { 2 } else { 4 } }\n",
+            ),
+        ):
+            with self.subTest(case=name):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.stamped()
+                    fixture.write(f"{fixture.ROOT}/src/lib.rs", source + fixture.WALK)
+                    with self.assertRaisesRegex(
+                        VERIFY.VerificationError, "cfg_attr|cfg!|redirects a module"
+                    ):
+                        fixture.verify()
+
+    def test_a_link_in_the_leaf_is_refused(self) -> None:
+        """A link resolves somewhere no digest reads. Skipped where this
+        process cannot create one -- Windows needs the privilege -- rather than
+        passing vacuously."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            target = fixture.root / "outside.rs"
+            target.write_text("pub fn elsewhere() {}\n", encoding="utf-8")
+            link = fixture.root / fixture.ROOT / "src" / "linked.rs"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"cannot create a symbolic link here: {error}")
+            with self.assertRaisesRegex(VERIFY.VerificationError, "contains a link"):
+                fixture.verify()
+
+    def test_metadata_that_cannot_be_read_is_fatal(self) -> None:
+        """A child this walk enumerated and then could not stat must not be
+        skipped quietly: `is_file()` says False for the same reason, and the
+        entry would leave the attested set without a word."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            real_lstat = Path.lstat
+
+            def refusing_lstat(self):
+                if self.name == "encode.rs":
+                    raise OSError(5, "device not ready")
+                return real_lstat(self)
+
+            fixture.write(f"{fixture.ROOT}/src/encode.rs", "pub fn write() {}\n")
+            with unittest.mock.patch.object(Path, "lstat", refusing_lstat):
+                with self.assertRaisesRegex(
+                    VERIFY.VerificationError, "cannot read the metadata"
+                ):
+                    fixture.verify()
+
+    def test_a_forbidden_construct_in_a_comment_is_not_a_construct(self) -> None:
+        """The seal reads code, not prose: the leaf documents its own rules,
+        and a gate that refused the sentence would make them undocumentable."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                f"{fixture.ROOT}/src/lib.rs",
+                "//! This crate has no build script, no `include!` and no\n"
+                '//! `env!("X")`, and OUT_DIR never reaches it.\n' + fixture.WALK,
+            )
+            fixture.restamp()
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_consumer_that_depends_on_another_copy_is_refused(self) -> None:
+        """A marker says "I execute this crate"; Cargo decides which crate that
+        is. Re-pointing the dependency keeps the code compiling, keeps the
+        marker green, and stops the attested source being what runs."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../vendored_grammar_leaf" }\n',
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "resolves outside the registered root"
+            ):
+                fixture.verify()
+
+    def test_a_consumer_that_depends_on_a_registry_version_is_refused(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = "0.1"\n',
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "without a path"
+            ):
+                fixture.verify()
+
+    def test_a_dependency_key_that_builds_another_package_is_refused(self) -> None:
+        """Cargo's `package =` field decides what a key builds. Reading the key
+        alone accepts `grammar_leaf = { package = "vendored_fork" }`, which
+        compiles, keeps the marker green, and runs somebody else's code."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { package = "vendored_fork", path = "../vendored" }\n',
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"package=vendored_fork"
+            ):
+                fixture.verify()
+
+    def test_a_cargo_alias_for_the_leaf_is_refused(self) -> None:
+        """A Cargo alias is the one way to execute the leaf without ever
+        writing its name: `grammar = { package = "grammar_leaf" }`, and then
+        `grammar::walk()`. The source scan that finds an unattested walker
+        looks for the crate's name, so the alias would hide a whole package
+        from it. The dependency is therefore spelled with the crate's own name
+        everywhere -- which the three packages that take d13_grammar already
+        do."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                'grammar = { package = "grammar_leaf", path = "../grammar_leaf" }\n',
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "must be spelled grammar_leaf"
+            ):
+                fixture.verify()
+
+    def test_a_workspace_inherited_dependency_is_refused(self) -> None:
+        """`{ workspace = true }` moves the path into a manifest this site does
+        not own, where a later workspace edit can re-point every consumer at
+        once without touching a single attested file."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/Cargo.toml",
+                "[workspace]\nmembers = []\n\n"
+                "[workspace.dependencies]\n"
+                'grammar_leaf = { path = "grammar_leaf" }\n',
+            )
+            fixture.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                "grammar_leaf = { workspace = true }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "inherits grammar_leaf from the workspace"
+            ):
+                fixture.verify()
+
+    def test_a_package_that_takes_the_leaf_and_attests_nothing_is_refused(self) -> None:
+        """The completeness half, from the manifests: a package can depend on
+        the leaf and walk it in a file the marker scan passes over. Every
+        package that CAN reach the grammar must own a site that attests it."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_four/Cargo.toml",
+                '[package]\nname = "reader_four"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n',
+            )
+            fixture.write(
+                "extractor/native/reader_four/src/lib.rs",
+                "pub fn nothing() -> usize { 1 }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "owns no registered consumer"
+            ):
+                fixture.verify()
+
+    def test_a_target_conditional_dependency_in_the_leaf_is_refused(self) -> None:
+        """`[target.'cfg(windows)'.dependencies]` is a dependency table a
+        top-level scan does not see, and behaviour from another crate on one
+        platform only is the hardest kind to notice."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                f"{fixture.ROOT}/Cargo.toml",
+                '[package]\nname = "grammar_leaf"\n\n'
+                "[target.'cfg(windows)'.dependencies]\nserde = \"1\"\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                r"declares \[target\.cfg\(windows\)\.dependencies\]",
+            ):
+                fixture.verify()
+
+    def test_a_production_cfg_in_the_leaf_is_refused(self) -> None:
+        """Which branch of the attested source RUNS must be a function of the
+        digest. `#[cfg(test)]` is the exception: it excludes the crate's own
+        proof, and `test` is set by the harness, not chosen by whoever builds
+        the consumers."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                f"{fixture.ROOT}/src/lib.rs",
+                "#[cfg(test)]\nmod tests {}\n"
+                '#[cfg(feature = "strict")]\n'
+                "pub const ROW_LEN: usize = 20;\n" + fixture.WALK,
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"carries #\[cfg\(feature="
+            ):
+                fixture.verify()
+
+    def test_a_re_export_of_the_leaf_is_refused(self) -> None:
+        """A registered consumer writing `pub use grammar_leaf::...` lets a
+        downstream file walk the grammar without naming the crate -- the one
+        route the source scan cannot see."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            fixture.write(
+                fixture.CONSUMERS[0], source + "pub use grammar_leaf::walk;\n"
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "publicly re-exports grammar_leaf"
+            ):
+                fixture.verify()
+
+    def test_a_new_unregistered_user_of_the_leaf_is_refused(self) -> None:
+        """A marker scan finds markers; it cannot find a consumer nobody
+        marked. A sixth site that walks the grammar with no marker is exactly
+        the shape this whole mechanism exists to stop, and it is invisible from
+        the marker end."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "pub fn walk_it() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "is not a registered consumer"
+            ):
+                fixture.verify()
+
+    def test_a_const_only_user_is_recorded_by_identifier(self) -> None:
+        """`offsets.rs` re-exports two constants and walks nothing, so it needs
+        no attestation -- but the exception is per IDENTIFIER, so the day that
+        file starts walking the grammar it fails instead of staying exempt."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.const_only = {
+                "extractor/native/reader_three/src/lib.rs": ("ROW_LEN",)
+            }
+            fixture.write(
+                "extractor/native/reader_three/Cargo.toml",
+                '[package]\nname = "reader_three"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n',
+            )
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "pub const LEN: usize = grammar_leaf::ROW_LEN;\n",
+            )
+            fixture.stamped()
+            self.assertEqual(fixture.verify(), (1, 2))
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "pub const LEN: usize = grammar_leaf::ROW_LEN;\n"
+                "pub fn walk_it() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, r"names \['walk'\]"
+            ):
+                fixture.verify()
+            # And the alias route, which names no item at all: an
+            # identifier-only check reads this file as touching nothing.
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "use grammar_leaf as g;\n"
+                "pub const LEN: usize = grammar_leaf::ROW_LEN;\n"
+                "pub fn walk_it() -> usize { g::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError,
+                "not a recorded `grammar_leaf::<const>` reference",
+            ):
+                fixture.verify()
+
+    def test_naming_the_leaf_in_a_comment_is_not_using_it(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_three/src/lib.rs",
+                "// grammar_leaf owns the walk; this file only says so.\n"
+                'pub const NOTE: &str = "grammar_leaf::walk";\n',
+            )
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_re_stamp_is_idempotent_and_check_reports_drift(self) -> None:
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            self.assertEqual(fixture.restamp(), (0, 2, False))
+            fixture.write(f"{fixture.ROOT}/src/lib.rs", fixture.WALK.replace("16", "20"))
+            self.assertEqual(
+                RESTAMP.restamp_leaves(
+                    fixture.root,
+                    check=True,
+                    allow_leaf_shrink=False,
+                    report=lambda _: None,
+                    registry=fixture.registry,
+                ),
+                (2, 2, False),
+            )
+            # --check wrote nothing.
+            with self.assertRaises(VERIFY.VerificationError):
+                fixture.verify()
+
+    def test_a_refused_leaf_shrink_leaves_the_world_markers_alone(self) -> None:
+        """The two re-stamps refuse for different reasons. Writing the first
+        half before asking the second leaves a tree with re-stamped world
+        markers and a run nobody asked for -- half a re-stamp is the state
+        that makes a lane distrust the tool."""
+        temporary = tempfile.TemporaryDirectory()
+        with temporary:
+            root = Path(temporary.name)
+            world = CitationFixture(root, INLINE_RENDER)
+            world.add_module(1, ("fold_render",))
+            leaf = LeafFixture(root)
+            leaf.write(f"{leaf.ROOT}/src/encode.rs", "pub const W: u8 = 1;\n")
+            leaf.stamped()
+            # A pending world re-stamp: the file moved, the marker did not.
+            world.set_world("// an insertion above everything\n" + INLINE_RENDER)
+            before = (world.wire_dir / "d1.rs").read_text(encoding="utf-8")
+            # And a leaf shrink, which must refuse.
+            (root / leaf.ROOT / "src" / "encode.rs").unlink()
+            with unittest.mock.patch.object(
+                VERIFY, "REQUIRED_LEAF_AUTHORITIES", leaf.registry
+            ), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    RESTAMP.main(["--repo-root", str(root)])
+            self.assertEqual(
+                (world.wire_dir / "d1.rs").read_text(encoding="utf-8"),
+                before,
+                "the world-fold half wrote before the leaf half refused",
+            )
+
+    def test_a_lone_cr_normalizes_like_a_crlf(self) -> None:
+        """Universal newlines is the normalization, and it maps a lone CR too.
+        A tree that still carries classic-Mac endings must hash the same."""
+        with tempfile.TemporaryDirectory() as lf_root, tempfile.TemporaryDirectory() as cr_root:
+            lf = LeafFixture(Path(lf_root), newline="\n")
+            cr = LeafFixture(Path(cr_root), newline="\r")
+            self.assertEqual(
+                VERIFY.leaf_manifest_digest(
+                    lf.root, VERIFY.leaf_attested_files(lf.root, lf.ROOT)
+                ),
+                VERIFY.leaf_manifest_digest(
+                    cr.root, VERIFY.leaf_attested_files(cr.root, cr.ROOT)
+                ),
+            )
+
+    def test_a_user_outside_extractor_native_is_seen(self) -> None:
+        """The scan is repository-wide, not `extractor/native`-wide. A package
+        under `replay_interface` that path-depends on the leaf and walks it was
+        invisible while the gate said PASS -- a completeness claim scoped to the
+        directory today's consumers happen to sit in is not one."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "replay_interface/native/reader/Cargo.toml",
+                '[package]\nname = "outside_reader"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../../../extractor/native/grammar_leaf" }\n',
+            )
+            fixture.write(
+                "replay_interface/native/reader/src/lib.rs",
+                "pub fn walk_it() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "is not a registered consumer"
+            ):
+                fixture.verify()
+            # Registered -- with the marker beside the code it attests, as
+            # adoption requires -- it is an ordinary consumer wherever it lives.
+            fixture.write(
+                "replay_interface/native/reader/src/lib.rs",
+                "// @leaf-source-authority crate=grammar_leaf "
+                "root=extractor/native/grammar_leaf files=0 sha256=0\n"
+                "pub fn walk_it() -> usize { grammar_leaf::walk() }\n",
+            )
+            registry = {
+                fixture.CRATE: VERIFY.LeafAuthority(
+                    root=fixture.ROOT,
+                    consumers=fixture.CONSUMERS
+                    + ("replay_interface/native/reader/src/lib.rs",),
+                )
+            }
+            RESTAMP.restamp_leaves(
+                fixture.root,
+                check=False,
+                allow_leaf_shrink=False,
+                report=lambda _: None,
+                registry=registry,
+            )
+            self.assertEqual(
+                VERIFY.verify_leaf_authorities(fixture.root, registry), (1, 3)
+            )
+
+    def test_a_package_whose_source_this_scan_cannot_read_is_refused(self) -> None:
+        """`[lib] path = "source.rust"` compiles and contains no file a `*.rs`
+        walk visits, so the package, its dependency and its walker were all
+        invisible. Manifests are now found by walking for MANIFESTS, and a
+        leaf-dependent package may not build from a source this gate cannot
+        read."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "portable_replay/kp_probe/Cargo.toml",
+                '[package]\nname = "kp_probe"\n\n'
+                "[lib]\n"
+                'path = "source.rust"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../../extractor/native/grammar_leaf" }\n',
+            )
+            fixture.write(
+                "portable_replay/kp_probe/source.rust",
+                "pub use grammar_leaf::*;\n",
+            )
+            with self.assertRaises(VERIFY.VerificationError) as raised:
+                fixture.verify()
+            message = str(raised.exception)
+            self.assertIn("owns no registered consumer", message)
+            self.assertIn("source scan does not read", message)
+
+    def test_a_module_redirected_out_of_the_scan_is_refused(self) -> None:
+        """Cargo's target paths are not the only redirect: a perfectly ordinary
+        registered consumer can write `#[path = "../../runs/hidden.rs"] mod
+        hidden;` and compile a walker out of an evidence directory, while every
+        visible file in the package is clean. Measured passing before this
+        rule."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/runs/hidden_reader.rs",
+                "pub fn hidden() -> usize { grammar_leaf::walk() }\n",
+            )
+            fixture.write(
+                fixture.CONSUMERS[0],
+                fixture.read(fixture.CONSUMERS[0])
+                + '#[path = "../../runs/hidden_reader.rs"]\nmod hidden_reader;\n',
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "with a `#\\[path\\]` module"
+            ):
+                fixture.verify()
+
+    def test_an_ordinary_module_redirect_inside_the_package_is_fine(self) -> None:
+        """`#[path]` is legal and used; only a redirect the scan cannot follow
+        is refused. A gate that refused all of them would be refusing correct
+        trees for nothing -- and this one caught two real defects: the first cut
+        normalized with `os.path`, which returns backslashes on Windows and
+        failed EVERY redirect, and the second guessed only two resolution bases,
+        which fails the legal inline form `mod outer { #[path = "inner.rs"] mod
+        inner; }` (Rust loads `outer/inner.rs`)."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/reader_one/src/shared/walkers.rs",
+                "pub fn ok() -> usize { 1 }\n",
+            )
+            fixture.write(
+                "extractor/native/reader_one/src/outer/inner.rs",
+                "pub fn also_ok() -> usize { 2 }\n",
+            )
+            fixture.write(
+                fixture.CONSUMERS[0],
+                fixture.read(fixture.CONSUMERS[0])
+                + '#[path = "shared/walkers.rs"]\nmod walkers;\n'
+                + 'mod outer { #[path = "inner.rs"] mod inner; }\n',
+            )
+            self.assertEqual(fixture.verify(), (1, 2))
+
+    def test_a_package_under_a_skipped_directory_is_still_found(self) -> None:
+        """An evidence tree is append-only prose, and a marker quoted in one is
+        a record. A CARGO PACKAGE under `runs/` is not prose: it compiles, it
+        can take the leaf and walk it, and this repository has three such probe
+        crates. Manifests are therefore skipped in fewer places than sources,
+        and a leaf-dependent package that lives where the source scan does not
+        look is refused."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            fixture.write(
+                "extractor/native/runs/hidden_reader/Cargo.toml",
+                '[package]\nname = "hidden_reader"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../../grammar_leaf" }\n',
+            )
+            fixture.write(
+                "extractor/native/runs/hidden_reader/src/lib.rs",
+                "pub fn hidden() -> usize { grammar_leaf::walk() }\n",
+            )
+            with self.assertRaisesRegex(
+                VERIFY.VerificationError, "which this gate's source scan skips"
+            ):
+                fixture.verify()
+
+    def test_a_registered_package_may_not_hide_a_second_target(self) -> None:
+        """A package can own a perfectly good registered consumer AND build
+        something else Cargo runs: a `build = "build.rust"` script, or a
+        `[lib] path = "runs/source.rs"` inside a directory this scan skips.
+        Both compiled, both executed the leaf, and both passed."""
+        for name, manifest, source_path in (
+            (
+                "a build script from a non-.rs path",
+                '[package]\nname = "reader_one"\nbuild = "build.rust"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n\n'
+                "[build-dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n',
+                "extractor/native/reader_one/build.rust",
+            ),
+            (
+                "a library inside a skipped directory",
+                '[package]\nname = "reader_one"\n\n'
+                "[lib]\n"
+                'path = "runs/source.rs"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n',
+                "extractor/native/reader_one/runs/source.rs",
+            ),
+        ):
+            with self.subTest(case=name):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.stamped()
+                    fixture.write("extractor/native/reader_one/Cargo.toml", manifest)
+                    fixture.write(
+                        source_path,
+                        "pub fn hidden() -> usize { grammar_leaf::walk() }\n",
+                    )
+                    with self.assertRaisesRegex(
+                        VERIFY.VerificationError, "source scan does not read"
+                    ):
+                        fixture.verify()
+
+    def test_two_leaves_sharing_one_consumer_both_get_re_stamped(self) -> None:
+        """A port that walks two shared grammars carries two markers. Planned
+        from the same text, the second write erased the first -- the same
+        defect as the world/leaf pair, one level in."""
+        temporary = tempfile.TemporaryDirectory()
+        with temporary:
+            root = Path(temporary.name)
+            first = LeafFixture(root)
+            second_root = "extractor/native/other_leaf"
+            shared = first.CONSUMERS[0]
+            for relative, text in (
+                (f"{second_root}/Cargo.toml", '[package]\nname = "other_leaf"\n'),
+                (f"{second_root}/src/lib.rs", "pub fn other() -> usize { 8 }\n"),
+            ):
+                first.write(relative, text)
+            first.write(
+                "extractor/native/reader_one/Cargo.toml",
+                '[package]\nname = "reader_one"\n\n'
+                "[dependencies]\n"
+                'grammar_leaf = { path = "../grammar_leaf" }\n'
+                'other_leaf = { path = "../other_leaf" }\n',
+            )
+            first.write(
+                shared,
+                first.read(shared)
+                + "// @leaf-source-authority crate=other_leaf "
+                f"root={second_root} files=0 sha256=0\n"
+                "pub fn also() -> usize { other_leaf::other() }\n",
+            )
+            registry = dict(first.registry)
+            registry["other_leaf"] = VERIFY.LeafAuthority(
+                root=second_root, consumers=(shared,)
+            )
+            RESTAMP.restamp_leaves(
+                root,
+                check=False,
+                allow_leaf_shrink=False,
+                report=lambda _: None,
+                registry=registry,
+            )
+            self.assertEqual(VERIFY.verify_leaf_authorities(root, registry), (2, 3))
+            source = first.read(shared)
+            self.assertNotIn("files=0 sha256=0", source)
+            # And a change to BOTH leaves re-stamps both markers in that file.
+            first.write(f"{first.ROOT}/src/lib.rs", first.WALK.replace("16", "20"))
+            first.write(f"{second_root}/src/lib.rs", "pub fn other() -> usize { 9 }\n")
+            RESTAMP.restamp_leaves(
+                root,
+                check=False,
+                allow_leaf_shrink=False,
+                report=lambda _: None,
+                registry=registry,
+            )
+            self.assertEqual(VERIFY.verify_leaf_authorities(root, registry), (2, 3))
+
+    def test_the_spellings_that_reach_a_crate_without_a_plain_path(self) -> None:
+        """Each of these executes the leaf and matches no `crate::`, no plain
+        `use crate` and no `extern crate crate` -- they were measured passing an
+        earlier version of this scan. A bare token is therefore a use."""
+        for name, source in (
+            ("grouped use with an alias", "use {grammar_leaf as g};\npub fn f() -> usize { g::walk() }\n"),
+            ("grouped path", "use {grammar_leaf::walk};\npub fn f() -> usize { walk() }\n"),
+            (
+                "macro token",
+                "macro_rules! call { ($c:ident) => { $c::walk() } }\n"
+                "pub fn f() -> usize { call!(grammar_leaf) }\n",
+            ),
+        ):
+            with self.subTest(spelling=name):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.stamped()
+                    fixture.write("extractor/native/reader_three/src/lib.rs", source)
+                    with self.assertRaisesRegex(
+                        VERIFY.VerificationError, "is not a registered consumer"
+                    ):
+                        fixture.verify()
+
+    def test_every_public_re_export_spelling_is_refused(self) -> None:
+        """A re-export is the one route the token scan cannot see, so all of
+        its spellings are refused at the registered consumer that would create
+        it -- grouped and `pub extern crate` included."""
+        for name, line in (
+            ("plain", "pub use grammar_leaf::walk;\n"),
+            ("grouped", "pub use {grammar_leaf::walk};\n"),
+            ("aliased", "pub(crate) use grammar_leaf as g;\n"),
+            ("extern crate", "pub extern crate grammar_leaf;\n"),
+        ):
+            with self.subTest(spelling=name):
+                temporary, fixture = self.fixture()
+                with temporary:
+                    fixture.stamped()
+                    fixture.write(
+                        fixture.CONSUMERS[0], fixture.read(fixture.CONSUMERS[0]) + line
+                    )
+                    with self.assertRaisesRegex(
+                        VERIFY.VerificationError, "publicly re-exports grammar_leaf"
+                    ):
+                        fixture.verify()
+
+    def test_both_markers_in_one_file_are_re_stamped_together(self) -> None:
+        """`wire_format/src/d13.rs` carries BOTH markers. Planned from the same
+        disk preimage and written independently, the second write erases the
+        first -- an atomic re-stamp that leaves one marker stale."""
+        temporary = tempfile.TemporaryDirectory()
+        with temporary:
+            root = Path(temporary.name)
+            world = CitationFixture(root, INLINE_RENDER)
+            world.add_module(1, ("fold_render",))
+            module = "extractor/native/wire_format/src/d1.rs"
+            leaf = LeafFixture(root, consumers=(module,) + LeafFixture.CONSUMERS)
+            # `LeafFixture` appends the leaf marker beside the module's own
+            # world-fold marker, exactly as d13.rs carries both.
+            leaf.stamped()
+            self.assertEqual(leaf.verify(), (1, 3))
+            # BOTH halves now have work: world_fold.rs moved, and so did the leaf.
+            world.set_world("// an insertion above everything\n" + INLINE_RENDER)
+            leaf.write(f"{leaf.ROOT}/src/lib.rs", leaf.WALK.replace("16", "20"))
+            with unittest.mock.patch.object(
+                VERIFY, "REQUIRED_LEAF_AUTHORITIES", leaf.registry
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(RESTAMP.main(["--repo-root", str(root)]), 0)
+            source = (root / module).read_text(encoding="utf-8")
+            self.assertIsNotNone(
+                VERIFY.WORLD_MARKER_RE.search(source), "the world marker was erased"
+            )
+            self.assertIsNotNone(
+                VERIFY.LEAF_MARKER_RE.search(source), "the leaf marker was erased"
+            )
+            # And the tree the re-stamp produced is one the gate accepts, both
+            # halves at once.
+            self.assertEqual(leaf.verify(), (1, 3))
+            self.assertEqual(
+                VERIFY.verify_repo(root, required_lane_authorities=()), (1, 0, 0, 0)
+            )
+
+    def test_a_malformed_registry_is_refused_before_anything_is_checked(self) -> None:
+        """The registry is a hand-written literal, and hand-written is not
+        correct: a duplicated consumer, an escaping path or a site that is both
+        attested and exempt each make some check below quietly weaker."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            cases = (
+                (
+                    VERIFY.LeafAuthority(
+                        root=fixture.ROOT,
+                        consumers=fixture.CONSUMERS + (fixture.CONSUMERS[0],),
+                    ),
+                    "more than once",
+                ),
+                (
+                    VERIFY.LeafAuthority(root="../outside", consumers=fixture.CONSUMERS),
+                    "not a normalized repository-relative POSIX path",
+                ),
+                (
+                    VERIFY.LeafAuthority(root=fixture.ROOT, consumers=()),
+                    "registers no consumer site",
+                ),
+                (
+                    VERIFY.LeafAuthority(
+                        root=fixture.ROOT,
+                        consumers=fixture.CONSUMERS,
+                        const_only={fixture.CONSUMERS[0]: ("ROW_LEN",)},
+                    ),
+                    "cannot be both attested and exempt",
+                ),
+                (
+                    VERIFY.LeafAuthority(
+                        root=fixture.ROOT,
+                        consumers=fixture.CONSUMERS,
+                        const_only={"extractor/native/x/src/lib.rs": ()},
+                    ),
+                    "must name the identifiers it may read",
+                ),
+            )
+            for leaf, expected in cases:
+                with self.subTest(expected=expected):
+                    with self.assertRaisesRegex(VERIFY.VerificationError, expected):
+                        VERIFY.verify_leaf_authorities(
+                            fixture.root, {fixture.CRATE: leaf}
+                        )
+
+    def test_a_marker_with_the_wrong_file_count_or_root_is_refused(self) -> None:
+        """The digest is not the only field that has to be true: a marker that
+        attests the right bytes under the wrong root, or claims a different
+        number of files, is describing a leaf that is not the one it names."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            source = fixture.read(fixture.CONSUMERS[0])
+            for replacement, expected in (
+                (source.replace("files=2", "files=3"), "marker attests 3 file"),
+                (
+                    source.replace(
+                        "root=extractor/native/grammar_leaf",
+                        "root=extractor/native/other_root",
+                    ),
+                    "marker attests root",
+                ),
+            ):
+                fixture.write(fixture.CONSUMERS[0], replacement)
+                with self.assertRaisesRegex(VERIFY.VerificationError, expected):
+                    fixture.verify()
+                fixture.write(fixture.CONSUMERS[0], source)
+
+    def test_a_world_closure_refusal_leaves_the_leaf_markers_alone(self) -> None:
+        """The reverse direction of the atomicity property: the leaf half has
+        writes pending and the world half refuses. Neither may land."""
+        temporary = tempfile.TemporaryDirectory()
+        with temporary:
+            root = Path(temporary.name)
+            world = CitationFixture(root, EXTRACTED_RENDER)
+            world.add_module(1, ("fold_render",))
+            leaf = LeafFixture(root)
+            leaf.stamped()
+            # A pending LEAF write: the grammar moved, the markers did not.
+            leaf.write(f"{leaf.ROOT}/src/lib.rs", leaf.WALK.replace("16", "20"))
+            before = leaf.read(leaf.CONSUMERS[0])
+            # And a world closure shrink, which must refuse.
+            world.set_world(MOVED_OUT_OF_FILE)
+            with unittest.mock.patch.object(
+                VERIFY, "REQUIRED_LEAF_AUTHORITIES", leaf.registry
+            ), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    RESTAMP.main(["--repo-root", str(root)])
+            self.assertEqual(
+                leaf.read(leaf.CONSUMERS[0]),
+                before,
+                "the leaf half wrote before the world half refused",
+            )
+
+    def test_a_plan_whose_file_changed_underneath_it_writes_nothing(self) -> None:
+        """A re-stamp is a decision about the bytes it read. If another lane's
+        editor saves over one of those files between planning and writing, the
+        write would overwrite that work with a re-stamp of the version before
+        it."""
+        temporary, fixture = self.fixture()
+        with temporary:
+            fixture.stamped()
+            path = fixture.root / fixture.CONSUMERS[0]
+            with path.open(encoding="utf-8", newline="") as handle:
+                original = handle.read()
+            stale = RESTAMP.PlannedWrite(path, "rewritten\n", original + "// later\n", "")
+            with self.assertRaises(SystemExit) as exited:
+                RESTAMP.commit_plan([stale])
+            self.assertIn("changed while this re-stamp was being planned", str(exited.exception))
+            with path.open(encoding="utf-8", newline="") as handle:
+                self.assertEqual(handle.read(), original)
+
+    def test_the_shipped_registry_still_covers_the_leaf_this_tree_ships(self) -> None:
+        """`0 leaf source authorities` passes every structural check in this
+        file. What it means is that somebody emptied the registry, and the
+        whole mechanism now verifies nothing."""
+        self.assertIn("d13_grammar", VERIFY.REQUIRED_LEAF_AUTHORITIES)
+        leaf = VERIFY.REQUIRED_LEAF_AUTHORITIES["d13_grammar"]
+        self.assertEqual(leaf.root, "extractor/native/d13_grammar")
+        self.assertEqual(
+            sorted(leaf.consumers),
+            [
+                "extractor/native/collector/src/attach_log.rs",
+                "extractor/native/collector/src/attach_log/domain13_tech_delta_tests.rs",
+                "extractor/native/recorder_host/src/domain_data_authority.rs",
+                "extractor/native/recorder_host/src/world_fold.rs",
+                "extractor/native/wire_format/src/d13.rs",
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,16 @@
 //! are inside some domain's closure, and this test demands the clause so the
 //! coverage cannot be dropped from the report without failing here.
 //!
+//! The same script also carries the LEAF SOURCE AUTHORITY. A closure follows
+//! calls inside one file, so when a shared walk moves into its own crate the
+//! closure shrinks and the digest stops covering it: d13's went from 80 names
+//! to 73 the day `d13_grammar` took its structural walk, after which a changed
+//! section length or flag mask inside that crate was invisible to every marker
+//! in the tree. A `@leaf-source-authority` marker at each site that walks or
+//! writes the leaf pins the crate's source, so editing the shared grammar
+//! without re-attesting at each consumer fails here — which is exactly what
+//! editing a cited fold already did.
+//!
 //! The same script also carries the free-text line-number ratchet: outside the
 //! one gated `lines=`/sha256 range, a dNN module may not cite `world_fold.rs:N`
 //! at all unless that exact reference is already grandfathered in
@@ -139,13 +149,76 @@ fn world_fold_citations_match_the_shipping_fold() {
             && reported.starts_with(&expected_prefix)
             && reported.contains(" lane authorities, ")
             && reported.contains(" items inside an authority closure, ")
+            // The leaf clause, demanded for the same reason as the closure one.
+            // A shared grammar crate is coverage that left this file entirely:
+            // d13's closure shrank from 80 names to 73 when `d13_grammar` took
+            // its structural walk, and the leaf markers are what replaced it.
+            // Requiring the clause here is what stops that half being dropped
+            // from the report — and the count is asserted to be non-zero below,
+            // because "0 leaf source authorities" is exactly what a registry
+            // someone emptied would print.
+            && reported.contains(" leaf source authorities over ")
             && reported.contains(" grandfathered prose line references, ")
             && reported.ends_with(" grandfathered document line references)"),
         "the verifier exited zero but did not report checking the {modules} dNN \
          modules under {}. Expected a single line `{expected_prefix}<n> lane \
-         authorities, <n> items inside an authority closure, <n> \
-         grandfathered prose line references, <n> grandfathered document line \
-         references)`, got: {reported:?}",
+         authorities, <n> items inside an authority closure, <n> leaf source \
+         authorities over <n> consumer sites, <n> grandfathered prose line \
+         references, <n> grandfathered document line references)`, got: \
+         {reported:?}",
         wire_src.display()
     );
+
+    // A clause is not coverage. `0 leaf source authorities over 0 consumer
+    // sites` satisfies every check above and is what an emptied
+    // `REQUIRED_LEAF_AUTHORITIES` prints — the mechanism removed, the gate
+    // still green. The count is read out of the line it just matched.
+    let leaves: u32 = reported
+        .split(", ")
+        .find(|clause| clause.contains("leaf source authorities over "))
+        .and_then(|clause| clause.split_whitespace().next())
+        .and_then(|count| count.parse().ok())
+        .expect("the leaf clause reports a count");
+    assert!(
+        leaves >= 1,
+        "the verifier reported {leaves} leaf source authorities. At least one \
+         shared grammar crate (`d13_grammar`) is attested by five consumer \
+         sites in this tree; zero means the registry was emptied and the leaf \
+         half of the gate now verifies nothing. Line: {reported:?}"
+    );
+
+    // And the count is not the claim either: once a second leaf exists, d13
+    // could be dropped from the registry while the number stays non-zero. The
+    // five sites are named here, in Rust, so removing one from the Python
+    // registry fails this test rather than quietly reducing coverage. This is
+    // the only check in this file that does not go through the script.
+    const D13_CONSUMERS: [&str; 5] = [
+        "extractor/native/collector/src/attach_log.rs",
+        "extractor/native/collector/src/attach_log/domain13_tech_delta_tests.rs",
+        "extractor/native/recorder_host/src/domain_data_authority.rs",
+        "extractor/native/recorder_host/src/world_fold.rs",
+        "extractor/native/wire_format/src/d13.rs",
+    ];
+    for consumer in D13_CONSUMERS {
+        let path = repo.join(consumer);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let attestations = source
+            .lines()
+            .filter(|line| {
+                line.trim_start()
+                    .starts_with("// @leaf-source-authority crate=d13_grammar ")
+            })
+            .count();
+        assert_eq!(
+            attestations,
+            1,
+            "{consumer} carries {attestations} `d13_grammar` leaf authority \
+             markers, expected exactly one. Every site that walks or writes \
+             that shared grammar attests to its source; a site that stops \
+             attesting is a site that can be left behind by a change to the \
+             leaf, which is how D13 lost 59 of 59 records of a live capture \
+             before the crate existed."
+        );
+    }
 }
