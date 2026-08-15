@@ -142,7 +142,13 @@ def build_catalog(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, A
         },
     }
     catalog = {
-        "schema": "idea_tech_loc_xref_static.static_artifact.v1",
+        # v2 widens `tokens.technologies` with the authored `start_year`.
+        # A hard bump rather than an additive field: on a v1 catalog an absent
+        # `start_year` means "this generator never emitted one", on a v2 catalog
+        # it means "this technology authors none", and the consumer's
+        # authored-year authentication silently weakens under the first reading.
+        # The consumer pins v2 exactly, so a stale catalog is refused instead.
+        "schema": "idea_tech_loc_xref_static.static_artifact.v2",
         "artifact_kind": "deterministic_static_replay_enrichment",
         "scope": {
             "closed_rows": [
@@ -222,6 +228,14 @@ def main() -> int:
             "idea_omitted": catalog["meta"]["idea_omitted_no_loc_key"],
             "technologies": catalog["meta"]["tech_mapped"],
             "technology_omitted": catalog["meta"]["tech_omitted_no_loc_key"],
+            "technology_start_year_mapped": catalog["meta"]["tech_start_year_mapped"],
+            "technology_start_year_absent": catalog["meta"]["tech_start_year_absent"],
+            "technology_start_year_unresolved": catalog["meta"][
+                "tech_start_year_unresolved_count"
+            ],
+            "technology_start_year_repeated_agreeing": len(
+                catalog["meta"]["tech_start_year_repeated_agreeing"]
+            ),
             "idea_files": catalog["meta"]["idea_files_total"],
             "idea_files_parsed": catalog["meta"]["idea_files_parsed"],
             "technology_files": catalog["meta"]["tech_files_total"],
@@ -233,6 +247,15 @@ def main() -> int:
         "warnings": catalog["meta"].get("warnings", []),
         "syntax_allowlist_hits": catalog["meta"].get("syntax_allowlist_hits", []),
         "wrapper_allowlist_hits": catalog["meta"].get("wrapper_allowlist_hits", []),
+        # Named, not fatal FOR THE CATALOG: a technology whose authored start
+        # year cannot be resolved keeps its row, and the row says so
+        # (`start_year_unresolved`). The consumer then REFUSES to present a
+        # derived ahead-of-time quartet for that one technology rather than
+        # authenticating it against the weaker check -- so the cost of an
+        # unreadable year is one technology's live row, not the catalog and not
+        # the capture.
+        "start_year_unresolved": catalog["meta"]["tech_start_year_unresolved"],
+        "start_year_repeated_agreeing": catalog["meta"]["tech_start_year_repeated_agreeing"],
     }
     report_path = args.out_dir / "idea_tech_static_gate_report.json"
     report_path.write_bytes(pretty_json(report))

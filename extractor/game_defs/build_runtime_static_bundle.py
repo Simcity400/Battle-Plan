@@ -673,7 +673,7 @@ def runtime_specs(root: Path) -> tuple[SB.ArtifactSpec, ...]:
             "idea_tech_loc_xref_static",
             root / "idea_tech/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
             root / "idea_tech/idea_tech_static_gate_report.json",
-            "idea_tech_loc_xref_static.static_artifact.v1",
+            "idea_tech_loc_xref_static.static_artifact.v2",
             "idea_tech_loc_xref_static.json",
             True,
         ),

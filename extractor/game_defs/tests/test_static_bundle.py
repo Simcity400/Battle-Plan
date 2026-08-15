@@ -214,7 +214,7 @@ def _fixture(tmp_path: Path):
         _artifact(
             src,
             "idea_tech_loc_xref_static",
-            "idea_tech_loc_xref_static.static_artifact.v1",
+            "idea_tech_loc_xref_static.static_artifact.v2",
             {"tokens": {"ideas": {"idea_ok": {}}, "technologies": {"tech_ok": {}}}},
             loc_sha=loc_sha,
         ),

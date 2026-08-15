@@ -245,7 +245,7 @@ pub use static_research_catalog::{
     AuthoredTechnologyLeadEdge, IdeaTechnologyDefinition, IdeaTechnologyLocalisationCatalog,
     LocalisationCatalogEntry, LocalisationJoinCatalog, StaticResearchCatalogError,
     TechnologySharingCatalog, TechnologySharingDefinition, IDEA_TECH_LOC_XREF_ARTIFACT,
-    LOCALISATION_JOIN_ARTIFACT, TECHNOLOGY_SHARING_ARTIFACT,
+    LOCALISATION_JOIN_ARTIFACT, PACKAGED_TECHNOLOGY_KIND, TECHNOLOGY_SHARING_ARTIFACT,
 };
 pub use tactic_weight::CountryPreferredTacticWeight;
 pub use tech_sharing::{

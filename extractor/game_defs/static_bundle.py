@@ -92,7 +92,7 @@ DEFAULT_SPECS = (
         "idea_tech_loc_xref_static",
         HERE / "out/idea_tech_loc_xref/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
         HERE / "out/idea_tech_loc_xref/idea_tech_static_gate_report.json",
-        "idea_tech_loc_xref_static.static_artifact.v1",
+        "idea_tech_loc_xref_static.static_artifact.v2",
         "idea_tech_loc_xref_static.json",
         True,
     ),

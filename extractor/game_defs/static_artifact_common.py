@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from paradox_parser import Node, tokenize
+from paradox_parser import Node, coerce_scalar, tokenize
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -264,6 +264,43 @@ def first_scalar(node: Node, field: str) -> str | None:
         if isinstance(value, str):
             return value
     return None
+
+
+def collect_at_var_defs(*nodes: Any) -> dict[str, Any]:
+    """Collect ``@name = value`` scripted-variable defs from DIRECT entries.
+
+    Clausewitz files declare these either as top entries of the wrapper block
+    (``technologies = { @1936 = 2 ... }``, the canonical spelling) or at the
+    file's top level, and mods do both. Pass the nodes in increasing priority
+    order; a later node's definition wins the tie.
+
+    One spelling of this rule is shared by ``parse_tech.py`` and
+    ``parse_idea_tech_loc.py`` deliberately: they parse the SAME files, and two
+    copies of the resolution rule is exactly how the two generators would come
+    to disagree about an authored number.
+    """
+    out: dict[str, Any] = {}
+    for node in nodes:
+        if not isinstance(node, Node):
+            continue
+        for key, value in node.entries:
+            if isinstance(key, str) and key.startswith("@") and isinstance(value, str):
+                out[key] = coerce_scalar(value)
+    return out
+
+
+def resolve_at_var_scalar(value: Any, at_vars: dict[str, Any]) -> tuple[Any, str | None]:
+    """Return ``(resolved, raw)`` for a scalar that may be an ``@ref``.
+
+    ``resolved`` is ``None`` when the value is not a scalar or when an ``@ref``
+    has no definition in scope -- an unresolved reference never silently
+    becomes a number.
+    """
+    if not isinstance(value, str):
+        return None, None
+    if value.startswith("@"):
+        return at_vars.get(value), value
+    return coerce_scalar(value), value
 
 
 def field_values(node: Node, field: str) -> list[Any]:

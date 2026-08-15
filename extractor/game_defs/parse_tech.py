@@ -43,7 +43,8 @@ import sys
 from pathlib import Path
 
 import resolver as R
-from paradox_parser import Node, coerce_scalar
+from paradox_parser import Node
+from static_artifact_common import collect_at_var_defs, resolve_at_var_scalar
 
 # Structural keys that are NOT modifier/effect rows.
 _STRUCTURAL = {
@@ -81,13 +82,7 @@ def _slot_offset(idx: int):
 
 def _num(v, scvars: dict):
     """Resolve a scalar that may be an @var reference to a number (keep raw)."""
-    if not isinstance(v, str):
-        return None, None
-    raw = v
-    if v.startswith("@"):
-        resolved = scvars.get(v)
-        return (resolved, raw)
-    return (coerce_scalar(v), raw)
+    return resolve_at_var_scalar(v, scvars)
 
 
 def _parse_folder(blk: Node, scvars: dict):
@@ -366,21 +361,16 @@ def _resolve_positions(techs: dict) -> dict:
     return stats
 
 
-def _collect_at_vars(node: Node, out: dict):
-    """Collect ``@name = value`` defs from a block's direct entries into ``out``."""
-    for k, v in node.entries:
-        if isinstance(k, str) and k.startswith("@") and isinstance(v, str):
-            out[k] = coerce_scalar(v)
-
-
 def _collect_scvars(file_root: Node, tech_block: Node) -> dict:
     """File-scoped @var defs (``@1936 = 2``). They normally live as top entries of
     the ``technologies={}`` block, but some files/mods declare them at the FILE
-    top level. Collect from both so geometry refs always resolve (Codex Q2)."""
-    out = {}
-    _collect_at_vars(file_root, out)     # file top-level @defs (fallback)
-    _collect_at_vars(tech_block, out)    # in-block @defs (canonical; win on tie)
-    return out
+    top level. Collect from both so geometry refs always resolve (Codex Q2).
+
+    The rule itself lives in ``static_artifact_common`` because
+    ``parse_idea_tech_loc.py`` resolves ``start_year`` out of the same files and
+    must not carry a second copy of it."""
+    # file top-level @defs first (fallback), in-block @defs win the tie.
+    return collect_at_var_defs(file_root, tech_block)
 
 
 def parse_technologies(layers) -> dict:

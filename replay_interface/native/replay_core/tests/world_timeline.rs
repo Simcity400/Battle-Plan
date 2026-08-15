@@ -1926,6 +1926,12 @@ fn stamped_static_artifact_bytes(mut semantic: Value) -> Vec<u8> {
 /// The three research catalogs `admit_static_research_catalogs` joins, in the
 /// exact shapes their generators emit, small enough to read.
 fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 4] {
+    // The authored start years these two technologies really carry in vanilla
+    // (`common/technologies/industry.txt`, `infantry.txt`), which schema v2 of
+    // the packaged artifact emits. `game_ui` authenticates the engine's
+    // ahead-of-time quartet against this number, so it has to survive the
+    // container round trip intact rather than only the generator's own output.
+    const START_YEARS: [(&str, i64); 2] = [("construction1", 1936), ("infantry_weapons", 1918)];
     const IDS: [&str; 2] = ["construction1", "infantry_weapons"];
     let mut keys = serde_json::Map::new();
     let mut technologies = serde_json::Map::new();
@@ -1947,6 +1953,11 @@ fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 
                 "kind": "tech",
                 "categories": [],
                 "folders": [],
+                "start_year": START_YEARS
+                    .iter()
+                    .find(|(name, _)| *name == id)
+                    .expect("every fixture technology has an authored year")
+                    .1,
                 "localisation_status": "resolved",
                 "resolved_loc_key": id,
                 "localised_name": format!("{id} display name"),
@@ -1974,14 +1985,25 @@ fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 
             "idea_tech_loc_xref_static",
             "static/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
             stamped_static_artifact_bytes(json!({
-                "schema": "idea_tech_loc_xref_static.static_artifact.v1",
+                "schema": "idea_tech_loc_xref_static.static_artifact.v2",
                 "artifact_kind": "deterministic_static_replay_enrichment",
                 "artifact_sha256": "",
                 "tokens": {
                     "ideas": serde_json::Map::new(),
                     "technologies": Value::Object(technologies),
                 },
-                "meta": {"idea_count": 0, "tech_count": IDS.len()},
+                "omitted": {"ideas": [], "technologies": []},
+                "meta": {
+                    "idea_count": 0,
+                    "idea_mapped": 0,
+                    "idea_omitted_no_loc_key": 0,
+                    "tech_count": IDS.len(),
+                    "tech_mapped": IDS.len(),
+                    "tech_omitted_no_loc_key": 0,
+                    "tech_start_year_mapped": IDS.len(),
+                    "tech_start_year_absent": 0,
+                    "tech_start_year_unresolved_count": 0,
+                },
             })),
         ),
         // NOT a research catalog: the A34 decision catalog rides along because
@@ -2275,6 +2297,26 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     assert_eq!(
         catalogs.technology_display_name("construction1"),
         Some("construction1 display name")
+    );
+    // The authored start year reaches the consumer through the real container,
+    // not just through the generator: this is the number `game_ui` checks the
+    // engine's derived ahead-of-time quartet against, and it was absent from
+    // every packaged catalog until schema v2.
+    assert_eq!(
+        catalogs
+            .idea_technology()
+            .technology("construction1")
+            .expect("the admitted catalog carries the technology")
+            .start_year,
+        Some(1936.0)
+    );
+    assert_eq!(
+        catalogs
+            .idea_technology()
+            .technology("infantry_weapons")
+            .expect("the admitted catalog carries the technology")
+            .start_year,
+        Some(1918.0)
     );
     drop(source);
 

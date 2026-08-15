@@ -519,3 +519,294 @@ def test_gate_report_redacts_paths_and_rejects_leaks():
 
     with pytest.raises(AssertionError):
         localisation_gate.assert_no_report_path_leaks({"bad": r"C:\Users\Example\leak"})
+
+
+def _start_year_layers(tmp_path):
+    """A vanilla+mod pair covering every authored ``start_year`` shape.
+
+    Mod compat is the point of the second layer: the parser reads the same
+    layered VFS the localisation gate does, so an override changes the authored
+    year, removes it, repairs an unresolvable one -- and, when the override
+    itself cannot be mapped, REPLACES the base row rather than leaving the game
+    described by a definition it does not have.
+    """
+    vanilla = tmp_path / "vanilla"
+    mod = tmp_path / "yearmod"
+    _write(vanilla, "common/technologies/years.txt", """
+@file_scope_year = 1918
+technologies = {
+  @block_scope_year = 1943
+  literal_year_tech = { start_year = 1936 }
+  block_var_tech = { start_year = @block_scope_year }
+  file_var_tech = { start_year = @file_scope_year }
+  whole_float_year_tech = { start_year = 1936.0 }
+  no_year_tech = { categories = { infantry_weapons } }
+  zero_year_tech = { start_year = 0 }
+  repeat_agreeing_tech = { start_year = 1940 research_cost = 1 start_year = 1940 }
+  conflicting_tech = { start_year = 1936 start_year = 1940 }
+  unresolved_ref_tech = { start_year = @never_declared }
+  non_integer_tech = { start_year = 1936.5 }
+  non_scalar_tech = { start_year = { 1936 } }
+  out_of_domain_tech = { start_year = 2147483648 }
+  last_engine_year_tech = { start_year = 245146 }
+  first_negative_wrapping_year_tech = { start_year = -245147 }
+  last_negative_engine_year_tech = { start_year = -245146 }
+  explicit_then_implicit_tech = { name = vanilla_explicit_title start_year = 1936 }
+  first_wrapping_year_tech = { start_year = 245147 }
+  repeat_then_single_tech = { start_year = 1938 research_cost = 1 start_year = 1938 }
+  bad_then_good_tech = { name = { bad = yes } }
+  override_year_tech = { start_year = 1936 }
+  dropped_year_tech = { start_year = 1936 }
+  repaired_ref_tech = { start_year = @only_in_the_mod }
+  broken_override_tech = { start_year = 1936 }
+}
+""")
+    _write(mod, "common/technologies/override.txt", """
+technologies = {
+  @only_in_the_mod = 1947
+  override_year_tech = { start_year = 1944 }
+  dropped_year_tech = { categories = { infantry_weapons } }
+  repaired_ref_tech = { start_year = @only_in_the_mod }
+  broken_override_tech = { name = { bad = yes } start_year = 1944 }
+  repeat_then_single_tech = { start_year = 1941 }
+  bad_then_good_tech = { start_year = 1942 }
+  explicit_then_implicit_tech = { start_year = 1943 }
+}
+""")
+    _write(vanilla, "common/ideas/base_ideas.txt", """
+ideas = {
+  country = {
+    kept_idea = { name = kept_idea_name }
+    replaced_by_broken_idea = { name = base_idea_name }
+    broken_then_fixed_idea = { name = { bad = yes } }
+  }
+}
+""")
+    _write(mod, "common/ideas/override_ideas.txt", """
+ideas = {
+  country = {
+    replaced_by_broken_idea = { name = { bad = yes } }
+    broken_then_fixed_idea = { name = mod_idea_name }
+  }
+}
+""")
+    return [Layer("vanilla", vanilla), Layer("yearmod", mod)]
+
+
+def test_technology_start_year_is_resolved_or_accounted_never_defaulted(tmp_path):
+    out = parse_idea_tech_loc.parse_idea_tech_loc_keys(_start_year_layers(tmp_path))
+    techs = out["tokens"]["technologies"]
+    meta = out["meta"]
+
+    # Resolved: a literal, an @ref declared in the technologies block, an @ref
+    # declared at the file top level, and a whole number the tokenizer spells as
+    # a float (the engine reads an integer; 1936.0 IS the year 1936).
+    assert techs["literal_year_tech"]["start_year"] == 1936
+    assert techs["block_var_tech"]["start_year"] == 1943
+    assert techs["file_var_tech"]["start_year"] == 1918
+    assert techs["whole_float_year_tech"]["start_year"] == 1936
+
+    # ABSENT IS ABSENT. A technology that authors no start year carries no key
+    # at all -- never 0 -- and an authored 0 is kept as the number 0, so the two
+    # can never be confused by a consumer reading the artifact.
+    assert "start_year" not in techs["no_year_tech"]
+    assert "start_year_unresolved" not in techs["no_year_tech"]
+    assert techs["zero_year_tech"]["start_year"] == 0
+
+    # Vanilla really does declare the field twice on one technology, with the
+    # same value. Whichever declaration the engine took, the year is the same,
+    # so it resolves -- and the shape is still recorded.
+    assert techs["repeat_agreeing_tech"]["start_year"] == 1940
+    assert [row["id"] for row in meta["tech_start_year_repeated_agreeing"]] == [
+        "repeat_agreeing_tech"
+    ]
+
+    # A REFUSAL IS NOT AN ABSENCE. Everything that is not a year is refused by
+    # name, and the ROW says so, so a consumer can tell "authors none" from
+    # "authors one I could not read" and fail closed on the second.
+    refused = {row["id"]: row["reason"] for row in meta["tech_start_year_unresolved"]}
+    assert refused == {
+        "conflicting_tech": "conflicting_start_year",
+        "unresolved_ref_tech": "unresolved_start_year_reference",
+        "non_integer_tech": "non_integer_start_year",
+        "non_scalar_tech": "non_scalar_start_year",
+        "out_of_domain_tech": "start_year_outside_engine_year_domain",
+        "first_wrapping_year_tech": "start_year_outside_engine_year_domain",
+        "first_negative_wrapping_year_tech": "start_year_outside_engine_year_domain",
+    }
+    for tech_id in refused:
+        assert "start_year" not in techs[tech_id]
+        assert techs[tech_id]["start_year_unresolved"] is True
+
+    # One malformed field costs its own row and nothing else: the other
+    # technologies in the same file still carry their years.
+    assert techs["literal_year_tech"]["start_year"] == 1936
+
+    # Mod compat, through the same layered VFS the rest of the gate reads: the
+    # override sets a different year, removes one, and supplies the @var that
+    # vanilla's reference could not resolve -- and the accounting for that last
+    # one does not outlive the row it was written for.
+    assert techs["override_year_tech"]["start_year"] == 1944
+    assert techs["override_year_tech"]["source_layer"] == "yearmod"
+    assert "start_year" not in techs["dropped_year_tech"]
+    assert techs["repaired_ref_tech"]["start_year"] == 1947
+    assert "repaired_ref_tech" not in refused
+
+    # And an override this parser CANNOT map replaces the base row instead of
+    # leaving it published: the engine loads the mod's definition, so keeping
+    # vanilla's row -- and its 1936 -- would describe a technology the game does
+    # not have.
+    assert "broken_override_tech" not in techs
+    assert [row["id"] for row in out["omitted"]["technologies"]] == ["broken_override_tech"]
+
+    # The engine's own arithmetic domain, derived from its i32 year multiply:
+    # the last year that fits resolves, the first that wraps is refused BY THE
+    # PRODUCER rather than shipped as resolved and refused per presented row.
+    assert techs["last_engine_year_tech"]["start_year"] == 245146
+    assert "start_year" not in techs["first_wrapping_year_tech"]
+    assert techs["first_wrapping_year_tech"]["start_year_unresolved"] is True
+    # The domain is symmetric, and both ends are tested: without the lower bound
+    # the negative pair below is indistinguishable.
+    assert techs["last_negative_engine_year_tech"]["start_year"] == -245146
+    assert "start_year" not in techs["first_negative_wrapping_year_tech"]
+
+    # Override bookkeeping in both directions, on both sides of the artifact.
+    # A repeat replaced by a single declaration drops out of the repeat list,
+    # and a definition this parser could not map, once replaced by one it can,
+    # drops out of the omissions -- otherwise the catalog would describe two
+    # different definitions of one id at once.
+    assert techs["repeat_then_single_tech"]["start_year"] == 1941
+    assert "repeat_then_single_tech" not in [
+        row["id"] for row in meta["tech_start_year_repeated_agreeing"]
+    ]
+    assert techs["bad_then_good_tech"]["start_year"] == 1942
+    ideas = out["tokens"]["ideas"]
+    assert ideas["kept_idea"]["loc_key"] == "kept_idea_name"
+    assert "replaced_by_broken_idea" not in ideas
+    assert ideas["broken_then_fixed_idea"]["loc_key"] == "mod_idea_name"
+    assert [row["id"] for row in out["omitted"]["ideas"]] == ["replaced_by_broken_idea"]
+
+    # A replaced definition is still a collision, even when the definition that
+    # replaced it could not be mapped.
+    overridden = {row["id"] for row in meta["id_collisions_last_wins"]["technologies"]}
+    assert "broken_override_tech" in overridden
+    assert "override_year_tech" in overridden
+
+    # Explicit-name counts describe the WINNING rows, not every definition
+    # parsed. `explicit_then_implicit_tech` is authored with an explicit name in
+    # vanilla and WITHOUT one in the mod that replaces it, so a count taken per
+    # parsed definition says 1 and the artifact says 0 -- and the artifact is
+    # right, because the row it ships takes its loc key from the id.
+    assert techs["explicit_then_implicit_tech"]["explicit_name"] is False
+    assert techs["explicit_then_implicit_tech"]["loc_key"] == "explicit_then_implicit_tech"
+    assert techs["explicit_then_implicit_tech"]["start_year"] == 1943
+    assert meta["tech_explicit_names"] == 0
+    assert meta["tech_explicit_names"] == sum(
+        1 for rec in techs.values() if rec["explicit_name"]
+    )
+    # Same on the idea side, where the winning rows ARE explicit.
+    assert meta["idea_explicit_names"] == sum(
+        1 for rec in ideas.values() if rec["explicit_name"]
+    )
+    assert meta["idea_explicit_names"] == 2
+
+    # Collisions are recorded on both sides, including for a definition that was
+    # replaced by one this parser could not map.
+    idea_collisions = {row["id"] for row in meta["id_collisions_last_wins"]["ideas"]}
+    assert idea_collisions == {"replaced_by_broken_idea", "broken_then_fixed_idea"}
+
+    mapped = meta["tech_start_year_mapped"]
+    assert mapped == 13
+    assert meta["tech_start_year_unresolved_count"] == len(refused)
+    assert (
+        mapped + meta["tech_start_year_absent"] + meta["tech_start_year_unresolved_count"]
+        == len(techs)
+    )
+
+
+def bundle_schemas_for(role: str) -> dict[str, str]:
+    """Every production bundle specification's schema for a role, read from the
+    specifications themselves rather than restated.
+
+    There are TWO: the eight-artifact extractor bundle and the runtime bundle
+    builder. A test that pins only one leaves the other free to drift to a
+    version the generator no longer emits, and the bundle would then reject the
+    catalog it is built from."""
+    import static_bundle
+    import build_runtime_static_bundle
+
+    specs = {
+        "static_bundle": static_bundle.DEFAULT_SPECS,
+        "runtime_bundle": build_runtime_static_bundle.runtime_specs(Path("out")),
+    }
+    out = {}
+    for name, group in specs.items():
+        matches = [spec.schema for spec in group if spec.role == role]
+        assert len(matches) == 1, f"{name} has {len(matches)} specifications for {role}"
+        out[name] = matches[0]
+    return out
+
+
+def test_gate_emits_schema_v2_with_the_start_year_census_the_consumers_pin(tmp_path):
+    """The GATE's own output, not a hand-written fixture.
+
+    Every other v2 assertion in this repo is written against an artifact a test
+    authored, so reverting `idea_tech_static_gate.py` to schema v1 -- or dropping
+    the census from `parse_idea_tech_loc.py` -- leaves them all green while
+    production generation starts producing a catalog the recorder refuses. This
+    runs the real `build_catalog` and pins the four things the packaging path and
+    the consumer actually require.
+    """
+    vanilla = tmp_path / "vanilla"
+    _write(vanilla, "common/ideas/base.txt", """
+ideas = {
+  country = {
+    an_idea = {}
+  }
+}
+""")
+    _write(vanilla, "common/technologies/base.txt", """
+technologies = {
+  with_year = { start_year = 1936 }
+  without_year = { categories = { infantry_weapons } }
+  unreadable_year = { start_year = @never_declared }
+}
+""")
+    args = SimpleNamespace(
+        vanilla=str(vanilla),
+        mods=None,
+        userdata=None,
+        localisation_catalog=tmp_path / "missing_localisation_catalog.json",
+    )
+    catalog, _coverage = idea_tech_static_gate.build_catalog(args)
+
+    # The schema the recorder's `expected_static_artifact_schema`, both bundle
+    # specifications and `replay_core::IDEA_TECH_SCHEMA` all pin.
+    assert catalog["schema"] == "idea_tech_loc_xref_static.static_artifact.v2"
+    for name, schema in bundle_schemas_for("idea_tech_loc_xref_static").items():
+        assert schema == catalog["schema"], f"{name} pins {schema}"
+
+    technologies = catalog["tokens"]["technologies"]
+    assert technologies["with_year"]["start_year"] == 1936
+    assert "start_year" not in technologies["without_year"]
+    assert "start_year_unresolved" not in technologies["without_year"]
+    assert technologies["unreadable_year"]["start_year_unresolved"] is True
+    assert "start_year" not in technologies["unreadable_year"]
+
+    # The census the consumer re-derives from those rows and refuses on
+    # disagreement, and the mapped/omitted contract it checks alongside it.
+    meta = catalog["meta"]
+    assert meta["tech_start_year_mapped"] == 1
+    assert meta["tech_start_year_absent"] == 1
+    assert meta["tech_start_year_unresolved_count"] == 1
+    assert (
+        meta["tech_start_year_mapped"]
+        + meta["tech_start_year_absent"]
+        + meta["tech_start_year_unresolved_count"]
+        == meta["tech_mapped"]
+        == len(technologies)
+    )
+    assert meta["tech_count"] == meta["tech_mapped"] + meta["tech_omitted_no_loc_key"]
+    assert meta["idea_count"] == meta["idea_mapped"] + meta["idea_omitted_no_loc_key"]
+    assert len(catalog["omitted"]["technologies"]) == meta["tech_omitted_no_loc_key"]
+    assert len(catalog["omitted"]["ideas"]) == meta["idea_omitted_no_loc_key"]

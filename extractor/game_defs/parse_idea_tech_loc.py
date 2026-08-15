@@ -8,7 +8,16 @@ effective mod-over-vanilla definition files and emits the derivable join only:
   * ideas: ``common/ideas/*.txt`` -> idea id, category, optional explicit
     ``name = <loc_key>`` override, picture.
   * technologies: ``common/technologies/*.txt`` -> technology id, folder,
-    categories, optional explicit top-level ``name = <loc_key>`` override.
+    categories, optional explicit top-level ``name = <loc_key>`` override, and
+    the authored ``start_year`` when the definition declares one.
+
+``start_year`` is the technology's authored template year, and the replay
+consumer authenticates the engine's ahead-of-time quartet against it
+(``game_ui/src/research_observer.rs``): a producer that derived the quartet from
+the WRONG year -- including the engine's wrapped ``IMUL R9D`` intermediate --
+reproduces internally but disagrees with the authored year. A technology that
+declares no ``start_year`` carries none here: the key is absent, never 0, so
+"this technology authors no start year" can never be read as "year zero".
 
 No localisation is guessed from the catalog here. The definition-side rule is:
 an explicit scalar ``name`` wins; if ``name`` is absent, the definition id is the
@@ -29,8 +38,10 @@ from paradox_parser import Node, parse
 from clausewitz_source_scan import idea_name_token_kinds, technology_name_token_kinds
 from static_artifact_common import (
     CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
+    collect_at_var_defs,
     first_scalar,
     put_present,
+    resolve_at_var_scalar,
     source_inventory,
     validate_clausewitz_text,
 )
@@ -130,6 +141,101 @@ def _list_field_atoms(node: Node, field: str) -> list[str] | None:
     return out if present else None
 
 
+# The engine's ahead-of-time arithmetic multiplies the template year by the
+# hours in a year and keeps the product in an i32 (`FUN_140abebf0`; the port and
+# the wrap are pinned by
+# `game_ui/src/research_observer.rs::the_engines_i32_year_intermediate_is_refused_rather_than_wrapped`,
+# which asserts 245_146 is the last year that fits and 245_147 is the first that
+# does not). The bound is DERIVED from that multiply rather than written down,
+# and it is the engine's own arithmetic domain -- an RE'd engine constant, not
+# authored game content.
+#
+# The producer bounds it, not just the consumer, because a year the consumer
+# cannot check would otherwise ship as "resolved" and be discovered hours later,
+# one presented row at a time. Refusing it here makes it a statement the
+# producer makes, in the census, while the other 551 technologies still ship.
+_ENGINE_HOURS_PER_YEAR = 8760
+_ENGINE_YEAR_MAX = (2 ** 31 - 1) // _ENGINE_HOURS_PER_YEAR
+# Symmetric: -245_147 * 8760 underflows i32 exactly as +245_147 overflows it.
+_ENGINE_YEAR_MIN = -_ENGINE_YEAR_MAX
+
+
+def _is_whole_number(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and value == value and value not in (
+        float("inf"),
+        float("-inf"),
+    ) and value.is_integer()
+
+
+def _whole_year(value):
+    """The authored value as an engine year, or ``None`` if it is not one.
+
+    ``1936.0`` IS a whole year -- the Clausewitz tokenizer spells it as a float
+    and the engine reads an integer -- so it resolves; ``1936.5`` does not.
+    """
+    if not _is_whole_number(value):
+        return None
+    year = int(value)
+    return year if _ENGINE_YEAR_MIN <= year <= _ENGINE_YEAR_MAX else None
+
+
+def _start_year(node: Node, at_vars: dict):
+    """Return ``(start_year, unresolved_reason, declarations)`` for one technology.
+
+    The engine's template year is a whole year -- its ahead-of-time arithmetic
+    multiplies it as an i32 -- so only an integer, literal or an ``@ref``
+    defined in scope, becomes a value. Everything else yields ``None`` with a
+    reason that is ACCOUNTED rather than guessed at.
+
+    Vanilla really does declare the field twice on one technology
+    (``AST_war_carriers_tech`` in ``common/technologies/support.txt``, both
+    ``1936``), so a repeat is not automatically a refusal: when every
+    declaration resolves to the SAME integer the authored year is unambiguous
+    whichever one the engine took, and that is a proof rather than a guess.
+    Declarations that DISAGREE are refused, because choosing between them would
+    need the engine's own duplicate-key rule and nothing here has it.
+
+    Only the integer is emitted -- no raw spelling. A year is exact in JSON, so
+    a raw token would add a second, ambiguous copy (which of two declarations?)
+    of a value that cannot be lost in the round trip.
+
+    A REFUSAL IS NOT AN ABSENCE, and the caller must keep the two apart: a
+    technology that declares nothing authors no start year, while one whose
+    declaration cannot be read has an authored year this parser could not
+    recover. The second is stamped on the row so the consumer can fail closed
+    instead of quietly authenticating against the weaker check.
+    """
+    values = node.get_all("start_year")
+    if not values:
+        return None, None, 0
+    if any(not isinstance(value, str) for value in values):
+        return None, "non_scalar_start_year", len(values)
+    resolved = [resolve_at_var_scalar(value, at_vars)[0] for value in values]
+    if any(
+        value is None and raw.startswith("@") for value, raw in zip(resolved, values)
+    ):
+        return None, "unresolved_start_year_reference", len(values)
+    years = [_whole_year(value) for value in resolved]
+    if any(year is None for year in years):
+        # Separate the two ways a number can fail to be an engine year, because
+        # they say different things about the content: a fraction is not a year
+        # at all, while a whole number outside the engine's own i32 arithmetic
+        # is a year the engine could not use either.
+        reason = (
+            "start_year_outside_engine_year_domain"
+            if all(_is_whole_number(value) for value in resolved)
+            else "non_integer_start_year"
+        )
+        return None, reason, len(values)
+    if len(set(years)) != 1:
+        return None, "conflicting_start_year", len(values)
+    return years[0], None, len(values)
+
+
 def _source_label(layers, abspath) -> str:
     return layers[R._layer_prio_fn(layers)(abspath)].label
 
@@ -155,10 +261,13 @@ def _parse_ideas(
     wrapper_allowlist_hits: list[dict],
 ):
     ideas: dict[str, dict] = {}
-    omitted = []
+    # Keyed by id for the same reason the technology side is: the last layer to
+    # define an idea is the only one that speaks for it, including when this
+    # parser cannot map that definition.
+    omitted: dict[str, dict] = {}
+    seen_source: dict[str, str] = {}
     collisions = []
     files_parsed = 0
-    explicit_names = 0
     ordered = R.ordered_files(layers, "common/ideas", (".txt",))
     for rel, abspath in ordered:
         try:
@@ -207,16 +316,28 @@ def _parse_ideas(
                 loc_key, explicit_name, reason, literal_name, loc_rule = _explicit_name_or_id(
                     iid, body, name_kinds.get((category, iid))
                 )
+                if seen_source.get(iid) not in (None, rel):
+                    collisions.append({
+                        "id": iid,
+                        "first": seen_source[iid],
+                        "override": rel,
+                    })
+                seen_source[iid] = rel
                 if reason:
-                    omitted.append({
+                    omitted[iid] = {
                         "id": iid,
                         "kind": "idea",
                         "category": category,
                         "reason": reason,
                         "source_layer": label,
                         "source_file": rel,
-                    })
+                    }
+                    # The override layer's definition replaces the base layer's
+                    # even when this parser cannot map it -- see the technology
+                    # branch for the argument.
+                    ideas.pop(iid, None)
                     continue
+                omitted.pop(iid, None)
                 rec = {
                     "id": iid,
                     "kind": "idea",
@@ -230,16 +351,17 @@ def _parse_ideas(
                     "source_file": rel,
                 }
                 put_present(rec, "picture", first_scalar(body, "picture"))
-                if explicit_name:
-                    explicit_names += 1
-                if iid in ideas and ideas[iid]["source_file"] != rel:
-                    collisions.append({
-                        "id": iid,
-                        "first": ideas[iid]["source_file"],
-                        "override": rel,
-                    })
                 ideas[iid] = rec
-    return ideas, omitted, collisions, files_parsed, explicit_names
+    return (
+        ideas,
+        sorted(omitted.values(), key=lambda row: row["id"]),
+        collisions,
+        files_parsed,
+        # Counted off the WINNING rows, not off every definition parsed: a
+        # definition an override replaced is not in the catalog, so counting it
+        # would describe the files rather than the artifact.
+        sum(1 for rec in ideas.values() if rec["explicit_name"]),
+    )
 
 
 def _parse_technologies(
@@ -251,10 +373,19 @@ def _parse_technologies(
     wrapper_allowlist_hits: list[dict],
 ):
     techs: dict[str, dict] = {}
-    omitted = []
+    # Everything derived from a technology is keyed by its id, so the LAST
+    # layer to define it is the only one that speaks for it -- exactly as the
+    # record itself is. Accounting that outlived the row it was written for is
+    # how the catalog would come to describe two different definitions at once.
+    omitted: dict[str, dict] = {}
+    start_year_unresolved: dict[str, dict] = {}
+    start_year_repeated: dict[str, dict] = {}
+    # Collision detection needs the previous DEFINING file even when that
+    # definition was later replaced by one this parser could not map, so it is
+    # tracked separately from the record.
+    seen_source: dict[str, str] = {}
     collisions = []
     files_parsed = 0
-    explicit_names = 0
     ordered = R.ordered_files(layers, "common/technologies", (".txt",))
     for rel, abspath in ordered:
         try:
@@ -292,21 +423,42 @@ def _parse_technologies(
             print(f"[idea_tech_loc] WARN {msg}", file=sys.stderr)
             continue
         files_parsed += 1
+        # ``@year = N`` defs are declared either at the file top level or as
+        # direct entries of the ``technologies`` wrapper, and a mod may author
+        # ``start_year = @late_war`` against either.
+        at_vars = collect_at_var_defs(root, block)
         for tid, body in block.entries:
             if tid.startswith("@") or not isinstance(body, Node):
                 continue
             loc_key, explicit_name, reason, literal_name, loc_rule = _explicit_name_or_id(
                 tid, body, name_kinds.get(tid)
             )
+            if seen_source.get(tid) not in (None, rel):
+                collisions.append({
+                    "id": tid,
+                    "first": seen_source[tid],
+                    "override": rel,
+                })
+            seen_source[tid] = rel
             if reason:
-                omitted.append({
+                omitted[tid] = {
                     "id": tid,
                     "kind": "tech",
                     "reason": reason,
                     "source_layer": label,
                     "source_file": rel,
-                })
+                }
+                # The override layer's definition REPLACES the base layer's even
+                # when this parser cannot map it: the engine loads the override,
+                # so continuing to publish the base row -- its loc key, and now
+                # its start year -- would describe a definition the game does
+                # not have. Everything derived from the replaced row goes with
+                # it.
+                techs.pop(tid, None)
+                start_year_unresolved.pop(tid, None)
+                start_year_repeated.pop(tid, None)
                 continue
+            omitted.pop(tid, None)
             rec = {
                 "id": tid,
                 "kind": "tech",
@@ -318,21 +470,53 @@ def _parse_technologies(
                 "source_layer": label,
                 "source_file": rel,
             }
+            start_year, start_year_reason, start_year_declarations = _start_year(
+                body, at_vars
+            )
+            if start_year_reason:
+                start_year_unresolved[tid] = {
+                    "id": tid,
+                    "reason": start_year_reason,
+                    "declarations": start_year_declarations,
+                    "source_layer": label,
+                    "source_file": rel,
+                }
+            else:
+                start_year_unresolved.pop(tid, None)
+            if start_year is not None and start_year_declarations > 1:
+                start_year_repeated[tid] = {
+                    "id": tid,
+                    "declarations": start_year_declarations,
+                    "source_layer": label,
+                    "source_file": rel,
+                }
+            else:
+                start_year_repeated.pop(tid, None)
+            put_present(rec, "start_year", start_year)
+            if start_year_reason:
+                # A refusal is not an absence. Without this stamp the two are
+                # the same shape on the wire, and a consumer reading "no
+                # start_year" would authenticate a technology whose authored
+                # year exists but could not be read -- which is the weaker
+                # check running silently, the exact failure this artifact was
+                # widened to end.
+                rec["start_year_unresolved"] = True
             put_present(rec, "categories", _list_field_atoms(body, "categories"))
             put_present(rec, "folders", _folder_names(body))
             put_present(rec, "desc_loc_key", first_scalar(body, "desc"))
             put_present(rec, "enable_equipments", _list_field_atoms(body, "enable_equipments"))
             put_present(rec, "enable_equipment_modules", _list_field_atoms(body, "enable_equipment_modules"))
-            if explicit_name:
-                explicit_names += 1
-            if tid in techs and techs[tid]["source_file"] != rel:
-                collisions.append({
-                    "id": tid,
-                    "first": techs[tid]["source_file"],
-                    "override": rel,
-                })
             techs[tid] = rec
-    return techs, omitted, collisions, files_parsed, explicit_names
+    return (
+        techs,
+        sorted(omitted.values(), key=lambda row: row["id"]),
+        collisions,
+        files_parsed,
+        # See the idea side: the winning rows, not every definition parsed.
+        sum(1 for rec in techs.values() if rec["explicit_name"]),
+        sorted(start_year_unresolved.values(), key=lambda row: row["id"]),
+        sorted(start_year_repeated.values(), key=lambda row: row["id"]),
+    )
 
 
 def parse_idea_tech_loc_keys(layers, *, strict: bool = True) -> dict:
@@ -346,12 +530,28 @@ def parse_idea_tech_loc_keys(layers, *, strict: bool = True) -> dict:
         syntax_allowlist_hits=syntax_allowlist_hits,
         wrapper_allowlist_hits=wrapper_allowlist_hits,
     )
-    techs, tech_omitted, tech_collisions, tech_files, tech_explicit = _parse_technologies(
+    (
+        techs,
+        tech_omitted,
+        tech_collisions,
+        tech_files,
+        tech_explicit,
+        tech_start_year_unresolved,
+        tech_start_year_repeated,
+    ) = _parse_technologies(
         layers,
         strict=strict,
         warnings=warnings,
         syntax_allowlist_hits=syntax_allowlist_hits,
         wrapper_allowlist_hits=wrapper_allowlist_hits,
+    )
+    # Counted off the emitted ROWS, not off the parser's bookkeeping, so the
+    # three numbers describe the artifact a consumer will read rather than the
+    # run that produced it. The consumer re-derives them from the same rows and
+    # refuses a disagreement.
+    tech_start_year_mapped = sum(1 for rec in techs.values() if "start_year" in rec)
+    tech_start_year_unresolved_rows = sum(
+        1 for rec in techs.values() if rec.get("start_year_unresolved")
     )
     idea_source_files = R.ordered_files(layers, "common/ideas", (".txt",))
     tech_source_files = R.ordered_files(layers, "common/technologies", (".txt",))
@@ -369,6 +569,19 @@ def parse_idea_tech_loc_keys(layers, *, strict: bool = True) -> dict:
             "tech_explicit_names": tech_explicit,
             "tech_files_parsed": tech_files,
             "tech_files_total": len(tech_source_files),
+            # The three states a mapped technology's authored start year can be
+            # in, which always sum to ``tech_mapped``: it resolved, the
+            # definition declares none, or the definition declares one this
+            # parser could not read. Keeping the third separate is what stops a
+            # consumer reading a refusal as "authors none" and authenticating
+            # against the weaker check without saying so.
+            "tech_start_year_mapped": tech_start_year_mapped,
+            "tech_start_year_absent": (
+                len(techs) - tech_start_year_mapped - tech_start_year_unresolved_rows
+            ),
+            "tech_start_year_unresolved_count": tech_start_year_unresolved_rows,
+            "tech_start_year_unresolved": tech_start_year_unresolved,
+            "tech_start_year_repeated_agreeing": tech_start_year_repeated,
             "warnings": warnings,
             "syntax_allowlist_hits": sorted(
                 syntax_allowlist_hits,
@@ -413,5 +626,7 @@ if __name__ == "__main__":
         f"idea_tech_loc_keys: {m['idea_mapped']}/{m['idea_count']} ideas "
         f"({m['idea_explicit_names']} explicit names), "
         f"{m['tech_mapped']}/{m['tech_count']} techs "
-        f"({m['tech_explicit_names']} explicit names) -> {outp.name}"
+        f"({m['tech_explicit_names']} explicit names, "
+        f"{m['tech_start_year_mapped']} start years, "
+        f"{len(m['tech_start_year_unresolved'])} unresolved) -> {outp.name}"
     )
