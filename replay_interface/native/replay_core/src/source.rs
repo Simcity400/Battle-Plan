@@ -2837,19 +2837,164 @@ struct PackagedStaticArtifactRoster {
     legacy_skipped: Option<&'static str>,
 }
 
+/// The ONE content epoch a recording binds its packaged artifacts to.
+///
+/// Every consumer that admits a packaged artifact asks this, and only this.
+/// There used to be two independent askers — the static-artifact roster and the
+/// A34 decision-catalog loader — each reaching straight into
+/// `container.content_manifest()`. Teaching only the first about the
+/// attach-time epoch left the second refusing the WHOLE recording with
+/// "portable content manifest is absent or unfinalized" for the ordinary shape
+/// a shipped recorder produces (Codex round 1, HIGH).
+enum RecordingContentEpoch {
+    /// No content authority at all: nothing may be admitted.
+    None,
+    /// The container's finalized portable content manifest — the launch-time
+    /// epoch, and the only authority a legacy recording could carry.
+    ContainerManifest(String),
+    /// The KIND C attach-time epoch, RE-DERIVED from the sealed proof.
+    ///
+    /// The derivation result is carried rather than raised: a recording whose
+    /// proof yields no epoch and which packages nothing is simply a recording
+    /// with no epoch, and only a row that CLAIMS one turns the reason into a
+    /// refusal.
+    AttachTime(
+        Box<Result<portable_content_manifest::attach_content_epoch::AttachContentEpoch, String>>,
+    ),
+}
+
+impl RecordingContentEpoch {
+    /// The digest every packaged row must carry, if there is one.
+    fn digest(&self) -> Option<&str> {
+        match self {
+            RecordingContentEpoch::None => Option::None,
+            RecordingContentEpoch::ContainerManifest(digest) => Some(digest.as_str()),
+            RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
+                Ok(epoch) => Some(epoch.digest()),
+                Err(_) => Option::None,
+            },
+        }
+    }
+
+    /// Why a declared proof yielded no epoch, when it declared one and failed.
+    fn derivation_error(&self) -> Option<&str> {
+        match self {
+            RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
+                Err(reason) => Some(reason.as_str()),
+                Ok(_) => Option::None,
+            },
+            _ => Option::None,
+        }
+    }
+
+    /// Whether this epoch authorizes ONE named artifact carrying exactly these
+    /// bytes.
+    ///
+    /// Under the attach-time epoch the join is PER ARTIFACT: one
+    /// recording-wide digest says the world was observed, not that THIS catalog
+    /// was resolved through it. A launch-time manifest, by contrast, is taken
+    /// over the admitted bundle as a whole.
+    fn authorizes(&self, role: &str, artifact_sha256: &str) -> Result<(), String> {
+        match self {
+            RecordingContentEpoch::None => {
+                Err("this recording states no content epoch".to_string())
+            }
+            RecordingContentEpoch::ContainerManifest(_) => Ok(()),
+            RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
+                Ok(epoch) => epoch.bind(role, artifact_sha256).map(|_| ()),
+                Err(reason) => Err(reason.clone()),
+            },
+        }
+    }
+}
+
+/// Resolve a recording's content epoch from its own POSITIVE declaration.
+///
+/// Exhaustive on the declared kind, never inferred from which field happens to
+/// be populated. A late attach carrying `--portable-content-use-trace` has BOTH
+/// a container content manifest and an attach-time proof, and a recording that
+/// positively declares `none` has no epoch even if a container manifest exists
+/// — reading either off field presence is the inference this loader forbids
+/// everywhere else (Codex round 1, MEDIUM). Unknown and non-string declarations
+/// are refused by the shared validator rather than falling back to anything.
+fn recording_content_epoch(
+    container: &snapshot::Container,
+    recorder_manifest: &Map<String, Value>,
+) -> Result<RecordingContentEpoch, SourceError> {
+    use portable_content_manifest::attach_content_epoch as epoch_authority;
+
+    let declared =
+        epoch_authority::content_proof_kind(recorder_manifest).map_err(SourceError::Open)?;
+    let container_digest = container
+        .content_manifest()
+        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref());
+    Ok(match declared {
+        // A recording that predates the declaration.
+        None => match container_digest {
+            Some(digest) => RecordingContentEpoch::ContainerManifest(digest.to_string()),
+            None => RecordingContentEpoch::None,
+        },
+        Some(kind) if kind == epoch_authority::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1 => {
+            match container_digest {
+                Some(digest) => RecordingContentEpoch::ContainerManifest(digest.to_string()),
+                None => {
+                    return Err(SourceError::Open(
+                        "recording declares the launch-time content epoch but its container \
+                         finalized no portable content manifest"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+        Some(kind) if kind == epoch_authority::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1 => {
+            let block = recorder_manifest
+                .get(epoch_authority::ATTACH_TIME_CONTENT_PROOF_FIELD)
+                .filter(|value| !value.is_null())
+                .ok_or_else(|| {
+                    SourceError::Open(
+                        "recorder manifest declares the attach-time content epoch but carries no \
+                         attach_time_content_proof block"
+                            .to_string(),
+                    )
+                })?;
+            RecordingContentEpoch::AttachTime(Box::new(epoch_authority::epoch_from_proof_json(
+                block,
+            )))
+        }
+        // Positively declared as having none. A container manifest that happens
+        // to exist does not become one.
+        Some(_) => RecordingContentEpoch::None,
+    })
+}
+
 /// Consume the complete recorder-owned static-artifact roster at replay
 /// admission.  Semantic adapters may select individual catalogs later, but no
 /// producer binding is allowed to sit in the portable file unchecked.
 ///
-/// # Recordings with no finalized content-manifest epoch
+/// # Which content epoch binds an artifact
 ///
-/// The production finalizer is what builds the portable content manifest, from
-/// the effective-VFS observation authenticated in-process before
-/// `ResumeThread`; a late attach never made that observation, so its container
-/// finalizes no manifest and the recorder writes
-/// `content_manifest_digest_sha256: null` on every static-artifact row it
-/// packs. This used to abort the whole open, which refused the recording over
-/// artifacts it could simply decline.
+/// Routed on the recording's own positively-written `content_proof_kind`, never
+/// inferred from which field happens to be populated:
+///
+/// * `launch_time_static_bundle_v1` — the finalized portable content manifest
+///   the container carries, built from an effective-VFS observation taken
+///   before `ResumeThread`.
+/// * `attach_time_effective_vfs_join_v1` — the KIND C attach-time epoch,
+///   RE-DERIVED here from the sealed proof block by the one shared authority
+///   ([`portable_content_manifest::attach_content_epoch`]) the recorder stamped
+///   it with. This is the route every shipped recording takes: the
+///   pre-`ResumeThread` actuator is compiled out of `collector_record`, so no
+///   product recording can finalize a portable content manifest, and before
+///   this route existed EVERY packaged catalog on EVERY real recording was
+///   declined. An artifact is admitted only if that proof joined it, and joined
+///   the exact bytes the package carries.
+/// * `none`, or a legacy recording that declares nothing — the container's
+///   content manifest if it has one, otherwise no epoch at all.
+///
+/// # Recordings with no epoch of any kind
+///
+/// Such a recording used to abort the whole open, which refused the recording
+/// over artifacts it could simply decline.
 ///
 /// It now declines them, and only them. The epoch check is not weakened in
 /// either direction: with an epoch, every row must carry exactly it; without
@@ -2953,9 +3098,8 @@ fn validate_packaged_static_artifact_roster(
     let container = store.container().ok_or_else(|| {
         SourceError::Open("static-artifact roster requires a portable container authority".into())
     })?;
-    let content_digest = container
-        .content_manifest()
-        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref());
+    let epoch_authority = recording_content_epoch(container, recorder_manifest)?;
+    let content_digest = epoch_authority.digest();
     // THE CARVE-OUT DOES NOT REACH A CAPTURE THAT CLAIMS THE PROFILE. Building
     // the portable content manifest is one of the things `--profile production`
     // guarantees, so a recording asserting `production_profile.enabled == true`
@@ -3048,6 +3192,16 @@ fn validate_packaged_static_artifact_roster(
                 // Without one every row must carry null: a row naming an epoch
                 // the container never finalized is a contradiction, and it
                 // refuses the recording here rather than being declined below.
+                // A row claiming an epoch this recording's own proof could
+                // not produce is a contradiction, and the reason the proof gave
+                // is what the refusal says. Reached only for a row that is NOT
+                // null, so a recording that packages nothing still opens.
+                if let (Some(reason), Some(_)) = (epoch_authority.derivation_error(), epoch) {
+                    return Err(SourceError::Open(format!(
+                        "recorder manifest static artifact {name:?} claims a content epoch its \
+                         own attach-time proof does not yield: {reason}"
+                    )));
+                }
                 let epoch_binds = match content_digest {
                     Some(digest) => epoch == Some(digest),
                     None => epoch.is_none(),
@@ -3118,6 +3272,18 @@ fn validate_packaged_static_artifact_roster(
                 }
                 // Verified in full above; admitted only when an epoch binds it
                 // to the effective content it was derived from.
+                // UNDER THE ATTACH-TIME EPOCH THE JOIN IS PER ARTIFACT. One
+                // recording-wide digest says the world was observed; it does not
+                // say THIS catalog was resolved through it. The proof names the
+                // roles it certified and the digest it read for each, so an
+                // artifact the proof refused, never joined, or joined in a
+                // different build is declined by name rather than admitted on
+                // the strength of its neighbours.
+                if epoch_authority.authorizes(name, &actual_sha).is_err() {
+                    not_content_bound.push(name.to_string());
+                    expected_container_paths.insert(container_path);
+                    continue;
+                }
                 match content_digest {
                     Some(digest) => {
                         admitted.insert(
@@ -3258,9 +3424,9 @@ fn read_packaged_decision_catalog(
     // Snapshot-only and legacy directory stores may have an unauthenticated
     // index roster but no recorder manifest at all. They remain playable with
     // XUI19 unavailable; there is no recorder claim to contradict.
-    if recorder_manifest.is_none() {
+    let Some(recorder_manifest) = recorder_manifest else {
         return Ok(None);
-    }
+    };
     let recorder_row = recorder_matches.first().copied().ok_or_else(|| {
         SourceError::Open(
             "index records A34 decision catalog present but recorder manifest omits it".into(),
@@ -3310,20 +3476,31 @@ fn read_packaged_decision_catalog(
                 .into(),
         )
     })?;
-    let content_digest = container
-        .content_manifest()
-        .and_then(|manifest| manifest.manifest_digest_sha256.as_deref())
-        .ok_or_else(|| {
-            SourceError::Open(
-                "A34 decision catalog is present but portable content manifest is absent or unfinalized"
-                    .into(),
-            )
-        })?;
+    // THE SAME AUTHORITY THE STATIC-ARTIFACT ROSTER ASKS. This used to reach
+    // straight into `container.content_manifest()`, which no shipped recording
+    // can carry, so the ordinary attach-time shape — a row stamped with a real
+    // KIND C epoch — refused the WHOLE recording here after the roster had
+    // already admitted the same artifact (Codex round 1, HIGH).
+    let epoch_authority = recording_content_epoch(container, recorder_manifest)?;
+    let Some(content_digest) = epoch_authority.digest() else {
+        // No epoch of any kind: decline the catalog exactly as the roster
+        // declines an unbound artifact. XUI19 is unavailable and the recording
+        // still opens.
+        return Ok(None);
+    };
     if content_digest != recorder_content_digest {
         return Err(SourceError::Open(
             "A34 decision catalog recorder row is not bound to the selected content manifest"
                 .into(),
         ));
+    }
+    // And under the attach-time epoch the proof must have joined THIS catalog,
+    // at these exact bytes — not merely observed the world it came from.
+    if epoch_authority
+        .authorizes(DECISION_CATALOG_NAME, recorder_sha)
+        .is_err()
+    {
+        return Ok(None);
     }
 
     let container_path = format!("payload/{game_id}/{DECISION_CATALOG_PATH}");

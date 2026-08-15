@@ -1890,6 +1890,454 @@ fn write_metadata_container_without_timeline(
     path
 }
 
+/// Canonicalise the way every static-artifact generator does before it stamps
+/// its own `artifact_sha256`.
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            let mut ordered = serde_json::Map::new();
+            for key in keys {
+                ordered.insert(key.clone(), canonical_json(&object[key]));
+            }
+            Value::Object(ordered)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Stamp the embedded self-hash the way the generator does, and return the
+/// packable bytes.
+fn stamped_static_artifact_bytes(mut semantic: Value) -> Vec<u8> {
+    let mut covered = semantic.clone();
+    covered
+        .as_object_mut()
+        .expect("artifact root is an object")
+        .remove("artifact_sha256");
+    let embedded = snapshot::sha256::Sha256::hex(
+        &serde_json::to_vec(&canonical_json(&covered)).expect("canonical artifact serialises"),
+    );
+    semantic["artifact_sha256"] = json!(embedded);
+    serde_json::to_vec(&semantic).expect("artifact serialises")
+}
+
+/// The three research catalogs `admit_static_research_catalogs` joins, in the
+/// exact shapes their generators emit, small enough to read.
+fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 4] {
+    const IDS: [&str; 2] = ["construction1", "infantry_weapons"];
+    let mut keys = serde_json::Map::new();
+    let mut technologies = serde_json::Map::new();
+    for id in IDS {
+        keys.insert(
+            id.to_string(),
+            json!({
+                "name": format!("{id} display name"),
+                "raw": format!("{id} display name"),
+                "has_interpolation": false,
+                "source_file": "localisation/english/technologies_l_english.yml",
+                "source_layer": "vanilla",
+            }),
+        );
+        technologies.insert(
+            id.to_string(),
+            json!({
+                "id": id,
+                "kind": "tech",
+                "categories": [],
+                "folders": [],
+                "localisation_status": "resolved",
+                "resolved_loc_key": id,
+                "localised_name": format!("{id} display name"),
+                "resolution_rule": "id",
+                "loc_key": id,
+                "source_file": "common/technologies/infantry.txt",
+                "source_layer": "vanilla",
+            }),
+        );
+    }
+    [
+        (
+            "localisation_join",
+            "static/localisation_join/localisation_catalog.json",
+            stamped_static_artifact_bytes(json!({
+                "schema": "static_localisation_join_r3.static_artifact.v1",
+                "artifact_kind": "deterministic_static_replay_enrichment",
+                "artifact_sha256": "",
+                "request": "R3",
+                "keys": Value::Object(keys),
+                "meta": {"key_count": IDS.len()},
+            })),
+        ),
+        (
+            "idea_tech_loc_xref_static",
+            "static/idea_tech_loc_xref_static/idea_tech_loc_xref_catalog.json",
+            stamped_static_artifact_bytes(json!({
+                "schema": "idea_tech_loc_xref_static.static_artifact.v1",
+                "artifact_kind": "deterministic_static_replay_enrichment",
+                "artifact_sha256": "",
+                "tokens": {
+                    "ideas": serde_json::Map::new(),
+                    "technologies": Value::Object(technologies),
+                },
+                "meta": {"idea_count": 0, "tech_count": IDS.len()},
+            })),
+        ),
+        // NOT a research catalog: the A34 decision catalog rides along because
+        // it is admitted by a SECOND, independent loader
+        // (`read_packaged_decision_catalog`) that also has to accept the
+        // attach-time epoch. A fixture carrying only the three research
+        // catalogs cannot see that loader refuse.
+        (
+            "decisions_static_definitions",
+            "static/decisions_static_definitions/decision_definitions_catalog.json",
+            stamped_static_artifact_bytes(json!({
+                "schema": "decisions_static_definitions.static_artifact.v1",
+                "artifact_kind": "deterministic_static_replay_enrichment",
+                "artifact_sha256": "",
+                "categories": serde_json::Map::new(),
+                "decisions": serde_json::Map::new(),
+                "meta": {"category_count": 0, "decision_count": 0},
+            })),
+        ),
+        (
+            "technology_sharing_static",
+            "static/technology_sharing_static/technology_sharing_static.json",
+            stamped_static_artifact_bytes(json!({
+                "schema": "technology_sharing_static.static_artifact.v1",
+                "artifact_kind": "deterministic_static_replay_enrichment",
+                "artifact_sha256": "",
+                "definitions": [],
+                "definitions_by_id": serde_json::Map::new(),
+                "join_keys": {"compatibility_status": "no_runtime_join_proven"},
+                "meta": {
+                    "definition_count": 0,
+                    "runtime_token_proof": "engine_runtime_intern_ordinal_not_string_hash",
+                    "runtime_hash_proof": "fnv1a_only_indexes_intern_table_not_runtime_token",
+                },
+            })),
+        ),
+    ]
+}
+
+/// A KIND C attach-time content proof over exactly the artifacts named, in the
+/// shape `recorder_host::attach_content_proof` seals.
+fn attach_time_content_proof(joins: Vec<Value>, refusals: Vec<Value>) -> Value {
+    let layers = vec![json!({
+        "ordinal": 0,
+        "kind": "base",
+        "layer_id": "base",
+        "descriptor_sha256": Value::Null,
+        "descriptor_file_sha256": Value::Null,
+        "source_container_sha256": Value::Null,
+    })];
+    json!({
+        "schema": "hoi4.attach-time-content-proof.v1",
+        "kind": "attach_time_effective_vfs_join_v1",
+        "game_process_start_unix": 1_786_770_247i64,
+        "observed_at_unix": 1_786_770_380i64,
+        "completed_at_unix": 1_786_770_403i64,
+        "elapsed_ms": 23_042u64,
+        "hashed_bytes": 1_799_816_841u64,
+        "hashed_files": 35_902u64,
+        "window_attempts": 1,
+        "window_settled": true,
+        "executable_sha256":
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "executable_size_bytes": 55_680_632u64,
+        "dlc_load_sha256":
+            "f88eff887671ebcb3a33e1dacd2378f8057f9d2ead35ef9fd94da06d4b8c6197",
+        "layer_stack": layers.clone(),
+        "layer_stack_sha256":
+            portable_content_manifest::attach_content_epoch::layer_stack_digest(&layers).unwrap(),
+        "artifact_joins": joins,
+        "refused_artifacts": refusals,
+        "required_content": [{
+            "purpose": "D81 province catalog",
+            "logical_path": "map/definition.csv",
+            "sha256": "86846be71198d6772c651638aa22e3656133198de9b7c49c6234ed48cf33d87b",
+            "bytes": 465_289u64,
+            "winning_layer_id": "base",
+        }],
+        "refused_required_content": [],
+    })
+}
+
+/// THE END-TO-END BLOCKER THIS CLOSES. The shipped `collector_record` cannot
+/// finalize a portable content manifest — the pre-`ResumeThread` actuator is
+/// compiled out — so every real recording wrote
+/// `content_manifest_digest_sha256: null` on every static-artifact row, every
+/// packaged catalog was declined, and `admit_static_research_catalogs` refused
+/// with "recording has no authenticated required static artifact
+/// localisation_join" on a recording that physically carried it. The measured
+/// consequence on t54 was that `observer_research_from_frame` executed 0 times.
+///
+/// This drives the whole chain the fix restores, on a real container: recorder
+/// roster + index + container role + KIND C proof -> `open_recording` ->
+/// `static_artifact()` -> `admit_static_research_catalogs`.
+///
+/// kills: dropping the attach-time route (case 1 stops admitting and the
+/// catalogs stop building); admitting an artifact the proof never joined or
+/// joined in a different build (cases 2 and 3 stop being declined); trusting
+/// the epoch a row states instead of re-deriving it from the proof (case 4
+/// stops refusing); and admitting anything at all from an unsettled window
+/// (case 5 stops refusing).
+#[test]
+fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() {
+    let root = unique_temp_dir("attach_time_content_epoch");
+    let artifacts = research_catalog_artifact_bytes();
+
+    let build = |tag: &str, mutate: &dyn Fn(&mut Value, &mut Vec<Value>)| -> PathBuf {
+        let game = format!("attach_epoch_{tag}");
+        let mut joins = artifacts
+            .iter()
+            .map(|(name, _, bytes)| {
+                json!({
+                    "role": name,
+                    "artifact_sha256": snapshot::sha256::Sha256::hex(bytes),
+                    "claimed_paths": 1,
+                    "joined_bytes": bytes.len(),
+                    "proven_absent_paths": 0,
+                    "localisation_source_sha256": Value::Null,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut proof = attach_time_content_proof(Vec::new(), Vec::new());
+        mutate(&mut proof, &mut joins);
+        proof["artifact_joins"] = json!(joins);
+        let epoch =
+            portable_content_manifest::attach_content_epoch::epoch_from_proof_json(&proof)
+                .map(|epoch| epoch.digest().to_string())
+                .unwrap_or_else(|_| "0".repeat(64));
+
+        let mut recorder_manifest = resolved_recorder_manifest();
+        recorder_manifest["replay_game_id"] = json!(game);
+        recorder_manifest["content_proof_kind"] = json!("attach_time_effective_vfs_join_v1");
+        recorder_manifest["attach_time_content_proof"] = proof;
+        recorder_manifest["replay_packaging"] = json!({
+            "static_artifacts": artifacts
+                .iter()
+                .map(|(name, path, bytes)| json!({
+                    "name": name,
+                    "path": path,
+                    "sha256": snapshot::sha256::Sha256::hex(bytes),
+                    "bytes": bytes.len(),
+                    "content_manifest_digest_sha256": epoch,
+                }))
+                .collect::<Vec<_>>(),
+        });
+
+        let packaged_names = artifacts
+            .iter()
+            .map(|(name, _, _)| *name)
+            .collect::<Vec<_>>();
+        let roster = absent_static_artifact_roster()
+            .into_iter()
+            .map(|mut row| {
+                let name = row["name"].as_str().unwrap_or_default().to_string();
+                if let Some((_, path, bytes)) = artifacts
+                    .iter()
+                    .find(|(candidate, _, _)| *candidate == name)
+                {
+                    row = json!({
+                        "name": name,
+                        "path": path,
+                        "present": true,
+                        "role": "static_artifact",
+                        "sha256": snapshot::sha256::Sha256::hex(bytes),
+                        "bytes": bytes.len(),
+                    });
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(packaged_names.len(), 4);
+
+        let mut entries = vec![
+            PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&json!({
+                    "game_id": game,
+                    "schema_version": "1",
+                    "host_fold_skipped": false,
+                    "static_artifacts": roster,
+                    "snapshots": [{
+                        "hour_index": 1,
+                        "date": "1936.1.1.1",
+                        "file": "000000000001.snapshot.json"
+                    }]
+                }))
+                .unwrap(),
+                role: "index",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/timeline.json"),
+                bytes: recorder_portable_timeline(),
+                role: "timeline",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/000000000001.snapshot.json"),
+                bytes: serde_json::to_vec(&metadata_snapshot(
+                    &game,
+                    json!({"world": {"scenario": {}}}),
+                ))
+                .unwrap(),
+                role: "snapshot",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/recorder/native_session_manifest.json"),
+                bytes: serde_json::to_vec(&recorder_manifest).unwrap(),
+                role: "recorder_manifest",
+                hour_index: None,
+            },
+            PackEntry {
+                path: format!("payload/{game}/collector_raw/collector_stream.bin"),
+                bytes: b"H4CR portable metadata fixture".to_vec(),
+                role: "collector_compact_stream",
+                hour_index: None,
+            },
+        ];
+        entries[2].hour_index = Some(1);
+        for (_, path, bytes) in artifacts.iter() {
+            entries.push(PackEntry {
+                path: format!("payload/{game}/{path}"),
+                bytes: bytes.clone(),
+                role: "static_artifact",
+                hour_index: None,
+            });
+        }
+        let out = root.join(format!("{tag}.battleplan"));
+        fs::write(
+            &out,
+            // NO `content_manifest`: exactly what a late attach seals. The
+            // epoch comes from the attach-time proof instead.
+            pack(
+                &game,
+                &entries,
+                &PackIdentity {
+                    schema_version: Some("1".into()),
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        out
+    };
+
+    // 1. THE FIX, END TO END.
+    let admitted = build("admitted", &|_, _| {});
+    let source = open_recording(&admitted).expect(
+        "a KIND C recording opens — including its A34 decision catalog, whose own loader used to \
+         demand a portable content manifest no shipped recorder can produce",
+    );
+    // The second admission path, on the same epoch.
+    assert!(
+        source.decision_catalog().is_some(),
+        "the attach-time epoch must admit the packaged A34 decision catalog"
+    );
+    let admission = source
+        .product_admission()
+        .expect("a recorder-manifest recording carries a product admission");
+    assert!(
+        admission.static_artifacts_not_content_bound.is_empty(),
+        "{:?}",
+        admission.static_artifacts_not_content_bound
+    );
+    let localisation = source
+        .static_artifact("localisation_join")
+        .expect("the attach-time epoch binds localisation_join");
+    let idea_technology = source
+        .static_artifact("idea_tech_loc_xref_static")
+        .expect("the attach-time epoch binds idea_tech_loc_xref_static");
+    let technology_sharing = source
+        .static_artifact("technology_sharing_static")
+        .expect("the attach-time epoch binds technology_sharing_static");
+    // Every packaged row carries the SAME epoch, which is the cross-artifact
+    // equality `admit_static_research_catalogs` itself checks.
+    let catalogs = replay_core::admit_static_research_catalogs(
+        localisation,
+        idea_technology,
+        technology_sharing,
+    )
+    .expect("the packaged research catalogs are admitted");
+    assert_eq!(catalogs.idea_technology().technology_count(), 2);
+    assert_eq!(
+        catalogs.technology_sharing().definitions().len(),
+        0,
+        "the fixture packages an empty sharing roster"
+    );
+    assert_eq!(
+        catalogs.technology_display_name("construction1"),
+        Some("construction1 display name")
+    );
+    drop(source);
+
+    // 2. An artifact the proof REFUSED is declined by name, and its neighbours
+    //    are still admitted — the epoch is not a single recording-wide verdict.
+    let refused = build("refused", &|proof, joins| {
+        joins.retain(|join| join["role"] != json!("technology_sharing_static"));
+        proof["refused_artifacts"] = json!([{
+            "role": "technology_sharing_static",
+            "reason": "a claimed path disagreed on re-read",
+        }]);
+    });
+    let source = open_recording(&refused).expect("a partially refused proof still opens");
+    assert!(source.static_artifact("localisation_join").is_some());
+    assert!(source.static_artifact("technology_sharing_static").is_none());
+    assert_eq!(
+        source
+            .product_admission()
+            .expect("recorder-manifest recording")
+            .static_artifacts_not_content_bound,
+        vec!["technology_sharing_static".to_string()]
+    );
+    drop(source);
+
+    // 3. A DIFFERENT BUILD of an artifact the proof joined is declined: the
+    //    join names the digest it read, and the package carries other bytes.
+    let restamped = build("restamped", &|_, joins| {
+        for join in joins.iter_mut() {
+            if join["role"] == json!("idea_tech_loc_xref_static") {
+                join["artifact_sha256"] = json!("11".repeat(32));
+            }
+        }
+    });
+    let source = open_recording(&restamped).expect("a mismatched join still opens the recording");
+    assert!(source.static_artifact("idea_tech_loc_xref_static").is_none());
+    assert!(source.static_artifact("localisation_join").is_some());
+    drop(source);
+
+    // 4. A TAMPERED PROOF whose layer stack does not hash to its declared
+    //    digest yields no epoch, so every row claiming one is a contradiction
+    //    and the RECORDING is refused — not quietly declined.
+    let tampered = build("tampered", &|proof, _| {
+        proof["layer_stack_sha256"] = json!("22".repeat(32));
+    });
+    let Err(error) = open_recording(&tampered) else {
+        panic!("a tampered proof refuses the recording");
+    };
+    let message = format!("{error}");
+    assert!(
+        message.contains("claims a content epoch its own attach-time proof does not yield"),
+        "{message}"
+    );
+
+    // 5. AN UNSETTLED WINDOW describes no one install, so it binds nothing.
+    let unsettled = build("unsettled", &|proof, _| {
+        proof["window_settled"] = json!(false);
+    });
+    let Err(error) = open_recording(&unsettled) else {
+        panic!("an unsettled window binds nothing");
+    };
+    assert!(format!("{error}").contains("never settled"), "{error}");
+}
+
 /// A late-attach recording: no finalized portable content-manifest epoch, so
 /// the static artifacts it DOES carry cannot be bound to the effective content
 /// they were derived from.

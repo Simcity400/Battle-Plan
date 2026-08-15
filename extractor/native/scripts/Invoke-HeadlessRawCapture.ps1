@@ -1116,6 +1116,15 @@ $staticCatalogs = [ordered]@{
     '--static-idea-tech-loc-xref'          = Join-Path $gameDefsOut 'idea_tech_loc_xref\idea_tech_loc_xref_static\idea_tech_loc_xref_catalog.json'
     '--static-ship-definitions'            = Join-Path $gameDefsOut 'ship_definitions_static\ship_definitions_static\ship_definitions_catalog.json'
     '--static-gfx-icon-manifest'           = Join-Path $gameDefsOut 'gfx_icon_manifest\gfx_icon_asset_manifest_static\gfx_icon_manifest_catalog.json'
+    # The two catalogs t51/t54 packaged as ABSENT. Nothing about attach timing
+    # kept them out: their generators are purely offline
+    # (extractor/game_defs/technology_sharing_static_gate.py and
+    # focus_defs_static_gate.py, both BATTLE_PLAN_VANILLA + --out-dir, no pid), the
+    # recorder had no CLI flag to accept them, and this list had no rows for
+    # them. All three are closed; a missing file still throws below rather than
+    # silently producing another six-of-eight recording.
+    '--static-technology-sharing'          = Join-Path $gameDefsOut 'technology_sharing_static\technology_sharing_static\technology_sharing_catalog.json'
+    '--static-focus-defs'                  = Join-Path $gameDefsOut 'focus_defs_static\focus_defs_static\focus_defs_catalog.json'
 }
 
 foreach ($path in @($Hoi4Exe, $PdxUserDir, $collectorDll, $collectorRecord, $headlessControl, $readOnlyObserver, $passiveClockWitnessTool)) {
@@ -1128,6 +1137,17 @@ $readOnlyObserverSha256 = (
     Get-FileHash -LiteralPath $readOnlyObserver -Algorithm SHA256
 ).Hash.ToLowerInvariant()
 foreach ($entry in $staticCatalogs.GetEnumerator()) {
+    # A control character in one of these literals is invisible in a diff and
+    # `Test-Path -LiteralPath` rejects the string as an illegal path, so the
+    # capture dies on a "missing catalog" that is really a typo. That is exactly
+    # how two rows above were first written: a tab and a form feed where the
+    # backslashes belonged, each having swallowed the following letter. Named
+    # separately from "missing" so the next one is diagnosed in one read.
+    if ($entry.Value -match '[\x00-\x1F]') {
+        throw ("Static catalog path for $($entry.Key) contains a control character; " +
+               "it is a source typo, not a missing file: " +
+               ($entry.Value | ConvertTo-Json))
+    }
     if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
         throw "Static catalog for $($entry.Key) is missing: $($entry.Value)"
     }

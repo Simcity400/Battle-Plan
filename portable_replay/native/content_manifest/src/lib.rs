@@ -1,6 +1,7 @@
 //! Portable, path-independent used-content requirements for a replay.
 //! Absolute install/profile paths never cross this boundary.
 
+pub mod attach_content_epoch;
 pub mod authored_ui;
 pub mod authored_ui_closure;
 pub mod content_parse;

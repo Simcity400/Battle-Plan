@@ -85,23 +85,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Manifest field naming WHICH content proof ran. Positively written by every
 /// recording this recorder produces; a consumer never infers the proof from
 /// which other fields happen to be present.
-pub const CONTENT_PROOF_KIND_FIELD: &str = "content_proof_kind";
+pub const CONTENT_PROOF_KIND_FIELD: &str =
+    portable_content_manifest::attach_content_epoch::CONTENT_PROOF_KIND_FIELD;
 
 /// Manifest field carrying the KIND C proof block itself.
-pub const ATTACH_TIME_CONTENT_PROOF_FIELD: &str = "attach_time_content_proof";
+pub const ATTACH_TIME_CONTENT_PROOF_FIELD: &str =
+    portable_content_manifest::attach_content_epoch::ATTACH_TIME_CONTENT_PROOF_FIELD;
 
 /// The launch-time epoch: a content manifest observed before `ResumeThread`.
-pub const KIND_LAUNCH_TIME_STATIC_BUNDLE_V1: &str = "launch_time_static_bundle_v1";
+pub const KIND_LAUNCH_TIME_STATIC_BUNDLE_V1: &str =
+    portable_content_manifest::attach_content_epoch::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1;
 
 /// The attach-time effective-VFS join this module produces.
-pub const KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1: &str = "attach_time_effective_vfs_join_v1";
+pub const KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1: &str =
+    portable_content_manifest::attach_content_epoch::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1;
 
 /// Neither proof ran. Written positively so "no content proof" is a claim the
 /// recording makes rather than a field a consumer finds missing.
-pub const KIND_NONE: &str = "none";
+pub const KIND_NONE: &str = portable_content_manifest::attach_content_epoch::KIND_NONE;
 
 /// Schema of the proof block.
-pub const SCHEMA: &str = "hoi4.attach-time-content-proof.v1";
+pub const SCHEMA: &str = portable_content_manifest::attach_content_epoch::ATTACH_PROOF_SCHEMA;
 
 /// Progress phase published while the fingerprint runs.
 pub const PHASE_CONTENT_FINGERPRINT: &str = "content_fingerprint";
@@ -441,6 +445,11 @@ impl AttachTimeContentProof {
 /// cannot recompute. Order is load-bearing: load order decides which layer wins
 /// a path, so a reordered stack is a different world and must produce a
 /// different digest.
+/// ONE authority, not two spellings: the rows are handed to
+/// [`portable_content_manifest::attach_content_epoch::layer_stack_digest`],
+/// which is also what the replay consumer re-derives the value with. A local
+/// second canonicalization here is exactly the harness-authority drift that
+/// makes a digest disagree with itself across a seam.
 pub fn layer_stack_sha256(layers: &[ProofLayer]) -> Result<String, String> {
     let rows = layers
         .iter()
@@ -455,9 +464,7 @@ pub fn layer_stack_sha256(layers: &[ProofLayer]) -> Result<String, String> {
             })
         })
         .collect::<Vec<_>>();
-    let bytes = serde_json::to_vec(&rows)
-        .map_err(|error| format!("serialize attach-time layer stack failed: {error}"))?;
-    Ok(format!("{:x}", Sha256::digest(&bytes)))
+    portable_content_manifest::attach_content_epoch::layer_stack_digest(&rows)
 }
 
 /// Start the fingerprint on recorder-owned threads and return immediately.
