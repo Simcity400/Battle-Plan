@@ -363,13 +363,19 @@ fn d65_and_d66_reader_failures_declare_their_own_outcome() {
 /// recorded 282 source-unavailable domain-hours for the same domain from the
 /// same capture.
 ///
+/// D91 joined for the same reason on the other side of the same wire: its emit
+/// site published the exact reader's SOURCE_UNAVAILABLE word with nothing in
+/// the ledger, so the completeness walk classified it `MigratedButSilent` and
+/// raised `migrated_site_published_outcome` as a FRAME finding -- t55 carried
+/// that finding on 960 of 960 refused frames.
+///
 /// Production change that makes this fail: dropping the
-/// `record_reader_status_outcome` call from D18's, D65's or D66's emit block in
-/// `build_compact_extraction_gate_records`, pointing one of them at a different
-/// domain, or adding a fourth site without deciding whether the domain it
-/// speaks for belongs off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`.
+/// `record_reader_status_outcome` call from D18's, D65's, D66's or D91's emit
+/// block in `build_compact_extraction_gate_records`, pointing one of them at a
+/// different domain, or adding a fifth site without deciding whether the domain
+/// it speaks for belongs off `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`.
 #[test]
-fn d18_d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
+fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
     const SOURCE: &str = include_str!("../attach_log.rs");
     let lines: Vec<&str> = SOURCE.lines().collect();
     let start = lines
@@ -405,9 +411,10 @@ fn d18_d65_and_d66_emit_sites_route_their_status_word_through_the_ledger() {
         vec![
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
+            "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
         ],
-        "D18, D65 and D66 publish a reader-computed status word and must substantiate it"
+        "D18, D65, D66 and D91 publish a reader-computed status word and must substantiate it"
     );
 }
 
