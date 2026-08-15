@@ -1226,11 +1226,19 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
                 }
             });
             snap["countries"]["CAN"] = country("CAN", false, "democratic", 40, 14.0);
-            snap["countries"]["CAN"]["misc"]["cosmetic_tag"] = if tick < 6 {
+            // Legacy snapshots mirror one cosmetic value under BOTH `misc` and
+            // `extra`, and `country()` seeds both spellings null. Write EVERY
+            // spelling, the way `fx_cosmetic_ideology` does: a null mirror
+            // beside a named override is a producer that missed a write, and
+            // `replay_core::world::first_available_nullable_string` refuses it
+            // rather than guessing which spelling measured the country.
+            let cosmetic = if tick < 6 {
                 json!("CAN_UK")
             } else {
                 json!("CAN_ALY")
             };
+            snap["countries"]["CAN"]["misc"]["cosmetic_tag"] = cosmetic.clone();
+            snap["countries"]["CAN"]["extra"]["cosmetic_tag"] = cosmetic;
         },
     );
     let h6 = hour_at(&s, 6);

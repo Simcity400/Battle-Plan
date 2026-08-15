@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("Check", "Build", "Fast", "Integration", "Test", "Final", "Soak", "Evidence", "Release", "Lock", "Stats")]
     [string]$Mode = "Final",
@@ -61,6 +61,58 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# FAILED UNTIL PROVEN OTHERWISE, and this is the FIRST executable statement of
+# the file for that reason.
+#
+# This repo's own gate instructions end with
+#
+#     & './Invoke-CentralRustValidation.ps1' ...; exit $LASTEXITCODE
+#
+# and $LASTEXITCODE holds the status of the last NATIVE command only. Every
+# refusal in this file is a PowerShell terminating error, which does not touch
+# it; this file is also an ADVANCED script ([CmdletBinding()] above), so its
+# terminating error reaches the caller as an ordinary error record governed by
+# the CALLER's $ErrorActionPreference - Continue - and the launcher runs on to
+# `exit $LASTEXITCODE`. In a fresh shell that variable is $null and `exit $null`
+# exits ZERO. So a refusal that ran no tests at all announced success.
+#
+# Seeding 1 here and clearing it to 0 only after the run has completed makes
+# EVERY failure in the body - the two refusals below, the mutex, the dot-sourced
+# helpers, anything inside the main try, and the cleanup in its finally - exit
+# nonzero, whether or not it is caught.
+#
+# THE ONE CASE THIS CANNOT REACH is a PARAMETER-BINDING failure (a bad -Mode, a
+# missing mandatory value): attribute validation runs before any statement of
+# this file, so nothing here has executed and $LASTEXITCODE still holds whatever
+# the caller left. Closing that needs the launcher itself to test PowerShell
+# success - `& ./Invoke-CentralRustValidation.ps1 ...; if (-not $?) { exit 1 };
+# exit $LASTEXITCODE` - which is a change to this repo's documented gate
+# spelling and therefore an owner call, not this file's to make. Case C9 in
+# runs/jm_compile_cache/Test-CompileCacheFallback.ps1 pins the residual so it
+# cannot change unnoticed.
+$global:LASTEXITCODE = 1
+$script:centralValidationFailed = $false
+
+# ============================ SETUP GUARD, OPENS ============================
+# Seeding 1 is not sufficient ON ITS OWN, because a NATIVE command that succeeds
+# after the seed writes 0 over it. This is not hypothetical and it hides the
+# most dangerous refusal in the file: `Test-CentralValidationTreeMatchesCaller`
+# runs `git rev-parse` TWICE, and when both succeed - which is exactly the case
+# where the caller's tree and this script's tree can be compared and found to
+# DIFFER - $LASTEXITCODE is 0 when the refusal throws. The gate that stops this
+# runner from certifying a tree the caller never changed would have reported
+# success.
+#
+# So everything executable from here to the main try is enclosed, and the catch
+# re-asserts the failure code. There is no `finally`: the mutex and the parallel
+# slot do not exist yet, and the main try's own finally is what releases them.
+#
+# THE BODY BELOW IS DELIBERATELY NOT INDENTED. It is ~1,600 lines, almost all of
+# it function definitions, and indenting it would bury a two-line structural fix
+# in a 1,600-line diff that no reviewer can read. The closing brace is marked
+# `SETUP GUARD, CLOSES` immediately before the main try.
+try {
 
 # BEFORE ANY EARLY RETURN AND BEFORE THE MACHINE-WIDE MUTEX. `-Features` is
 # honoured by three modes; every other mode must REFUSE it rather than run and
@@ -293,6 +345,829 @@ function Get-CurrentPinnedHookSourceAuthority {
     }
 }
 
+# NO-PROGRESS interval for a cargo run made through the compile cache. This is
+# NOT a total time budget: batteries legitimately run for tens of minutes, and a
+# fixed total budget would be a machine-speed constant this repo refuses to
+# carry. What is bounded is SILENCE - cargo emitting nothing at all for this
+# long while sccache is installed as RUSTC_WRAPPER.
+#
+# Why the bound is needed: sccache 0.16's client reads server responses with a
+# blocking read and no timeout, and SCCACHE_IGNORE_SERVER_IO_ERROR only helps
+# once an I/O call RETURNS an error. A server that answers the preflight probe
+# and then never answers a compile request would otherwise hang the battery
+# forever - the preflight probe cannot protect the rest of the run.
+#
+# Ten minutes is far above any gap this build produces between output lines
+# (the slowest single test is ~72 s, and link steps are shorter), so it does not
+# fire on a slow machine - it measures progress, not speed. A FALSE positive is
+# survivable by construction: the phase is re-run cache-free, costing time and
+# nothing else. That matters because cargo can sit silent on the package-cache
+# lock when several lanes build at once; killing that and re-running is wasteful
+# but never wrong.
+$script:CargoStallTimeoutSeconds = 600
+
+function ConvertTo-WindowsCommandLineArgument {
+    <#
+    .SYNOPSIS
+    Quote ONE argument the way CommandLineToArgvW parses it back.
+
+    .DESCRIPTION
+    PowerShell's `& $exe @array` passes an argument array with full fidelity.
+    Start-Process does NOT: -ArgumentList is joined with spaces and nothing is
+    quoted, so any argument containing a space arrives as several arguments.
+    That is not theoretical - it broke a battery here. nextest filtersets look
+    like
+
+        not (package(=collector) | package(=fold_v3))
+
+    and being split on spaces produced `error: expected expression / 1 | not`
+    and `failed to parse filterset`, exit 94, on a tree that was perfectly fine.
+
+    So every argument is quoted here before Start-Process sees it: wrap when it
+    contains whitespace or a quote, double the backslashes that precede a quote
+    (and those at the very end, which would otherwise escape the closing quote),
+    and escape embedded quotes.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ($Value -eq '') { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+
+    $builder = New-Object System.Text.StringBuilder
+    $null = $builder.Append('"')
+    $pendingBackslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $pendingBackslashes++
+            continue
+        }
+        if ($character -eq '"') {
+            $null = $builder.Append('\' * (($pendingBackslashes * 2) + 1))
+            $null = $builder.Append('"')
+            $pendingBackslashes = 0
+            continue
+        }
+        if ($pendingBackslashes -gt 0) {
+            $null = $builder.Append('\' * $pendingBackslashes)
+            $pendingBackslashes = 0
+        }
+        $null = $builder.Append($character)
+    }
+    if ($pendingBackslashes -gt 0) {
+        $null = $builder.Append('\' * ($pendingBackslashes * 2))
+    }
+    $null = $builder.Append('"')
+    return $builder.ToString()
+}
+
+function Initialize-ProcessJobType {
+    <#
+    .SYNOPSIS
+    Compile the Windows Job Object wrapper once per process. $true if the type
+    is available.
+
+    .DESCRIPTION
+    WHY A JOB OBJECT, after four spellings that tried to do this with pids.
+
+    The watchdog has to answer one question before it may start a cache-free
+    retry: is cargo's whole process tree - the rustc children, the sccache
+    clients inside them - gone? Everything built on process IDs answered it
+    approximately, and every approximation was a defect:
+
+      * `taskkill /T <root>` does its OWN tree walk, so it obeys none of the
+        caller's decisions about what belongs to the tree, and can terminate a
+        process the caller could not even identify;
+      * a pid is not an identity. Windows reuses them, so a member that exits
+        between the census and the kill hands its number to a stranger, and the
+        stranger is what gets waited on and killed;
+      * comparing creation timestamps narrows that to a window rather than
+        closing it - a 2 ms wall-clock agreement is not identity, and a clock
+        adjustment can make a live member look like a different process;
+      * and no census can contain a descendant created AFTER it was taken, so a
+        rustc spawned a moment later is invisible to the proof no matter how
+        carefully the list is built.
+
+    A job object has none of those properties, because it never names a process
+    at all. Every process cargo creates is in the job automatically - children
+    inherit job membership and cannot leave it, since breakaway is only possible
+    if the job permits it and this one does not - so the job IS the tree,
+    including descendants created after any observation. `TerminateJobObject`
+    kills exactly its members and nothing else, and the number of processes
+    still assigned is a categorical answer to "is it gone", with no pid resolved
+    anywhere.
+
+    The job carries NO limit flags - KILL_ON_JOB_CLOSE least of all; see
+    Create() for why arming it was worse than the cleanup it bought.
+
+    THAT GAP IS CLOSED. `Start-Process` gives no way to create a process
+    suspended, so this path does its own CreateProcess and the child joins the
+    job before executing one instruction (StartSuspendedInJob).
+
+    THE RESIDUAL THAT REMAINS, at its actual scope: the job carries no limit
+    flags, so a run ABANDONED while cargo is still alive - this process killed,
+    a cancellation, an exceptional unwind that never reaches the stall path -
+    closes an inert job and leaves the tree running. That is the behaviour that
+    existed before this lane. The alternative, KILL_ON_JOB_CLOSE, was armed for
+    two rounds and cost more than it bought; see Create().
+    #>
+    if ('JmProcessJob' -as [type]) { return $true }
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public class JmProcessJob {
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct SECURITY_ATTRIBUTES {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        public bool bInheritHandle;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct STARTUPINFO {
+        public int cb;
+        public string lpReserved, lpDesktop, lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_INFORMATION {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcess(string applicationName, System.Text.StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateFile(string fileName, uint access, uint share,
+        ref SECURITY_ATTRIBUTES security, uint creationDisposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    const int JobObjectBasicProcessIdList = 3;
+    const int JobObjectExtendedLimitInformation = 9;
+    const int ERROR_MORE_DATA = 234;
+    const uint CREATE_SUSPENDED = 0x4;
+    const uint CREATE_NO_WINDOW = 0x8000000;
+    const uint GENERIC_WRITE = 0x40000000;
+    const uint GENERIC_READ = 0x80000000;
+    const uint FILE_SHARE_READ_WRITE = 0x3;
+    const uint CREATE_ALWAYS = 2;
+    const uint OPEN_EXISTING = 3;
+    const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+    const uint STARTF_USESTDHANDLES = 0x100;
+    const int STD_INPUT_HANDLE = -10;
+    const uint DUPLICATE_SAME_ACCESS = 0x2;
+    const short SW_HIDE = 0;
+    const uint WAIT_OBJECT_0 = 0;
+    const uint STILL_ACTIVE = 259;
+
+    IntPtr handle = IntPtr.Zero;
+    IntPtr processHandle = IntPtr.Zero;
+    public string LastError = "";
+    public int ProcessId = -1;
+    public bool IsOpen { get { return handle != IntPtr.Zero; } }
+
+    // NO LIMIT FLAGS, AND KILL_ON_JOB_CLOSE IN PARTICULAR IS NOT SET.
+    //
+    // It was, for two rounds, on the reasoning that a runner killed outright
+    // should take its build tree with it. That turned out to cost far more than
+    // it was worth. The flag makes CLOSING THE LAST HANDLE lethal to everything
+    // still in the job, and what is still in the job after an ORDINARY
+    // successful cargo is whatever cargo deliberately left running - for one,
+    // the long-lived sccache server its client starts when it finds none, which
+    // is shared with every other lane on this machine. So the ordinary path had
+    // to disarm the flag before closing, and a disarm that FAILED left no safe
+    // move: refusing still runs the finally, and the finally still closes the
+    // handle, so the run would go red AND take the shared server with it.
+    //
+    // Not arming it removes the entire failure mode. The tree is killed the one
+    // way that is unambiguous: TerminateJobObject, explicitly, on the stall path
+    // where this code has decided the tree must die. What is given up is cleanup
+    // after an abruptly killed runner - which is the behaviour that existed
+    // before this lane, and which nothing here can tell apart from a normal exit
+    // anyway.
+    public bool Create() {
+        handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == IntPtr.Zero) {
+            LastError = "CreateJobObject failed with " + Marshal.GetLastWin32Error();
+            return false;
+        }
+        return true;
+    }
+
+    // CREATE THE PROCESS SUSPENDED, ASSIGN IT, THEN LET IT RUN. Assignment is
+    // not retroactive, so a process started first can spawn a child that is
+    // outside the job for as long as the parent takes to be scheduled again -
+    // and nothing later can find that child. Suspended means it has not
+    // executed one instruction when it joins the job.
+    //
+    // stdout/stderr go to files opened with an inheritable handle each; the
+    // caller polls those files, exactly as before. stdin is an INHERITABLE
+    // DUPLICATE of the caller's own, so the child sees what Start-Process gave
+    // it (NUL only when there is nothing to duplicate).
+    public int StartSuspendedInJob(string application, string commandLine, string stdoutPath, string stderrPath,
+            string workingDirectory) {
+        if (handle == IntPtr.Zero) { LastError = "the job was never created"; return -1; }
+
+        SECURITY_ATTRIBUTES inheritable = new SECURITY_ATTRIBUTES();
+        inheritable.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
+        inheritable.lpSecurityDescriptor = IntPtr.Zero;
+        inheritable.bInheritHandle = true;
+
+        // ALL THREE ARE DECLARED INVALID AND THE try IS ENTERED BEFORE ANY OF
+        // THEM IS OPENED, so that EVERY return below - including the failure
+        // returns - passes through the finally that closes them. Opening the
+        // redirect files first and returning early on a later failure leaked
+        // both of them: the temporary files could then not be deleted, and the
+        // Start-Process fallback this failure exists to reach could fail on a
+        // sharing violation against those same paths. A degraded fallback that
+        // cannot run is worse than the defect it was avoiding.
+        IntPtr hOut = (IntPtr)(-1);
+        IntPtr hErr = (IntPtr)(-1);
+        IntPtr hIn = (IntPtr)(-1);
+        try {
+            hOut = CreateFile(stdoutPath, GENERIC_WRITE, FILE_SHARE_READ_WRITE, ref inheritable,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+            hErr = CreateFile(stderrPath, GENERIC_WRITE, FILE_SHARE_READ_WRITE, ref inheritable,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+            if (hOut == (IntPtr)(-1) || hErr == (IntPtr)(-1)) {
+                LastError = "could not open the redirect files: " + Marshal.GetLastWin32Error();
+                return -1;
+            }
+
+            // THE CALLER'S OWN STDIN, not NUL, so the child sees what it saw
+            // under Start-Process -NoNewWindow: a cargo that wants to prompt for
+            // registry credentials, or a test binary that reads stdin, must not
+            // behave differently because this runner changed how it launches
+            // things.
+            //
+            // DUPLICATED, because bInheritHandles only carries handles that are
+            // themselves INHERITABLE and GetStdHandle can hand back a perfectly
+            // valid one that is not - a redirected CI host being the usual way.
+            //
+            // THREE OUTCOMES, and the middle one is the point. NO standard input
+            // at all (a service, a host that hands back nothing) -> NUL, which is
+            // what the child would have got anyway. A handle that duplicates ->
+            // the child sees exactly the caller's stdin. A handle that EXISTS but
+            // cannot be duplicated is NEITHER: quietly turning the caller's stdin
+            // into EOF would be this launcher changing what the child reads,
+            // silently, on a host that is not this machine. That case gives up
+            // the job path - LOUDLY, via the named degraded notice - and lets
+            // Start-Process hand on the real handle the way it always did.
+            IntPtr callerStdIn = GetStdHandle(STD_INPUT_HANDLE);
+            if (callerStdIn != IntPtr.Zero && callerStdIn != (IntPtr)(-1)) {
+                IntPtr duplicate;
+                IntPtr self = GetCurrentProcess();
+                if (!DuplicateHandle(self, callerStdIn, self, out duplicate, 0, true, DUPLICATE_SAME_ACCESS)) {
+                    LastError = "the caller's standard input could not be duplicated for inheritance (" +
+                        Marshal.GetLastWin32Error() + "); substituting NUL would change what the child reads";
+                    return -1;
+                }
+                hIn = duplicate;
+            }
+            if (hIn == (IntPtr)(-1)) {
+                // There is genuinely no standard input to hand on: NUL, so a
+                // child that reads stdin sees EOF rather than an invalid handle.
+                hIn = CreateFile("NUL", GENERIC_READ, FILE_SHARE_READ_WRITE, ref inheritable,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+                if (hIn == (IntPtr)(-1)) {
+                    LastError = "could not open NUL for the child's standard input: " + Marshal.GetLastWin32Error();
+                    return -1;
+                }
+            }
+
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            si.dwFlags = (int)STARTF_USESTDHANDLES;
+            si.hStdInput = hIn;
+            si.hStdOutput = hOut;
+            si.hStdError = hErr;
+
+            PROCESS_INFORMATION pi;
+            // CreateProcess can WRITE to its command line buffer, so it must be
+            // a mutable StringBuilder rather than a string.
+            //
+            // NO CREATE_NO_WINDOW: the child keeps this process's console,
+            // exactly as Start-Process -NoNewWindow gave it. Taking the console
+            // away is a behaviour change for anything that asks whether it has
+            // one, and this path launches every cargo call in the battery.
+            System.Text.StringBuilder mutable = new System.Text.StringBuilder(commandLine);
+            // THE WORKING DIRECTORY IS PASSED EXPLICITLY, and null here was a
+            // real defect that a full battery caught: CreateProcess with a null
+            // lpCurrentDirectory inherits the PROCESS's current directory, and
+            // PowerShell's `Set-Location` / `Push-Location` do NOT change that -
+            // they move a provider location that only PowerShell knows about.
+            // `Start-Process` defaulted its -WorkingDirectory to that provider
+            // location, so switching to CreateProcess silently moved every cargo
+            // invocation to whatever directory this process happened to start
+            // in, and cargo answered "could not find Cargo.toml".
+            if (!CreateProcess(application, mutable, IntPtr.Zero, IntPtr.Zero, true,
+                    CREATE_SUSPENDED, IntPtr.Zero, workingDirectory, ref si, out pi)) {
+                LastError = "CreateProcess failed with " + Marshal.GetLastWin32Error();
+                return -1;
+            }
+
+            if (!AssignProcessToJobObject(handle, pi.hProcess)) {
+                LastError = "AssignProcessToJobObject failed with " + Marshal.GetLastWin32Error();
+                // -2, not -1: the caller may NOT fall back when a process it
+                // created cannot be shown to have died.
+                if (!KillSuspended(pi)) { LastError += "; " + LastError2; return -2; }
+                return -1;
+            }
+
+            if (ResumeThread(pi.hThread) == 0xFFFFFFFF) {
+                LastError = "ResumeThread failed with " + Marshal.GetLastWin32Error();
+                if (!KillSuspended(pi)) { LastError += "; " + LastError2; return -2; }
+                return -1;
+            }
+
+            CloseHandle(pi.hThread);
+            processHandle = pi.hProcess;
+            ProcessId = pi.dwProcessId;
+            return ProcessId;
+        }
+        finally {
+            // The child has its own duplicates; these are this process's copies
+            // and must go, or the files stay open for writing after it exits.
+            // stdin included: it is always a handle this function opened or
+            // duplicated, never the caller's own.
+            if (hOut != (IntPtr)(-1)) { CloseHandle(hOut); }
+            if (hErr != (IntPtr)(-1)) { CloseHandle(hErr); }
+            if (hIn != (IntPtr)(-1)) { CloseHandle(hIn); }
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr GetStdHandle(int stdHandle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DuplicateHandle(IntPtr sourceProcess, IntPtr sourceHandle, IntPtr targetProcess,
+        out IntPtr targetHandle, uint desiredAccess, bool inheritHandle, uint options);
+
+    public string LastError2 = "";
+
+    // A SUSPENDED PROCESS THAT COULD NOT BE PUT IN THE JOB MUST DIE, AND BE SEEN
+    // TO. Resuming it would put a build outside the job; leaving it suspended
+    // would leave it forever; and closing the handle without waiting would let
+    // the fallback start a second cargo beside one this code cannot prove is
+    // gone. TerminateProcess is asynchronous, so the wait is the proof.
+    bool KillSuspended(PROCESS_INFORMATION pi) {
+        bool dead = false;
+        if (TerminateProcess(pi.hProcess, 1)) {
+            dead = WaitForSingleObject(pi.hProcess, 15000) == WAIT_OBJECT_0;
+            if (!dead) { LastError2 = "the suspended process did not exit within 15 s of being terminated"; }
+        }
+        else {
+            LastError2 = "TerminateProcess failed with " + Marshal.GetLastWin32Error();
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return dead;
+    }
+
+    public bool HasExited {
+        get {
+            if (processHandle == IntPtr.Zero) { return true; }
+            return WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0;
+        }
+    }
+
+    public bool WaitForExit(int milliseconds) {
+        if (processHandle == IntPtr.Zero) { return true; }
+        return WaitForSingleObject(processHandle, (uint)milliseconds) == WAIT_OBJECT_0;
+    }
+
+    // -1 when it cannot be read, which the caller must not confuse with 0.
+    public int ExitCode {
+        get {
+            uint code;
+            if (processHandle == IntPtr.Zero) { LastError = "no process was started"; return -1; }
+            if (!GetExitCodeProcess(processHandle, out code)) {
+                LastError = "GetExitCodeProcess failed with " + Marshal.GetLastWin32Error();
+                return -1;
+            }
+            if (code == STILL_ACTIVE) { LastError = "the process is still running"; return -1; }
+            return unchecked((int)code);
+        }
+    }
+
+    public bool Assign(IntPtr processHandle) {
+        if (handle == IntPtr.Zero) { LastError = "the job was never created"; return false; }
+        if (!AssignProcessToJobObject(handle, processHandle)) {
+            LastError = "AssignProcessToJobObject failed with " + Marshal.GetLastWin32Error();
+            return false;
+        }
+        return true;
+    }
+
+    public bool Terminate() {
+        if (handle == IntPtr.Zero) { LastError = "the job was never created"; return false; }
+        if (!TerminateJobObject(handle, 1)) {
+            LastError = "TerminateJobObject failed with " + Marshal.GetLastWin32Error();
+            return false;
+        }
+        return true;
+    }
+
+    // How many processes are still assigned. -1 means the question could not be
+    // asked, which the caller must treat as "not established" rather than zero.
+    public int AssignedProcessCount() {
+        if (handle == IntPtr.Zero) { LastError = "the job was never created"; return -1; }
+        int size = 8 + (8 * 4096);
+        IntPtr buffer = Marshal.AllocHGlobal(size);
+        try {
+            if (!QueryInformationJobObject(handle, JobObjectBasicProcessIdList, buffer, (uint)size, IntPtr.Zero)) {
+                int error = Marshal.GetLastWin32Error();
+                // ERROR_MORE_DATA means the id list did not fit, but the count
+                // in the first field is filled in and is the only field read.
+                if (error != ERROR_MORE_DATA) {
+                    LastError = "QueryInformationJobObject failed with " + error;
+                    return -1;
+                }
+            }
+            return Marshal.ReadInt32(buffer, 0);
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    public void Close() {
+        if (processHandle != IntPtr.Zero) { CloseHandle(processHandle); processHandle = IntPtr.Zero; }
+        if (handle != IntPtr.Zero) { CloseHandle(handle); handle = IntPtr.Zero; }
+    }
+}
+'@
+    }
+    catch {
+        return $false
+    }
+    return $null -ne ('JmProcessJob' -as [type])
+}
+
+function Wait-ProcessJobEmpty {
+    <#
+    .SYNOPSIS
+    Poll until the job holds no processes, or the budget expires. Returns the
+    number still assigned: 0 is the proof of death, and -1 means it could not be
+    established - which is not the same as zero and must never be read as it.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][object]$Job,
+        [Parameter(Mandatory = $true)][int]$TimeoutMs
+    )
+
+    # A STOPWATCH, not the wall clock: `Get-Date` moves when the machine's clock
+    # is adjusted (NTP, DST, a VM resuming), and a backwards step would silently
+    # extend a bound whose whole job is to be exact.
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $count = $Job.AssignedProcessCount()
+        if ($count -eq 0) { return 0 }
+        if ($elapsed.ElapsedMilliseconds -ge $TimeoutMs) { return $count }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
+function Invoke-WatchedProcess {
+    <#
+    .SYNOPSIS
+    Run a program, streaming its output, and report whether it went silent for
+    longer than $StallSeconds. Never throws on a stall - it reports one.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Program,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][int]$StallSeconds,
+        # When set, STDOUT is collected and returned instead of relayed to the
+        # host. Needed for `nextest list`, whose stdout is the JSON the caller
+        # parses. Stderr is still relayed, and both streams still count as
+        # progress, so a captured call is bounded exactly like a streamed one.
+        [switch]$CaptureStandardOutput
+    )
+
+    $outFile = [IO.Path]::GetTempFileName()
+    $errFile = [IO.Path]::GetTempFileName()
+    $outOffset = 0L
+    $errOffset = 0L
+    $lastProgress = Get-Date
+    $stalled = $false
+    $process = $null
+    $job = $null
+    $jobAssignFailure = ''
+
+    # Relays whatever has been written since the last look, and reports whether
+    # anything arrived - that is the definition of progress used here.
+    #
+    # CAPTURE MODE NEVER DECODES HERE. In capture mode the return value is the
+    # census JSON the caller parses, and decoding it incrementally out of a file
+    # a live process is appending to loses bytes two ways:
+    #   * `ReadToEnd` stops at the EOF it sees; reading `$stream.Length`
+    #     afterwards can report MORE than was read, and advancing the offset to
+    #     that length marks the difference consumed without ever having captured
+    #     it;
+    #   * a `StreamReader` recreated at an arbitrary byte offset can start
+    #     inside a multi-byte UTF-8 sequence and turn it into replacement
+    #     characters.
+    # Either one makes a healthy `nextest list` come back as malformed JSON and
+    # fails a green tree. So capture mode watches the file's LENGTH for progress
+    # and the whole stdout file is decoded ONCE, after the process has exited.
+    # The relayed path keeps streaming - it is a console mirror, and it now
+    # advances by what the reader actually consumed rather than by the length it
+    # read back afterwards.
+    $pump = {
+        param([string]$Path, [ref]$Offset, [bool]$LengthOnly)
+        $moved = $false
+        try {
+            $stream = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
+            try {
+                if ($stream.Length -gt $Offset.Value) {
+                    if ($LengthOnly) {
+                        $Offset.Value = $stream.Length
+                        $moved = $true
+                    }
+                    else {
+                        $null = $stream.Seek($Offset.Value, 'Begin')
+                        $reader = New-Object IO.StreamReader($stream)
+                        $text = $reader.ReadToEnd()
+                        if (-not [string]::IsNullOrEmpty($text)) {
+                            Write-Host $text -NoNewline
+                            $moved = $true
+                        }
+                        # What the reader CONSUMED, not the file's length now.
+                        $Offset.Value = $stream.Position
+                    }
+                }
+            }
+            finally { $stream.Dispose() }
+        }
+        catch { }
+        return $moved
+    }
+
+    try {
+        # Redirecting to FILES rather than pipes: the parent then never has to
+        # drain a pipe to keep the child alive, so a stalled child cannot be
+        # confused with a parent that stopped reading.
+        # Quote every argument before Start-Process sees it - see
+        # ConvertTo-WindowsCommandLineArgument for why this is not optional.
+        $quoted = @($Arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument -Value $_ })
+
+        # THE PROCESS IS CREATED SUSPENDED AND JOINS THE JOB BEFORE IT EXECUTES
+        # ONE INSTRUCTION. Assignment is not retroactive: a process that is
+        # already running can spawn a child before it is assigned, and that child
+        # is outside the job permanently - invisible to the kill and to the proof
+        # that follows it. There is no way to ask Start-Process for a suspended
+        # process, so this path does its own CreateProcess; see
+        # Initialize-ProcessJobType.
+        #
+        # The command line is built HERE, with the program quoted by the same
+        # function as every argument, because CreateProcess takes one string
+        # rather than a list. Case C6 checks argv arrives unchanged end to end.
+        # RESOLVED THROUGH PATH FIRST, and this is not a detail. CreateProcess
+        # given a non-null lpApplicationName does NO PATH or PATHEXT search: it
+        # takes the name literally, relative to the current directory, extension
+        # included. So `cargo` - the name every call site in this file passes -
+        # simply does not exist, CreateProcess fails, and the code below falls
+        # back to Start-Process. That is exactly what shipped for one round: the
+        # suspended job path worked perfectly for the test shims (absolute paths)
+        # and never once ran for a real cargo call, silently, because the
+        # fallback is quiet by design.
+        $resolvedProgram = $Program
+        try {
+            $found = @(Get-Command $Program -CommandType Application -ErrorAction Stop)
+            if ($found.Count -gt 0) { $resolvedProgram = $found[0].Source }
+        }
+        catch { }
+
+        if (Initialize-ProcessJobType) {
+            $job = New-Object JmProcessJob
+            if ($job.Create()) {
+                $commandLine = ((@(ConvertTo-WindowsCommandLineArgument -Value $resolvedProgram) + $quoted) -join ' ')
+                # PowerShell's location, not the process's - see the comment in
+                # StartSuspendedInJob. Every cargo call in this runner is made
+                # from inside its workspace directory via Push-Location, and that
+                # is the directory cargo must see.
+                $workingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath
+                $started = $job.StartSuspendedInJob($resolvedProgram, $commandLine, $outFile, $errFile, $workingDirectory)
+                if ($started -lt 0) {
+                    $jobAssignFailure = $job.LastError
+                    $job.Close()
+                    $job = $null
+
+                    # -2 IS NOT -1. -1 means "the job could not be used", and the
+                    # run falls back and compiles. -2 means a process this code
+                    # CREATED could not be shown to have died - it is suspended,
+                    # unassigned, holding inherited handles, and unreachable now
+                    # that its handles are closed. Starting a second cargo beside
+                    # it is the one thing that must not happen, so this refuses
+                    # rather than degrading.
+                    if ($started -eq -2) {
+                        # Deliberately neutral about WHICH step failed: -2 is
+                        # reached from the assign failure and from the resume
+                        # failure, and in the second case the process WAS in the
+                        # job. What matters to whoever reads this is the same
+                        # either way - a suspended process was created and could
+                        # not be shown to have died.
+                        throw (("this run created {0} suspended and could not complete its job-object " +
+                                "startup, then could not establish that it died ({1}); refusing to start " +
+                                "a second one beside a process it can no longer reach") -f `
+                                $resolvedProgram, $jobAssignFailure)
+                    }
+                }
+            }
+            else {
+                $jobAssignFailure = $job.LastError
+                $job = $null
+            }
+        }
+        else {
+            $jobAssignFailure = 'the job-object wrapper could not be compiled on this machine'
+        }
+
+        # FAIL OPEN. If the job could not be created or the process could not be
+        # started inside it, the compile still happens - this is a RECOVERY
+        # mechanism, and refusing to build because a recovery mechanism is
+        # unavailable would be the tail wagging the dog. What it costs is the
+        # ability to PROVE the tree died, so a stall then refuses rather than
+        # retrying blind.
+        if ($null -eq $job) {
+            # NAMED, NEVER SILENT. A quiet fallback is how the PATH-resolution
+            # defect above survived a full green battery: the mechanism was not
+            # running at all and nothing said so. A run that cannot bound its own
+            # compiles says which line it is on.
+            $notice = (
+                ('COMPILE WATCHDOG DEGRADED: {0} is being started outside a job object ({1}), so a stall ' +
+                 'could not be recovered from - it would be REFUSED instead. The compile itself is ' +
+                 'unaffected.') -f $Program,
+                $(if ([string]::IsNullOrWhiteSpace($jobAssignFailure)) { 'reason not recorded' } else { $jobAssignFailure })
+            )
+            Write-Host $notice
+            Write-Warning $notice
+
+            $process = Start-Process -FilePath $Program -ArgumentList $quoted -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+            # TOUCH .Handle IMMEDIATELY. A process object from Start-Process
+            # -PassThru does not retain the native handle, and without it
+            # .ExitCode comes back EMPTY after the process ends. Empty is the
+            # dangerous value here: the caller tests `-ne 0`, and $null -ne 0 is
+            # TRUE, so every SUCCESSFUL cargo invocation would have been reported
+            # as a failure and thrown.
+            $null = $process.Handle
+        }
+
+        # ONE name for "the child", whichever path started it. The job wrapper
+        # answers HasExited/ExitCode from the handle CreateProcess returned, so
+        # neither path ever looks a pid up.
+        $processId = if ($null -ne $job) { $job.ProcessId } else { $process.Id }
+
+        while ($true) {
+            $movedOut = & $pump $outFile ([ref]$outOffset) $CaptureStandardOutput.IsPresent
+            $movedErr = & $pump $errFile ([ref]$errOffset) $false
+            if ($movedOut -or $movedErr) { $lastProgress = Get-Date }
+
+            if ($(if ($null -ne $job) { $job.HasExited } else { $process.HasExited })) { break }
+
+            if (((Get-Date) - $lastProgress).TotalSeconds -ge $StallSeconds) {
+                $stalled = $true
+                break
+            }
+            Start-Sleep -Milliseconds 500
+        }
+
+        if ($stalled) {
+            # Kill the whole TREE: cargo's rustc children (and the sccache client
+            # inside them) are what is actually stuck, and killing only cargo
+            # would leave them holding the cache and the target dir.
+            #
+            # NOTHING HERE NAMES A PROCESS. The job is the tree - every process
+            # cargo created is in it, including any created since the last time
+            # anyone looked - so TerminateJobObject kills exactly that set and
+            # nothing else, and an empty job is a categorical proof of death
+            # rather than a pid lookup that can race. Four earlier spellings
+            # tried to do this with pids and each one was a defect; see
+            # Initialize-ProcessJobType.
+            if ($null -eq $job) {
+                # PARENTHESISED before -f: the operator binds to the LAST string
+                # of a concatenation, so without these brackets the message went
+                # out with a literal "PID {0}" in it - which is what
+                # fallback/no_job_refusal.log recorded.
+                throw (("the stalled cargo process (PID {0}) could not be put in a job object{1}, so its " +
+                        "rustc children cannot be shown to have stopped; refusing to start a second build " +
+                        "in the same target directory") -f `
+                        $processId,
+                        $(if ([string]::IsNullOrWhiteSpace($jobAssignFailure)) { '' }
+                          else { " ($jobAssignFailure)" }))
+            }
+
+            if (-not $job.Terminate()) {
+                throw (("the stalled cargo process tree (PID {0}) could not be terminated ({1}); refusing to " +
+                        "start a second build in the same target directory") -f $processId, $job.LastError)
+            }
+
+            # PROVE it before anyone starts a retry. Starting a cache-free re-run
+            # beside a still-live rustc would put two builds in one target
+            # directory and fight over the build lock - worse than the stall.
+            $stillAssigned = Wait-ProcessJobEmpty -Job $job -TimeoutMs 30000
+            if ($stillAssigned -ne 0) {
+                throw (("the stalled cargo process tree (PID {0}) could not be shown to have stopped - {1}; " +
+                        "refusing to start a second build in the same target directory") -f `
+                        $processId,
+                        $(if ($stillAssigned -lt 0) { "the job could not be queried ($($job.LastError))" }
+                          else { "$stillAssigned process(es) still assigned to its job" }))
+            }
+        }
+        else {
+            $null = $(if ($null -ne $job) { $job.WaitForExit(-1) } else { $process.WaitForExit() })
+            # Final drain: the child may have written after the last poll.
+            $null = & $pump $outFile ([ref]$outOffset) $CaptureStandardOutput.IsPresent
+            $null = & $pump $errFile ([ref]$errOffset) $false
+
+            # NOTHING TO DISARM. The job carries no KILL_ON_JOB_CLOSE, so
+            # closing its handle below is inert for anything cargo deliberately
+            # left running - a shared sccache server, above all. See Create():
+            # arming that flag meant the ordinary path had to disarm it, and a
+            # disarm that failed left no safe move, because refusing still runs
+            # the finally and the finally still closes the handle.
+        }
+
+        # ONE decode of the WHOLE file, after the writer is gone. Nothing can be
+        # appended to it any more, so there is no partial read to lose and no
+        # arbitrary offset to split a character on. A stalled run returns no
+        # output on purpose: its caller re-runs the phase without the cache.
+        $capturedOutput = ''
+        if ($CaptureStandardOutput -and -not $stalled) {
+            try { $capturedOutput = [IO.File]::ReadAllText($outFile) } catch { $capturedOutput = '' }
+        }
+
+        $exitCode = if ($stalled) { -1 }
+                    elseif ($null -ne $job) { $job.ExitCode }
+                    else { $process.ExitCode }
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Stalled  = $stalled
+            Output   = $capturedOutput
+        }
+    }
+    finally {
+        # The job handle, released once the phase is over. It carries no limit
+        # flags, so closing it terminates nothing: the only thing that ever kills
+        # this tree is the explicit TerminateJobObject on the stall path.
+        if ($null -ne $job) { $job.Close() }
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)]
@@ -303,10 +1178,213 @@ function Invoke-Checked {
     )
 
     Write-Host ("> {0} {1}" -f $Program, ($Arguments -join " "))
-    & $Program @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Program exited with code $LASTEXITCODE"
+
+    # The watchdog is only worth its complexity for the case it exists for: a
+    # cargo run whose rustc calls are being driven by sccache. Everything else
+    # keeps the plain, direct invocation.
+    $watched = ($Program -ieq 'cargo') -and -not [string]::IsNullOrWhiteSpace($env:RUSTC_WRAPPER)
+    if (-not $watched) {
+        & $Program @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Program exited with code $LASTEXITCODE"
+        }
+        return
     }
+
+    $run = Invoke-WatchedProcess -Program $Program -Arguments $Arguments -StallSeconds $script:CargoStallTimeoutSeconds
+    if ($run.Stalled) {
+        $notice = (
+            ('COMPILE CACHE UNAVAILABLE: cargo produced no output for {0} s while sccache was installed as ' +
+             'RUSTC_WRAPPER, which is how a cache server that stops answering presents itself. The process ' +
+             'tree was stopped and this phase is being re-run WITHOUT the cache. The run continues; only its ' +
+             'speed changes, and the cache stays off for the rest of it.') -f $script:CargoStallTimeoutSeconds
+        )
+        Write-Host $notice
+        Write-Warning $notice
+
+        # Drop the wrapper for the remainder of the run. Re-running the same
+        # phase with the same broken cache would just stall again.
+        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+        $env:CARGO_INCREMENTAL = "1"
+
+        Write-Host ("> {0} {1}   (cache-free re-run)" -f $Program, ($Arguments -join " "))
+        & $Program @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Program exited with code $LASTEXITCODE"
+        }
+        return
+    }
+
+    if ($run.ExitCode -ne 0) {
+        throw "$Program exited with code $($run.ExitCode)"
+    }
+}
+
+function Test-ConfigSelectsTargetDirectory {
+    <#
+    .SYNOPSIS
+    Does cargo, with CARGO_TARGET_DIR absent, still put build output exactly
+    where this runner expects it? Never throws; answers true or false.
+
+    .DESCRIPTION
+    THE WHOLE CROSS-WORKTREE CACHE RESTS ON THIS. sccache hashes inherited
+    CARGO_* environment values, so exporting CARGO_TARGET_DIR makes every
+    worktree's compilations unique and reuse across checkouts is exactly zero
+    (measured 0 hits / 61). Letting the repo's own .cargo/config.toml select the
+    same directory - `[build] target-dir = ".cargo-target"`, resolved per
+    worktree - removes that variable from the environment and the same
+    experiment returns 43 hits / 61, all of them shared dependencies.
+
+    But the runner computes artifact paths (release ZIPs, the attestation) under
+    $targetDir. If config discovery ever resolved somewhere else - a cargo root
+    outside this tree, a config that stops being found - those paths would point to
+    nothing while the build quietly succeeded elsewhere. So this ASKS CARGO,
+    with the variable cleared, and the caller falls back to exporting it when
+    the answer is not the expected directory. Slower, never wrong.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedTargetDir
+    )
+
+    if (-not (Test-Path $ManifestPath)) { return $false }
+
+    # ASK FROM THE DIRECTORY THE REAL BUILD RUNS IN. Cargo discovers
+    # .cargo/config.toml by walking up from the CURRENT DIRECTORY, not from the
+    # manifest path, so asking from anywhere else answers a different question:
+    # run from outside the worktree this returned the MAIN checkout's target dir
+    # for a worktree manifest. Every cargo invocation in this runner is made
+    # from inside its workspace directory, so the probe stands there too.
+    $savedTargetDir = $env:CARGO_TARGET_DIR
+    $savedPreference = $ErrorActionPreference
+    $env:CARGO_TARGET_DIR = $null
+    $ErrorActionPreference = 'Continue'
+    $pushed = $false
+    try {
+        Push-Location (Split-Path -Parent $ManifestPath)
+        $pushed = $true
+        $json = & cargo metadata --no-deps --format-version 1 --offline --manifest-path $ManifestPath 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $reported = ($json | Out-String | ConvertFrom-Json).target_directory
+        if ([string]::IsNullOrWhiteSpace($reported)) { return $false }
+        return ([IO.Path]::GetFullPath($reported).TrimEnd('\')) -ieq ([IO.Path]::GetFullPath($ExpectedTargetDir).TrimEnd('\'))
+    }
+    catch { return $false }
+    finally {
+        if ($pushed) { Pop-Location }
+        $env:CARGO_TARGET_DIR = $savedTargetDir
+        $ErrorActionPreference = $savedPreference
+    }
+}
+
+function Get-CompileCacheState {
+    <#
+    .SYNOPSIS
+    Decide whether this run can compile through sccache. Never throws.
+
+    .DESCRIPTION
+    FAIL-OPEN BY DESIGN. What this replaced was
+
+        throw "Reusable cache mode requires sccache on PATH."
+
+    which turned a missing OPTIONAL accelerator into a refusal to validate
+    anything at all. A compile cache is a speed device; a machine without one
+    must still be able to run a full battery, and the only thing that may
+    change is how long it takes.
+
+    Presence on PATH is not enough to earn the wrapper. RUSTC_WRAPPER makes
+    sccache the compiler driver for EVERY rustc invocation of the run, so an
+    sccache that is installed but cannot start or answer its server converts
+    the entire compile into hard errors - strictly worse than not using it.
+    This probes the server and only a server that answers is accepted.
+
+    Returns Usable plus a Notice naming the reason when it is false.
+    #>
+    param([int]$ProbeTimeoutMs = 20000)
+
+    if ($null -eq (Get-Command sccache -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            Usable = $false
+            Notice = 'COMPILE CACHE UNAVAILABLE: sccache is not on PATH. This run compiles with plain cargo; nothing else about it changes.'
+        }
+    }
+
+    # The probe runs as a BOUNDED child process rather than an inline call, for
+    # two reasons. First, sccache writes "couldn't connect to server" to STDERR
+    # in the perfectly ordinary case where no server is running yet, and
+    # PowerShell turns a native command's stderr into a terminating
+    # NativeCommandError while $ErrorActionPreference is Stop. Second, an
+    # inline call has NO time bound: an sccache that hangs instead of failing
+    # would hang the whole validation, which is the one outcome a fail-open
+    # path must never produce. An unanswered probe inside the deadline is
+    # treated exactly like a broken one.
+    # Driven through System.Diagnostics.Process rather than Start-Process. Two
+    # earlier spellings of this probe both reported a HEALTHY sccache as broken,
+    # and every battery silently took the plain-cargo fallback:
+    #   * `-RedirectStandardOutput 'NUL' -RedirectStandardError 'NUL'` - Start-Process
+    #     refuses identical redirect targets and threw;
+    #   * `-PassThru` alone - .ExitCode came back empty, so the exit-code test
+    #     compared against nothing.
+    # Both times the fallback did its job and the run stayed green, so the only
+    # symptom was the notice in the log. This spelling owns the process object,
+    # so the exit code and the output are both dependable.
+    $probeExit = -1
+    $statsText = $null
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = 'sccache'
+        $startInfo.Arguments = '--show-stats'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+
+        $probe = [System.Diagnostics.Process]::Start($startInfo)
+        # BOTH streams are drained ASYNCHRONOUSLY, and WaitForExit owns the
+        # deadline. A synchronous ReadToEnd() blocks until end-of-stream, so a
+        # child that stays alive without closing stdout never lets the timeout
+        # below be reached - the "bounded" probe would hang the entire battery,
+        # which is the one outcome a fail-open path must never produce. Reading
+        # the two streams one after the other is also the documented redirected
+        # -stream deadlock: stderr filling its buffer stalls a process whose
+        # stdout is still being waited on. Starting both reads first avoids both.
+        $stdoutRead = $probe.StandardOutput.ReadToEndAsync()
+        $stderrRead = $probe.StandardError.ReadToEndAsync()
+        if ($probe.WaitForExit($ProbeTimeoutMs)) {
+            $probeExit = $probe.ExitCode
+            # The process has exited, so both reads are finished or about to be;
+            # bound the collection anyway rather than trust that.
+            if ($stdoutRead.Wait(5000)) { $statsText = $stdoutRead.Result }
+            $null = $stderrRead.Wait(1000)
+        }
+        else {
+            # Still running past the deadline: kill it, make sure it is really
+            # gone, and refuse the cache.
+            try { $probe.Kill() } catch { }
+            try { $null = $probe.WaitForExit(5000) } catch { }
+            return [pscustomobject]@{
+                Usable = $false
+                Notice = ('COMPILE CACHE UNAVAILABLE: sccache did not answer within {0} ms and was stopped. This run compiles with plain cargo; nothing else about it changes.' -f $ProbeTimeoutMs)
+                StatsText = $null
+            }
+        }
+    }
+    catch {
+        $probeExit = -1
+    }
+
+    if ($probeExit -ne 0) {
+        return [pscustomobject]@{
+            Usable = $false
+            Notice = ('COMPILE CACHE UNAVAILABLE: sccache is on PATH but its server did not answer (probe exit {0}). This run compiles with plain cargo; nothing else about it changes.' -f $probeExit)
+            StatsText = $null
+        }
+    }
+
+    # The probe's own output is carried back so callers that want the statistics
+    # do not have to ask a second time: a second unbounded `--show-stats` could
+    # hang, or terminate on native stderr, after this one has already succeeded.
+    return [pscustomobject]@{ Usable = $true; Notice = $null; StatsText = $statsText }
 }
 
 function Invoke-CheckedNextestWithCensus {
@@ -346,9 +1424,42 @@ function Invoke-CheckedNextestWithCensus {
     #
     # No 2>&1: cargo's stderr goes to the console, where it belongs, and only
     # stdout -- the JSON -- is captured.
-    $listJson = & cargo @ListArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Context could not be listed: cargo exited with code $LASTEXITCODE"
+    # BOUNDED LIKE EVERY OTHER CARGO CALL. `nextest list` BUILDS the test
+    # binaries before it can list them, so it runs rustc under RUSTC_WRAPPER
+    # exactly like a run does - and a direct `& cargo` here would be the one
+    # compiling invocation in the battery with no stall bound, which is
+    # precisely the hang this lane exists to close. Capture mode keeps stdout
+    # (the JSON) while stderr still streams to the console.
+    if (-not [string]::IsNullOrWhiteSpace($env:RUSTC_WRAPPER)) {
+        $listRun = Invoke-WatchedProcess -Program 'cargo' -Arguments $ListArguments `
+            -StallSeconds $script:CargoStallTimeoutSeconds -CaptureStandardOutput
+        if ($listRun.Stalled) {
+            $notice = (
+                ('COMPILE CACHE UNAVAILABLE: cargo produced no output for {0} s while listing {1} with sccache ' +
+                 'installed as RUSTC_WRAPPER. The process tree was stopped and the listing is being retried ' +
+                 'WITHOUT the cache; the cache stays off for the rest of this run.') -f $script:CargoStallTimeoutSeconds, $Context
+            )
+            Write-Host $notice
+            Write-Warning $notice
+            Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+            $env:CARGO_INCREMENTAL = "1"
+            $listJson = & cargo @ListArguments
+            if ($LASTEXITCODE -ne 0) {
+                throw "$Context could not be listed: cargo exited with code $LASTEXITCODE"
+            }
+        }
+        else {
+            if ($listRun.ExitCode -ne 0) {
+                throw "$Context could not be listed: cargo exited with code $($listRun.ExitCode)"
+            }
+            $listJson = $listRun.Output
+        }
+    }
+    else {
+        $listJson = & cargo @ListArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Context could not be listed: cargo exited with code $LASTEXITCODE"
+        }
     }
     $listed = ($listJson | Out-String) | ConvertFrom-Json
     $count = 0
@@ -1031,11 +2142,53 @@ function Enter-CentralValidationSerialPhase {
 }
 
 function Add-SerialPhaseAction {
+    <#
+    .SYNOPSIS
+    Queue one machine-serial step, with the values it must run against.
+
+    .DESCRIPTION
+    -State carries what used to be captured by `.GetNewClosure()`, and it is a
+    SINGLE object on purpose.
+
+    The queued steps run after the loops that built them, so each one needs the
+    loop's values AS THEY WERE, not as they end up. `.GetNewClosure()` does that
+    by binding the script block to a NEW DYNAMIC MODULE - and a script block
+    bound to a module resolves commands in that module and then in GLOBAL scope.
+    The functions this file defines live in the SCRIPT scope, which is neither.
+    Whether they are found therefore depends on how the runner was started:
+
+        powershell -File Invoke-CentralRustValidation.ps1 ...   -> found
+        powershell -Command "& './Invoke-CentralRustValidation.ps1' ..."  -> NOT found
+
+    Under the second form - the spelling in this repo's own gate instructions -
+    every queued step died with "The term 'Invoke-CheckedNextestWithCensus' is
+    not recognized", and because the failure is a terminating error rather than
+    a native exit code, `; exit $LASTEXITCODE` then reported the LAST NATIVE
+    COMMAND's status: the battery announced exit 0 having run NONE of its
+    machine-serial tests. A gate that reports green after running nothing is the
+    worst failure this script can have.
+
+    A plain script block stays bound to this script's session state, so it sees
+    these functions under either spelling. Passing the captured values as one
+    -State parameter keeps the by-value capture without the module: one object,
+    because a `[object[]]` list would flatten the string ARRAYS (the cargo
+    argument lists) into their elements at binding time.
+    #>
     param(
         [Parameter(Mandatory = $true)][string]$Describe,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][object]$State
     )
-    $serialPhaseActions.Add([ordered]@{ Describe = $Describe; Action = $Action })
+    if ($null -ne $Action.Module) {
+        throw (
+            "the queued serial step '$Describe' is bound to a module (a closure). " +
+            'It would resolve commands in that module and then in global scope, ' +
+            'so this script''s own functions would be invisible to it under ' +
+            '`powershell -Command "& ./Invoke-CentralRustValidation.ps1"`. Pass a ' +
+            'plain script block and put the captured values in -State.'
+        )
+    }
+    $serialPhaseActions.Add([ordered]@{ Describe = $Describe; Action = $Action; State = $State })
 }
 
 function Get-CargoRootPackages {
@@ -1064,6 +2217,19 @@ function Get-CargoRootPackages {
     finally {
         Pop-Location
     }
+}
+
+}
+# =========================== SETUP GUARD, CLOSES ============================
+catch {
+    # Everything above ran before the mutex existed, so there is nothing to
+    # release - only the exit code to restore. Re-asserted rather than assumed,
+    # because a successful `git rev-parse` (or any other native command added
+    # here later) will have overwritten the seed with 0. Re-thrown unchanged:
+    # the message is how a human finds out WHAT failed.
+    $global:LASTEXITCODE = 1
+    $script:centralValidationFailed = $true
+    throw
 }
 
 try {
@@ -1367,7 +2533,38 @@ try {
         $releaseRuntimeLinkage = Enable-StaticMsvcCrtForCentralRelease
     }
 
+    # The safe default. It is REMOVED again further down when, and only when,
+    # cargo can be shown to select this very directory without it - see the
+    # cross-worktree block after the cache decision.
     $env:CARGO_TARGET_DIR = $targetDir
+
+    # THE COMPILE CACHE, AND EXACTLY WHAT IT IS WORTH.
+    # Measured by lane JM; evidence in extractor/native/runs/jm_compile_cache/.
+    #
+    # sccache hashes the CARGO_* values it inherits, and CARGO_TARGET_DIR is one
+    # of them. Exporting it makes every worktree's compilations unique: a second
+    # checkout of the same commit, compiling identical sources against a cache
+    # the first checkout had just filled, scored ZERO hits out of 61. Removing
+    # that one variable and letting the repo's .cargo/config.toml select the
+    # SAME directory turned the same experiment into 43 hits out of 61 (70.5%),
+    # and the Replay workspace's compile from 222.8 s to 169.4 s.
+    #
+    # What shares and what does not is the important part, and it is the right
+    # split rather than a lucky one: the 43 are registry DEPENDENCIES, whose
+    # manifest directory is identical in every worktree. The 18 misses are the
+    # workspace's own crates, which sccache keeps apart because their
+    # CARGO_MANIFEST_DIR differs - and they MUST stay apart, because this repo
+    # bakes that path into test binaries that then scan the tree
+    # (inline_detour source bans, citation integrity, the script vocabulary
+    # sweep). A workspace artifact shared from another worktree would produce a
+    # battery that certifies a tree the lane never changed.
+    #
+    # Each worktree still gets its own target dir, so no cargo build lock is
+    # shared and lane isolation is untouched.
+    #
+    # SCCACHE_DIR is the location knob and is deliberately NOT set here: unset
+    # means sccache's own per-user default, which is where this machine's
+    # existing cache already sits. Export SCCACHE_DIR to put it elsewhere.
     if (Get-Command sccache -ErrorAction SilentlyContinue) {
         if (-not $env:SCCACHE_CACHE_SIZE) {
             $env:SCCACHE_CACHE_SIZE = "30G"
@@ -1376,23 +2573,115 @@ try {
             $env:SCCACHE_SERVER_PORT = "4227"
         }
     }
+
+    $compileCache = [pscustomobject]@{ Usable = $false; Notice = $null }
     if ($CacheMode -eq "Reusable") {
-        if (-not (Get-Command sccache -ErrorAction SilentlyContinue)) {
-            throw "Reusable cache mode requires sccache on PATH."
-        }
+        # Probed AFTER the size and port above, so the server this starts is
+        # the one those settings describe.
+        $compileCache = Get-CompileCacheState
+    }
+    if ($compileCache.Usable) {
         $env:RUSTC_WRAPPER = "sccache"
+        # sccache cannot cache an incremental compilation: the two are
+        # alternatives, not additives.
         $env:CARGO_INCREMENTAL = "0"
+        # THE PROBE ABOVE ONLY PROVES THE SERVER WAS ALIVE AT PREFLIGHT.
+        # RUSTC_WRAPPER makes sccache the driver for every rustc call for the
+        # rest of the run, so a server that dies mid-battery would otherwise
+        # turn each remaining compile into a hard error - a preflight check
+        # cannot fail open on its own. This is sccache's own switch for
+        # "if you cannot reach the server, run the real compiler instead",
+        # which converts that class from a failed battery into a slow one.
+        $env:SCCACHE_IGNORE_SERVER_IO_ERROR = "1"
     }
     else {
+        if ($null -ne $compileCache.Notice) {
+            # NAMED, never silent, and on BOTH streams. Write-Warning alone is
+            # suppressible with -WarningAction SilentlyContinue or a
+            # $WarningPreference of SilentlyContinue, and a notice an operator
+            # can lose is the same defect as no notice: a run that quietly
+            # changed its own compiler configuration. A slower battery is
+            # never a reason to refuse one.
+            Write-Host $compileCache.Notice
+            Write-Warning $compileCache.Notice
+        }
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
         $env:CARGO_INCREMENTAL = "1"
+    }
+
+    # CROSS-WORKTREE REUSE: drop CARGO_TARGET_DIR from the environment, but only
+    # after cargo itself confirms it lands in the same place without it. This is
+    # attempted only when the cache is actually in use - with no wrapper there is
+    # nothing to gain, and exporting the variable is the cheaper, duller path.
+    #
+    # FAIL-SAFE, NOT FAIL-FAST: every workspace this run may touch has to agree.
+    # If any of them resolves elsewhere, or cargo cannot be asked, the variable
+    # stays exported and the only thing lost is cross-worktree sharing. A wrong
+    # target dir would strand the release ZIP and attestation paths the runner
+    # computes from $targetDir while the build itself quietly succeeded
+    # somewhere else, which is far worse than a slower compile.
+    if ($compileCache.Usable) {
+        # EVERY cargo root this runner can enter, not just the two workspaces.
+        # The standalone roots below are separate cargo roots with their own
+        # Cargo.lock, and the runner invokes cargo (and nextest through cargo)
+        # from inside each of them. Today they all descend from the single
+        # .cargo/config.toml at the repo root and therefore resolve to the same
+        # target dir - but the guard is not allowed to ASSUME that: a
+        # .cargo/config.toml added under any one of them would override the
+        # root config for that root alone, and the run would still have unset
+        # CARGO_TARGET_DIR on the strength of the two workspaces agreeing.
+        # Then that root would build somewhere the cleanup, timing and release
+        # paths never look. Ask all of them.
+        $targetDirManifests = @(
+            (Join-Path $repoRoot "extractor\native\Cargo.toml"),
+            (Join-Path $repoRoot "replay_interface\native\Cargo.toml"),
+            (Join-Path $repoRoot "extractor\native\project_progress_live_lane\Cargo.toml"),
+            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify\Cargo.toml"),
+            (Join-Path $repoRoot "portable_replay\native\admission\Cargo.toml"),
+            (Join-Path $repoRoot "portable_replay\native\compact_stream\Cargo.toml"),
+            (Join-Path $repoRoot "portable_replay\native\content_manifest\Cargo.toml"),
+            (Join-Path $repoRoot "portable_replay\native\render_stream\Cargo.toml"),
+            (Join-Path $repoRoot "portable_replay\native\snapshot\Cargo.toml")
+        ) | Where-Object { Test-Path $_ }
+
+        $configSelectsSameDir = $targetDirManifests.Count -gt 0
+        foreach ($manifest in $targetDirManifests) {
+            if (-not (Test-ConfigSelectsTargetDirectory -ManifestPath $manifest -ExpectedTargetDir $targetDir)) {
+                $configSelectsSameDir = $false
+                break
+            }
+        }
+
+        if ($configSelectsSameDir) {
+            Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+            Write-Host ("Compile cache: cross-worktree reuse ENABLED (CARGO_TARGET_DIR unset; cargo selects {0} from .cargo/config.toml)." -f $targetDir)
+        }
+        else {
+            Write-Host ("Compile cache: cross-worktree reuse DISABLED - cargo does not select {0} without CARGO_TARGET_DIR, so the variable stays set. Dependencies will not be shared with other checkouts; nothing else about this run changes." -f $targetDir)
+        }
     }
     if (Get-Command lld-link -ErrorAction SilentlyContinue) {
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = "lld-link.exe"
     }
 
     if ($Mode -eq "Stats") {
-        Invoke-Checked -Program "sccache" -Arguments @("--show-stats")
+        # Same fail-open rule: a report about an absent or broken optional tool
+        # is a notice, not a failure. This asks the SAME question the compile
+        # path asks - checking only Get-Command would send a present-but-broken
+        # sccache into Invoke-Checked, where PowerShell 5.1 can terminate on the
+        # native command's stderr before the exit-code check is ever reached.
+        $statsCache = Get-CompileCacheState
+        if (-not $statsCache.Usable) {
+            Write-Host $statsCache.Notice
+            Write-Warning $statsCache.Notice
+            return
+        }
+        # Print what the BOUNDED probe already read. Asking sccache a second
+        # time through Invoke-Checked reopens both holes this mode is meant to
+        # be free of: that call has no timeout, and PowerShell 5.1 can
+        # terminate on its native stderr before the exit-code check runs. The
+        # server can also die between the two calls.
+        Write-Host $statsCache.StatsText
         return
     }
 
@@ -1716,31 +3005,34 @@ try {
                     Invoke-Checked -Program "cargo" -Arguments $arguments
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "final-nextest"
                     if ($null -ne $rootHalves -and $rootHalves.Serial) {
-                        # Captured by value into the closure: $workspaceRoot and
-                        # the argument list are loop variables, and a script
-                        # block that read them at drain time would run every
-                        # queued action against the LAST workspace.
-                        $serialRoot = $workspaceRoot
-                        $serialName = $workspaceName
-                        $serialArguments = @("nextest", "run", "--all-targets", "--no-fail-fast") +
-                            $nextestConfigSelection + $nextestCiProfileSelection +
-                            $timingSelection + $selection + @("-E", $rootHalves.Serial)
-                        $serialListArguments = @("nextest", "list", "--all-targets") +
-                            $nextestConfigSelection + $nextestCiProfileSelection +
-                            $selection + @("-E", $rootHalves.Serial, "--message-format", "json")
+                        # Captured by value into -State: $workspaceRoot and the
+                        # argument list are loop variables, and a script block
+                        # that read them at drain time would run every queued
+                        # action against the LAST workspace.
+                        $serialState = [pscustomobject]@{
+                            Root          = $workspaceRoot
+                            Name          = $workspaceName
+                            RunArguments  = @("nextest", "run", "--all-targets", "--no-fail-fast") +
+                                $nextestConfigSelection + $nextestCiProfileSelection +
+                                $timingSelection + $selection + @("-E", $rootHalves.Serial)
+                            ListArguments = @("nextest", "list", "--all-targets") +
+                                $nextestConfigSelection + $nextestCiProfileSelection +
+                                $selection + @("-E", $rootHalves.Serial, "--message-format", "json")
+                        }
                         Add-SerialPhaseAction -Describe (
-                            "$serialName machine-serial tests ({0})" -f ($rootHalves.SerialPackages -join ', ')
-                        ) -Action {
-                            Push-Location $serialRoot
+                            "$workspaceName machine-serial tests ({0})" -f ($rootHalves.SerialPackages -join ', ')
+                        ) -State $serialState -Action {
+                            param($State)
+                            Push-Location $State.Root
                             try {
                                 Invoke-CheckedNextestWithCensus `
-                                    -Arguments $serialArguments `
-                                    -ListArguments $serialListArguments `
-                                    -Context "$serialName machine-serial tests"
-                                Save-CargoTimingReport -WorkspaceName $serialName -Label "final-nextest-serial"
+                                    -Arguments $State.RunArguments `
+                                    -ListArguments $State.ListArguments `
+                                    -Context ("{0} machine-serial tests" -f $State.Name)
+                                Save-CargoTimingReport -WorkspaceName $State.Name -Label "final-nextest-serial"
                             }
                             finally { Pop-Location }
-                        }.GetNewClosure()
+                        }
                     }
                     # DOCTESTS ARE NOT SPLIT, and the reason is fidelity rather
                     # than caution.
@@ -1769,18 +3061,23 @@ try {
                     # fail-closed rule requires of anything the partition does not
                     # classify. Measured warm on this tree it costs 9.9 s of mutex
                     # time for the Extractor workspace.
-                    $doctestRoot = $workspaceRoot
-                    $doctestName = $workspaceName
                     $doctestArguments = @("test", "--doc", "--no-fail-fast") + $timingSelection + $selection
                     if ($splitBattery) {
-                        Add-SerialPhaseAction -Describe "$doctestName doctests (unsplit: cargo feature unification)" -Action {
-                            Push-Location $doctestRoot
+                        $doctestState = [pscustomobject]@{
+                            Root      = $workspaceRoot
+                            Name      = $workspaceName
+                            Arguments = $doctestArguments
+                        }
+                        Add-SerialPhaseAction -Describe "$workspaceName doctests (unsplit: cargo feature unification)" `
+                            -State $doctestState -Action {
+                            param($State)
+                            Push-Location $State.Root
                             try {
-                                Invoke-Checked -Program "cargo" -Arguments $doctestArguments
-                                Save-CargoTimingReport -WorkspaceName $doctestName -Label "final-doctest"
+                                Invoke-Checked -Program "cargo" -Arguments $State.Arguments
+                                Save-CargoTimingReport -WorkspaceName $State.Name -Label "final-doctest"
                             }
                             finally { Pop-Location }
-                        }.GetNewClosure()
+                        }
                     }
                     else {
                         Invoke-Checked -Program "cargo" -Arguments $doctestArguments
@@ -1816,12 +3113,13 @@ try {
                                         Where-Object { $batteryPartition.Serial -contains $_ }).Count -gt 0
                             }
                             if ($detourSerial) {
-                                $detourRoot = $workspaceRoot
-                                Add-SerialPhaseAction -Describe 'release detour-identity gate' -Action {
-                                    Push-Location $detourRoot
+                                Add-SerialPhaseAction -Describe 'release detour-identity gate' `
+                                    -State ([pscustomobject]@{ Root = $workspaceRoot }) -Action {
+                                    param($State)
+                                    Push-Location $State.Root
                                     try { Invoke-ReleaseDetourIdentityGate }
                                     finally { Pop-Location }
-                                }.GetNewClosure()
+                                }
                             }
                             else {
                                 Invoke-ReleaseDetourIdentityGate
@@ -1946,27 +3244,30 @@ try {
                 $standaloneSerialPackages = @($standalonePackages |
                         Where-Object { $batteryPartition.Serial -contains $_ })
                 if ($standaloneSerialPackages.Count -gt 0) {
-                    $queuedRoot = $standaloneRoot
-                    $queuedManifest = $standaloneManifest
+                    $standaloneState = [pscustomobject]@{
+                        Root     = $standaloneRoot
+                        Manifest = $standaloneManifest
+                    }
                     Add-SerialPhaseAction -Describe (
                         "standalone root {0} ({1})" -f `
                             (Split-Path -Leaf $standaloneRoot), ($standaloneSerialPackages -join ', ')
-                    ) -Action {
-                        Push-Location $queuedRoot
+                    ) -State $standaloneState -Action {
+                        param($State)
+                        Push-Location $State.Root
                         try {
                             Invoke-CheckedNextestWithCensus `
                                 -Arguments @("nextest", "run", "--locked", "--all-targets", "--no-fail-fast") `
                                 -ListArguments @("nextest", "list", "--locked", "--all-targets", "--message-format", "json") `
-                                -Context ("standalone root {0}" -f (Split-Path -Leaf $queuedRoot))
-                            if (Test-CargoManifestHasLibraryTarget -ManifestPath $queuedManifest) {
+                                -Context ("standalone root {0}" -f (Split-Path -Leaf $State.Root))
+                            if (Test-CargoManifestHasLibraryTarget -ManifestPath $State.Manifest) {
                                 Invoke-Checked -Program "cargo" -Arguments @("test", "--locked", "--doc", "--no-fail-fast")
                             }
                             else {
-                                Write-Host "Skipping standalone doctests: no library target in $queuedManifest"
+                                Write-Host ("Skipping standalone doctests: no library target in {0}" -f $State.Manifest)
                             }
                         }
                         finally { Pop-Location }
-                    }.GetNewClosure()
+                    }
                     continue
                 }
             }
@@ -2028,7 +3329,7 @@ try {
         $serialPhaseStart = Get-Date
         foreach ($queued in $serialPhaseActions) {
             Write-Host ("Battery serial half: {0}" -f $queued.Describe)
-            & $queued.Action
+            & $queued.Action $queued.State
         }
         $serialPhaseSeconds = ((Get-Date) - $serialPhaseStart).TotalSeconds
         $sealTemplate =
@@ -2413,20 +3714,66 @@ try {
         }
     }
 }
+catch {
+    # A FAILING BATTERY MUST LEAVE A FAILING EXIT CODE, and without this it did
+    # not have to.
+    #
+    # $LASTEXITCODE only ever holds the status of the last NATIVE command. Every
+    # refusal in this file - the zero-tests-selected throw, the unstoppable
+    # process tree, a rejected receipt, a partition that covers nothing - is a
+    # PowerShell terminating error, which does not touch it. So after any cargo
+    # or python step had succeeded, a later throw returned to the caller with
+    # $LASTEXITCODE still 0, and this repo's own gate instructions end with
+    #
+    #     & './Invoke-CentralRustValidation.ps1' ...; exit $LASTEXITCODE
+    #
+    # which then exits 0. A battery that refused to certify the tree announced
+    # success. This is not hypothetical: it is how the serial half's queued
+    # steps failed silently until 2026-08-15, and the same masking is available
+    # to every other refusal in the file.
+    #
+    # $global: because this runs in the script's scope and the caller reads the
+    # variable in its own. The error is re-thrown unchanged: the message is how
+    # a human finds out WHAT failed, the exit code is how a script does.
+    $global:LASTEXITCODE = 1
+    $script:centralValidationFailed = $true
+    throw
+}
 finally {
-    # The parallel slot is released here as well as on the success path: a throw
-    # anywhere in the parallel half would otherwise leave a slot held until this
-    # process exited, and a run that fails early is exactly when the machine
-    # should get its slot back soonest.
-    if ($parallelSlotIndex -ge 0) {
-        $parallelSlotMutexes[$parallelSlotIndex].ReleaseMutex()
-        $parallelSlotIndex = -1
+    # THE CLEANUP IS INSIDE ITS OWN try/catch, and the 0 is written LAST.
+    #
+    # A finally runs AFTER the catch above, so a failure in here is not covered
+    # by it: `ReleaseMutex` on a mutex this thread does not own throws, and that
+    # throw would have left whatever the last cargo step wrote in $LASTEXITCODE.
+    # Equally, the run is not entitled to a zero until the cleanup has actually
+    # succeeded - a released slot that was not released is a defect the next
+    # battery pays for.
+    try {
+        # The parallel slot is released here as well as on the success path: a
+        # throw anywhere in the parallel half would otherwise leave a slot held
+        # until this process exited, and a run that fails early is exactly when
+        # the machine should get its slot back soonest.
+        if ($parallelSlotIndex -ge 0) {
+            $parallelSlotMutexes[$parallelSlotIndex].ReleaseMutex()
+            $parallelSlotIndex = -1
+        }
+        foreach ($slot in $parallelSlotMutexes) {
+            $slot.Dispose()
+        }
+        if ($ownsMutex) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
+
+        # The ONLY place a zero is written. Reached only when the body did not
+        # throw (the catch sets the flag) and the cleanup above did not either.
+        if (-not $script:centralValidationFailed) {
+            $global:LASTEXITCODE = 0
+        }
     }
-    foreach ($slot in $parallelSlotMutexes) {
-        $slot.Dispose()
+    catch {
+        $global:LASTEXITCODE = 1
+        $script:centralValidationFailed = $true
+        throw
     }
-    if ($ownsMutex) {
-        $mutex.ReleaseMutex()
-    }
-    $mutex.Dispose()
 }

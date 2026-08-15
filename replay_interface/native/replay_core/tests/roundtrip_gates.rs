@@ -990,7 +990,14 @@ fn rt_dlc_language_variation() {
             "language @ {}",
             f.hour_index()
         );
-        // DLC-gated cosmetic (CAN carries it only under misc.cosmetic_tag).
+        // DLC-gated cosmetic. CAN carries the SAME value under both legacy
+        // mirrors, `misc.cosmetic_tag` and `extra.cosmetic_tag` — since lane KE,
+        // where the generator stopped leaving `extra` at the null it seeds every
+        // country with. Reading `misc` here is reading one of two agreeing
+        // spellings, not the only one that carries it: a disagreement between
+        // them would now resolve to `Unobtained`
+        // (`replay_core::world::first_available_nullable_string`) and this
+        // assertion would fail rather than quietly follow the surviving mirror.
         let can = f.country_identity("CAN").expect("CAN identity");
         assert_eq!(
             can.cosmetic_tag,
