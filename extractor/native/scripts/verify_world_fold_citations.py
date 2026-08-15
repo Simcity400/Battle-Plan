@@ -384,7 +384,8 @@ LEAF_MARKER_SCAN_ROOTS = (Path("."),)
 # AGENTS.md -- a marker quoted inside a completed run's notes is a record of
 # what was true, not a claim about this tree.
 LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
-    {"runs", "target", ".git", "re_evidence", ".cargo-target", "node_modules"}
+    {"runs", "target", ".git", "re_evidence", ".cargo-target", "node_modules",
+     ".claude"}
 )
 # MANIFESTS are skipped in fewer places than sources.  An evidence tree is
 # append-only prose and a marker quoted inside one is a record, not a claim --
@@ -393,8 +394,11 @@ LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
 # this repository today.  A package that depends on a leaf is therefore found
 # wherever it lives, and refused if it lives where this gate cannot read its
 # sources.
+# `.claude/` holds OTHER checkouts (lane worktrees) of this same repository.
+# Their manifests and sources are claims about THEIR trees, not this one; a
+# gate that reads them certifies (or refuses) work that is not here.
 LEAF_MANIFEST_SKIP_DIRECTORIES = frozenset(
-    {"target", ".git", ".cargo-target", "node_modules"}
+    {"target", ".git", ".cargo-target", "node_modules", ".claude"}
 )
 # A leaf's attested files: its manifest and every Rust source under it, wherever
 # it sits (`src/`, `tests/`, `benches/`, a `build.rs`).  The set is what the
