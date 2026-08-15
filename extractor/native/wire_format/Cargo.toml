@@ -19,6 +19,14 @@ blake3 = "1"
 # reference implementation. It does not replace capture, measurement, packed
 # reopen, or source-parity gates.
 compact_contract = { path = "../compact_contract" }
+# D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder. This is a
+# LEAF crate with no dependencies of its own, so depending on it reverses none of
+# this crate's directions -- in particular it is NOT a `recorder_host` dependency
+# and carries no recorder or capture-lane policy. It replaces the transcribed
+# structural walk in `src/d13.rs`, which went stale against the shipping producer
+# within a day of a section being added and refused every payload a shipping
+# recorder writes.
+d13_grammar = { path = "../d13_grammar" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 portable_admission = { path = "../../../portable_replay/native/admission" }
 serde_json = "1"

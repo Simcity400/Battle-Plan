@@ -149,6 +149,7 @@ dependencies = [
  "country_army_upgrade_requests_live_lane",
  "country_dynamic_modifiers_live_lane",
  "country_economy_production_stockpile_live_lane",
+ "d13_grammar",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
@@ -310,6 +311,10 @@ dependencies = [
  "generic-array",
  "typenum",
 ]
+
+[[package]]
+name = "d13_grammar"
+version = "0.1.0"
 
 [[package]]
 name = "decision_panel_live_lane"
@@ -897,6 +902,7 @@ dependencies = [
  "construction_buildings_state_damage_live",
  "country_army_upgrade_requests_live_lane",
  "country_economy_production_stockpile_live_lane",
+ "d13_grammar",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
@@ -1312,6 +1318,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "compact_contract",
+ "d13_grammar",
  "portable_admission",
  "portable_content_manifest",
  "serde_json",

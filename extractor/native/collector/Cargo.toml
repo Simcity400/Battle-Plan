@@ -13,6 +13,14 @@ cc = "1"
 
 [dependencies]
 compact_contract = { path = "../compact_contract" }
+# D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder, and
+# the producer writes THROUGH it. A leaf with no dependencies of its own, so
+# this crate gains no recorder or wire dependency. Sharing only the constants
+# would leave the drift that matters: a packer can append a section every
+# reader is unaware of, which is exactly what cost a live capture its whole
+# D13 domain. Emitting through the leaf makes the section inventory one
+# declaration for the writer and all three readers.
+d13_grammar = { path = "../d13_grammar" }
 direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }

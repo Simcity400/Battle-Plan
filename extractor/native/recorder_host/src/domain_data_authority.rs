@@ -3090,40 +3090,57 @@ fn decode_compact_tech_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    if payload.len() < 32 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: tech data payload is {} byte(s), expected at least 32",
-            payload.len()
-        ));
-        return;
-    }
-    let country_count = read_u32_le(payload, 8) as usize;
-    let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
-    let progress_scale = read_u32_le(payload, 20);
-    let live_scale = read_u32_le(payload, 24);
-    let active_count = read_u32_le(payload, 28) as usize;
+    // The structural walk is `d13_grammar`'s, shared with the producer, the fold
+    // and the wire port. This decoder's own half is unchanged: it ACCUMULATES
+    // diagnostics where the fold returns, and which violations abandon the walk
+    // is decided here, at each step.
+    //
+    // That boundary matters in one direction only: `stream_fold` consults this
+    // decoder before applying a payload at all, so a row refused here never
+    // reaches `WorldFold`, and a rule that is merely STRICTER here silently
+    // deletes the domain.
+    let header = match d13_grammar::read_header(payload) {
+        Ok(header) => header,
+        Err(_) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech data payload is {} byte(s), expected at least {}",
+                payload.len(),
+                d13_grammar::HEADER_LEN
+            ));
+            return;
+        }
+    };
+    let country_count = header.country_count as usize;
+    let changed_rows = header.changed_rows as usize;
+    let status_flags = header.status_flags;
+    let active_count = header.active_count as usize;
     add_decoder_status(summary, status_flags);
-    if progress_scale != COMPACT_TECH_PROGRESS_SCALE_RAW {
+    if header.progress_scale_raw != COMPACT_TECH_PROGRESS_SCALE_RAW {
         summary.parse_errors.push(format!(
-            "offset {offset}: tech progress scale {progress_scale} != expected {COMPACT_TECH_PROGRESS_SCALE_RAW}"
+            "offset {offset}: tech progress scale {} != expected {COMPACT_TECH_PROGRESS_SCALE_RAW}",
+            header.progress_scale_raw
         ));
     }
-    if live_scale != COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW {
+    if header.live_scale_raw != COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW {
         summary.parse_errors.push(format!(
-            "offset {offset}: tech live scale {live_scale} != expected {COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW}"
+            "offset {offset}: tech live scale {} != expected {COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW}",
+            header.live_scale_raw
         ));
     }
-    let minimum_len = 32usize
-        .saturating_add(country_count.saturating_mul(16))
-        .saturating_add(active_count.saturating_mul(40));
-    if payload.len() < minimum_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: tech data payload is {} byte(s), expected at least {minimum_len}",
-            payload.len()
-        ));
-        return;
-    }
+    let layout = match d13_grammar::body_layout(payload, &header) {
+        Ok(layout) => layout,
+        Err(violation) => {
+            let minimum_len = match violation.kind {
+                d13_grammar::ViolationKind::Need { len, .. } => len,
+                _ => payload.len(),
+            };
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech data payload is {} byte(s), expected at least {minimum_len}",
+                payload.len()
+            ));
+            return;
+        }
+    };
     if changed_rows > country_count {
         summary.parse_errors.push(format!(
             "offset {offset}: tech data changed_rows {changed_rows} > country_count {country_count}"
@@ -3138,50 +3155,59 @@ fn decode_compact_tech_data_payload(
     }
     add_compact_domain_data_unit(summary, 13, "tech_country_rows", country_count);
     add_compact_domain_data_unit(summary, 13, "active_research_slot_rows", active_count);
-    let mut cursor = 32usize;
+    let mut cursor = layout.countries.start;
     let mut seen_countries = BTreeSet::new();
     for row_index in 0..country_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        let flags = read_u32_le(payload, cursor + 4);
-        let _completed_count = read_u32_le(payload, cursor + 8);
-        let slot_count = read_u32_le(payload, cursor + 12);
-        if tag_db_id == 0 {
+        let row = match d13_grammar::read_country_row(payload, cursor) {
+            Ok(row) => row,
+            Err(_) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech country row {row_index} is truncated"
+                ));
+                return;
+            }
+        };
+        if row.tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech country row {row_index} has zero tag_db_id"
             ));
-        } else if !seen_countries.insert(tag_db_id) {
+        } else if !seen_countries.insert(row.tag_db_id) {
             summary.parse_errors.push(format!(
-                "offset {offset}: tech country row {row_index} duplicates tag_db_id {tag_db_id}"
+                "offset {offset}: tech country row {row_index} duplicates tag_db_id {}",
+                row.tag_db_id
             ));
         }
-        if flags & !0b111 != 0 {
+        if row.unknown_flags() != 0 {
             summary.parse_errors.push(format!(
-                "offset {offset}: tech country row {row_index} has unknown flags {flags}"
+                "offset {offset}: tech country row {row_index} has unknown flags {}",
+                row.flags
             ));
         }
-        if slot_count != u32::MAX && slot_count > 32 {
+        if row.research_slot_count != u32::MAX && row.research_slot_count > 32 {
             summary.parse_errors.push(format!(
-                "offset {offset}: tech country row {row_index} has invalid slot_count {slot_count}"
+                "offset {offset}: tech country row {row_index} has invalid slot_count {}",
+                row.research_slot_count
             ));
         }
-        cursor += 16;
+        cursor = row.span.end;
     }
     let mut seen_slots = BTreeSet::new();
     for row_index in 0..active_count {
-        if cursor.saturating_add(40) > payload.len() {
-            summary.parse_errors.push(format!(
-                "offset {offset}: tech active row {row_index} base record is truncated"
-            ));
-            return;
-        }
-        let tag_db_id = read_u32_le(payload, cursor);
-        let slot_index = read_u32_le(payload, cursor + 4);
-        let _tech_handle_raw = read_u32_le(payload, cursor + 8);
-        let tech_def_index_raw = read_u32_le(payload, cursor + 12);
-        let _progress_raw = read_u32_le(payload, cursor + 16);
-        let flags = read_u32_le(payload, cursor + 20);
-        let live_progress_raw = read_i64_le(payload, cursor + 24);
-        let base_required_points_raw = read_i64_le(payload, cursor + 32);
+        let (mut row, unknown_flags) = match d13_grammar::ActiveRowCursor::begin(payload, cursor) {
+            Ok(begun) => begun,
+            Err(_) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} base record is truncated"
+                ));
+                return;
+            }
+        };
+        let fixed = row.fixed().clone();
+        let tag_db_id = fixed.tag_db_id;
+        let slot_index = fixed.slot_index;
+        let tech_def_index_raw = fixed.tech_def_index_raw;
+        let live_progress_raw = fixed.live_progress_word;
+        let base_required_points_raw = fixed.base_required_points_word;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has zero tag_db_id"
@@ -3192,212 +3218,237 @@ fn decode_compact_tech_data_payload(
                 "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
             ));
         }
-        // Bit 5 is the derived ahead-of-time authority.
-        if flags & !0b11_1111 != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: tech active row {row_index} has unknown flags {flags}"
-            ));
+        // Recorded and walked past: the known bits still describe a walkable row,
+        // and refusing where the fold does not would delete the domain.
+        if let Some(violation) = unknown_flags {
+            summary
+                .parse_errors
+                .push(tech_authority_message(offset, row_index, &violation));
         }
         if !seen_slots.insert((tag_db_id, slot_index)) {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} duplicates tag_db_id {tag_db_id} slot_index {slot_index}"
             ));
         }
-        cursor += 40;
-        if flags & 1 == 0 && live_progress_raw != 0 {
+        if !fixed.live_progress_captured() && live_progress_raw != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has live_progress_raw without presence flag"
             ));
         }
-        if flags & (1 << 1) == 0 && base_required_points_raw != 0 {
+        if !fixed.base_required_points_captured() && base_required_points_raw != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has base_required_points_raw without presence flag"
             ));
         }
-        if flags & (1 << 2) != 0 {
-            match skip_compact_string_len(payload, &mut cursor, "tech active tech_name") {
-                Ok(0) => summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} has empty tech_name"
-                )),
-                Ok(_) => {}
-                Err(err) => {
-                    summary.parse_errors.push(format!("offset {offset}: {err}"));
+        let mut ahead_quartet = None;
+        let row_end = loop {
+            let step = match row.next_step() {
+                Ok(step) => step,
+                // Terminal: the bytes that would find the next boundary are not
+                // there, so this decoder abandons the payload exactly as it
+                // always has for a truncated row.
+                Err(violation) => {
+                    summary
+                        .parse_errors
+                        .push(tech_authority_message(offset, row_index, &violation));
                     return;
                 }
-            }
-        }
-        let mut ahead_quartet = None;
-        if flags & (1 << 3) != 0 {
-            if cursor.saturating_add(32) > payload.len() {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} ahead quartet is truncated"
-                ));
-                return;
-            }
-            let years_raw = read_i64_le(payload, cursor);
-            let penalty_raw = read_i64_le(payload, cursor + 8);
-            let reduction_raw = read_i64_le(payload, cursor + 16);
-            let reduced_penalty_raw = read_i64_le(payload, cursor + 24);
-            ahead_quartet = Some((years_raw, penalty_raw, reduction_raw, reduced_penalty_raw));
-            if [years_raw, penalty_raw, reduction_raw, reduced_penalty_raw]
-                .iter()
-                .any(|value| !(0..=10_000_000_000i64).contains(value))
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} has invalid ahead fixed-5 quartet"
-                ));
-            }
-            cursor += 32;
-            add_compact_domain_data_unit(summary, 13, "effective_ahead_rows", 1);
-        }
-        if flags & (1 << 4) != 0 {
-            if flags & (1 << 3) == 0 {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} has A29 provenance without an ahead quartet"
-                ));
-                return;
-            }
-            if cursor.saturating_add(176) > payload.len() {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} A29 provenance is truncated"
-                ));
-                return;
-            }
-            let authority = read_u32_le(payload, cursor);
-            let branch = read_u32_le(payload, cursor + 4);
-            let callback_sequence = read_u64_le(payload, cursor + 8);
-            let callback_thread_id = read_u32_le(payload, cursor + 16);
-            let producer_game_hour_raw = read_i32_le(payload, cursor + 20);
-            let callback_qpc_ticks = read_u64_le(payload, cursor + 24);
-            let qpc_frequency_hz = read_u64_le(payload, cursor + 32);
-            let source_sha = &payload[cursor + 40..cursor + 72];
-            let ui_action_gate_return_rva = read_u32_le(payload, cursor + 72);
-            let candidate_count = read_u32_le(payload, cursor + 76);
-            let selected_ordinal = read_u32_le(payload, cursor + 80);
-            let selected_game_hour_raw = read_i32_le(payload, cursor + 84);
-            let selected_candidate_id = read_u64_le(payload, cursor + 88);
-            let selected_qpc_ticks = read_u64_le(payload, cursor + 96);
-            let selection_cutoff_qpc_ticks = read_u64_le(payload, cursor + 104);
-            let candidate_set_sha256: [u8; 32] =
-                payload[cursor + 112..cursor + 144].try_into().unwrap();
-            let selected_present_receipt_sha256: [u8; 32] =
-                payload[cursor + 144..cursor + 176].try_into().unwrap();
-            let expected_source_sha = ahead_quartet.map(|quartet| {
-                a29_expected_source_record_sha256(
-                    callback_sequence,
-                    callback_thread_id,
-                    callback_qpc_ticks,
-                    qpc_frequency_hz,
-                    producer_game_hour_raw,
-                    slot_index,
-                    tech_def_index_raw,
-                    branch,
-                    quartet,
-                    candidate_count,
-                    selected_candidate_id,
-                    selected_ordinal,
-                    selected_game_hour_raw,
-                    selected_qpc_ticks,
-                    selection_cutoff_qpc_ticks,
-                    &candidate_set_sha256,
-                    &selected_present_receipt_sha256,
-                )
-            });
-            let computed_selected_present_sha256 = portable_render_stream::SelectedPresentReceipt::sealed(
-                candidate_count,
-                snapshot::sha256::to_hex(&candidate_set_sha256),
-                selected_candidate_id,
-                selected_ordinal,
-                selected_game_hour_raw,
-                selected_qpc_ticks,
-                selection_cutoff_qpc_ticks,
-            )
-            .computed_sha256()
-            .ok();
-            if authority != 3
-                || !matches!(branch, 0 | 1 | 2)
-                || match (branch, ahead_quartet) {
-                    (0, Some((years, penalty, reduction, reduced_penalty))) => {
-                        years != 0 || penalty != 0 || reduction < 0 || reduced_penalty != 0
+            };
+            // No wildcard arm: a tail added to the grammar is a compile error
+            // here until this decoder decides what it means.
+            match step {
+                d13_grammar::ActiveStep::Section(section) => match section.tail {
+                    d13_grammar::ActiveTail::TechName => {
+                        if section.span.is_empty() {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: tech active row {row_index} has empty tech_name"
+                            ));
+                        }
                     }
-                    (1, Some((_, penalty, reduction, reduced_penalty))) => {
-                        reduction != 0 || reduced_penalty != penalty
+                    d13_grammar::ActiveTail::AheadQuartet => {
+                        let view = match d13_grammar::AheadQuartetView::new(payload, section.span) {
+                            Some(view) => view,
+                            None => {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: tech active row {row_index} ahead quartet is truncated"
+                                ));
+                                return;
+                            }
+                        };
+                        let values = view.tuple();
+                        ahead_quartet = Some(values);
+                        if [values.0, values.1, values.2, values.3]
+                            .iter()
+                            .any(|value| !(0..=10_000_000_000i64).contains(value))
+                        {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: tech active row {row_index} has invalid ahead fixed-5 quartet"
+                            ));
+                        }
+                        add_compact_domain_data_unit(summary, 13, "effective_ahead_rows", 1);
                     }
-                    (2, Some((_, _, reduction, _))) => reduction <= 0,
-                    _ => true,
+                    d13_grammar::ActiveTail::ObservedAuthority => {
+                        let view = match d13_grammar::A29ProvenanceView::new(payload, section.span) {
+                            Some(view) => view,
+                            None => {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: tech active row {row_index} A29 provenance is truncated"
+                                ));
+                                return;
+                            }
+                        };
+                        let authority = view.authority();
+                        let branch = view.localization_branch();
+                        let callback_sequence = view.callback_sequence();
+                        let callback_thread_id = view.callback_thread_id();
+                        let producer_game_hour_raw = view.producer_game_hour_raw();
+                        let callback_qpc_ticks = view.callback_qpc_ticks();
+                        let qpc_frequency_hz = view.qpc_frequency_hz();
+                        let source_sha = view.source_record_sha256();
+                        let ui_action_gate_return_rva = view.ui_action_gate_return_rva();
+                        let candidate_count = view.selected_present_candidate_count();
+                        let selected_ordinal = view.selected_present_ordinal();
+                        let selected_game_hour_raw = view.selected_present_game_hour_raw();
+                        let selected_candidate_id = view.selected_present_candidate_id();
+                        let selected_qpc_ticks = view.selected_present_qpc_ticks();
+                        let selection_cutoff_qpc_ticks = view.selected_present_cutoff_qpc_ticks();
+                        let candidate_set_sha256: [u8; 32] = view
+                            .selected_present_candidate_set_sha256()
+                            .try_into()
+                            .unwrap();
+                        let selected_present_receipt_sha256: [u8; 32] =
+                            view.selected_present_receipt_sha256().try_into().unwrap();
+                        let expected_source_sha = ahead_quartet.map(|quartet| {
+                            a29_expected_source_record_sha256(
+                                callback_sequence,
+                                callback_thread_id,
+                                callback_qpc_ticks,
+                                qpc_frequency_hz,
+                                producer_game_hour_raw,
+                                slot_index,
+                                tech_def_index_raw,
+                                branch,
+                                quartet,
+                                candidate_count,
+                                selected_candidate_id,
+                                selected_ordinal,
+                                selected_game_hour_raw,
+                                selected_qpc_ticks,
+                                selection_cutoff_qpc_ticks,
+                                &candidate_set_sha256,
+                                &selected_present_receipt_sha256,
+                            )
+                        });
+                        let computed_selected_present_sha256 =
+                            portable_render_stream::SelectedPresentReceipt::sealed(
+                                candidate_count,
+                                snapshot::sha256::to_hex(&candidate_set_sha256),
+                                selected_candidate_id,
+                                selected_ordinal,
+                                selected_game_hour_raw,
+                                selected_qpc_ticks,
+                                selection_cutoff_qpc_ticks,
+                            )
+                            .computed_sha256()
+                            .ok();
+                        if authority != 3
+                            || !matches!(branch, 0 | 1 | 2)
+                            || match (branch, ahead_quartet) {
+                                (0, Some((years, penalty, reduction, reduced_penalty))) => {
+                                    years != 0
+                                        || penalty != 0
+                                        || reduction < 0
+                                        || reduced_penalty != 0
+                                }
+                                (1, Some((_, penalty, reduction, reduced_penalty))) => {
+                                    reduction != 0 || reduced_penalty != penalty
+                                }
+                                (2, Some((_, _, reduction, _))) => reduction <= 0,
+                                _ => true,
+                            }
+                            || callback_sequence == 0
+                            || callback_thread_id == 0
+                            || producer_game_hour_raw <= 0
+                            || callback_qpc_ticks == 0
+                            || qpc_frequency_hz == 0
+                            || ui_action_gate_return_rva != A29_UI_YEAR_HELPER_RETURN_RVA as u32
+                            || candidate_count == 0
+                            || selected_ordinal >= candidate_count
+                            || selected_game_hour_raw != producer_game_hour_raw
+                            || callback_qpc_ticks > selected_qpc_ticks
+                            || selection_cutoff_qpc_ticks < selected_qpc_ticks
+                            || candidate_set_sha256.iter().all(|byte| *byte == 0)
+                            || selected_present_receipt_sha256.iter().all(|byte| *byte == 0)
+                            || computed_selected_present_sha256.as_deref()
+                                != Some(
+                                    snapshot::sha256::to_hex(&selected_present_receipt_sha256)
+                                        .as_str(),
+                                )
+                            || source_sha.iter().all(|byte| *byte == 0)
+                            || expected_source_sha
+                                .is_none_or(|expected| source_sha != expected.as_slice())
+                        {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: tech active row {row_index} A29 provenance is invalid"
+                            ));
+                        }
+                        add_compact_domain_data_unit(
+                            summary,
+                            13,
+                            "observed_ahead_provenance_rows",
+                            1,
+                        );
+                    }
+                    // The DERIVED authority: the recorder's own inputs in place
+                    // of a producer receipt. This decoder sees a payload without
+                    // its record's hour, so the SAME-HOUR gate stays where the
+                    // frame hour is known (`world_fold.rs::fold_tech`); what is
+                    // checked here is everything that is decidable from the bytes
+                    // alone, and nothing beyond it.
+                    d13_grammar::ActiveTail::DerivedAuthority => {
+                        let view =
+                            match d13_grammar::DerivedAuthorityView::new(payload, section.span) {
+                                Some(view) => view,
+                                None => {
+                                    summary.parse_errors.push(format!(
+                                        "offset {offset}: tech active row {row_index} is too short for the A29 derived authority"
+                                    ));
+                                    return;
+                                }
+                            };
+                        if view.authority() != 1
+                            || view.producer_game_hour_raw() <= 0
+                            || !(0..=10_000_000_000i64).contains(&view.penalty_factor_raw())
+                        {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: tech active row {row_index} A29 derived authority is invalid"
+                            ));
+                        }
+                        add_compact_domain_data_unit(summary, 13, "derived_ahead_authority_rows", 1);
+                    }
+                },
+                d13_grammar::ActiveStep::Recoverable(violation) => {
+                    summary
+                        .parse_errors
+                        .push(tech_authority_message(offset, row_index, &violation));
+                    // One recoverable rule abandons the payload here and always
+                    // has: a receipt for a quartet that is not there means the
+                    // row's remaining bytes cannot be trusted to be what their
+                    // flags claim. The other three are recorded and walked past.
+                    if matches!(
+                        violation.kind,
+                        d13_grammar::ViolationKind::Rule {
+                            rule: d13_grammar::RuleViolation::ObservedAuthorityWithoutQuartet,
+                            ..
+                        }
+                    ) {
+                        return;
+                    }
                 }
-                || callback_sequence == 0
-                || callback_thread_id == 0
-                || producer_game_hour_raw <= 0
-                || callback_qpc_ticks == 0
-                || qpc_frequency_hz == 0
-                || ui_action_gate_return_rva != A29_UI_YEAR_HELPER_RETURN_RVA as u32
-                || candidate_count == 0
-                || selected_ordinal >= candidate_count
-                || selected_game_hour_raw != producer_game_hour_raw
-                || callback_qpc_ticks > selected_qpc_ticks
-                || selection_cutoff_qpc_ticks < selected_qpc_ticks
-                || candidate_set_sha256.iter().all(|byte| *byte == 0)
-                || selected_present_receipt_sha256.iter().all(|byte| *byte == 0)
-                || computed_selected_present_sha256.as_deref()
-                    != Some(snapshot::sha256::to_hex(&selected_present_receipt_sha256).as_str())
-                || source_sha.iter().all(|byte| *byte == 0)
-                || expected_source_sha
-                    .is_none_or(|expected| source_sha != expected.as_slice())
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} A29 provenance is invalid"
-                ));
+                d13_grammar::ActiveStep::End(end) => break end,
             }
-            cursor += 176;
-            add_compact_domain_data_unit(summary, 13, "observed_ahead_provenance_rows", 1);
-        }
-        // The DERIVED authority: the recorder's own inputs in place of a
-        // producer receipt. This decoder sees a payload without its record's
-        // hour, so the SAME-HOUR gate stays where the frame hour is known
-        // (`world_fold.rs::fold_tech`); what is checked here is everything that
-        // is decidable from the bytes alone, and nothing beyond it. That
-        // boundary matters in one direction only: `stream_fold` consults this
-        // decoder before applying the payload at all, so a row refused here
-        // never reaches `WorldFold`, and a rule that is merely STRICTER here
-        // silently deletes the domain.
-        if flags & (1 << 5) != 0 {
-            if flags & (1 << 3) == 0 {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} A29 derived authority without ahead quartet"
-                ));
-            }
-            if flags & (1 << 4) != 0 {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} carries both observed and derived A29 authority"
-                ));
-            }
-            if payload.len() < cursor + 16 {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} is too short for the A29 derived authority"
-                ));
-                return;
-            }
-            let authority = u32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap());
-            let producer_game_hour_raw =
-                i32::from_le_bytes(payload[cursor + 4..cursor + 8].try_into().unwrap());
-            let penalty_factor_raw =
-                i64::from_le_bytes(payload[cursor + 8..cursor + 16].try_into().unwrap());
-            if authority != 1
-                || producer_game_hour_raw <= 0
-                || !(0..=10_000_000_000i64).contains(&penalty_factor_raw)
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: tech active row {row_index} A29 derived authority is invalid"
-                ));
-            }
-            cursor += 16;
-            add_compact_domain_data_unit(summary, 13, "derived_ahead_authority_rows", 1);
-        } else if flags & (1 << 4) == 0 && flags & (1 << 3) != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: tech active row {row_index} has an unauthenticated ahead quartet"
-            ));
-        }
+        };
+        cursor = row_end;
     }
     // D13's XUI09 witness tail (G4-X9S1, landed by lane JO). This decoder
     // authenticates the A29 provenance and the row structure; the FOLD is the
@@ -3413,11 +3464,111 @@ fn decode_compact_tech_data_payload(
             .parse_errors
             .push(format!("offset {offset}: {error}")),
     }
-    if cursor != payload.len() {
-        summary.parse_errors.push(format!(
+    if let Err(violation) = d13_grammar::exact_consumption(cursor, payload.len()) {
+        if let d13_grammar::ViolationKind::TrailingBytes { consumed, total } = violation.kind {
+            summary.parse_errors.push(format!(
+                "offset {offset}: tech data payload has {} trailing byte(s)",
+                total.saturating_sub(consumed)
+            ));
+        }
+    }
+}
+
+/// One structural violation, spelled the way THIS decoder has always spelled it:
+/// with the record's stream offset and the row's index, because its diagnostics
+/// become a sealed manifest's exclusion reasons and a reader needs to find the
+/// record they name.
+///
+/// Exhaustive, no wildcard arm: a new violation kind is a compile error here
+/// rather than a silently reworded exclusion.
+fn tech_authority_message(
+    offset: usize,
+    row_index: usize,
+    violation: &d13_grammar::Violation,
+) -> String {
+    use d13_grammar::{FlagWord, RuleViolation, Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section,
+            at,
+            len,
+            available,
+            ..
+        } => match section {
+            Section::ActiveFixed => format!(
+                "offset {offset}: tech active row {row_index} base record is truncated"
+            ),
+            // `skip_compact_string_len`'s wording, which this decoder used for
+            // the name before the walk was shared.
+            Section::TechNamePrefix | Section::TechNameBytes => format!(
+                "offset {offset}: tech active tech_name overruns payload at cursor {at}: need {len}, remaining {}",
+                available.saturating_sub(at)
+            ),
+            Section::AheadQuartet => format!(
+                "offset {offset}: tech active row {row_index} ahead quartet is truncated"
+            ),
+            Section::ObservedAuthority => format!(
+                "offset {offset}: tech active row {row_index} A29 provenance is truncated"
+            ),
+            Section::DerivedAuthority => format!(
+                "offset {offset}: tech active row {row_index} is too short for the A29 derived authority"
+            ),
+            Section::Header
+            | Section::PayloadMinimum
+            | Section::CountryTable
+            | Section::CountryRow
+            | Section::Xui09TailHeader
+            | Section::Xui09DictionaryIndex
+            | Section::Xui09DictionaryEntry
+            | Section::Xui09DictionaryIdPrefix
+            | Section::Xui09DictionaryIdBytes
+            | Section::Xui09MeasuredTag
+            | Section::Xui09Refusal
+            | Section::Xui09MeasuredAndRefusalSets
+            | Section::Xui09VectorHeader
+            | Section::Xui09VectorRows => format!(
+                "offset {offset}: tech data payload is truncated at cursor {at}: need {len}, remaining {}",
+                available.saturating_sub(at)
+            ),
+        },
+        ViolationKind::LengthOverflow { .. } | ViolationKind::OffsetOverflow { .. } => {
+            format!("offset {offset}: tech active row {row_index} length overflows")
+        }
+        ViolationKind::BadMagic { found, expected } => format!(
+            "offset {offset}: tech XUI09 tail magic {found:#010x} is not {expected:#010x}"
+        ),
+        ViolationKind::UnknownFlags { word, value, .. } => match word {
+            FlagWord::ActiveRow => format!(
+                "offset {offset}: tech active row {row_index} has unknown flags {value}"
+            ),
+            FlagWord::CountryRow => format!(
+                "offset {offset}: tech country row {row_index} has unknown flags {value}"
+            ),
+            FlagWord::Xui09Tail | FlagWord::Xui09CountryVector => format!(
+                "offset {offset}: tech XUI09 flags {value} are not all assigned"
+            ),
+        },
+        ViolationKind::Rule { rule, .. } => match rule {
+            RuleViolation::ObservedAuthorityWithoutQuartet => format!(
+                "offset {offset}: tech active row {row_index} has A29 provenance without an ahead quartet"
+            ),
+            RuleViolation::DerivedAuthorityWithoutQuartet => format!(
+                "offset {offset}: tech active row {row_index} A29 derived authority without ahead quartet"
+            ),
+            RuleViolation::BothAuthorities => format!(
+                "offset {offset}: tech active row {row_index} carries both observed and derived A29 authority"
+            ),
+            RuleViolation::QuartetWithoutAuthority => format!(
+                "offset {offset}: tech active row {row_index} has an unauthenticated ahead quartet"
+            ),
+        },
+        ViolationKind::TrailingBytes { consumed, total } => format!(
             "offset {offset}: tech data payload has {} trailing byte(s)",
-            payload.len().saturating_sub(cursor)
-        ));
+            total.saturating_sub(consumed)
+        ),
+        ViolationKind::WalkOutOfOrder => {
+            format!("offset {offset}: tech payload walk driven out of order")
+        }
     }
 }
 

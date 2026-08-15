@@ -1,0 +1,17 @@
+[package]
+name = "d13_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "The single structural walk of domain 13's (tech_live) compact DATA payload: header, country rows, variable-length active-research rows and their four optional tails, and the XUI09 witness tail. Owner ruling 2026-08-15 - ONE shared decoder, because the same grammar was walked in four places and two went silently stale in a day."
+
+# THIS CRATE HAS NO DEPENDENCIES, AND THAT IS THE POINT.
+#
+# The duplication this crate replaces existed because of deliberate crate
+# directions: `wire_format` takes no `recorder_host` dependency (it is an
+# independent reference implementation of WIRE_FORMAT.md), and `recorder_host`
+# does not depend on `wire_format`. A leaf with no dependencies is the only
+# shape all four sites -- the collector's packer, the recorder's fold, the
+# recorder's authority validator and the wire port -- can depend on without any
+# of those directions being reversed. Adding a dependency here would put that
+# back: every dependency of this crate becomes a dependency of all four.
+[dependencies]

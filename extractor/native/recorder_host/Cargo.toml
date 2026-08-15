@@ -18,6 +18,13 @@ mem-alloc-trace = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
+# D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder. A LEAF with
+# no dependencies, which is the only shape the four D13 sites could share -- the
+# producer, this fold, this crate's authority validator and the wire port sit on
+# both sides of two deliberate crate directions. Two of those four went stale in
+# a day when a tail was added, and one of them excluded 100% of a live capture's
+# D13 records.
+d13_grammar = { path = "../d13_grammar" }
 compact_contract = { path = "../compact_contract" }
 # The admission bounds this fold shares with the replay consumer. Both cargo
 # workspaces path-depend on this crate so each bound has one home; see

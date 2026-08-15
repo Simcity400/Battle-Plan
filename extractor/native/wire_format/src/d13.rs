@@ -1,8 +1,8 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `world_fold.rs:17535`-`:17910`
+//! Derived from `world_fold.rs:17539`-`:17942`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=17535-17910 sha256=24afda804dea444f7c82b1575ab37670864fb5bca6b6b02a48acccba0b6d49e7 closure=4b637d9dc9929964b73d49bd06dbe49d01729b6cfa2044203b65f993eff73d14
+// @world-fold-authority domain=13 functions=fold_tech lines=17539-17942 sha256=3c67f3bd440442e719fd9c225dbb0985ade107814daa7533e8c29cbe185e0966 closure=424b8242c49805f3c1e1b1320d50c330c60a3dfeef309040f00068576f67e463
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the
@@ -222,6 +222,12 @@
 
 use core::ops::Range;
 
+use d13_grammar as grammar;
+use d13_grammar::{
+    A29ProvenanceView, ActiveStep, ActiveTail, AheadQuartetView, DerivedAuthorityView, FlagWord,
+    RuleViolation, Section, Violation, ViolationKind,
+};
+
 use crate::body::{key, Key, KeyedState};
 use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Schema, Shape};
@@ -266,15 +272,15 @@ pub mod field {
 // --- Payload grammar, from `world_fold.rs::fold_tech`. -------------------
 
 /// `world_fold.rs::fold_tech` — `need(payload, 32, "tech header")`.
-pub const HEADER_LEN: usize = 32;
+pub const HEADER_LEN: usize = grammar::HEADER_LEN;
 /// `world_fold.rs::fold_tech` — `cursor += 16`.
-pub const COUNTRY_ROW_LEN: usize = 16;
+pub const COUNTRY_ROW_LEN: usize = grammar::COUNTRY_ROW_LEN;
 /// `world_fold.rs::fold_tech` — `cursor += 40`, before any tail.
-pub const ACTIVE_ROW_FIXED_LEN: usize = 40;
+pub const ACTIVE_ROW_FIXED_LEN: usize = grammar::ACTIVE_ROW_FIXED_LEN;
 /// `world_fold.rs::fold_tech` — four `i64` ahead-of-time values.
-pub const AHEAD_QUARTET_LEN: usize = 32;
+pub const AHEAD_QUARTET_LEN: usize = grammar::AHEAD_QUARTET_LEN;
 /// `world_fold.rs::fold_tech` — the A29 producer provenance block.
-pub const A29_PROVENANCE_LEN: usize = 176;
+pub const A29_PROVENANCE_LEN: usize = grammar::A29_PROVENANCE_LEN;
 /// `world_fold.rs::fold_tech` — the derived quartet's authority tail:
 /// `authority: u32`, `producer_game_hour_raw: i32`, `penalty_factor_raw: i64`.
 ///
@@ -284,44 +290,44 @@ pub const A29_PROVENANCE_LEN: usize = 176;
 /// wants them recomputes the quartet from them; a consumer that does not is not
 /// helped by three loose numbers. The row length still accounts for it here so
 /// that a stream carrying derived quartets does not desynchronise this port.
-pub const A29_DERIVED_AUTHORITY_LEN: usize = 16;
+pub const A29_DERIVED_AUTHORITY_LEN: usize = grammar::A29_DERIVED_AUTHORITY_LEN;
 /// `world_fold.rs::fold_tech` — the only value the derived authority word takes.
 pub const A29_DERIVED_AUTHORITY: u32 = 1;
 
 /// Country-row flag bits. **The fold never reads this word**; the collector packs
 /// it at `attach_log.rs:69214`-`:69225` and it is the only authority on why a
 /// value is missing. See the module docs.
-pub const COUNTRY_FLAG_COMPLETED_TECH_COUNT: u32 = 1;
-pub const COUNTRY_FLAG_RESEARCH_SLOT_COUNT: u32 = 1 << 1;
-pub const COUNTRY_FLAG_ACTIVE_RESEARCH: u32 = 1 << 2;
+pub const COUNTRY_FLAG_COMPLETED_TECH_COUNT: u32 = grammar::COUNTRY_FLAG_COMPLETED_TECH_COUNT;
+pub const COUNTRY_FLAG_RESEARCH_SLOT_COUNT: u32 = grammar::COUNTRY_FLAG_RESEARCH_SLOT_COUNT;
+pub const COUNTRY_FLAG_ACTIVE_RESEARCH: u32 = grammar::COUNTRY_FLAG_ACTIVE_RESEARCH;
 
 /// The word the collector packs for a gated-off country count
 /// (`attach_log.rs:69229`, `:69235`: `unwrap_or(u32::MAX)`). Unreachable as a
 /// real reading: the collector's own bounds are 2000 and 32
 /// (`attach_log/offsets.rs:274`-`:275`).
-pub const COUNTRY_COUNT_ABSENT_SENTINEL: u32 = u32::MAX;
+pub const COUNTRY_COUNT_ABSENT_SENTINEL: u32 = grammar::COUNTRY_COUNT_ABSENT_SENTINEL;
 
 /// Active-row flag bits (`world_fold.rs:13368`, `:13377`, `:13389`, `:13396`,
 /// `:13448`).
-pub const ACTIVE_FLAG_LIVE_PROGRESS: u32 = 1;
-pub const ACTIVE_FLAG_BASE_REQUIRED_POINTS: u32 = 1 << 1;
-pub const ACTIVE_FLAG_TECH_NAME: u32 = 1 << 2;
-pub const ACTIVE_FLAG_AHEAD_QUARTET: u32 = 1 << 3;
-pub const ACTIVE_FLAG_A29_PROVENANCE: u32 = 1 << 4;
+pub const ACTIVE_FLAG_LIVE_PROGRESS: u32 = grammar::ACTIVE_FLAG_LIVE_PROGRESS;
+pub const ACTIVE_FLAG_BASE_REQUIRED_POINTS: u32 = grammar::ACTIVE_FLAG_BASE_REQUIRED_POINTS;
+pub const ACTIVE_FLAG_TECH_NAME: u32 = ActiveTail::TechName.flag_bit();
+pub const ACTIVE_FLAG_AHEAD_QUARTET: u32 = ActiveTail::AheadQuartet.flag_bit();
+pub const ACTIVE_FLAG_A29_PROVENANCE: u32 = ActiveTail::ObservedAuthority.flag_bit();
 /// `world_fold.rs::fold_tech` — the DERIVED quartet's authority tail: the hour
 /// the recorder read and the live `BASE_YEAR_AHEAD_PENALTY_FACTOR`. Mutually
 /// exclusive with [`ACTIVE_FLAG_A29_PROVENANCE`]; exactly one of the two must
 /// accompany [`ACTIVE_FLAG_AHEAD_QUARTET`].
-pub const ACTIVE_FLAG_AHEAD_DERIVED: u32 = 1 << 5;
+pub const ACTIVE_FLAG_AHEAD_DERIVED: u32 = ActiveTail::DerivedAuthority.flag_bit();
 /// `world_fold.rs::fold_tech` — `flags & !0b11_1111` is a hard error.
 ///
 /// Bit 5 is the derived ahead-of-time authority ([`ACTIVE_FLAG_AHEAD_DERIVED`]).
-pub const ACTIVE_KNOWN_FLAGS: u32 = 0b11_1111;
+pub const ACTIVE_KNOWN_FLAGS: u32 = grammar::ACTIVE_KNOWN_FLAGS;
 
 /// `TECH_PROGRESS_SCALE`, `world_fold.rs::TECH_PROGRESS_SCALE`. Applies to `progress_raw` alone
 /// (`:13366`). The header word at `+20` carries it too (`attach_log.rs:69209`).
 pub const TECH_PROGRESS_SCALE: f64 = 1000.0;
-pub const TECH_PROGRESS_SCALE_RAW: u32 = 1000;
+pub const TECH_PROGRESS_SCALE_RAW: u32 = grammar::TECH_PROGRESS_SCALE_RAW;
 /// `TECH_LIVE_SCALE`, `world_fold.rs::TECH_LIVE_SCALE`. **100× the other one**, and it applies
 /// to six fields in the same row: `live_progress_raw` (`:13372`),
 /// `base_required_points_raw` (`:13384`) and all four quartet values
@@ -329,7 +335,7 @@ pub const TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 /// (`attach_log.rs:69210`), and the fold restates it per row as
 /// `"ahead_of_time_fixed_scale": 100_000` (`:13420`).
 pub const TECH_LIVE_SCALE: f64 = 100_000.0;
-pub const TECH_LIVE_SCALE_RAW: u32 = 100_000;
+pub const TECH_LIVE_SCALE_RAW: u32 = grammar::TECH_LIVE_SCALE_RAW;
 
 /// `world_fold.rs::fold_tech` — every quartet value must lie in `0..=10^10`.
 pub const AHEAD_RAW_MAX: i64 = 10_000_000_000;
@@ -474,44 +480,21 @@ pub struct Tables<'a> {
 /// optional tails — so the exact-consumption rule (`world_fold.rs::fold_tech`) belongs to
 /// [`active_row_spans`], which is the only function that can evaluate it.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tables<'_>), String> {
-    if payload.len() < HEADER_LEN {
-        return Err(format!(
-            "tech payload {} shorter than the {HEADER_LEN}-byte header",
-            payload.len()
-        ));
-    }
-    let header = PayloadHeader {
-        elapsed_wall_ms: u64::from_le_bytes(payload[0..8].try_into().expect("8 bytes")),
-        country_count: u32_at(payload, 8),
-        changed_rows: u32_at(payload, 12),
-        status_flags: u32_at(payload, 16),
-        progress_scale_raw: u32_at(payload, 20),
-        live_scale_raw: u32_at(payload, 24),
-        active_count: u32_at(payload, 28),
-    };
-    // Checked arithmetic: the counts are input from a file on disk, and the
-    // fold's `saturating_*` (`:13325`-`:13327`) turns an overflowing product into
-    // a length shortfall rather than a wrapped, plausible one. Checked reports the
-    // overflow as itself; both refuse the payload.
-    let countries_len = (header.country_count as usize)
-        .checked_mul(COUNTRY_ROW_LEN)
-        .ok_or_else(|| format!("tech country_count {} overflows", header.country_count))?;
-    let active_min = (header.active_count as usize)
-        .checked_mul(ACTIVE_ROW_FIXED_LEN)
-        .ok_or_else(|| format!("tech active_count {} overflows", header.active_count))?;
-    let minimum = HEADER_LEN
-        .checked_add(countries_len)
-        .and_then(|n| n.checked_add(active_min))
-        .ok_or_else(|| "tech payload length overflows".to_string())?;
-    if payload.len() < minimum {
-        return Err(format!("tech len {} < minimum {minimum}", payload.len()));
-    }
-    let countries_end = HEADER_LEN + countries_len;
+    let header = grammar::read_header(payload).map_err(|violation| message(&violation))?;
+    let layout = grammar::body_layout(payload, &header).map_err(|violation| message(&violation))?;
     Ok((
-        header,
+        PayloadHeader {
+            elapsed_wall_ms: header.elapsed_wall_ms,
+            country_count: header.country_count,
+            changed_rows: header.changed_rows,
+            status_flags: header.status_flags,
+            progress_scale_raw: header.progress_scale_raw,
+            live_scale_raw: header.live_scale_raw,
+            active_count: header.active_count,
+        },
         Tables {
-            countries: &payload[HEADER_LEN..countries_end],
-            active: &payload[countries_end..],
+            countries: &payload[layout.countries.clone()],
+            active: &payload[layout.active_start..],
         },
     ))
 }
@@ -550,37 +533,43 @@ pub fn active_row_spans(
     cursor = cursor
         .checked_add(xui09_tail_len(&active[cursor..])?)
         .ok_or_else(|| "tech XUI09 tail length overflows".to_string())?;
-    // `world_fold.rs::fold_tech`.
-    if cursor != active.len() {
-        return Err(format!(
-            "tech trailing bytes: consumed {cursor} of {} active-table bytes",
-            active.len()
-        ));
-    }
+    // `world_fold.rs::fold_tech`, through the grammar crate that owns the rule.
+    grammar::exact_consumption(cursor, active.len()).map_err(|violation| match violation.kind {
+        ViolationKind::TrailingBytes { consumed, total } => format!(
+            "tech trailing bytes: consumed {consumed} of {total} active-table bytes"
+        ),
+        _ => message(&violation),
+    })?;
     Ok(spans)
 }
 
-/// `XU09`, the first word of the witness tail
-/// (`collector/src/attach_log.rs`, mirrored in `world_fold.rs`).
+/// `XU09`, the first word of the witness tail.
 ///
-/// Mirrored rather than shared, for the same crate-direction reason the fold
-/// mirrors it: this port is an independent reference implementation of
-/// `WIRE_FORMAT.md` and takes no recorder dependency.
-pub const XUI09_TAIL_MAGIC: u32 = u32::from_le_bytes(*b"XU09");
+/// SHARED, not mirrored, since the owner's 2026-08-15 one-decoder ruling: it and
+/// every other structural constant in this module now come from the leaf
+/// `d13_grammar` crate, which the producer and both recorder-side readers also
+/// depend on. That reverses no crate direction — the leaf has no dependencies at
+/// all, so this port still takes no recorder dependency — and it closes the gap
+/// that made the mirrored copy refuse every shipping payload the day this tail
+/// was added. What stays independent is the SEMANTIC layer below: this module
+/// still decides for itself what a span means and what `WIRE_FORMAT.md` requires
+/// of it.
+pub const XUI09_TAIL_MAGIC: u32 = grammar::XUI09_TAIL_MAGIC;
 /// `magic`, `flags`, `dictionary_count`, `measured_count`, `refused_count`,
 /// `vector_count`, one `u32` each.
-pub const XUI09_TAIL_HEADER_LEN: usize = 24;
+pub const XUI09_TAIL_HEADER_LEN: usize = grammar::XUI09_TAIL_HEADER_LEN;
 /// A country vector whose per-technology states are one byte each rather than
-/// five (`world_fold.rs::COMPACT_TECH_XUI09_COUNTRY_FLAG_DENSE`).
-pub const XUI09_COUNTRY_FLAG_DENSE: u32 = 1;
+/// five. The bit is the shared grammar's, like every other structural constant
+/// in this module.
+pub const XUI09_COUNTRY_FLAG_DENSE: u32 = grammar::XUI09_COUNTRY_FLAG_DENSE;
 
 /// The byte length of the XUI09 witness tail beginning at `rest[0]`, or `0` when
 /// there is none.
 ///
 /// LENGTH ONLY. `world_fold.rs::fold_tech_xui09_witness` is the authority on
-/// what the tail means and validates every byte of it; this measures it, exactly
-/// as `recorder_host::world_fold::compact_tech_xui09_tail_len` does for the
-/// canonical validator.
+/// what the tail means and validates every byte of it; this measures it through
+/// the same `d13_grammar` walk `recorder_host::world_fold::compact_tech_xui09_tail_len`
+/// measures it with, so the two can no longer disagree about where it ends.
 ///
 /// It exists because a decoder that does not know the tail reports it as
 /// trailing bytes and refuses a perfectly good payload. That is not a
@@ -589,128 +578,148 @@ pub const XUI09_COUNTRY_FLAG_DENSE: u32 = 1;
 /// (`runs/jt_a29_values/LIVE_D13_EXCLUSION.md`). This port was the next decoder
 /// in line with the same gap.
 pub fn xui09_tail_len(rest: &[u8]) -> core::result::Result<usize, String> {
-    if rest.is_empty() {
-        return Ok(0);
-    }
-    let need = |cursor: usize, extra: usize, what: &str| -> core::result::Result<usize, String> {
-        let end = cursor
-            .checked_add(extra)
-            .ok_or_else(|| format!("tech XUI09 {what} length overflows"))?;
-        if end > rest.len() {
-            return Err(format!(
-                "tech XUI09 {what} needs {end} bytes, {} present",
-                rest.len()
-            ));
-        }
-        Ok(end)
-    };
-    let mut cursor = need(0, XUI09_TAIL_HEADER_LEN, "tail header")?;
-    let magic = u32_at(rest, 0);
-    if magic != XUI09_TAIL_MAGIC {
-        return Err(format!(
-            "tech XUI09 tail magic {magic:#010x} is not {XUI09_TAIL_MAGIC:#010x}"
-        ));
-    }
-    let dictionary_count = u32_at(rest, 8) as usize;
-    let measured_count = u32_at(rest, 12) as usize;
-    let refused_count = u32_at(rest, 16) as usize;
-    let vector_count = u32_at(rest, 20) as usize;
-    for _ in 0..dictionary_count {
-        let after_len = need(cursor, 6, "dictionary entry")?;
-        let len = u16::from_le_bytes([rest[cursor + 4], rest[cursor + 5]]) as usize;
-        cursor = need(after_len, len, "dictionary id bytes")?;
-    }
-    let fixed = measured_count
-        .checked_mul(4)
-        .and_then(|value| value.checked_add(refused_count.checked_mul(8)?))
-        .ok_or_else(|| "tech XUI09 measured/refusal set length overflows".to_string())?;
-    cursor = need(cursor, fixed, "measured and refusal sets")?;
-    for _ in 0..vector_count {
-        let after_header = need(cursor, 16, "country vector")?;
-        let country_flags = u32_at(rest, cursor + 4);
-        let state_count = u32_at(rest, cursor + 8) as usize;
-        let completed_count = u32_at(rest, cursor + 12) as usize;
-        let state_bytes = if country_flags & XUI09_COUNTRY_FLAG_DENSE != 0 {
-            1usize
-        } else {
-            5usize
-        };
-        let rows = state_count
-            .checked_mul(state_bytes)
-            .and_then(|value| value.checked_add(completed_count.checked_mul(4)?))
-            .ok_or_else(|| "tech XUI09 country vector length overflows".to_string())?;
-        cursor = need(after_header, rows, "country vector rows")?;
-    }
-    Ok(cursor)
+    grammar::xui09_tail_len(rest, 0).map_err(|violation| message(&violation))
 }
 
 /// The total length of the active-research row that starts at `rest[0]`, or an
 /// error if `rest` cannot carry one.
 pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
-    if rest.len() < ACTIVE_ROW_FIXED_LEN {
-        return Err(format!(
-            "row needs {ACTIVE_ROW_FIXED_LEN} fixed bytes, {} present",
-            rest.len()
-        ));
+    grammar::active_row_len(rest, 0).map_err(|violation| message(&violation))
+}
+
+/// One structural violation, spelled the way this port has always spelled it.
+///
+/// The grammar crate carries operands and no text, because the three D13 readers
+/// print the same violation three different ways: the fold's messages go into a
+/// recorder diagnostic, the authority validator's into a sealed manifest's
+/// exclusion reasons, and these into a measurement harness. This match is the
+/// whole compatibility boundary, it is exhaustive, and it has no wildcard arm —
+/// so a new violation kind is a compile error here rather than a silently
+/// reworded refusal.
+fn message(violation: &Violation) -> String {
+    match violation.kind {
+        ViolationKind::Need {
+            section,
+            at,
+            len,
+            available,
+            aggregate,
+        } => match section {
+            Section::Header => format!(
+                "tech payload {available} shorter than the {HEADER_LEN}-byte header"
+            ),
+            Section::PayloadMinimum => format!("tech len {available} < minimum {len}"),
+            Section::CountryTable | Section::CountryRow => format!(
+                "tech country row needs {} bytes, {available} present",
+                at + len
+            ),
+            Section::ActiveFixed => {
+                format!("row needs {len} fixed bytes, {available} present")
+            }
+            Section::TechNamePrefix => "row is too short for the tech_name length prefix".into(),
+            Section::TechNameBytes => "row is too short for its tech_name bytes".into(),
+            Section::AheadQuartet => "row is too short for the ahead-of-time quartet".into(),
+            Section::ObservedAuthority => "row is too short for the A29 provenance block".into(),
+            Section::DerivedAuthority => "row is too short for the A29 derived authority".into(),
+            // The tail's own bounds checks. The coarser operands this port has
+            // always printed ride on the violation; see `AggregateNeed`.
+            Section::Xui09TailHeader
+            | Section::Xui09DictionaryIndex
+            | Section::Xui09DictionaryEntry
+            | Section::Xui09DictionaryIdPrefix
+            | Section::Xui09DictionaryIdBytes
+            | Section::Xui09MeasuredTag
+            | Section::Xui09Refusal
+            | Section::Xui09MeasuredAndRefusalSets
+            | Section::Xui09VectorHeader
+            | Section::Xui09VectorRows => {
+                let (section, end) = match aggregate {
+                    Some(aggregate) => (aggregate.section, aggregate.at + aggregate.len),
+                    None => (section, at + len),
+                };
+                format!(
+                    "tech XUI09 {} needs {end} bytes, {available} present",
+                    xui09_label(section)
+                )
+            }
+        },
+        ViolationKind::LengthOverflow {
+            section, count, ..
+        } => match section {
+            Section::CountryTable => format!("tech country_count {count} overflows"),
+            Section::PayloadMinimum => format!("tech active_count {count} overflows"),
+            Section::Xui09MeasuredAndRefusalSets => {
+                "tech XUI09 measured/refusal set length overflows".into()
+            }
+            Section::Xui09VectorRows => "tech XUI09 country vector length overflows".into(),
+            other => format!("tech XUI09 {} length overflows", xui09_label(other)),
+        },
+        ViolationKind::OffsetOverflow { section, .. } => match section {
+            Section::CountryTable | Section::PayloadMinimum => {
+                "tech payload length overflows".into()
+            }
+            Section::Xui09MeasuredAndRefusalSets => {
+                "tech XUI09 measured/refusal set length overflows".into()
+            }
+            Section::Xui09VectorRows => "tech XUI09 country vector length overflows".into(),
+            other => format!("tech XUI09 {} length overflows", xui09_label(other)),
+        },
+        ViolationKind::BadMagic { found, expected } => {
+            format!("tech XUI09 tail magic {found:#010x} is not {expected:#010x}")
+        }
+        ViolationKind::UnknownFlags { word, value, .. } => match word {
+            FlagWord::ActiveRow => format!("row has unknown flags {value:#x}"),
+            // This port deliberately accepts a country bit it does not know (the
+            // fold never reads the word at all, so refusing would refuse a
+            // payload the recorder folds) and never asks the grammar about the
+            // XUI09 flag words, so neither reaches here.
+            FlagWord::CountryRow | FlagWord::Xui09Tail | FlagWord::Xui09CountryVector => {
+                format!("tech unknown flags {value:#x}")
+            }
+        },
+        ViolationKind::Rule { rule, .. } => match rule {
+            RuleViolation::ObservedAuthorityWithoutQuartet => {
+                "A29 provenance without ahead quartet".into()
+            }
+            RuleViolation::DerivedAuthorityWithoutQuartet => {
+                "A29 derived authority without ahead quartet".into()
+            }
+            RuleViolation::BothAuthorities => {
+                "A29 quartet carries both observed and derived authority".into()
+            }
+            RuleViolation::QuartetWithoutAuthority => {
+                "ahead quartet lacks an A29 producer authority".into()
+            }
+        },
+        ViolationKind::TrailingBytes { consumed, total } => {
+            format!("tech trailing bytes: consumed {consumed} of {total}")
+        }
+        ViolationKind::WalkOutOfOrder => "tech payload walk driven out of order".into(),
     }
-    let flags = u32_at(rest, 20);
-    // `world_fold.rs::fold_tech` — an unrecognised flag word means the row is not this
-    // grammar, so nothing in it (including its length) can be trusted.
-    if flags & !ACTIVE_KNOWN_FLAGS != 0 {
-        return Err(format!("row has unknown flags {flags:#x}"));
+}
+
+/// The XUI09 label this port has always printed for each part of the tail.
+fn xui09_label(section: Section) -> &'static str {
+    match section {
+        Section::Xui09TailHeader => "tail header",
+        Section::Xui09DictionaryIndex | Section::Xui09DictionaryEntry => "dictionary entry",
+        Section::Xui09DictionaryIdPrefix | Section::Xui09DictionaryIdBytes => "dictionary id bytes",
+        Section::Xui09MeasuredTag
+        | Section::Xui09Refusal
+        | Section::Xui09MeasuredAndRefusalSets => "measured and refusal sets",
+        Section::Xui09VectorHeader => "country vector",
+        Section::Xui09VectorRows => "country vector rows",
+        Section::Header
+        | Section::PayloadMinimum
+        | Section::CountryTable
+        | Section::CountryRow
+        | Section::ActiveFixed
+        | Section::TechNamePrefix
+        | Section::TechNameBytes
+        | Section::AheadQuartet
+        | Section::ObservedAuthority
+        | Section::DerivedAuthority => "tail",
     }
-    let mut len = ACTIVE_ROW_FIXED_LEN;
-    if flags & ACTIVE_FLAG_TECH_NAME != 0 {
-        // `read_string`, `world_fold.rs::read_string`: a **u16** length prefix, then that
-        // many UTF-8 bytes. The packer writes the same (`attach_log.rs:71944`).
-        if rest.len() < len + 2 {
-            return Err("row is too short for the tech_name length prefix".into());
-        }
-        let name_len = u16::from_le_bytes([rest[len], rest[len + 1]]) as usize;
-        len += 2 + name_len;
-        if rest.len() < len {
-            return Err("row is too short for its tech_name bytes".into());
-        }
-    }
-    if flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
-        len += AHEAD_QUARTET_LEN;
-        if rest.len() < len {
-            return Err("row is too short for the ahead-of-time quartet".into());
-        }
-    }
-    if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
-        // `world_fold.rs::fold_tech` — the provenance block requires the quartet, and
-        // the check runs before the 176-byte `need`.
-        if flags & ACTIVE_FLAG_AHEAD_QUARTET == 0 {
-            return Err("A29 provenance without ahead quartet".into());
-        }
-        len += A29_PROVENANCE_LEN;
-        if rest.len() < len {
-            return Err("row is too short for the A29 provenance block".into());
-        }
-    }
-    if flags & ACTIVE_FLAG_AHEAD_DERIVED != 0 {
-        // `world_fold.rs::fold_tech` — a derived quartet carries its inputs
-        // rather than a producer receipt, and the two authorities are mutually
-        // exclusive.
-        if flags & ACTIVE_FLAG_AHEAD_QUARTET == 0 {
-            return Err("A29 derived authority without ahead quartet".into());
-        }
-        if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
-            return Err("A29 quartet carries both observed and derived authority".into());
-        }
-        len += A29_DERIVED_AUTHORITY_LEN;
-        if rest.len() < len {
-            return Err("row is too short for the A29 derived authority".into());
-        }
-    } else if flags & ACTIVE_FLAG_A29_PROVENANCE == 0 && flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
-        // `world_fold.rs::fold_tech` — the converse. A quartet with neither
-        // authority is unauthenticated, and the fold reaches this only after
-        // consuming the quartet, which is why it is checked after the length is
-        // known rather than beside the flag mask.
-        return Err("ahead quartet lacks an A29 producer authority".into());
-    }
-    Ok(len)
 }
 
 // --- Keys --------------------------------------------------------------------
@@ -962,107 +971,107 @@ fn parse_active_row(
             row.len()
         ));
     }
-    let flags = u32_at(row, 20);
-    let live_word = i64_at(row, 24);
-    let base_word = i64_at(row, 32);
+    // The structural walk is the shared one. `active_row_len` above has already
+    // refused every violation it can raise, so nothing below can be reached by a
+    // row this function accepts — but the walk is still driven rather than
+    // re-derived, because a second implementation of "where does the quartet
+    // start" is exactly what this lane exists to delete.
+    let (mut cursor, unknown_flags) =
+        grammar::ActiveRowCursor::begin(row, 0).map_err(|violation| message(&violation))?;
+    if let Some(violation) = unknown_flags {
+        return Err(message(&violation));
+    }
+    let fixed = cursor.fixed().clone();
 
     // `world_fold.rs:13374` and `:13386`: a gated-off value must pack a zero.
-    let live_progress_raw = if flags & ACTIVE_FLAG_LIVE_PROGRESS != 0 {
-        Some(live_word)
-    } else if live_word != 0 {
+    let live_progress_raw = if fixed.live_progress_captured() {
+        Some(fixed.live_progress_word)
+    } else if fixed.live_progress_word != 0 {
         return Err("tech live_progress_raw without presence flag".into());
     } else {
         None
     };
-    let base_required_points_raw = if flags & ACTIVE_FLAG_BASE_REQUIRED_POINTS != 0 {
-        Some(base_word)
-    } else if base_word != 0 {
+    let base_required_points_raw = if fixed.base_required_points_captured() {
+        Some(fixed.base_required_points_word)
+    } else if fixed.base_required_points_word != 0 {
         return Err("tech base_required_points_raw without presence flag".into());
     } else {
         None
     };
 
-    let mut cursor = ACTIVE_ROW_FIXED_LEN;
-    let tech_name_captured = flags & ACTIVE_FLAG_TECH_NAME != 0;
-    if tech_name_captured {
-        let name_len = u16::from_le_bytes([row[cursor], row[cursor + 1]]) as usize;
-        cursor += 2;
-        // `world_fold.rs:13391` — an empty name is a rejected row, and
-        // `read_string` (`world_fold.rs::read_string`) rejects invalid UTF-8 before that. The bytes
-        // themselves are a field-level stop-report (module docs); they are still
-        // validated, because a row the fold refuses must not be measured.
-        if name_len == 0 {
-            return Err("tech active row has empty tech_name".into());
+    let mut tech_name_captured = false;
+    let mut quartet: Option<(i64, i64, i64, i64)> = None;
+    let mut branch = None;
+    loop {
+        // No wildcard arm, in either match: a tail added to the grammar is a
+        // compile error here until this port decides what it means.
+        match cursor.next_step().map_err(|violation| message(&violation))? {
+            ActiveStep::Section(section) => match section.tail {
+                ActiveTail::TechName => {
+                    tech_name_captured = true;
+                    // `world_fold.rs:13391` — an empty name is a rejected row,
+                    // and `read_string` (`world_fold.rs::read_string`) rejects
+                    // invalid UTF-8 before that. The bytes themselves are a
+                    // field-level stop-report (module docs); they are still
+                    // validated, because a row the fold refuses must not be
+                    // measured.
+                    if section.span.is_empty() {
+                        return Err("tech active row has empty tech_name".into());
+                    }
+                    core::str::from_utf8(&row[section.span])
+                        .map_err(|e| format!("tech_name: invalid utf-8: {e}"))?;
+                }
+                ActiveTail::AheadQuartet => {
+                    let view = AheadQuartetView::new(row, section.span)
+                        .ok_or("tech ahead quartet span is not the quartet's width")?;
+                    let values = view.tuple();
+                    // `world_fold.rs::fold_tech`.
+                    if [values.0, values.1, values.2, values.3]
+                        .iter()
+                        .any(|value| !(0..=AHEAD_RAW_MAX).contains(value))
+                    {
+                        return Err("tech active row has invalid ahead fixed-5 quartet".into());
+                    }
+                    quartet = Some(values);
+                }
+                ActiveTail::ObservedAuthority => {
+                    let view = A29ProvenanceView::new(row, section.span)
+                        .ok_or("tech A29 provenance span is not the block's width")?;
+                    let quartet = quartet.ok_or("tech A29 provenance without ahead quartet")?;
+                    branch = Some(check_a29_provenance(&view, quartet, frame_game_hour)?);
+                }
+                ActiveTail::DerivedAuthority => {
+                    // `world_fold.rs::fold_tech`. Delimiting this tail without
+                    // reading it would leave the port silently ignoring the
+                    // authority, the hour and the factor.
+                    let view = DerivedAuthorityView::new(row, section.span)
+                        .ok_or("tech A29 derived authority span is not the tail's width")?;
+                    if quartet.is_none() {
+                        return Err("tech A29 derived authority without ahead quartet".into());
+                    }
+                    if view.authority() != A29_DERIVED_AUTHORITY {
+                        return Err("tech A29 derived authority is not the known authority".into());
+                    }
+                    if frame_game_hour.is_some_and(|hour| view.producer_game_hour_raw() != hour) {
+                        return Err("tech A29 derived authority is not same-hour".into());
+                    }
+                    if !(0..=AHEAD_RAW_MAX).contains(&view.penalty_factor_raw()) {
+                        return Err("tech A29 derived penalty factor is out of range".into());
+                    }
+                }
+            },
+            ActiveStep::Recoverable(violation) => return Err(message(&violation)),
+            ActiveStep::End(end) => {
+                debug_assert_eq!(end, row.len());
+                break;
+            }
         }
-        core::str::from_utf8(&row[cursor..cursor + name_len])
-            .map_err(|e| format!("tech_name: invalid utf-8: {e}"))?;
-        cursor += name_len;
     }
 
-    let quartet = if flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
-        let q = (
-            i64_at(row, cursor),
-            i64_at(row, cursor + 8),
-            i64_at(row, cursor + 16),
-            i64_at(row, cursor + 24),
-        );
-        // `world_fold.rs::fold_tech`.
-        if [q.0, q.1, q.2, q.3]
-            .iter()
-            .any(|value| !(0..=AHEAD_RAW_MAX).contains(value))
-        {
-            return Err("tech active row has invalid ahead fixed-5 quartet".into());
-        }
-        cursor += AHEAD_QUARTET_LEN;
-        Some(q)
-    } else {
-        None
-    };
-
-    let branch = if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
-        let quartet = quartet.ok_or("tech A29 provenance without ahead quartet")?;
-        let branch = check_a29_provenance(
-            &row[cursor..cursor + A29_PROVENANCE_LEN],
-            quartet,
-            frame_game_hour,
-        )?;
-        cursor += A29_PROVENANCE_LEN;
-        Some(branch)
-    } else {
-        None
-    };
-
-    if flags & ACTIVE_FLAG_AHEAD_DERIVED != 0 {
-        // `world_fold.rs::fold_tech`. Delimiting this tail without reading it
-        // would leave the port silently ignoring the authority, the hour and
-        // the factor in release, and tripping the consumption assertion below
-        // in debug.
-        if quartet.is_none() {
-            return Err("tech A29 derived authority without ahead quartet".into());
-        }
-        if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
-            return Err("tech A29 quartet carries both observed and derived authority".into());
-        }
-        let authority = u32_at(row, cursor);
-        let producer_game_hour_raw = i32_at(row, cursor + 4);
-        let penalty_factor_raw = i64_at(row, cursor + 8);
-        if authority != A29_DERIVED_AUTHORITY {
-            return Err("tech A29 derived authority is not the known authority".into());
-        }
-        if frame_game_hour.is_some_and(|hour| producer_game_hour_raw != hour) {
-            return Err("tech A29 derived authority is not same-hour".into());
-        }
-        if !(0..=AHEAD_RAW_MAX).contains(&penalty_factor_raw) {
-            return Err("tech A29 derived penalty factor is out of range".into());
-        }
-        cursor += A29_DERIVED_AUTHORITY_LEN;
-    }
-
-    debug_assert_eq!(cursor, row.len());
     Ok(ActiveRow {
-        tech_handle_raw: u32_at(row, 8),
-        tech_def_index_raw: u32_at(row, 12),
-        progress_raw: u32_at(row, 16),
+        tech_handle_raw: fixed.tech_handle_raw,
+        tech_def_index_raw: fixed.tech_def_index_raw,
+        progress_raw: fixed.progress_raw,
         live_progress_raw,
         base_required_points_raw,
         tech_name_captured,
@@ -1085,26 +1094,26 @@ fn parse_active_row(
 /// hash inputs (`domain_data_authority.rs:104`-`:105`), so their absence from the
 /// checkable set costs nothing beyond those two clauses.
 fn check_a29_provenance(
-    block: &[u8],
+    block: &A29ProvenanceView<'_>,
     quartet: (i64, i64, i64, i64),
     frame_game_hour: Option<i32>,
 ) -> core::result::Result<u32, String> {
-    let authority = u32_at(block, 0);
-    let branch = u32_at(block, 4);
-    let callback_sequence = u64_at(block, 8);
-    let callback_thread_id = u32_at(block, 16);
-    let producer_game_hour_raw = i32_at(block, 20);
-    let callback_qpc_ticks = u64_at(block, 24);
-    let qpc_frequency_hz = u64_at(block, 32);
-    let source_record_sha256 = &block[40..72];
-    let ui_action_gate_return_rva = u32_at(block, 72);
-    let candidate_count = u32_at(block, 76);
-    let selected_ordinal = u32_at(block, 80);
-    let selected_game_hour_raw = i32_at(block, 84);
-    let selected_qpc_ticks = u64_at(block, 96);
-    let selection_cutoff_qpc_ticks = u64_at(block, 104);
-    let candidate_set_sha256 = &block[112..144];
-    let selected_present_receipt_sha256 = &block[144..176];
+    let authority = block.authority();
+    let branch = block.localization_branch();
+    let callback_sequence = block.callback_sequence();
+    let callback_thread_id = block.callback_thread_id();
+    let producer_game_hour_raw = block.producer_game_hour_raw();
+    let callback_qpc_ticks = block.callback_qpc_ticks();
+    let qpc_frequency_hz = block.qpc_frequency_hz();
+    let source_record_sha256 = block.source_record_sha256();
+    let ui_action_gate_return_rva = block.ui_action_gate_return_rva();
+    let candidate_count = block.selected_present_candidate_count();
+    let selected_ordinal = block.selected_present_ordinal();
+    let selected_game_hour_raw = block.selected_present_game_hour_raw();
+    let selected_qpc_ticks = block.selected_present_qpc_ticks();
+    let selection_cutoff_qpc_ticks = block.selected_present_cutoff_qpc_ticks();
+    let candidate_set_sha256 = block.selected_present_candidate_set_sha256();
+    let selected_present_receipt_sha256 = block.selected_present_receipt_sha256();
 
     // `world_fold.rs::fold_tech`, in the fold's own order.
     if authority != A29_AUTHORITY {
