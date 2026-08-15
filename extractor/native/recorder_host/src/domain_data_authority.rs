@@ -907,7 +907,16 @@ pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
 pub const COMPACT_WEATHER_MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
-pub const COMPACT_WEATHER_MAX_PRECIP_RAW: i32 = 100_000_000;
+// COMPACT_WEATHER_MAX_PRECIP_RAW (= 100_000_000) is deliberately gone rather
+// than widened, on the same ground as COMPACT_WEATHER_MAX_REGION_ID above: the
+// engine's two precipitation ceilings are `CWeatherManager + 0x1a8` (water) and
+// `+ 0x1f8` (snow), both parsed out of `common/weather.txt`, so a constant here
+// is game content this crate made up. `100_000_000` is `1000.0` in
+// `COMPACT_FIXED_SCALE_RAW` spelling and matched no engine value at all. The
+// producer discovers both when the weather root resolves and carries them in the
+// payload header's last two words, so this decoder bounds rows by the measured
+// envelope. Authority site and engine proof:
+// `collector/src/attach_log/offsets.rs::WEATHER_MANAGER_MAX_WATER_RAW_OFF`.
 pub const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
 pub const COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT: u32 = 1;
 pub const COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY: u32 = 1 << 1;
@@ -16919,8 +16928,12 @@ fn decode_compact_weather_data_payload(
     let observed_province_rows = read_u32_le(payload, 28) as usize;
     let scale_raw = read_u32_le(payload, 32);
     let active_region_count = read_u32_le(payload, 36) as usize;
-    let reserved0 = read_u32_le(payload, 40);
-    let reserved1 = read_u32_le(payload, 44);
+    // Header words `+40` / `+44`: the two ENGINE precipitation ceilings the
+    // producer discovered for this record, in the slots that used to be reserved
+    // zeros. See `COMPACT_WEATHER_MAX_TEMPERATURE_RAW`'s neighbourhood for why
+    // the constant they replaced is gone.
+    let max_water_raw_word = read_u32_le(payload, 40);
+    let max_snow_raw_word = read_u32_le(payload, 44);
     add_decoder_status(summary, status_flags);
     let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
     let failed = compact_contract::compact_status_is_failure(
@@ -16998,11 +17011,29 @@ fn decode_compact_weather_data_payload(
             "offset {offset}: weather active_region_count {active_region_count} > region_count {region_count}"
         ));
     }
-    if reserved0 != 0 || reserved1 != 0 {
+    // The ceilings are a presence-gated pair: `0, 0` is the producer saying no
+    // weather root resolved, which is legal only when the record carries no
+    // province rows to bound. Anything else zero, or a value the wire's signed
+    // slot cannot hold, means rows arrived without the envelope they were
+    // admitted against.
+    let ceilings_absent = max_water_raw_word == 0 && max_snow_raw_word == 0;
+    if !ceilings_absent && (max_water_raw_word == 0 || max_snow_raw_word == 0) {
         summary.parse_errors.push(format!(
-            "offset {offset}: weather reserved fields are nonzero ({reserved0}, {reserved1})"
+            "offset {offset}: weather precipitation ceilings are half-present (water {max_water_raw_word}, snow {max_snow_raw_word})"
         ));
     }
+    if ceilings_absent && province_count != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather carries {province_count} province rows with no precipitation ceilings"
+        ));
+    }
+    if max_water_raw_word > i32::MAX as u32 || max_snow_raw_word > i32::MAX as u32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: weather precipitation ceilings exceed the wire's signed slot (water {max_water_raw_word}, snow {max_snow_raw_word})"
+        ));
+    }
+    let max_water_raw = max_water_raw_word.min(i32::MAX as u32) as i32;
+    let max_snow_raw = max_snow_raw_word.min(i32::MAX as u32) as i32;
     if let Some(domain) = summary.per_domain.get_mut(&24) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(emitted_rows as u64);
         domain.data_changed_rows_total = domain
@@ -17223,7 +17254,7 @@ fn decode_compact_weather_data_payload(
         }
         if water_present {
             add_compact_domain_data_unit(summary, 24, "weather_province_water_rows", 1);
-            if !(0..=COMPACT_WEATHER_MAX_PRECIP_RAW).contains(&water_raw) {
+            if !(0..=max_water_raw).contains(&water_raw) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: weather province row {row_index} has invalid water_raw {water_raw}"
                 ));
@@ -17235,7 +17266,7 @@ fn decode_compact_weather_data_payload(
         }
         if snow_present {
             add_compact_domain_data_unit(summary, 24, "weather_province_snow_rows", 1);
-            if !(0..=COMPACT_WEATHER_MAX_PRECIP_RAW).contains(&snow_raw) {
+            if !(0..=max_snow_raw).contains(&snow_raw) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: weather province row {row_index} has invalid snow_raw {snow_raw}"
                 ));

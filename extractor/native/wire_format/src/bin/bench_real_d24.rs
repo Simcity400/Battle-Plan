@@ -305,9 +305,13 @@ fn check_authority_payload(
     if header.active_region_count as usize > region_count {
         return invalid("active_region_count exceeds region_count".to_string());
     }
-    if header.reserved0 != 0 || header.reserved1 != 0 {
-        return invalid("header reserved fields are nonzero".to_string());
-    }
+    // The header's two ENGINE precipitation ceilings, which replaced the
+    // reserved zeros. `None` means the producer resolved no weather root, and is
+    // legal only on a record with no province rows.
+    let ceilings = match d24::PrecipCeilings::from_header(*header, province_count) {
+        Ok(ceilings) => ceilings,
+        Err(message) => return invalid(message),
+    };
 
     let region_collection = schema
         .collections
@@ -370,7 +374,12 @@ fn check_authority_payload(
                 "province row {row_index} is missing the struct validation flag"
             ));
         }
-        d24::record_from_province_row(province_collection, row, 0).map_err(|e| {
+        let Some(ceilings) = ceilings else {
+            return invalid(format!(
+                "province row {row_index} arrived with no precipitation ceilings"
+            ));
+        };
+        d24::record_from_province_row(province_collection, row, 0, ceilings).map_err(|e| {
             format!("d24 authority province row {row_index} at byte {at_byte}: {e}")
         })?;
     }
@@ -1082,8 +1091,10 @@ mod tests {
         p.extend_from_slice(&observed_province_rows.to_le_bytes());
         p.extend_from_slice(&d24::FIXED_SCALE_RAW.to_le_bytes());
         p.extend_from_slice(&0u32.to_le_bytes()); // active_region_count
-        p.extend_from_slice(&0u32.to_le_bytes()); // reserved0
-        p.extend_from_slice(&0u32.to_le_bytes()); // reserved1
+        // The two ENGINE precipitation ceilings. Unequal on purpose: the pair is
+        // two separate engine fields, not one number worn twice.
+        p.extend_from_slice(&20_000_000u32.to_le_bytes()); // max_water_raw
+        p.extend_from_slice(&8_000_000u32.to_le_bytes()); // max_snow_raw
         assert_eq!(p.len(), d24::HEADER_LEN);
         for r in regions.iter().chain(provinces) {
             p.extend_from_slice(r);
@@ -1735,9 +1746,16 @@ mod tests {
         let mut active = delta_payload(FAILED_DELTA, 4, 10);
         active[36..40].copy_from_slice(&1u32.to_le_bytes());
         bad.push(active);
-        let mut reserved = delta_payload(FAILED_DELTA, 4, 10);
-        reserved[40..44].copy_from_slice(&1u32.to_le_bytes());
-        bad.push(reserved);
+        // The two precipitation ceilings, which took the reserved words. They
+        // are a presence-gated pair, so a HALF-present pair is the malformation
+        // -- "non-zero" no longer is, and a payload with a real water ceiling
+        // and no snow ceiling is exactly a producer that lost one of them.
+        let mut half_present = delta_payload(FAILED_DELTA, 4, 10);
+        half_present[44..48].copy_from_slice(&0u32.to_le_bytes());
+        bad.push(half_present);
+        let mut ceiling_overflow = delta_payload(FAILED_DELTA, 4, 10);
+        ceiling_overflow[40..44].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+        bad.push(ceiling_overflow);
 
         let mut invalid_region_id = delta_payload(FAILED_DELTA, 4, 10);
         invalid_region_id[d24::HEADER_LEN..d24::HEADER_LEN + 4]
@@ -1769,6 +1787,11 @@ mod tests {
         let mut province_id = province_payload();
         province_id[d24::HEADER_LEN..d24::HEADER_LEN + 4].copy_from_slice(&10_000u32.to_le_bytes());
         bad.push(province_id);
+        // Province rows with no ceilings at all: the "no weather root resolved"
+        // state is only legal when there are no rows to bound.
+        let mut rows_without_ceilings = province_payload();
+        rows_without_ceilings[40..48].copy_from_slice(&[0u8; 8]);
+        bad.push(rows_without_ceilings);
         let mut missing_struct = province_payload();
         let flags = province_flags() & !d24::PROVINCE_STRUCT_VALIDATED;
         missing_struct[d24::HEADER_LEN + 4..d24::HEADER_LEN + 8]

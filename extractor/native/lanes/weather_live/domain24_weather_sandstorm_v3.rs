@@ -41,7 +41,14 @@ pub const MIN_PROVINCE_ROWS: usize = 2;
 pub const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
-pub const MAX_PRECIP_RAW: i32 = 100_000_000;
+// MAX_PRECIP_RAW (= 100_000_000) is deliberately gone rather than widened, the
+// same correction MAX_REGION_ID above already carries. The engine keeps TWO
+// precipitation ceilings, `CWeatherManager + 0x1a8` (water) and `+ 0x1f8`
+// constant here is game content this gate made up, and it bounded both fields
+// with one number that matched neither. The producer discovers them and carries
+// them in the payload header's last two words. Engine proof and authority site:
+// `collector/src/attach_log/offsets.rs::WEATHER_MANAGER_MAX_WATER_RAW_OFF`,
+// long form in `runs/jv_weather_precip/RE_EVIDENCE.md`.
 // MIN_OBSERVED_PROVINCE_ROWS is now MIN_PROVINCE_ROWS above.
 pub const MAX_OBSERVED_PROVINCE_ROWS: usize = 65_536;
 pub const MAX_CUSTOM_MODIFIER_COUNT: u32 = 4_096;
@@ -114,6 +121,13 @@ pub struct WeatherVisualHeader {
     pub changed_rows: u32,
     pub observed_region_rows: u32,
     pub observed_province_rows: u32,
+    /// The two ENGINE precipitation ceilings (`CWeatherManager + 0x1a8` and
+    /// `+ 0x1f8`), which took the header words that used to be reserved zeros.
+    /// `0, 0` means no weather root resolved and is legal only with no province
+    /// rows, so an encoder that leaves them zero while writing province rows
+    /// produces a payload its own decoder refuses.
+    pub max_water_raw: u32,
+    pub max_snow_raw: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -189,8 +203,8 @@ pub fn encode_payload(
     payload.extend_from_slice(&header.observed_province_rows.to_le_bytes());
     payload.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
     payload.extend_from_slice(&active_region_count.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&header.max_water_raw.to_le_bytes());
+    payload.extend_from_slice(&header.max_snow_raw.to_le_bytes());
     for row in region_rows {
         payload.extend_from_slice(&row.region_id.to_le_bytes());
         payload.extend_from_slice(&row.flags.to_le_bytes());
@@ -230,8 +244,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherSandstormGateSumm
     let observed_province_rows = read_u32_le(payload, 28) as usize;
     let scale_raw = read_u32_le(payload, 32);
     let active_region_count = read_u32_le(payload, 36) as usize;
-    let reserved0 = read_u32_le(payload, 40);
-    let reserved1 = read_u32_le(payload, 44);
+    // The two ENGINE precipitation ceilings, in the words that used to be
+    // reserved zeros.
+    let max_water_raw_word = read_u32_le(payload, 40);
+    let max_snow_raw_word = read_u32_le(payload, 44);
     let delta_data = (status_flags & STATUS_DELTA_DATA) != 0;
     let emitted_rows = region_count.saturating_add(province_count);
 
@@ -287,11 +303,26 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherSandstormGateSumm
             "offset {offset}: active_region_count {active_region_count} > region_count {region_count}"
         ));
     }
-    if reserved0 != 0 || reserved1 != 0 {
+    // Presence-gated pair: `0, 0` means no weather root resolved, which is legal
+    // only when the record carries no province rows to bound.
+    let ceilings_absent = max_water_raw_word == 0 && max_snow_raw_word == 0;
+    if !ceilings_absent && (max_water_raw_word == 0 || max_snow_raw_word == 0) {
         summary.parse_errors.push(format!(
-            "offset {offset}: reserved header fields are nonzero ({reserved0}, {reserved1})"
+            "offset {offset}: precipitation ceilings are half-present (water {max_water_raw_word}, snow {max_snow_raw_word})"
         ));
     }
+    if ceilings_absent && province_count != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: {province_count} province rows with no precipitation ceilings"
+        ));
+    }
+    if max_water_raw_word > i32::MAX as u32 || max_snow_raw_word > i32::MAX as u32 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: precipitation ceilings exceed the wire's signed slot (water {max_water_raw_word}, snow {max_snow_raw_word})"
+        ));
+    }
+    let max_water_raw = max_water_raw_word.min(i32::MAX as u32) as i32;
+    let max_snow_raw = max_snow_raw_word.min(i32::MAX as u32) as i32;
 
     add_unit(&mut summary, "weather_region_rows", region_count);
     add_unit(&mut summary, "weather_observed_region_rows", observed_region_rows);
@@ -362,6 +393,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> WeatherSandstormGateSumm
             custom_modifier_count,
             row_reserved,
             observed_province_rows,
+            max_water_raw,
+            max_snow_raw,
             &mut seen_provinces,
             &mut summary,
         );
@@ -470,6 +503,8 @@ fn validate_province_row(
     custom_modifier_count: u32,
     row_reserved: u32,
     observed_province_rows: usize,
+    max_water_raw: i32,
+    max_snow_raw: i32,
     seen_provinces: &mut BTreeSet<u32>,
     summary: &mut WeatherSandstormGateSummary,
 ) {
@@ -543,7 +578,7 @@ fn validate_province_row(
     }
     if water_present {
         add_unit(summary, "weather_province_water_rows", 1);
-        if !(0..=MAX_PRECIP_RAW).contains(&water_raw) {
+        if !(0..=max_water_raw).contains(&water_raw) {
             summary.parse_errors.push(format!(
                 "offset {offset}: weather province row {row_index} has invalid water_raw {water_raw}"
             ));
@@ -555,7 +590,7 @@ fn validate_province_row(
     }
     if snow_present {
         add_unit(summary, "weather_province_snow_rows", 1);
-        if !(0..=MAX_PRECIP_RAW).contains(&snow_raw) {
+        if !(0..=max_snow_raw).contains(&snow_raw) {
             summary.parse_errors.push(format!(
                 "offset {offset}: weather province row {row_index} has invalid snow_raw {snow_raw}"
             ));
@@ -619,6 +654,14 @@ mod tests {
     /// that is what the reference captures carry -- a fixture choice, not a
     /// contract: the count is content and the wire states it.
     const FIXTURE_REGION_ROWS: usize = 305;
+    /// The two ENGINE precipitation ceilings these fixtures carry: the values a
+    /// real modless capture produced, water saturating at exactly 20,000,000 and
+    /// snow at exactly 8,000,000
+    /// (`extractor/native/runs/jv_weather_precip/D24_LIVE_CEILING_SATURATION.json`).
+    /// Unequal, so a decoder that bounds both precipitation words with one
+    /// number, or swaps them, fails rather than coincides.
+    const FIXTURE_MAX_WATER_RAW: u32 = 20_000_000;
+    const FIXTURE_MAX_SNOW_RAW: u32 = 8_000_000;
 
     use super::*;
 
@@ -630,6 +673,8 @@ mod tests {
             changed_rows: 2,
             observed_region_rows: FIXTURE_REGION_ROWS as u32,
             observed_province_rows: 13_414,
+            max_water_raw: FIXTURE_MAX_WATER_RAW,
+            max_snow_raw: FIXTURE_MAX_SNOW_RAW,
         };
         let payload = encode_payload(
             &header,
@@ -678,6 +723,8 @@ mod tests {
             changed_rows: 1,
             observed_region_rows: FIXTURE_REGION_ROWS as u32,
             observed_province_rows: 13_414,
+            max_water_raw: FIXTURE_MAX_WATER_RAW,
+            max_snow_raw: FIXTURE_MAX_SNOW_RAW,
         };
         let payload = encode_payload(
             &header,

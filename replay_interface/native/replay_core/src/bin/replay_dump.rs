@@ -197,6 +197,48 @@ fn print_frame_coverage(label: &str, frame: &WorldFrame) {
     for w in frame.coverage_warnings() {
         println!("    - {w}");
     }
+    print_snow_mud(frame);
+}
+
+/// The GP-U12 per-province snow/mud seam, printed because its acceptance leg is
+/// a LIVE one: `by_province_status` is the field that separates "the carrier was
+/// there and empty" from "the carrier was absent, unobtained or wrong-typed",
+/// and an operator validating a real recording has no other way to read it.
+/// The snow extremes come with it because the admitted range is the ENGINE's
+/// (`CWeatherManager + 0x1f8`, parsed from `common/weather.txt`), so what the
+/// capture actually reached is the only evidence of where that ceiling sits.
+fn print_snow_mud(frame: &WorldFrame) {
+    let view = frame.snow_mud();
+    let mut measured = 0usize;
+    let mut mud_measured = 0usize;
+    let mut mud_true = 0usize;
+    let mut min_snow: Option<i64> = None;
+    let mut max_snow: Option<i64> = None;
+    for cell in view.by_province.values() {
+        if let Leaf::Measured(raw) = &cell.snow_raw {
+            measured += 1;
+            min_snow = Some(min_snow.map_or(*raw, |m: i64| m.min(*raw)));
+            max_snow = Some(max_snow.map_or(*raw, |m: i64| m.max(*raw)));
+        }
+        if let Leaf::Measured(mud) = &cell.mud {
+            mud_measured += 1;
+            if *mud {
+                mud_true += 1;
+            }
+        }
+    }
+    println!(
+        "  snow_mud: status={:?} by_province_status={:?} cells={} scale_raw={}",
+        view.status,
+        view.by_province_status,
+        view.by_province.len(),
+        fmt_leaf_display(&view.scale_raw)
+    );
+    println!(
+        "    snow_raw measured={measured} range={}..={} | mud measured={mud_measured} true={mud_true}",
+        min_snow.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+        max_snow.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+    );
 }
 
 fn print_world_summary(requested_hour: i64, frame: &WorldFrame) {
@@ -205,6 +247,7 @@ fn print_world_summary(requested_hour: i64, frame: &WorldFrame) {
         frame.hour_index(),
         frame.date().unwrap_or("null(unobtained)")
     );
+    print_snow_mud(frame);
 
     let mut owned: BTreeMap<&str, usize> = BTreeMap::new();
     let mut states_unmeasured = 0usize;

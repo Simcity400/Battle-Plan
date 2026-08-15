@@ -63,7 +63,14 @@ const PROVINCE_DYNAMIC_LUT_DRIVER: u32 = 1 << 9;
 const MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 const MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 const MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
-const MAX_PRECIP_RAW: i32 = 100_000_000;
+// MAX_PRECIP_RAW (= 100_000_000) is deliberately gone rather than widened, the
+// same correction MAX_REGION_ID above already carries. The engine keeps TWO
+// precipitation ceilings, `CWeatherManager + 0x1a8` (water) and `+ 0x1f8`
+// constant here is game content this gate made up, and it bounded both fields
+// with one number that matched neither. The producer discovers them and carries
+// them in the payload header's last two words. Engine proof and authority site:
+// `collector/src/attach_log/offsets.rs::WEATHER_MANAGER_MAX_WATER_RAW_OFF`,
+// long form in `runs/jv_weather_precip/RE_EVIDENCE.md`.
 const MAX_CUSTOM_MODIFIER_COUNT: u32 = 4_096;
 const MAX_ACTIVE_MODIFIER_COUNT: u32 = 4_096;
 const FAILURE_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
@@ -156,8 +163,10 @@ impl Gate {
         let observed_provinces = u32_at(payload, 28)? as usize;
         let scale = u32_at(payload, 32)?;
         let active_regions = u32_at(payload, 36)? as usize;
-        let reserved0 = u32_at(payload, 40)?;
-        let reserved1 = u32_at(payload, 44)?;
+        // The two ENGINE precipitation ceilings, in the words that used to be
+        // reserved zeros.
+        let max_water_word = u32_at(payload, 40)?;
+        let max_snow_word = u32_at(payload, 44)?;
         let delta = status & COMPACT_STATUS_DELTA_DATA != 0;
 
         if status & !COMPACT_STATUS_V1_KNOWN_MASK != 0 {
@@ -192,9 +201,26 @@ impl Gate {
         if scale != 100_000 {
             return Err(format!("weather scale {scale} != 100000"));
         }
-        if reserved0 != 0 || reserved1 != 0 {
-            return Err(format!("nonzero weather reserved words {reserved0}, {reserved1}"));
+        // Presence-gated pair: `0, 0` means no weather root resolved, and is legal
+        // only when the record carries no province rows to bound.
+        let ceilings_absent = max_water_word == 0 && max_snow_word == 0;
+        if !ceilings_absent && (max_water_word == 0 || max_snow_word == 0) {
+            return Err(format!(
+                "half-present precipitation ceilings (water {max_water_word}, snow {max_snow_word})"
+            ));
         }
+        if ceilings_absent && province_rows != 0 {
+            return Err(format!(
+                "{province_rows} province rows with no precipitation ceilings"
+            ));
+        }
+        if max_water_word > i32::MAX as u32 || max_snow_word > i32::MAX as u32 {
+            return Err(format!(
+                "precipitation ceilings exceed the wire's signed slot (water {max_water_word}, snow {max_snow_word})"
+            ));
+        }
+        let max_water_raw = max_water_word.min(i32::MAX as u32) as i32;
+        let max_snow_raw = max_snow_word.min(i32::MAX as u32) as i32;
         if observed_provinces == 0 && province_rows != 0 {
             return Err("province rows emitted with zero observed province rows".into());
         }
@@ -382,12 +408,12 @@ impl Gate {
                     "province {id} has invalid temperature change {temperature_change_raw}"
                 ));
             }
-            if (water_present && !(0..=MAX_PRECIP_RAW).contains(&water_raw))
+            if (water_present && !(0..=max_water_raw).contains(&water_raw))
                 || (!water_present && water_raw != 0)
             {
                 return Err(format!("province {id} has invalid water value {water_raw}"));
             }
-            if (snow_present && !(0..=MAX_PRECIP_RAW).contains(&snow_raw))
+            if (snow_present && !(0..=max_snow_raw).contains(&snow_raw))
                 || (!snow_present && snow_raw != 0)
             {
                 return Err(format!("province {id} has invalid snow value {snow_raw}"));
