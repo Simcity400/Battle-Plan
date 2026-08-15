@@ -8633,4 +8633,644 @@ mod tests {
             "{error}"
         );
     }
+
+    // ------------------------------------------------------------------
+    // Lane KH — coverage ported from the tests lane JL deleted with the
+    // legacy selected-Present renderer (owner ruling 2026-08-15).
+    //
+    // The originals lived in `game_ui/tests/production_renderer.rs` and drove
+    // `compose_legacy_reconstruction_hud_frame(_for_input)`, which no longer
+    // exists. They are re-aimed here at the shipping entry point that
+    // inherited their properties,
+    // `prepare_observer_semantic_frame_with_xui12_and_xui22_producers`, and
+    // they are in-crate rather than `gate_hoi4_install`-gated so the ported
+    // coverage RUNS in the central battery instead of being skipped: the
+    // guards under test all precede the first authored-asset read, so an
+    // installed corpus would add nothing to them.
+    //
+    // Full classification of what was lost, ported and retired:
+    // `extractor/native/runs/kh_renderer_coverage/CLASSIFICATION.md`.
+    // ------------------------------------------------------------------
+
+    /// This file with its own test module cut off.
+    ///
+    /// Two traps this closes, both of which lane JL found live in this tree:
+    /// a `!contains` assertion over the WHOLE file matches the needle written in
+    /// the test body itself and passes forever; and the checkout is CRLF, so a
+    /// needle written with `\n` silently matches nothing.
+    ///
+    /// A third: the module-attribute marker is assembled from two fragments and
+    /// is never spelled whole anywhere in this module, comments included —
+    /// `rfind` would otherwise cut at that occurrence and return most of the
+    /// test module as "production".
+    fn production_source() -> String {
+        let source = include_str!("production_renderer.rs").replace("\r\n", "\n");
+        let marker = ["#[cfg(", "test)]"].concat();
+        let cut = source
+            .rfind(&marker)
+            .expect("this module has a test module to cut off");
+        source[..cut].to_string()
+    }
+
+    /// kills: any change that makes `production_source` return the whole file,
+    /// an empty slice, or a slice cut at a later occurrence of the marker, which
+    /// would leave the test module inside the "production" half and silently
+    /// disarm every `!contains` assertion built on it. The module-opening canary
+    /// is what catches the last one.
+    #[test]
+    fn the_production_renderer_source_slice_actually_excludes_the_tests() {
+        let production = production_source();
+        assert!(production.len() < include_str!("production_renderer.rs").len());
+        assert!(!production.contains('\r'));
+        assert!(
+            !production.contains(&["mod ", "tests {"].concat()),
+            "the cut landed after the test module opens"
+        );
+        let test_only = [
+            "the_production_renderer_source_slice_",
+            "actually_excludes_the_tests",
+        ]
+        .concat();
+        assert!(!production.contains(&test_only));
+        assert!(production.contains("pub fn prepare_observer_semantic_frame("));
+    }
+
+    /// Ported from the half of the deleted
+    /// `authenticated_product_hud_reads_only_the_four_controller_bound_roots`
+    /// that still has a live subject.
+    ///
+    /// That test asserted the renderer used `compose_authenticated_hud` and NOT
+    /// `compose_hud`. The first function was deleted with the legacy whole-HUD
+    /// path, so the positive half is retired. The negative half is not:
+    /// `hud::compose_hud` survives as the PROBE compositor and is still called
+    /// from `hud.rs` and `probe.rs`. It draws controller-unbound authored
+    /// fragments and a sample binding, so a production route reaching for it
+    /// would put pixels on screen the recording never proved.
+    ///
+    /// kills: routing any production composition through the probe HUD
+    /// compositor or through any of the probe-only panel helpers it assembles.
+    ///
+    /// The needles are bare identifiers rather than call syntax, so an aliasing
+    /// `use crate::hud::compose_hud as ...;` is caught as well as a direct call.
+    #[test]
+    fn the_production_renderer_never_reaches_for_the_probe_hud_compositor() {
+        let production = production_source();
+        let hud = include_str!("hud.rs").replace("\r\n", "\n");
+        let topbar = include_str!("topbar.rs").replace("\r\n", "\n");
+        // Each row is the forbidden needle plus the DECLARATION that needle is
+        // supposed to name. Checking the declaration rather than the bare name
+        // is what stops the second assertion from being satisfied by a comment
+        // that merely mentions the item after the item itself was renamed away.
+        for (probe_only, declaration, haystack) in [
+            ("compose_hud", "pub fn compose_hud(", &hud),
+            (
+                "compose_minimap_panel",
+                "pub fn compose_minimap_panel(",
+                &hud,
+            ),
+            (
+                "compose_mapmode_panel",
+                "pub fn compose_mapmode_panel(",
+                &hud,
+            ),
+            (
+                "compose_outliner_panel",
+                "pub fn compose_outliner_panel(",
+                &hud,
+            ),
+            ("HudBinding::sample", "    pub fn sample() -> Self {", &hud),
+            (
+                "topbar_debug_overlay",
+                "pub fn topbar_debug_overlay(",
+                &topbar,
+            ),
+        ] {
+            assert!(
+                !production.contains(probe_only),
+                "production composition must not reach the probe-only item {probe_only}"
+            );
+            assert!(
+                haystack.contains(declaration),
+                "the forbidden needle {probe_only} no longer names a declared item; \
+                 the prohibition above has stopped guarding anything"
+            );
+        }
+    }
+
+    /// The behavioural companion test below builds its renderer with a struct
+    /// literal, so it can prove what the OBSERVER ENTRY POINT does with an
+    /// absent key but not what the CONSTRUCTORS put there. This closes exactly
+    /// that gap over the production slice.
+    ///
+    /// kills, one assertion at a time:
+    ///
+    /// * Giving `ProductionUiRenderer::new` a playback profile of its own —
+    ///   the first slice requires it to forward `None` verbatim.
+    /// * Making `new_for_playback` drop the profile it was handed — the second
+    ///   slice requires it to forward `Some(profile)` verbatim. Without this,
+    ///   the test would say nothing about the constructor its own name names.
+    /// * Making `new_with_playback_profile` synthesise a key when it was handed
+    ///   `None`. The third assertion pins the WHOLE initialiser expression, not
+    ///   a substring of it, so an added `.or_else(|| Some(production_ui_variant_key()))`
+    ///   — which keeps every substring a `contains` check would look for —
+    ///   fails.
+    #[test]
+    fn only_the_playback_constructor_supplies_a_variant_key() {
+        let production = production_source();
+        let slice_between = |open: &str, close: &str| {
+            let start = production.find(open).expect("constructor opening");
+            let end = production[start..]
+                .find(close)
+                .map(|offset| start + offset)
+                .expect("constructor closing");
+            production[start..end].to_string()
+        };
+        assert!(
+            slice_between("    pub fn new(\n", "    pub fn new_for_playback(\n")
+                .contains("Self::new_with_playback_profile(resolver, content_admission, None)"),
+            "the non-playback constructor must forward an absent profile verbatim"
+        );
+        assert!(
+            slice_between(
+                "    pub fn new_for_playback(\n",
+                "    fn new_with_playback_profile(\n"
+            )
+            .contains("Self::new_with_playback_profile(resolver, content_admission, Some(profile))"),
+            "the playback constructor must forward the profile it was handed verbatim"
+        );
+
+        // The field is written EXACTLY once, in that struct literal. A
+        // re-assignment after construction — `renderer.playback_variant_key =
+        // Some(production_ui_variant_key());` — would leave the initialiser line
+        // untouched and is invisible to the line collector below, so it is
+        // forbidden by shape instead.
+        //
+        // The needle carries the leading dot deliberately, so that it names a
+        // FIELD assignment through a receiver and nothing else. It is a
+        // prohibition on re-assignment, not on the word.
+        assert!(
+            !production.contains(".playback_variant_key ="),
+            "the stored key must never be re-assigned after construction"
+        );
+
+        // The whole initialiser, not a prefix of it: a fallback appended to the
+        // end of this expression would leave every substring intact.
+        //
+        // This is deliberately EXACT, and the cost is stated rather than hidden:
+        // a refactor that moves the expression off this line — hoisting it to a
+        // local and using field shorthand, say — has to update this assertion
+        // even though it changes no behaviour. That is the price of pinning the
+        // expression whole, and pinning it whole is the only form that survives
+        // an appended `.or_else(...)`. The reviewer that sees this fail should
+        // re-state the expression here, not loosen the assertion.
+        let initialiser = production
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("playback_variant_key:"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            initialiser,
+            [
+                // The field declaration, pinned so the key cannot quietly stop
+                // being optional and start defaulting.
+                "playback_variant_key: Option<DisplayVariantKey>,",
+                // ...and its ONE assignment, whole.
+                "playback_variant_key: profile.map(|profile| profile.key().clone()),",
+            ],
+            "the stored key must be exactly the supplied profile's key, with no \
+             fallback and no second assignment anywhere in the production half"
+        );
+    }
+
+    /// The shipping observer renderer with no authored corpus behind it at all.
+    ///
+    /// Every catalog is deliberately unavailable and the resolver has no roots,
+    /// so this renderer cannot resolve, decode or draw anything. That is the
+    /// point: a rejection returned by this renderer can only have come from a
+    /// guard that runs before the first asset is touched.
+    fn observer_only_renderer(
+        playback_variant_key: Option<DisplayVariantKey>,
+    ) -> ProductionUiRenderer {
+        ProductionUiRenderer {
+            resolver: AssetResolver::new(Vec::new()),
+            registry: crate::gfx::SpriteRegistry::new(),
+            localisation: Localisation::default(),
+            playback_localisation_language: PRODUCTION_UI_LANGUAGE.into(),
+            character_portraits: Err("unused test feature".into()),
+            character_traits: Err("unused test feature".into()),
+            character_skill_costs: Err("unused test feature".into()),
+            ability_catalog: Err("unused test feature".into()),
+            power_balance_catalog: Err("unused test feature".into()),
+            power_balance_decisions: Err("unused test feature".into()),
+            event_definitions: Ok(BTreeMap::new()),
+            event_layout: Ok(crate::gui::LayoutSet::default()),
+            content_admission: content_admission(&[]),
+            playback_variant_key,
+            asset_cache: Mutex::new(UiAssetCache::default()),
+        }
+    }
+
+    /// Decode one in-memory recording into a `WorldFrame`.
+    ///
+    /// Each call builds its own timeline, so two calls with the same `rest`
+    /// produce two independently decoded frames rather than two handles on one.
+    fn observer_test_frame(
+        rest: serde_json::Map<String, serde_json::Value>,
+    ) -> std::sync::Arc<WorldFrame> {
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+
+        struct OneFrame {
+            rest: serde_json::Map<String, serde_json::Value>,
+        }
+        impl ReplaySource for OneFrame {
+            fn game_id(&self) -> &str {
+                "kh-observer-preparation"
+            }
+            fn hours(&self) -> &[i64] {
+                &[1_000]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest: self.rest.clone(),
+                })
+            }
+        }
+
+        WorldTimeline::open(Box::new(OneFrame { rest }))
+            .expect("open in-memory observer timeline")
+            .state_at(1_000)
+            .expect("decode observer frame")
+    }
+
+    fn observer_static_focus_content() -> crate::static_focus_defs::AdmittedStaticFocusUiContent {
+        crate::static_focus_defs::AdmittedStaticFocusUiContent::fixture(
+            content_admission(&[]).manifest_digest_sha256().to_string(),
+            crate::national_focus::FocusTreeTopology {
+                tree_id: "kh_observer_tree".into(),
+                effective_node_ids: BTreeSet::new(),
+            },
+            crate::national_focus::FocusCatalog {
+                nodes: BTreeMap::new(),
+            },
+        )
+    }
+
+    fn observer_country_frame() -> std::sync::Arc<WorldFrame> {
+        let mut rest = serde_json::Map::new();
+        rest.insert(
+            "countries".into(),
+            serde_json::json!({"GER": {"_r2_tag_db_id": 73}}),
+        );
+        observer_test_frame(rest)
+    }
+
+    /// Prepare one observer semantic frame through the shipping entry point.
+    fn prepare_observer(
+        renderer: &ProductionUiRenderer,
+        frame: &WorldFrame,
+        static_content: &crate::static_focus_defs::AdmittedStaticFocusUiContent,
+        viewer: &ObserverViewerUiState,
+        playback: &ObserverPlaybackUiProfile,
+        viewport_width: usize,
+        viewport_height: usize,
+    ) -> std::result::Result<ObserverUiSemanticFrame, ProductionUiRejection> {
+        renderer.prepare_observer_semantic_frame_with_xui12_and_xui22_producers(
+            frame,
+            None,
+            static_content,
+            viewer,
+            playback,
+            0,
+            false,
+            viewport_width,
+            viewport_height,
+            Ok(None),
+            None,
+            None,
+        )
+    }
+
+    /// Ported from the deleted
+    /// `unsupported_physical_viewport_rejects_before_any_pixel_resampling`.
+    ///
+    /// kills, one assertion at a time:
+    ///
+    /// * DELETING the guard, or widening it to accept a viewport the playback
+    ///   profile did not admit. With the guard gone this call runs to
+    ///   completion — the third assertion below shows the same renderer, same
+    ///   frame and same viewer preparing successfully at the admitted viewport —
+    ///   so `assert_eq!` would compare `Ok(..)` against the rejection and fail.
+    /// * MOVING the guard below the playback-carrier check. The second
+    ///   assertion drives a renderer that has no stored key AND a wrong
+    ///   viewport: whichever guard runs first names itself in the error, so the
+    ///   two orderings are distinguishable and only the shipping one passes.
+    /// * RE-POINTING the guard at the frozen `PRODUCTION_UI_WIDTH/HEIGHT`
+    ///   constants. The guard is an argument-versus-profile agreement check; the
+    ///   frozen 1920x1080 law is enforced one step later by
+    ///   `ExactKeyVariantContract`. The fourth assertion drives an internally
+    ///   consistent 1280x720 profile, which must be refused by the CONTRACT with
+    ///   the key in hand, not silently by the arithmetic above it.
+    ///
+    /// This is the behavioural coverage `only_the_frozen_xui25_viewport_is_admitted`
+    /// never had: that test builds a rejection value and matches it against its
+    /// own pattern, so no change to this renderer can make it fail.
+    ///
+    /// NOT claimed: that the guard precedes every authored-asset read. This
+    /// renderer resolves nothing, so no rejection it returns can have come from
+    /// asset work — but that is a property of the fixture, not a proof about
+    /// where the guard sits relative to the asset routes further down.
+    #[test]
+    fn an_unsupported_physical_viewport_is_refused_before_the_playback_carrier_is_consulted() {
+        let frozen = production_ui_variant_key();
+        let renderer = observer_only_renderer(Some(frozen.clone()));
+        let frame = observer_country_frame();
+        let static_content = observer_static_focus_content();
+        let viewer = ObserverViewerUiState::default();
+        let playback = ObserverPlaybackUiProfile {
+            variant_key: frozen.clone(),
+        };
+
+        assert_eq!(
+            prepare_observer(
+                &renderer,
+                frame.as_ref(),
+                &static_content,
+                &viewer,
+                &playback,
+                1280,
+                720,
+            ),
+            Err(ProductionUiRejection::UnsupportedDisplayVariant {
+                width: 1280,
+                height: 720,
+            }),
+            "a viewport the playback profile did not admit must be refused"
+        );
+
+        // Both guards would fire on this call. The viewport guard runs first, so
+        // it is the one that names itself; if the two were swapped this would be
+        // `MissingDisplayVariantCarrier` instead.
+        assert_eq!(
+            prepare_observer(
+                &observer_only_renderer(None),
+                frame.as_ref(),
+                &static_content,
+                &viewer,
+                &playback,
+                1280,
+                720,
+            ),
+            Err(ProductionUiRejection::UnsupportedDisplayVariant {
+                width: 1280,
+                height: 720,
+            }),
+            "the viewport must be settled before the playback carrier is consulted"
+        );
+
+        // The control: everything above differs from this call only in the
+        // viewport, and this one succeeds. That is what makes the rejections
+        // above attributable to the guard rather than to the fixture.
+        assert!(prepare_observer(
+            &renderer,
+            frame.as_ref(),
+            &static_content,
+            &viewer,
+            &playback,
+            PRODUCTION_UI_WIDTH,
+            PRODUCTION_UI_HEIGHT,
+        )
+        .is_ok());
+
+        let unfrozen = DisplayVariantKey {
+            physical_viewport: PixelExtent {
+                width: 1280,
+                height: 720,
+            },
+            ..frozen
+        };
+        let unfrozen_renderer = observer_only_renderer(Some(unfrozen.clone()));
+        assert_eq!(
+            prepare_observer(
+                &unfrozen_renderer,
+                frame.as_ref(),
+                &static_content,
+                &viewer,
+                &ObserverPlaybackUiProfile {
+                    variant_key: unfrozen.clone(),
+                },
+                1280,
+                720,
+            ),
+            Err(ProductionUiRejection::UnsupportedExactDisplayVariant(
+                unfrozen
+            )),
+            "an internally consistent but non-frozen variant must be refused by the \
+             exact-key contract, naming the key, not by the viewport arithmetic"
+        );
+    }
+
+    /// Ported from the deleted
+    /// `installed_a729_ui_rejects_without_the_portable_xui25_carrier`.
+    ///
+    /// The original passed `frame: None` and expected
+    /// `MissingDisplayVariantCarrier("WorldFrame")`. The shipping entry point
+    /// takes `frame: &WorldFrame`, so that absence is now impossible to
+    /// construct and the literal assertion has no analogue — writing one would
+    /// mean re-introducing an `Option` the product does not have. What DID
+    /// survive on the same entry point is the other carrier the composition
+    /// cannot proceed without: the playback-owned variant key.
+    ///
+    /// kills, one assertion at a time:
+    ///
+    /// * Replacing the `ok_or` on `self.playback_variant_key` with a fallback,
+    ///   so an absent key stops being a refusal. The first assertion drives a
+    ///   renderer with no stored key at the admitted viewport, where every other
+    ///   guard would pass — the previous test shows the identical call succeeds
+    ///   once the key is present.
+    /// * Dropping the expected-versus-supplied equality, so a caller could hand
+    ///   in any profile it liked. The second assertion is arranged so the
+    ///   downstream frozen contract CANNOT stand in for that guard: the profile
+    ///   it supplies is the frozen key, which the contract admits. Only the
+    ///   equality against the renderer's own (different) stored key refuses it,
+    ///   so deleting that guard turns this rejection into a successful
+    ///   preparation.
+    ///
+    /// It deliberately does NOT claim anything about which constructor leaves
+    /// the key absent: this renderer is built from a struct literal, so it
+    /// would still pass if `ProductionUiRenderer::new` later began supplying a
+    /// key of its own. That half is a separate property and is asserted over
+    /// the production source by `only_the_playback_constructor_supplies_a_variant_key`.
+    #[test]
+    fn observer_preparation_requires_the_playback_owned_variant_key_and_will_not_infer_one() {
+        let frozen = production_ui_variant_key();
+        let frame = observer_country_frame();
+        let static_content = observer_static_focus_content();
+        let viewer = ObserverViewerUiState::default();
+        let playback = ObserverPlaybackUiProfile {
+            variant_key: frozen.clone(),
+        };
+
+        // A renderer built the `ProductionUiRenderer::new` way carries no
+        // playback profile at all. It must refuse, not fall back to the frozen
+        // key that happens to be correct for shipping playback.
+        assert_eq!(
+            prepare_observer(
+                &observer_only_renderer(None),
+                frame.as_ref(),
+                &static_content,
+                &viewer,
+                &playback,
+                PRODUCTION_UI_WIDTH,
+                PRODUCTION_UI_HEIGHT,
+            ),
+            Err(ProductionUiRejection::MissingDisplayVariantCarrier(
+                "playback-owned observer UI profile"
+            )),
+        );
+
+        // The renderer stores a FOREIGN key and is handed the frozen profile.
+        // That direction matters: the frozen profile is exactly what
+        // `ExactKeyVariantContract` admits, so the contract one line below
+        // cannot be what refuses this call. Only the playback-owned equality
+        // can, which is what makes deleting it observable here.
+        let foreign = DisplayVariantKey {
+            localisation_language: "l_french".to_string(),
+            ..frozen.clone()
+        };
+        assert_eq!(
+            prepare_observer(
+                &observer_only_renderer(Some(foreign)),
+                frame.as_ref(),
+                &static_content,
+                &viewer,
+                &playback,
+                PRODUCTION_UI_WIDTH,
+                PRODUCTION_UI_HEIGHT,
+            ),
+            Err(ProductionUiRejection::UnsupportedExactDisplayVariant(
+                frozen
+            )),
+        );
+    }
+
+    /// Ported from the deleted
+    /// `recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access`,
+    /// which composed one frame twice and required identical image and report,
+    /// and required the report to carry the POV it was asked for.
+    ///
+    /// It also absorbs the still-testable residue of the deleted
+    /// `relocated_portable_replay_file_still_drives_the_same_production_pixels`.
+    /// That test moved the `.battleplan` file and required identical pixels; the
+    /// shipping entry point takes no path of any kind, so the file's location
+    /// cannot reach it and the relocation assertion has no analogue here. The
+    /// part of it that CAN still break is decode identity: two frames decoded
+    /// independently from the same recorded frame content must prepare to the same
+    /// semantic frame, so the two preparations below use two separate decodes
+    /// rather than one shared frame.
+    ///
+    /// kills, one assertion at a time:
+    ///
+    /// * Any nondeterminism entering the prepared frame — an unordered map
+    ///   reaching `gaps` or a surface list, a decode-instance identity or
+    ///   allocation address formatted into a gap reason, or the renderer's
+    ///   interior-mutable `asset_cache` letting the second preparation differ
+    ///   from the first. Two independently decoded frames are used rather than
+    ///   one shared handle so a per-decode identity would show up.
+    /// * Gating the country scope on the viewer but taking the TAG from the
+    ///   recording. The recording here names exactly one country, `GER`; the
+    ///   third preparation selects `FRA`, which the recording does not contain.
+    ///   A route that read the tag from the frame would produce the same
+    ///   `GER`-shaped result for both selections, and the inequality assertion
+    ///   fails.
+    /// * Running the country-scoped admission with no country selected at all.
+    #[test]
+    fn observer_preparation_is_decode_stable_and_country_scope_is_viewer_owned() {
+        let frozen = production_ui_variant_key();
+        let renderer = observer_only_renderer(Some(frozen.clone()));
+        let static_content = observer_static_focus_content();
+        let playback = ObserverPlaybackUiProfile {
+            variant_key: frozen,
+        };
+        let mut viewer = ObserverViewerUiState::default();
+        viewer.selected_country = Some("GER".into());
+
+        let prepare = |frame: &WorldFrame, viewer: &ObserverViewerUiState| {
+            prepare_observer(
+                &renderer,
+                frame,
+                &static_content,
+                viewer,
+                &playback,
+                PRODUCTION_UI_WIDTH,
+                PRODUCTION_UI_HEIGHT,
+            )
+            .expect("the shipping observer entry point prepares a semantic frame")
+        };
+
+        let first = prepare(observer_country_frame().as_ref(), &viewer);
+        let second = prepare(observer_country_frame().as_ref(), &viewer);
+        assert_eq!(
+            first, second,
+            "two independent decodes of the same recorded frame content must prepare \
+             to the same semantic frame"
+        );
+
+        // `FRA` is NOT in the recording; `GER` is the only country it names. A
+        // route that took the tag from the frame rather than from the viewer
+        // would prepare the same thing for both.
+        //
+        // This is asserted on the topbar binding SPECIFICALLY, not on the whole
+        // semantic frame: several independent surfaces copy the viewer's tag
+        // straight through, so a whole-frame inequality would still hold if only
+        // the topbar/theatre branch regressed to reading the recording.
+        let mut other_country = ObserverViewerUiState::default();
+        other_country.selected_country = Some("FRA".into());
+        let elsewhere = prepare(observer_country_frame().as_ref(), &other_country);
+        assert_ne!(
+            first.hud_binding.topbar, elsewhere.hud_binding.topbar,
+            "the topbar must bind the country the viewer selected, not the one the \
+             recording happens to contain"
+        );
+        assert_ne!(
+            first, elsewhere,
+            "the country the viewer selected must decide what is prepared"
+        );
+
+        let omniscient = prepare(
+            observer_country_frame().as_ref(),
+            &ObserverViewerUiState::default(),
+        );
+        assert_ne!(
+            first, omniscient,
+            "the viewer's country selection must change what is prepared"
+        );
+        assert!(
+            first
+                .gaps
+                .iter()
+                .any(|gap| gap.surface == "XUI07/theatre_selector"),
+            "a selected country runs the country-scoped theatre admission: {:?}",
+            first.gaps
+        );
+        assert!(
+            !omniscient
+                .gaps
+                .iter()
+                .any(|gap| gap.surface == "XUI07/theatre_selector"),
+            "with no country selected the country-scoped admission must not run at \
+             all, so the recording cannot supply a POV of its own: {:?}",
+            omniscient.gaps
+        );
+        assert!(
+            omniscient.theatre.is_none(),
+            "no country selected must leave every country-scoped surface absent"
+        );
+    }
 }
