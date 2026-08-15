@@ -1174,10 +1174,15 @@ pub fn map_authority_requirement_metadata(
         // missing measurement instead of a pending proof. Its sibling rows above
         // keep theirs, each for a producer-side reason recorded in
         // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`: the POV rows need
-        // the all-country `complete_pov_roster` FOW1 census no producer emits,
-        // and `country.presentation_identity` needs a cosmetic-tag spelling that
+        // the all-country `complete_pov_roster` FOW1 census no producer emits.
+        // `country.presentation_identity` needed a cosmetic-tag spelling that
         // distinguishes "legitimately absent" from "could not read" across the
-        // seam, which the current `cosmetic_tag: null` emission does not.
+        // seam; the producer always had one (D18's per-country marker byte), and
+        // GP-F23 fixed the consumer that was collapsing it — `cosmetic_tag` is
+        // now `Leaf<Option<String>>`, where `Measured(None)` is the measured
+        // "no override" and `Absent` is the unread field. What that row still
+        // owes is the authenticated producer contract over the complete
+        // enumeration, not the spelling.
         "country.d18_complete_roster" => {
             "the recording carries no complete measured D18 country roster for this hour"
         }

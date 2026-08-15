@@ -1218,18 +1218,21 @@ mod alert_join_tests {
         );
     }
 
+    /// kills: giving `cosmetic_tag` the generic optional-dimension rule.
+    ///
+    /// `ruling_ideology` is a plain leaf — a null there is a gap — but
+    /// `cosmetic_tag` is nullable, and the producer spends a marker byte
+    /// keeping "measured: no override" (JSON null) apart from "could not read
+    /// it" (no key). Route the cosmetic dimension back through
+    /// `admitted_optional_country_name_dimension` and the two swap: XUI16 would
+    /// name a country off its base TAG on the strength of a field D18 failed to
+    /// read, and refuse the countries D18 measured. GP-F23.
     #[test]
     fn country_name_dimensions_fall_back_only_for_explicit_absence() {
+        // The generic rule, still used for the ideology dimension.
         assert_eq!(
-            admitted_optional_country_name_dimension(&Leaf::Absent, "cosmetic tag"),
+            admitted_optional_country_name_dimension(&Leaf::Absent, "ruling ideology"),
             Ok(None)
-        );
-        assert_eq!(
-            admitted_optional_country_name_dimension(
-                &Leaf::Measured("FRA_VICHY".into()),
-                "cosmetic tag"
-            ),
-            Ok(Some("FRA_VICHY"))
         );
         assert!(
             admitted_optional_country_name_dimension(&Leaf::Unobtained, "ruling ideology")
@@ -1242,6 +1245,28 @@ mod alert_join_tests {
             )
             .is_err()
         );
+
+        // The nullable cosmetic rule.
+        assert_eq!(
+            crate::binding::admitted_cosmetic_override(&Leaf::Measured(Some(
+                "FRA_VICHY".to_string()
+            ))),
+            Ok(Some("FRA_VICHY"))
+        );
+        assert_eq!(
+            crate::binding::admitted_cosmetic_override(&Leaf::Measured(None)),
+            Ok(None),
+            "a measured 'no cosmetic override' names the country off its base TAG"
+        );
+        assert!(
+            crate::binding::admitted_cosmetic_override(&Leaf::Absent).is_err(),
+            "a cosmetic field that was never carried cannot name a country"
+        );
+        assert!(crate::binding::admitted_cosmetic_override(&Leaf::Unobtained).is_err());
+        assert!(
+            crate::binding::admitted_cosmetic_override(&Leaf::Measured(Some(String::new())))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1253,12 +1278,14 @@ mod alert_join_tests {
         localisation
             .entries
             .insert("FRA".into(), "France".into());
+        // `Measured(None)` is the producer's measured "FRA has no cosmetic
+        // override", so the name resolves off the base TAG ladder.
         assert_eq!(
             resolve_admitted_country_name(
                 &localisation,
                 "FRA",
                 &Leaf::Measured("democratic".into()),
-                &Leaf::Absent,
+                &Leaf::Measured(None),
             ),
             Ok("French Republic")
         );
@@ -1266,10 +1293,21 @@ mod alert_join_tests {
             &localisation,
             "FRA",
             &Leaf::Unobtained,
-            &Leaf::Absent,
+            &Leaf::Measured(None),
         )
         .expect_err("unobtained ideology must reject");
         assert_eq!(rejected.0, "XUI16_IDEOLOGY_IDENTITY_UNAVAILABLE");
+        // ...and a cosmetic field D18 could not read is refused under its own
+        // code, rather than silently naming the country off its base TAG
+        // (GP-F23).
+        let unread = resolve_admitted_country_name(
+            &localisation,
+            "FRA",
+            &Leaf::Measured("democratic".into()),
+            &Leaf::Absent,
+        )
+        .expect_err("an unread cosmetic field must reject");
+        assert_eq!(unread.0, "XUI16_COSMETIC_IDENTITY_UNAVAILABLE");
     }
 
     #[test]
@@ -1862,10 +1900,15 @@ fn resolve_admitted_country_name<'a>(
     localisation: &'a Localisation,
     base_tag: &str,
     ruling_ideology: &Leaf<String>,
-    cosmetic_tag: &Leaf<String>,
+    cosmetic_tag: &Leaf<Option<String>>,
 ) -> std::result::Result<&'a str, (&'static str, String)> {
-    let cosmetic_tag = admitted_optional_country_name_dimension(cosmetic_tag, "cosmetic tag")
-        .map_err(|detail| ("XUI16_COSMETIC_IDENTITY_UNAVAILABLE", detail))?;
+    // `cosmetic_tag` is NULLABLE and does not share the generic rule above: the
+    // producer's measured "this country has no cosmetic override" is a JSON
+    // null (D18 marker 1) and is a measurement — the name resolves off the base
+    // TAG — while a field D18 could not read carries no key at all and is the
+    // state this gate must refuse. GP-F23.
+    let cosmetic_tag = crate::binding::admitted_cosmetic_override(cosmetic_tag)
+        .map_err(|detail| ("XUI16_COSMETIC_IDENTITY_UNAVAILABLE", detail.to_string()))?;
     let ruling_ideology =
         admitted_optional_country_name_dimension(ruling_ideology, "ruling ideology")
             .map_err(|detail| ("XUI16_IDEOLOGY_IDENTITY_UNAVAILABLE", detail))?;

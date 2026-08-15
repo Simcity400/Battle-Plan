@@ -243,13 +243,82 @@ fn apply_exact_decision_alerts(binding: &mut TopbarBinding, frame: &WorldFrame, 
         (panel.timeout_alert_count > 0).then(|| panel.timeout_alert_count.to_string());
 }
 
+/// The measured cosmetic OVERRIDE, for a rendering path that has no way to
+/// refuse and must key a flag or a name for every frame it is handed.
+///
+/// `cosmetic_tag` is nullable (`replay_core::CountryIdentity::cosmetic_tag`):
+/// `Measured(None)` is the producer's measured "this country has NO cosmetic
+/// override", which is precisely the instruction to key off the base TAG, i.e.
+/// the same `None` a rendering path already falls back to. `Absent` and
+/// `Unobtained` collapse to that fallback too, because a shield still has to be
+/// drawn — the states are only separable where the consumer is allowed to
+/// refuse (XUI13/XUI15/XUI16 and XMAP05/XMAP17 do, and use
+/// [`admitted_cosmetic_override`]).
+pub(crate) fn rendered_cosmetic_override(leaf: &Leaf<Option<String>>) -> Option<&str> {
+    match leaf {
+        Leaf::Measured(Some(tag)) => Some(tag.as_str()),
+        Leaf::Measured(None) | Leaf::Absent | Leaf::Unobtained => None,
+    }
+}
+
+/// The cosmetic override for an ADMISSION path, which may refuse.
+///
+/// Admits the producer's two measured states — an override, and a measured
+/// "there is no override" — and refuses the two that are gaps: `Absent` (D18
+/// marker 0, the engine field could not be read, so a country whose real name
+/// and flag come from an override would silently render under its base TAG) and
+/// `Unobtained` (a null country object or a wrong-typed leaf). A blank measured
+/// override is a malformed measurement.
+///
+/// GP-F23: these gates used to admit `Absent` and refuse the producer's
+/// measured "no override", which is each state mistaken for the other, and the
+/// refused one is the common case.
+pub(crate) fn admitted_cosmetic_override(
+    leaf: &Leaf<Option<String>>,
+) -> std::result::Result<Option<&str>, &'static str> {
+    match leaf {
+        Leaf::Measured(Some(tag)) if !tag.trim().is_empty() => Ok(Some(tag.as_str())),
+        Leaf::Measured(Some(_)) => Err("measured cosmetic tag is empty"),
+        Leaf::Measured(None) => Ok(None),
+        Leaf::Absent => Err("cosmetic tag was never carried for this country"),
+        Leaf::Unobtained => Err("cosmetic tag is unobtained"),
+    }
+}
+
+/// The cosmetic override for a consumer that keys a flag off a
+/// [`TopbarBinding`] but IS allowed to refuse — XUI19's custom-icon and
+/// country-target flags (`production_renderer.rs`).
+///
+/// `TopbarBinding::cosmetic_tag` is a RENDERING field: it is built with
+/// [`rendered_cosmetic_override`], so a country whose cosmetic field D18 could
+/// not read arrives here indistinguishable from one measured as having no
+/// override. That is right for the topbar, which must draw a shield either way,
+/// and wrong for XUI19, which returns `Result` and would otherwise search the
+/// base-TAG flag ladder — and find it, because base flags ship — painting the
+/// WRONG flag for a country that really does carry an override. So XUI19 asks
+/// the identity directly.
+///
+/// `None` identity is deliberately NOT a refusal: a flag tag with no entry in
+/// the country-identity view has no cosmetic leaf to misread, which is a
+/// different gap under the binding's own bare-tag fallback, not one of GP-F23's
+/// three cosmetic states.
+pub(crate) fn admitted_flag_cosmetic(
+    identity: Option<&CountryIdentity>,
+) -> std::result::Result<Option<&str>, &'static str> {
+    match identity {
+        Some(identity) => admitted_cosmetic_override(&identity.cosmetic_tag),
+        None => Ok(None),
+    }
+}
+
 /// Fill the flag/ideology identity fields from a [`CountryIdentity`] view.
-/// `ruling_ideology`/`cosmetic_tag` that are absent/unobtained stay `None`, so
-/// flag selection falls back exactly as the shipped inventory dictates.
+/// A `ruling_ideology` that is absent/unobtained stays `None`, as does a
+/// `cosmetic_tag` with no measured override, so flag selection falls back
+/// exactly as the shipped inventory dictates.
 fn apply_identity(binding: &mut TopbarBinding, pov_tag: &str, identity: &CountryIdentity) {
     binding.country_tag = Some(pov_tag.to_string());
     binding.country_ideology = identity.ruling_ideology.measured().cloned();
-    binding.cosmetic_tag = identity.cosmetic_tag.measured().cloned();
+    binding.cosmetic_tag = rendered_cosmetic_override(&identity.cosmetic_tag).map(str::to_string);
 }
 
 /// Build the topbar binding for `pov_tag` at one world frame (D1 + D2
@@ -715,7 +784,7 @@ pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<
     flag_candidates_for_size(
         Some(tag),
         identity.ruling_ideology.measured().map(String::as_str),
-        identity.cosmetic_tag.measured().map(String::as_str),
+        rendered_cosmetic_override(&identity.cosmetic_tag),
         None,
         FlagSizeFolder::Medium,
     )
@@ -1430,10 +1499,10 @@ mod tests {
 
     fn identity(ideology: Option<&str>, cosmetic: Option<&str>) -> CountryIdentity {
         CountryIdentity {
-            cosmetic_tag: match cosmetic {
-                Some(c) => Leaf::Measured(c.to_string()),
-                None => Leaf::Unobtained,
-            },
+            // `None` here means "this country has no cosmetic override", which
+            // is the producer's MEASURED state (D18 marker 1 / JSON null), not
+            // a gap — see `replay_core::CountryIdentity::cosmetic_tag`.
+            cosmetic_tag: Leaf::Measured(cosmetic.map(str::to_string)),
             ruling_ideology: match ideology {
                 Some(i) => Leaf::Measured(i.to_string()),
                 None => Leaf::Unobtained,
@@ -1442,6 +1511,54 @@ mod tests {
             claims: Leaf::Unobtained,
             preferred_tactic: Leaf::Unobtained,
         }
+    }
+
+    /// kills: letting an ADMITTING flag consumer key off the rendering
+    /// spelling of the cosmetic identity (GP-F23).
+    ///
+    /// `TopbarBinding::cosmetic_tag` is built with
+    /// [`rendered_cosmetic_override`], which has to collapse all three
+    /// non-override states to `None` because the topbar must draw a shield
+    /// whatever the recording says. XUI19 keys its custom-icon and
+    /// decision-target flags off that same binding but returns `Result`, so
+    /// routing it through the rendering spelling means a country whose cosmetic
+    /// field D18 could NOT read resolves down the base-TAG ladder — which
+    /// succeeds, because base flags ship — and paints the wrong flag instead of
+    /// refusing. Point XUI19 back at `binding.cosmetic_tag` and the second
+    /// assertion below goes green while the frame goes wrong.
+    #[test]
+    fn admitting_flag_consumers_separate_an_unread_cosmetic_from_a_measured_none() {
+        // The rendering spelling cannot tell the three non-override states
+        // apart, and must not: it always has something to draw.
+        for leaf in [
+            Leaf::Measured(None),
+            Leaf::Absent,
+            Leaf::Unobtained,
+        ] {
+            assert_eq!(rendered_cosmetic_override(&leaf), None);
+        }
+        assert_eq!(
+            rendered_cosmetic_override(&Leaf::Measured(Some("RAJ_UK".to_string()))),
+            Some("RAJ_UK")
+        );
+
+        // The admitting spelling does tell them apart.
+        assert_eq!(
+            admitted_flag_cosmetic(Some(&identity(Some("neutrality"), None))),
+            Ok(None),
+            "a measured 'no cosmetic override' keys the base TAG"
+        );
+        let unread = CountryIdentity {
+            cosmetic_tag: Leaf::Absent,
+            ..identity(Some("neutrality"), None)
+        };
+        assert!(
+            admitted_flag_cosmetic(Some(&unread)).is_err(),
+            "an unread cosmetic field must refuse, not resolve down the base-TAG ladder"
+        );
+        // A flag tag with no identity row at all is a different gap, left to
+        // the binding's own bare-tag fallback.
+        assert_eq!(admitted_flag_cosmetic(None), Ok(None));
     }
 
     #[test]

@@ -344,7 +344,9 @@ fn ideology_flip_rekeys_flag_and_name_at_flip_hour() {
         let b = topbar_binding_from_frame(&frame, "GER");
         let (ideology, cosmetic) = ideology_at(t);
 
-        // tick<4: extra.cosmetic_tag is JSON null → Unobtained → None binding.
+        // tick<4: extra.cosmetic_tag is JSON null, the producer's MEASURED "this
+        // country has no cosmetic override" → `Leaf::Measured(None)` → no
+        // override in the binding, so the shield keys off the bare tag.
         assert_eq!(
             b.country_ideology.as_deref(),
             Some(ideology),

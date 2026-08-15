@@ -90,6 +90,17 @@ fn exp_string(v: Option<&Value>) -> Leaf<String> {
         other => panic!("exp_string: not a string: {other:?}"),
     }
 }
+/// Expectation for a NULLABLE leaf (see `CountryIdentity::cosmetic_tag`): the
+/// producer's null is a measured "there is none", not a gap, so it must round
+/// trip as `Measured(None)` and only a missing key may read `Absent`.
+fn exp_nullable_string(v: Option<&Value>) -> Leaf<Option<String>> {
+    match v {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Measured(None),
+        Some(Value::String(s)) => Leaf::Measured(Some(s.clone())),
+        other => panic!("exp_nullable_string: not a string or null: {other:?}"),
+    }
+}
 fn exp_id_string(v: Option<&Value>) -> Leaf<String> {
     match v {
         None => Leaf::Absent,
@@ -200,7 +211,7 @@ fn rt_cosmetic_ideology() {
         let id = f.country_identity("GER").expect("GER identity");
         assert_eq!(
             id.cosmetic_tag,
-            exp_string(raw(&f, &["countries", "GER", "extra", "cosmetic_tag"])),
+            exp_nullable_string(raw(&f, &["countries", "GER", "extra", "cosmetic_tag"])),
             "cosmetic_tag @ {}",
             f.hour_index()
         );
@@ -983,7 +994,7 @@ fn rt_dlc_language_variation() {
         let can = f.country_identity("CAN").expect("CAN identity");
         assert_eq!(
             can.cosmetic_tag,
-            exp_string(raw(&f, &["countries", "CAN", "misc", "cosmetic_tag"])),
+            exp_nullable_string(raw(&f, &["countries", "CAN", "misc", "cosmetic_tag"])),
             "CAN cosmetic @ {}",
             f.hour_index()
         );

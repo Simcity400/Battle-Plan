@@ -2896,10 +2896,24 @@ impl ProductionUiRenderer {
                         icon.value_text.clone(),
                     );
                     let binding = topbar_binding_from_frame(frame, &icon.flag_tag);
+                    // GP-F23: the binding's own `cosmetic_tag` is the rendering
+                    // spelling, which cannot tell a measured "no override" from
+                    // a cosmetic field D18 could not read. XUI19 may refuse, so
+                    // it reads the identity's admission rule instead of
+                    // painting the base-TAG flag over an unread override.
+                    let cosmetic = crate::binding::admitted_flag_cosmetic(
+                        frame.country_identity(&icon.flag_tag),
+                    )
+                    .map_err(|detail| {
+                        ProductionUiRejection::IncompleteComposition(format!(
+                            "XUI19 custom icon flag for {}: {detail}",
+                            icon.flag_tag
+                        ))
+                    })?;
                     let candidates = crate::topbar::flag_candidates_for_size(
                         binding.country_tag.as_deref(),
                         binding.country_ideology.as_deref(),
-                        binding.cosmetic_tag.as_deref(),
+                        cosmetic,
                         binding.flag_texture.as_deref(),
                         crate::topbar::FlagSizeFolder::Small,
                     );
@@ -3134,10 +3148,20 @@ impl ProductionUiRenderer {
                 match card.target.as_ref() {
                     Some(replay_core::DecisionTargetExactV1::Country { flag_tag, .. }) => {
                         let binding = topbar_binding_from_frame(frame, flag_tag);
+                        // GP-F23, as above: an unread cosmetic identity must
+                        // refuse here rather than resolve down the base-TAG
+                        // flag ladder.
+                        let cosmetic =
+                            crate::binding::admitted_flag_cosmetic(frame.country_identity(flag_tag))
+                                .map_err(|detail| {
+                                    ProductionUiRejection::IncompleteComposition(format!(
+                                        "XUI19 decision target flag for {flag_tag}: {detail}"
+                                    ))
+                                })?;
                         let candidates = crate::topbar::flag_candidates_for_size(
                             binding.country_tag.as_deref(),
                             binding.country_ideology.as_deref(),
-                            binding.cosmetic_tag.as_deref(),
+                            cosmetic,
                             binding.flag_texture.as_deref(),
                             crate::topbar::FlagSizeFolder::Small,
                         );
@@ -7043,13 +7067,33 @@ mod tests {
             "card.tooltip_text.clone()",
             "card.interface_state",
             "custom_icon_definition_count",
+            // GP-F23: both flag sites in this route must key off the ADMITTING
+            // cosmetic spelling. `TopbarBinding::cosmetic_tag` is the rendering
+            // spelling and cannot separate a measured "no cosmetic override"
+            // from a cosmetic field D18 could not read; XUI19 returns `Result`,
+            // so keying off it makes an unread override resolve down the
+            // base-TAG flag ladder — which succeeds, because base flags ship —
+            // and paints the WRONG flag instead of refusing. The forbidden
+            // spelling below is the exact regression.
+            "crate::binding::admitted_flag_cosmetic(",
         ] {
             assert!(
                 route.contains(required),
                 "missing XUI19 invariant {required}"
             );
         }
-        for forbidden in ["decision_panel_live", "selected_present", "d87", "fudge"] {
+        assert_eq!(
+            route.matches("crate::binding::admitted_flag_cosmetic(").count(),
+            2,
+            "both XUI19 flag sites (custom icon, decision target) must admit the cosmetic identity"
+        );
+        for forbidden in [
+            "decision_panel_live",
+            "selected_present",
+            "d87",
+            "fudge",
+            "binding.cosmetic_tag",
+        ] {
             assert!(
                 !route.to_ascii_lowercase().contains(forbidden),
                 "XUI19 shipping compositor contains forbidden route {forbidden}"

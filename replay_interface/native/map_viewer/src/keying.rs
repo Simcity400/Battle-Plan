@@ -38,7 +38,9 @@ pub struct KeyingTables {
     /// is the measured state controller when it differs / is present.
     pub state_controls: BTreeMap<u32, InitialStateControl>,
     /// Tag -> cosmetic tag (set_cosmetic_tag) for the NAME1 color/name
-    /// override. Only tags with a measured cosmetic tag appear.
+    /// override. Only tags with a measured OVERRIDE appear: a country the
+    /// producer measured as having none renders under its base TAG, which is
+    /// what an omitted row already means.
     pub cosmetic_by_tag: BTreeMap<String, String>,
 }
 
@@ -46,8 +48,9 @@ impl KeyingTables {
     /// Build the keying for one hour from a scrubbable [`WorldFrame`], reading
     /// the typed `owner_by_state` / `control_by_state` / `country_identities`
     /// views. Only `Leaf::Measured` values are kept (fail-closed): an
-    /// unobtained or absent owner/controller/cosmetic is omitted, never
-    /// coerced to a default.
+    /// unobtained or absent owner/controller is omitted, never coerced to a
+    /// default. The cosmetic table additionally omits a country the producer
+    /// measured as having NO override — see [`Self::cosmetic_by_tag`].
     pub fn from_world_frame(frame: &WorldFrame) -> KeyingTables {
         let mut state_owners = BTreeMap::new();
         let mut state_controls: BTreeMap<u32, InitialStateControl> = BTreeMap::new();
@@ -76,9 +79,15 @@ impl KeyingTables {
             }
         }
 
+        // Only a measured OVERRIDE keys a NAME1 colour/name substitution. The
+        // producer's measured "this country has no override"
+        // (`Leaf::Measured(None)`, D18 marker 1 / legacy `cosmetic_tag: null`)
+        // is a real measurement, and what it measures is that the base TAG is
+        // the right key — so it belongs out of this table exactly as much as an
+        // absent or unobtained leaf does, for the opposite reason.
         let mut cosmetic_by_tag = BTreeMap::new();
         for (tag, identity) in frame.country_identities() {
-            if let Leaf::Measured(cosmetic) = &identity.cosmetic_tag {
+            if let Leaf::Measured(Some(cosmetic)) = &identity.cosmetic_tag {
                 cosmetic_by_tag.insert(tag.clone(), cosmetic.clone());
             }
         }
@@ -205,7 +214,10 @@ mod tests {
         let provinces = json!({ "1000": pv("GER", 10), "2000": pv("SOV", 20) });
         let countries = json!({
             "GER": ctry_cosmetic(json!("GER_reichskommissariat")),
-            "SOV": ctry_cosmetic(Value::Null), // captured-but-unobtained
+            // Explicit null: the producer MEASURED that SOV has no cosmetic
+            // override (D18 marker 1), which is exactly the instruction to
+            // colour it off its base TAG.
+            "SOV": ctry_cosmetic(Value::Null),
         });
         let t = timeline_from_snapshots(vec![snapshot(0, states, provinces, countries)]);
         let frame = t.frame(0).expect("frame 0");
@@ -233,7 +245,10 @@ mod tests {
         );
         assert_eq!(keying.state_controls, expected_controls, "control table");
 
-        // SOV cosmetic is explicit null (Unobtained) -> omitted (fail-closed).
+        // SOV's cosmetic is a measured "no override" -> omitted, which is what
+        // this table's absence of a row means: render off the base TAG. An
+        // unobtained or never-carried leaf is omitted too, for the opposite
+        // reason (nothing measured), and neither may invent an override.
         let mut expected_cosmetic = BTreeMap::new();
         expected_cosmetic.insert("GER".to_string(), "GER_reichskommissariat".to_string());
         assert_eq!(keying.cosmetic_by_tag, expected_cosmetic, "cosmetic table");

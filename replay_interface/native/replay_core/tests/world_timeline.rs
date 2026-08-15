@@ -898,14 +898,25 @@ fn dir_store_typed_views_and_trichotomy() {
     let ger_identity = f100.country_identity("GER").unwrap();
     assert_eq!(
         ger_identity.cosmetic_tag,
-        Leaf::Measured("GER_reich".to_string())
+        Leaf::Measured(Some("GER_reich".to_string()))
     );
     assert_eq!(
         ger_identity.ruling_ideology,
         Leaf::Measured("fascism".to_string())
     );
+    // Hour 101's `extra` object is `{cosmetic_tag: null, nukes_total: null,
+    // nukes_ready_total: null}` — three nulls that do NOT mean the same thing.
+    // `cosmetic_tag` is the one nullable leaf: its null is the producer's
+    // MEASURED "this country has no cosmetic override" (D18 marker 1), so it
+    // reads `Measured(None)`. Its two siblings in the same object are ordinary
+    // scalars whose null is a gap, and they still read `Unobtained` — which is
+    // what makes this pair the trichotomy proof for GP-F23.
     assert_eq!(
         f101.country_identity("GER").unwrap().cosmetic_tag,
+        Leaf::Measured(None)
+    );
+    assert_eq!(
+        f101.topbar_scalars("GER").unwrap().nukes_total,
         Leaf::Unobtained
     );
 
