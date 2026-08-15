@@ -300,9 +300,9 @@ pub const COMPACT_FRD_DECISION_TARGET_FLAG_NUMERIC_ID: u32 = 1 << 2;
 pub const COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X24: u32 = 1 << 3;
 pub const COMPACT_FRD_DECISION_TARGET_COUNTRY_FLAGS: u32 =
     COMPACT_FRD_DECISION_TARGET_FLAG_COUNTRY_TAG | COMPACT_FRD_DECISION_TARGET_FLAG_RECORD_0X20;
-pub const COMPACT_MARKET_TRADE_HEADER_LEN: usize = 48;
-pub const COMPACT_MARKET_TRADE_ROW_LEN: usize = 48;
-pub const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = 81;
+pub const COMPACT_MARKET_TRADE_HEADER_LEN: usize = d43_grammar::CORE_HEADER_LEN;
+pub const COMPACT_MARKET_TRADE_ROW_LEN: usize = d43_grammar::CORE_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = d43_grammar::CORE_CONTRACT_TYPE;
 pub const COMPACT_MAX_OWNER_TAG_DB_ID: u32 =
     compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 
@@ -313,26 +313,26 @@ pub const COMPACT_MAX_STATE_ID_FRD: u32 = compact_contract::build_profile::MAX_S
 pub const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
-pub const COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID: u32 = 1;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = 1 << 1;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 = 1 << 2;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 = 1 << 3;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID: u32 = 1 << 4;
-pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] = b"MTD1";
-pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize = 32;
-pub const COMPACT_MARKET_TRADE_DETAIL_ROW_LEN: usize = 64;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 = 1;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 = 1 << 1;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 = 1 << 2;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 = 1 << 3;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 = 1 << 4;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 = 1 << 5;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 = 1 << 6;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 = 1 << 7;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 = 1 << 8;
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 = 1 << 9;
+pub const COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW: i64 = d43_grammar::MAX_AMOUNT_RAW;
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID: u32 = d43_grammar::RowFlag::BuyerPtrValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = d43_grammar::RowFlag::EquipmentSubbufValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 = d43_grammar::RowFlag::DeliverySubbufValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 = d43_grammar::RowFlag::VariantValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID: u32 = d43_grammar::RowFlag::AmountValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Detail.magic();
+pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::Detail.header_len();
+pub const COMPACT_MARKET_TRADE_DETAIL_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::Detail);
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 = d43_grammar::DetailFlag::PriceValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 = d43_grammar::DetailFlag::AmountValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 = d43_grammar::DetailFlag::SpeedValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 = d43_grammar::DetailFlag::CompletedValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 = d43_grammar::DetailFlag::DaysValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 = d43_grammar::DetailFlag::DeliveryCountryValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 = d43_grammar::DetailFlag::ConvoysValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 = d43_grammar::DetailFlag::EfficiencyValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 = d43_grammar::DetailFlag::FactoryProgressValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 = d43_grammar::DetailFlag::EquipmentProgressValid.bit();
 pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
     COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
@@ -355,71 +355,71 @@ pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
 // resource could not be published. v3 states the count at `+24` and derives
 // `row_len` from it. Mirrors the collector's
 // append_compact_market_trade_resource_flow_trailer wire layout.
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION: u16 = 2;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = 3;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = 32;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ResourceFlow.magic();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = d43_grammar::FlowVersion::Legacy.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION: u16 = d43_grammar::FlowVersion::Fixed7.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = d43_grammar::FlowVersion::Variable.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ResourceFlow.header_len();
 /// v1/v2 only. A v3 row is `ROW_HEADER_LEN + 8 * resource_count`.
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = 72;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = 16;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = 0x7F;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = 0x3F;
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = b"MTRH";
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = 24;
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = 1;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = d43_grammar::FLOW_FIXED7_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = d43_grammar::FLOW_ROW_HEADER_LEN;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = d43_grammar::FLOW_RESOURCE_MASK;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = d43_grammar::FLOW_KIND_MASK;
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::FactoryHeader.magic();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::FactoryHeader.header_len();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::FactoryHeader);
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ResourceRow.magic();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = d43_grammar::ResourceRowVersion::Legacy.wire();
 /// v2 states the resource COUNT; v3 also states each resource's IDENTITY in a
 /// fixed-stride block between the header and the rows.
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 = 2;
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = 3;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 = d43_grammar::ResourceRowVersion::CountOnly.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = d43_grammar::ResourceRowVersion::Identity.wire();
 /// v4 is v3 plus one extra admitted ROW shape: an oil row whose needed-trio
 /// could not be derived states that instead of being omitted. The header shape
 /// -- including the dense `row_count == country_count * resource_count`
 /// invariant this authority checks -- is byte-identical to v3.
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION: u16 = 4;
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = 32;
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION: u16 = d43_grammar::ResourceRowVersion::NeededUnavailable.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ResourceRow.header_len();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::ResourceRow);
 /// One `MTRR` v3 identity entry.
 pub const COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE: u32 =
     compact_contract::build_profile::COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE;
 /// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
-pub const COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
+pub const COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = d43_grammar::FIXED7_RESOURCE_COUNT;
 /// The one shared admission ceiling for a count-prefixed resource vector.
 pub const COMPACT_MAX_STRATEGIC_RESOURCE_COUNT: u32 =
     compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT;
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = 2;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ClassicDeal.magic();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = d43_grammar::DealVersion::Legacy.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = d43_grammar::DealVersion::Statuses.wire();
 /// v3 spends the header's last word on the incomplete-owner count and carries
 /// that many census keys between the witness block and the rows.
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 = 3;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 = d43_grammar::DealVersion::PerOwner.wire();
 /// v4 keeps v3's header exactly and respells the ROW's deal identity at full
 /// width: two `u32` country ids at `+0x20`/`+0x24` and a one-based `u32` ordinal
 /// at `+0x5C`, in place of v1-v3's single packed `u64`. This decoder is
 /// structural — it advances a cursor and counts units — so the only thing the
 /// bump changes here is which versions are admitted and which of them carry the
 /// incomplete block.
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION: u16 = 4;
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = 32;
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = b"MTRA";
-pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN: usize = 32;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 = 3;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE: u32 = 1;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = 1;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = 0x015e_c520;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
-pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = 1;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = 20;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = 24;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS: u32 = 3;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = 1;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 = 70;
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION: u16 = d43_grammar::DealVersion::WideIdentity.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ClassicDeal.header_len();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::ClassicDeal);
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Activation.magic();
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN: usize = d43_grammar::Trailer::Activation.header_len();
+pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 = d43_grammar::KNOWN_ACTIVATION_FLAGS;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE: u32 = d43_grammar::ACTIVATION_FLAG_ACTIVE;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = d43_grammar::ACTIVATION_ROOT_COUNTRYTRADEVIEW;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = d43_grammar::ACTIVATION_OPEN_RVA;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Stockpile.magic();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = d43_grammar::Trailer::Stockpile.header_len();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = d43_grammar::STOCKPILE_COUNTRY_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = d43_grammar::STOCKPILE_ITEM_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS: u32 = d43_grammar::STOCKPILE_GLOBAL_FLAGS;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = d43_grammar::STOCKPILE_COUNTRY_COMPLETE;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 = d43_grammar::STOCKPILE_EQUIPMENT_TYPE;
 
 // --- W1-W6 newly wired domains 63-69: summarizer decode constants ----------
 // These mirror the collector emit and the world_fold parse (recorder_host

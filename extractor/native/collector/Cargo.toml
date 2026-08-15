@@ -26,6 +26,9 @@ d13_grammar = { path = "../d13_grammar" }
 d68_grammar = { path = "../d68_grammar" }
 # D24's payload grammar (lane KO).
 d24_grammar = { path = "../d24_grammar" }
+# D43's payload grammar (lane KU). This packer writes it; the fold, the
+# authority validator and the market_trade lane gate read it.
+d43_grammar = { path = "../d43_grammar" }
 direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }

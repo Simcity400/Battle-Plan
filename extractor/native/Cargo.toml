@@ -30,6 +30,11 @@ members = [
     # precipitation ceilings -- the exact kind of change that leaves a reader
     # behind, at a domain whose layout was restated four times.
     "d24_grammar",
+    # D43's payload grammar (lane KU, phase 2 of the same ruling). The
+    # largest drift surface in the tree: 122 independently duplicated layout
+    # facts across four shipping walk sites, nine trailer magics and four
+    # live version families (MTRF v1-v3, MTRR v1-v4, MTRD v1-v4).
+    "d43_grammar",
     "snapshot",
     "collector",
     "recorder_host",
