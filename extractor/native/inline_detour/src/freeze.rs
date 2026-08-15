@@ -136,10 +136,61 @@
 //! own away. MEASURED on Windows 10.0.26200
 //! (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): 14,243 system-wide
 //! entries walked to keep 3, at 65-131 ms per pass and at least two passes per
-//! freeze. A clean freeze cost 129-258 ms and now costs 15.4-25.1 ms, holding
-//! seven threads and settling each of their suspensions -- of which the WALKING
-//! is 114-334 us and the rest is the single roster confirmation that closes the
-//! fixed point. That time is the game stopped, once per detour installed.
+//! freeze.
+//!
+//! EVERY FIGURE IN THAT FILE IS A DEBUG-BUILD FIGURE, and the product ships
+//! `--release`. Re-measured in both profiles on the same machine in the same
+//! hour (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`), 10 threads
+//! held, 2 passes:
+//!
+//!   a clean freeze     DEBUG 14.6-19.2 ms      RELEASE 1.85-2.13 ms
+//!   14 in a row*       DEBUG   222-233 ms      RELEASE  27.4-38.3 ms
+//!   one toolhelp pass  DEBUG 45.9-55.7 ms      RELEASE 43.4-50.0 ms
+//!
+//! *a synthetic back-to-back loop, NOT a start-up: production declares TWELVE
+//! `PRODUCTION_INSTALL_UNITS` (`collector/src/attach_log.rs`), and how many
+//! freezes and applies one attach actually performs is UNMEASURED. Read that
+//! row as the per-freeze cost times fourteen and nothing else -- this file
+//! deliberately publishes no per-attach total until that census exists.
+//!
+//! The enumeration this replaced costs THE SAME IN BOTH, because none of its
+//! work is ours; the freeze costs 8-9x more in debug because two pieces of OUR
+//! code are unoptimised there -- `Vec::resize` zeroing the roster buffer, and
+//! the roster parse's per-entry duplicate check. So the shipped before/after on
+//! that machine is >=87-111 ms per clean freeze against 1.85-2.13 ms.
+//!
+//! OF WHICH THE GAME IS STOPPED FOR 1.19-3.55 ms (release, measured at the
+//! window boundary, ALL FIFTY samples and not a warm subset): the roster
+//! confirmation is 1.06-3.37 ms of it and both walks, the per-thread access
+//! queries, ten suspends, ten context reads and ten resumes are the remaining
+//! 125-301 us (0.1-0.3 ms, the full observed spread over all fifty rows;
+//! ~0.1-0.2 ms is the typical row, not the range). Everything else the
+//! freeze does -- resolving, the sizing walk,
+//! the roster SIZING call, and reserving and zeroing the buffer -- runs BEFORE
+//! the first suspension, so it is recorder time and not stopped game.
+//!
+//! AND A FREEZE IS NOT THE STALL. `enable_batch` holds this guard across
+//! `MinHook::apply_queued`. MEASURED PAIRED, in the same window and the same
+//! sample (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`,
+//! `guard_lifetime_raw.txt`): one production frozen window is 30.6-80.6 ms, of
+//! which `apply_queued` is 27.9-72.5 ms -- 74.7-95.3% of it in EVERY sample -- and
+//! acquiring this freeze is 2.3-17.0 ms. Mean `apply_queued` shows NO UPWARD
+//! TREND across batches of 1, 3, 6 and 12 targets, which is consistent with a
+//! dominant fixed per-apply cost rather than a per-target one.
+//!
+//! THAT IT IS MINHOOK'S OWN THREAD SNAPSHOT IS AN INFERENCE, not a reading of
+//! MinHook's source: what is measured is that the call dominates, shows no
+//! per-target trend, and is the same order as the system-wide snapshot pass
+//! above. The confirming step is named in the evidence file. Either way, making
+//! THIS freeze faster stopped being the lever some time ago; the numbers above
+//! are what is left of our share.
+//!
+//! THE ROSTER READ TRACKS THE MACHINE'S PROCESS TABLE, not ours, so none of
+//! these are constants: they were taken at ~700 processes / ~730 KB, and lane IX
+//! saw the same call answer 2,698 processes / ~3.1 MB. The read is the dominant
+//! in-window term, so IF its cost scales approximately with the bytes the kernel
+//! writes -- an inference from ONE size point and not a measurement -- a machine
+//! carrying four times the processes costs proportionally more.
 //!
 //! # The walk's own fail-open, and the two things that close it
 //!
@@ -189,8 +240,8 @@
 //! whether the list is itself taken under exclusion is a separate question this
 //! module does not settle, below.
 //!
-//! BOTH ARE ANSWERED BY THE SAME THING, and it is implemented here rather than
-//! left as a residual:
+//! ONE THING ANSWERS THE ACCESS PAIR OUTRIGHT AND THE CURSOR RACE ONLY IN PART,
+//! and it is implemented here rather than left as a residual:
 //! [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`]. A pass that
 //! already looks quiet must be CONFIRMED against a roster the kernel MATERIALISES
 //! INTO A BUFFER -- `NtQuerySystemInformation(SystemProcessInformation)`, which
@@ -200,22 +251,68 @@
 //! [`FreezeRefusal::RosterUnheld`], naming it.
 //!
 //! ACCESS-INDEPENDENCE is what answers the two configurations above, and it is
-//! MEASURED rather than argued for the shape that can be built here: a thread
-//! this process has been denied every access to by an empty DACL is still in the
-//! roster, and the confirmation still names it
-//! (`the_roster_names_a_live_thread_the_walk_did_not_account_for`). That the
-//! call opens no thread is the reason to expect it; the measurement is why it is
-//! stated. It is NOT established for every security shape -- the OWNER RIGHTS
-//! construction was not built -- so the claim is exactly as wide as the test.
+//! MEASURED rather than argued, now for BOTH shapes that can be built from
+//! inside this process (`runs/ju_ix_residuals/owner_rights_sid_measured.txt`):
+//!
+//!  * an EMPTY DACL. Still in the roster, still named
+//!    (`the_roster_names_a_live_thread_the_walk_did_not_account_for`). It does
+//!    NOT exercise the silent skip: the owner's implicit `READ_CONTROL |
+//!    WRITE_DAC` survives an empty DACL, so `MAXIMUM_ALLOWED` still opens the
+//!    thread, the WALK STILL RETURNS IT, and it refuses as
+//!    [`FreezeRefusal::ThreadRights`] before the roster is consulted.
+//!  * an explicit OWNER RIGHTS SID ACE granting nothing -- the second bullet
+//!    above, built. MEASURED: the walk returns FIVE threads where the system
+//!    snapshot lists SIX and still reports the end of the list, i.e. the silent
+//!    skip; the roster names the missing thread anyway; and the freeze refuses
+//!    as [`FreezeRefusal::RosterUnheld`] after the full pass budget, having
+//!    patched nothing
+//!    (`a_thread_the_owner_rights_sid_hides_from_the_walk_is_still_named_by_the_roster`).
+//!
+//! That the call opens no thread is the reason to expect this; the measurements
+//! are why it is stated. STILL NOT established for the FIRST configuration, a
+//! thread owned by a different security principal: manufacturing one needs a
+//! second account or a privilege this process does not hold, so it is out of
+//! reach of a self-contained test. The mechanism is the same and the claim is
+//! still exactly as wide as the tests.
 //!
 //! WHAT IT DOES FOR THE CURSOR RACE IS WEAKER, and is stated as such next.
 //!
 //! HOW STRONG THAT IS, said exactly, because the obvious overstatement is that
-//! the roster is ATOMIC with respect to thread creation inside one process. THAT
-//! IS NOT ESTABLISHED HERE. What was measured is its layout, its contents and
-//! its cost; whether the kernel copies one process's thread sublist under
-//! exclusion is a question about `ntoskrnl`, and this module has no evidence
-//! either way (adversarial review, round 20).
+//! the roster is ATOMIC with respect to thread creation inside one process. IT
+//! IS NOT, and that is now a MEASURED FACT rather than an unknown
+//! (`runs/ju_ix_residuals/kernel_roster_premise_settled.txt`; lane IX named the
+//! settling step and it was taken). On Windows 10.0.26100.9168 the class-5
+//! worker takes the per-process push lock `EPROCESS+0x1c8` SHARED, selects and
+//! REFERENCES one thread, RELEASES the lock, and copies that thread's record
+//! outside it -- once per thread. There is no instant at which the sublist is
+//! copied whole.
+//!
+//! WHAT HOLDS INSTEAD, and it closes ONE of the two holes above and not the
+//! other: A THREAD THAT IS A MEMBER OF THE LIST FOR THE WHOLE CALL IS IN THE
+//! BUFFER. The walk resumes from
+//! the REFERENCED thread object's `ETHREAD+0x578.Flink`, re-read under the
+//! reacquired lock; both insertion and unlinking of that field require the SAME
+//! lock EXCLUSIVELY; and the thread object type's DeleteProcedure IS the unlink,
+//! so an outstanding reference means the cursor is still LINKED and not merely
+//! still allocated. Nothing can move an already-present entry from ahead of the
+//! cursor to behind it.
+//!
+//! AN INACCESSIBLE THREAD IS EXACTLY SUCH A MEMBER, which is why the ACCESS hole
+//! above is closed rather than merely covered by a test.
+//!
+//! THE CURSOR RACE IS NOT CLOSED BY IT, and no reading of the kernel closes it:
+//! a thread created behind the roster's own traversal, or created and reaped
+//! inside one call, can be absent from the buffer, and this module can then
+//! return `Ok` with it running. The roster is strictly stronger than the cursor
+//! -- it materialises a LIST, so there is a set to compare against -- and that
+//! is the whole of what round 19 needed. It is not an instant and never was.
+//!
+//! AND THE `Ok` IS THEREFORE VERSION-SPECIFIC. Microsoft documents this class as
+//! internal, with no contract about any of the above; a future kernel that
+//! omitted a thread would make [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`]
+//! answer `None` and this module would return `Ok` with that thread running.
+//! The fail-closed paths cover a roster that cannot be READ or PARSED and one
+//! that NAMES an unheld thread -- not one that lies by omission.
 //!
 //! NOR IS IT ESTABLISHED FOR THE ENUMERATION THIS REPLACED. An earlier draft
 //! argued parity by asserting that `CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD)`
@@ -232,33 +329,45 @@
 //! must be held or the freeze does not return. No materialisation against some
 //! is the difference, and the fixed point rests on it.
 //!
-//! WHAT WOULD SETTLE THE REST, named rather than left as "could not determine":
-//! the `ntoskrnl` implementation of this information class, or a documented
-//! contract for it, showing whether the per-process thread sublist is copied
-//! under the process's thread-list lock. Until then, a thread created and reaped
-//! entirely inside one roster call is a residual, and this module claims no
-//! user-mode alternative avoids it.
+//! WHAT IS STILL NOT CLOSED, unchanged by the kernel reading: a thread created
+//! behind the roster's OWN traversal, or created and reaped entirely inside one
+//! call, can be absent from the buffer. The roster is strictly stronger than the
+//! cursor -- it materialises a LIST, so there is something to compare against --
+//! but it is not an instant, and this module claims no user-mode alternative
+//! avoids that. The step lane IX named as settling this has been taken and it
+//! settled the OTHER half; this half is a property of the kernel and not of any
+//! caller.
 //!
-//! WHAT IT COSTS, MEASURED rather than asserted
-//! (`runs/ix_batch_freeze/enumeration_cost_measured.txt`): 11.5-17.8 ms and
-//! ~3.2 MB per call, because it walks the whole process table -- 2,695-2,699
-//! processes -- to answer about one. The obvious way to make that cheaper is
+//! WHAT IT COSTS, MEASURED rather than asserted, and the two rows are the same
+//! call on the same machine at different process counts and in different build
+//! profiles -- neither is a constant:
+//!   DEBUG,   ~3.2 MB / 2,695-2,699 processes: 11.5-17.8 ms
+//!            (`runs/ix_batch_freeze/enumeration_cost_measured.txt`)
+//!   RELEASE, ~730 KB / ~700 processes:        1.3-4.3 ms, settling to ~1.3 ms
+//!            (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`)
+//! It walks the whole process table to answer about one process, so the cost is
+//! the machine's, not ours. The obvious way to make that cheaper is
 //! not available: `NtQuerySystemInformationEx` does not accept a process filter
 //! for this class on the measured build, returning `STATUS_INVALID_INFO_CLASS`.
 //! That is one API on one Windows version, not a proof that nothing cheaper
 //! exists anywhere -- it is the alternative that was tried.
 //!
 //! EXACTLY ONE READ WHEN THE FIRST QUIET-LOOKING PASS CONFIRMS, which is the
-//! ordinary case and the one that was MEASURED: 15.4-25.1 ms for a clean freeze
-//! at two passes, against 129-258 ms for the enumeration it replaced.
+//! ordinary case and the one that was MEASURED: a clean freeze at two passes is
+//! 1.85-2.13 ms in the shipped release build (14.6-19.2 ms in debug), against
+//! >=87-111 ms for the enumeration it replaced in either build.
 //!
 //! ONE PER QUIET-LOOKING PASS OTHERWISE, and that is the number to plan against
 //! because it bounds BOTH outcomes. A pass can read the roster, be sent round
 //! again by a thread it named, and the freeze can still SUCCEED later after
 //! another read; a thread the walk can never return -- the inaccessible case --
 //! makes every pass quiet-looking and refuses at the end of them. Either way the
-//! ceiling is [`MAX_PASSES`] reads, ARITHMETICALLY 184-285 ms at the measured
-//! per-call cost. "Once per freeze" is the common case, not a bound.
+//! ceiling is [`MAX_PASSES`] reads, ARITHMETICALLY ~21-69 ms at the release
+//! per-call cost measured here and 184-285 ms at the debug cost lane IX
+//! measured on a machine carrying four times the processes. "Once per freeze" is
+//! the common case, not a bound. MEASURED end to end rather than only derived:
+//! the OWNER RIGHTS test below drives a freeze that reads the roster on all
+//! sixteen passes and then refuses.
 //!
 //! The buffer it fills is reserved BEFORE the first suspension and reused, so
 //! the frozen window still allocates nothing; a buffer that has become too small
@@ -351,10 +460,11 @@
 //! The comparison, stated so nobody has to reconstruct it, and counted in
 //! PASSES because a pass is the unit that costs:
 //!
-//!  * a clean freeze is 2 passes, MEASURED at 15.4-25.1 ms
-//!    (`runs/ix_batch_freeze/enumeration_cost_measured.txt`) -- 114-334 us of
-//!    walking plus ONE roster confirmation; it was 129-258 ms when every pass
-//!    was a system-wide snapshot;
+//!  * a clean freeze is 2 passes, MEASURED at 1.85-2.13 ms in the shipped
+//!    release build and 14.6-19.2 ms in debug
+//!    (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`) -- both walks
+//!    plus ONE roster confirmation, which is ~90% of it; it was >=87-111 ms in
+//!    EITHER build when every pass was a system-wide snapshot;
 //!  * an unsettled probe used to cost 1 pass plus up to 50 ms BLOCKED, and then
 //!    either proceed or refuse;
 //!  * it now costs whatever it takes, bounded by [`MAX_PASSES`]. A thread that
@@ -1307,12 +1417,23 @@ impl ProcessFreeze {
     /// which was this module's other fail-open -- appears here and is refused by
     /// the same comparison.
     ///
-    /// AS WIDE AS THE MEASUREMENT AND NO WIDER: a thread denied EVERY access by
-    /// an empty DACL is still listed, and is still named
-    /// (`the_roster_names_a_live_thread_the_walk_did_not_account_for`). The
-    /// OWNER RIGHTS SID construction was NOT built and is NOT covered. That the
-    /// call opens no thread is the reason to expect the wider claim; it is not
-    /// evidence for it.
+    /// AS WIDE AS THE MEASUREMENTS AND NO WIDER, and there are two of them now
+    /// (`runs/ju_ix_residuals/owner_rights_sid_measured.txt`). A thread denied
+    /// EVERY access by an empty DACL is still listed and still named
+    /// (`the_roster_names_a_live_thread_the_walk_did_not_account_for`) -- but
+    /// that thread is one the walk still RETURNS, so it never reaches here; it
+    /// refuses as [`FreezeRefusal::ThreadRights`] first. THE SHAPE THAT ACTUALLY
+    /// REACHES THIS COMPARISON is a thread carrying an OWNER RIGHTS SID ACE that
+    /// grants nothing, and it is built and driven end to end by
+    /// `a_thread_the_owner_rights_sid_hides_from_the_walk_is_still_named_by_the_roster`:
+    /// the walk returns five threads where the system snapshot lists six, this
+    /// answer names the sixth, and the freeze refuses by
+    /// [`FreezeRefusal::RosterUnheld`] having patched nothing.
+    ///
+    /// A thread owned by a DIFFERENT SECURITY PRINCIPAL is still not covered --
+    /// it cannot be manufactured from inside this process -- so the claim stops
+    /// there. That the call opens no thread is the reason to expect the wider
+    /// claim; it is not evidence for it.
     ///
     /// Returns the id of the first thread the roster lists that this freeze does
     /// not hold, or `None` when it named nothing.
@@ -1552,10 +1673,23 @@ impl ThreadWalk {
     /// NEITHER IS LEFT TO THIS WALK. The fixed point does not rest on it: a
     /// quiet pass is confirmed against a roster that names threads WITHOUT
     /// OPENING THEM, so a thread this walk cannot see is named there and refuses
-    /// the freeze. MEASURED for an empty DACL, not established for the OWNER
-    /// RIGHTS construction -- see
+    /// the freeze.
+    ///
+    /// THE OWNER RIGHTS CASE IS NOW MEASURED END TO END and is no longer the
+    /// unestablished half of that sentence
+    /// (`runs/ju_ix_residuals/owner_rights_sid_measured.txt`, and the test
+    /// `a_thread_the_owner_rights_sid_hides_from_the_walk_is_still_named_by_the_roster`).
+    /// The two shapes behave DIFFERENTLY here and the difference is the point:
+    /// an empty DACL leaves the owner 0x60000, so this walk RETURNS that thread
+    /// and [`granted_access_covers_the_freeze`] refuses it without the roster
+    /// being consulted at all; the OWNER RIGHTS ACE leaves nothing, this walk
+    /// returns FIVE threads where the system snapshot lists SIX and still
+    /// reports the end of the list, and only the roster catches it.
+    ///
+    /// A thread owned by a DIFFERENT SECURITY PRINCIPAL is still not measured --
+    /// it cannot be manufactured from inside this process. See
     /// [`ProcessFreeze::what_the_roster_names_that_we_do_not_hold`], which
-    /// states exactly how far that goes.
+    /// states exactly how far this goes.
     ///
     /// # Ownership needs no check any more
     ///
@@ -2213,13 +2347,36 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             // WHAT THIS `Ok` RESTS ON, said where it is returned rather than
             // only in the header: the roster named nothing this freeze does not
             // hold, so every thread of this process THE ROSTER LISTED was
-            // suspended or proven gone. That the buffer is a CONSISTENT view of
-            // the thread list at one moment -- rather than itself the product of
-            // a live traversal -- is NOT established here and cannot be from
-            // user mode (adversarial review, rounds 20-25). It is the module's
-            // one open technical residual, the step that would settle it is
-            // named in the header, and no user-mode enumerator this module could
-            // use instead has been shown to avoid it.
+            // suspended or proven gone.
+            //
+            // WHAT THE BUFFER IS, SETTLED BY KERNEL RE rather than left open
+            // (`runs/ju_ix_residuals/kernel_roster_premise_settled.txt`; lane IX
+            // named this step and it was taken). It is NOT a consistent view at
+            // one moment: on Windows 10.0.26100.9168 the class-5 worker takes
+            // `EPROCESS+0x1c8` SHARED, selects and references ONE thread,
+            // RELEASES it, and copies that thread's record outside the lock --
+            // per thread. What holds instead is narrower, and it is ONE of the
+            // two things this `Ok` rests on and not the whole of it: the walk
+            // resumes from the REFERENCED thread object's
+            // `+0x578.Flink` re-read under the reacquired lock, and both insert
+            // and unlink of that field require the SAME lock EXCLUSIVELY, so a
+            // thread that is a list member for the WHOLE call cannot be stepped
+            // over. An inaccessible thread is exactly such a member, which is
+            // why the access hole is closed.
+            //
+            // WHAT IS STILL NOT CLOSED, and it is the same sentence as before: a
+            // thread created behind the roster's own traversal, or created and
+            // reaped inside one call, can be absent from the buffer. The roster
+            // is strictly stronger than the cursor -- it materialises a LIST --
+            // but it is not an instant.
+            //
+            // AND THIS `Ok` IS VERSION-SPECIFIC, which is worth more than the
+            // reassurance it replaces. Microsoft documents the class as internal
+            // with no contract about any of the above. A future kernel that
+            // omitted a thread here would return `None` and this line would
+            // return `Ok` with that thread RUNNING -- the fail-closed paths
+            // cover a roster that cannot be read or parsed and a roster that
+            // NAMES an unheld thread, not one that lies by omission.
             match freeze.what_the_roster_names_that_we_do_not_hold(&walk, current_thread_id, our_process_id)? {
                 None => return Ok(freeze),
                 Some(thread) => {
@@ -2649,21 +2806,25 @@ mod tests {
         true
     }
 
-    /// Give `thread` an EMPTY DACL, so every access to it is denied to everyone
-    /// and only the owner rights remain. Returns the NTSTATUS.
+    /// An `ACL` header, hand-declared.
     ///
     /// Hand-built rather than taken from `windows-sys`: the security structures
-    /// live behind a feature this crate does not otherwise need, and this is the
-    /// only place in it that has ever wanted them.
-    fn deny_every_access_to(thread: HANDLE) -> i32 {
-        #[repr(C)]
-        struct AclHeader {
-            revision: u8,
-            sbz1: u8,
-            size: u16,
-            count: u16,
-            sbz2: u16,
-        }
+    /// live behind a feature this crate does not otherwise need, and the two
+    /// DACLs below are the only place in it that has ever wanted them.
+    #[repr(C)]
+    struct AclHeader {
+        revision: u8,
+        sbz1: u8,
+        size: u16,
+        count: u16,
+        sbz2: u16,
+    }
+
+    /// Put `dacl` on `thread` as its discretionary ACL. Returns the NTSTATUS.
+    ///
+    /// The descriptor is ABSOLUTE (pointers, not offsets) and carries only the
+    /// DACL, which is the only part `DACL_SECURITY_INFORMATION` reads.
+    fn set_thread_dacl(thread: HANDLE, dacl: *mut c_void) -> i32 {
         #[repr(C)]
         struct AbsoluteSecurityDescriptor {
             revision: u8,
@@ -2678,17 +2839,10 @@ mod tests {
         const DACL_SECURITY_INFORMATION: u32 = 4;
         /// `SE_DACL_PRESENT`. A descriptor with the flag and an ACL of zero ACEs
         /// denies everything; a descriptor WITHOUT the flag grants everything,
-        /// which is the mistake that would make this test vacuous.
+        /// which is the mistake that would make either caller vacuous.
         const SE_DACL_PRESENT: u16 = 0x0004;
         type NtSetSecurityObjectFn = unsafe extern "system" fn(HANDLE, u32, *const c_void) -> i32;
 
-        let mut empty_dacl = AclHeader {
-            revision: 2,
-            sbz1: 0,
-            size: core::mem::size_of::<AclHeader>() as u16,
-            count: 0,
-            sbz2: 0,
-        };
         let descriptor = AbsoluteSecurityDescriptor {
             revision: 1,
             sbz1: 0,
@@ -2696,7 +2850,7 @@ mod tests {
             owner: core::ptr::null_mut(),
             group: core::ptr::null_mut(),
             sacl: core::ptr::null_mut(),
-            dacl: (&mut empty_dacl) as *mut AclHeader as *mut c_void,
+            dacl,
         };
         let ntdll: [u16; 10] = [
             b'n' as u16, b't' as u16, b'd' as u16, b'l' as u16, b'l' as u16, b'.' as u16,
@@ -2715,6 +2869,117 @@ mod tests {
                 (&descriptor) as *const AbsoluteSecurityDescriptor as *const c_void,
             )
         }
+    }
+
+    /// Give `thread` an EMPTY DACL, so every access to it is denied to everyone
+    /// and only the owner rights remain. Returns the NTSTATUS.
+    fn deny_every_access_to(thread: HANDLE) -> i32 {
+        let mut empty_dacl = AclHeader {
+            revision: 2,
+            sbz1: 0,
+            size: core::mem::size_of::<AclHeader>() as u16,
+            count: 0,
+            sbz2: 0,
+        };
+        set_thread_dacl(thread, (&mut empty_dacl) as *mut AclHeader as *mut c_void)
+    }
+
+    /// Give `thread` a DACL that takes away THE OWNER'S rights as well, by
+    /// naming the OWNER RIGHTS SID (`S-1-3-4`) in an ACE that grants nothing.
+    /// Returns the NTSTATUS.
+    ///
+    /// # Why this exists beside [`deny_every_access_to`]
+    ///
+    /// They are the module header's TWO security shapes, and only this one
+    /// reaches the hole the roster confirmation was written for.
+    ///
+    /// An empty DACL denies everyone, but `READ_CONTROL | WRITE_DAC` is still
+    /// granted to an object's OWNER whatever its DACL says -- MEASURED at
+    /// 0x60000 (`runs/ix_batch_freeze/enumeration_cost_measured.txt`) -- so the
+    /// walk's `MAXIMUM_ALLOWED` open SUCCEEDS, the thread is returned, and the
+    /// shortfall refuses by name through [`FreezeRefusal::ThreadRights`].
+    ///
+    /// An explicit OWNER RIGHTS ACE REPLACES that implicit grant with the ACE's
+    /// own mask. With a mask of zero the owner is left NOTHING, the open fails
+    /// outright, and the walk SKIPS THE THREAD IN SILENCE -- which is the one
+    /// shape `next_thread`'s access argument cannot cover and the roster has to.
+    ///
+    /// The ACL is 28 bytes: an 8-byte header, one 20-byte `ACCESS_ALLOWED_ACE`
+    /// (4-byte ACE header, 4-byte access mask of ZERO, and a 12-byte SID), and
+    /// it is 4-byte aligned because an `ACL` must be.
+    fn deny_every_access_including_the_owner_s_to(thread: HANDLE) -> i32 {
+        /// `ACCESS_ALLOWED_ACE_TYPE`.
+        const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+        /// `SECURITY_CREATOR_SID_AUTHORITY`, big-endian as SIDs spell it.
+        const CREATOR_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 3];
+        /// `SECURITY_CREATOR_OWNER_RIGHTS_RID`. `S-1-3-4` is OWNER RIGHTS.
+        const OWNER_RIGHTS_RID: u32 = 4;
+
+        #[repr(C, align(4))]
+        struct OwnerRightsDacl {
+            // ACL
+            revision: u8,
+            sbz1: u8,
+            size: u16,
+            count: u16,
+            sbz2: u16,
+            // ACCESS_ALLOWED_ACE
+            ace_type: u8,
+            ace_flags: u8,
+            ace_size: u16,
+            // GRANTING NOTHING. This single zero is the whole construction: an
+            // OWNER RIGHTS ACE that granted anything would leave the owner that
+            // much, and the walk would keep seeing the thread.
+            mask: u32,
+            // The SID sits where `ACCESS_ALLOWED_ACE::SidStart` does.
+            sid_revision: u8,
+            sid_sub_authority_count: u8,
+            sid_identifier_authority: [u8; 6],
+            sid_sub_authority: [u32; 1],
+        }
+        // Asserted rather than trusted: the ACL's declared size and the ACE's
+        // are read by the kernel out of these fields, and a Rust layout that
+        // padded differently would describe bytes that are not there.
+        const _: () = assert!(core::mem::size_of::<OwnerRightsDacl>() == 28);
+
+        let mut dacl = OwnerRightsDacl {
+            revision: 2,
+            sbz1: 0,
+            size: core::mem::size_of::<OwnerRightsDacl>() as u16,
+            count: 1,
+            sbz2: 0,
+            ace_type: ACCESS_ALLOWED_ACE_TYPE,
+            ace_flags: 0,
+            ace_size: (core::mem::size_of::<OwnerRightsDacl>() - core::mem::size_of::<AclHeader>())
+                as u16,
+            mask: 0,
+            sid_revision: 1,
+            sid_sub_authority_count: 1,
+            sid_identifier_authority: CREATOR_AUTHORITY,
+            sid_sub_authority: [OWNER_RIGHTS_RID],
+        };
+        set_thread_dacl(thread, (&mut dacl) as *mut OwnerRightsDacl as *mut c_void)
+    }
+
+    /// What `OpenThread(MAXIMUM_ALLOWED)` gets on `thread_id` RIGHT NOW: the
+    /// granted mask, or `None` if the open was refused outright.
+    ///
+    /// This is the independent read of the security state that keeps the
+    /// OWNER RIGHTS test from passing vacuously. The walk not returning a thread
+    /// looks identical whether the ACE worked or the thread simply exited, and
+    /// this call tells those apart.
+    fn what_maximum_allowed_gets(walk: &ThreadWalk, thread_id: u32) -> Option<u32> {
+        use windows_sys::Win32::System::Threading::OpenThread;
+        let handle = unsafe { OpenThread(MAXIMUM_ALLOWED, 0, thread_id) };
+        if handle.is_null() {
+            return None;
+        }
+        // A granted-access query that FAILS is not a grant of nothing, so it is
+        // not reported as one: the open succeeded, and that alone is more access
+        // than the construction under test is supposed to leave.
+        let granted = walk.granted_access(handle).ok();
+        unsafe { CloseHandle(handle) };
+        Some(granted.unwrap_or(u32::MAX))
     }
 
     /// Falsifiable: fails if a suspend failure is ever excused by anything
@@ -3952,6 +4217,244 @@ mod tests {
              nothing else; a parse that cannot see it cannot see the thread a \
              walk missed either"
         );
+    }
+
+    /// Falsifiable, and the claim lane IX explicitly could NOT make: fails if a
+    /// thread the walk cannot see AT ALL is not caught by the roster and
+    /// refused.
+    ///
+    /// # What this covers that nothing before it did
+    ///
+    /// The module header names TWO security shapes that defeat the walk's
+    /// `MAXIMUM_ALLOWED` argument, and lane IX measured only one of them. An
+    /// empty DACL leaves the OWNER's implicit `READ_CONTROL | WRITE_DAC`, so the
+    /// walk still RETURNS the thread and the shortfall refuses as
+    /// [`FreezeRefusal::ThreadRights`] -- that is
+    /// `a_thread_this_process_cannot_open_at_the_freeze_rights_refuses_by_name`,
+    /// and it never exercises the roster at all. An explicit OWNER RIGHTS ACE
+    /// (`S-1-3-4`) REPLACES that implicit grant, and with a zero mask the walk's
+    /// open fails outright and THE THREAD IS SKIPPED IN SILENCE. That silence is
+    /// the whole reason the roster confirmation exists, and until this test
+    /// nothing drove it: `the_roster_names_a_live_thread_the_walk_did_not_
+    /// account_for` withholds a thread by STATING a held set, which is a parse
+    /// test, not an OS one.
+    ///
+    /// So this test asserts the chain end to end. What stops it being vacuous
+    /// is the PAIR the assertions below spell out at length: `!walked.contains`
+    /// alone is not enough (an ACE that merely fails to hide the thread would
+    /// still satisfy it), so the argument rests on `after == None` -- the ACE
+    /// really did hide the thread from the walk -- TOGETHER WITH the
+    /// `RosterUnheld` refusal, which is the roster confirmation catching
+    /// exactly that silent skip. Neither half carries it by itself. If a
+    /// future Windows build stops honouring the ACE this way, this test fails
+    /// LOUDLY with that as its message rather than passing while testing the
+    /// empty-DACL path over again.
+    ///
+    /// kills: removing the roster confirmation from the quiet-pass branch (the
+    /// freeze then returns `Ok` while a live thread of this process runs
+    /// unsuspended -- the exact fail-open round 19 found); reading the roster
+    /// but ignoring what it names; naming the wrong thread; and turning the
+    /// refusal into a skip.
+    ///
+    /// It cleans up by ending the thread. The DACL is not restored, and does not
+    /// need to be: the thread exits, leaves this process's thread list, and no
+    /// later freeze can reach it.
+    #[test]
+    fn a_thread_the_owner_rights_sid_hides_from_the_walk_is_still_named_by_the_roster() {
+        use std::os::windows::io::AsRawHandle;
+        // Comfortably more than this binary's thread count; asserted below
+        // rather than assumed, because a buffer that filled to capacity would
+        // make the "the walk did not return it" assertion mean nothing.
+        const ROOM: usize = 4096;
+
+        // SERIALISED for the same reason the other two are: between stripping
+        // this thread's access and joining it, a freeze taken by any other test
+        // would meet it and refuse -- this test's subject, arriving in the wrong
+        // test.
+        let _serialised = os_suspend_state_guard();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_id = Arc::new(AtomicU32::new(0));
+        let worker = {
+            let stop = Arc::clone(&stop);
+            let worker_id = Arc::clone(&worker_id);
+            std::thread::spawn(move || {
+                worker_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+                while !stop.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        while worker_id.load(Ordering::Acquire) == 0 {
+            std::hint::spin_loop();
+        }
+        let hidden_id = worker_id.load(Ordering::Acquire);
+
+        // Resolved and SIZED before anything is suspended, exactly as production
+        // does it: `GetProcAddress` takes the loader lock and the allocation
+        // below takes the allocator's, and a suspended thread may hold either.
+        let walk = ThreadWalk::resolve().expect("the walk resolves on this OS");
+
+        // WHAT THE OWNER GETS BEFORE THE ACE AND AFTER IT, read independently of
+        // the walk. This is what makes the ACE's effect a change THIS TEST
+        // CAUSED rather than a state it happened to find: a thread that had
+        // already exited would also be missing from the walk below.
+        let before = what_maximum_allowed_gets(&walk, hidden_id);
+        let set = deny_every_access_including_the_owner_s_to(worker.as_raw_handle() as HANDLE);
+        let after = what_maximum_allowed_gets(&walk, hidden_id);
+        let current_thread_id = unsafe { GetCurrentThreadId() };
+        let our_process_id = unsafe { GetCurrentProcessId() } as usize;
+        let mut buffer = vec![0u8; walk.roster_bytes_needed().expect("the roster sizes") * 2];
+        let mut walked: Vec<u32> = Vec::with_capacity(ROOM);
+        let mut snapshotted: Vec<u32> = Vec::with_capacity(ROOM);
+
+        let walk_answered = fill_with_walked_thread_ids(&walk, &mut walked);
+        // THE INDEPENDENT AUTHORITY THAT THE THREAD IS STILL ALIVE, and that is
+        // ALL it is used for here. It opens nothing, so it is unaffected by the
+        // ACE, and a thread it lists is one that exists -- which is what stops
+        // "the walk did not return it" being satisfied by a thread that simply
+        // exited. It is NOT compared by COUNT against the walk: the kernel keeps
+        // a terminated thread in its list until it is reaped while toolhelp
+        // drops it at once, so the walk legitimately lists more and a count
+        // comparison would be a race. See the assertions.
+        let snapshot_answered = fill_with_snapshotted_thread_ids(&mut snapshotted);
+        let filled = walk.read_roster(&mut buffer).expect("the roster reads");
+        let named = roster_names_an_unheld_thread(
+            &buffer[..filled],
+            our_process_id,
+            current_thread_id,
+            |id| id != hidden_id,
+        );
+
+        // AND THEN THE WHOLE FREEZE, which is the half the residual asked about.
+        // The parse above says the roster CAN name it; this says the freeze
+        // refuses because it did. It costs the full pass budget by construction
+        // -- the walk can never reach this thread, so every pass looks quiet and
+        // every one of them reads the roster.
+        let refused_confirmations_before = ROSTER_CONFIRMATIONS_REFUSED.load(Ordering::Acquire);
+        let frozen = freeze_other_threads().map(|freeze| freeze.frozen_thread_count());
+        let refused_confirmations_after = ROSTER_CONFIRMATIONS_REFUSED.load(Ordering::Acquire);
+
+        stop.store(true, Ordering::Release);
+        worker.join().expect("the spinning thread joins");
+
+        assert_eq!(
+            set, 0,
+            "NtSetSecurityObject refused the OWNER RIGHTS DACL ({set:#010x}), so \
+             this test could not manufacture the thread it exists to test"
+        );
+        assert!(
+            before.is_some_and(granted_access_covers_the_freeze),
+            "before the ACE this process could not open its own thread at the \
+             freeze's access ({before:?}), so nothing below is a change this test \
+             caused"
+        );
+        assert_eq!(
+            after, None,
+            "after the ACE, OpenThread(MAXIMUM_ALLOWED) still returned a handle \
+             granting {after:?}: the OWNER RIGHTS ACE did not take, and the \
+             thread below is not the invisible one this test needs"
+        );
+        walk_answered.expect("the kernel walk answers");
+        assert!(
+            walked.len() < ROOM,
+            "the walk filled its buffer ({} of {ROOM}), so 'the walk did not \
+             return the hidden thread' below would be an artefact of capacity",
+            walked.len()
+        );
+        assert!(
+            walked.len() > 1,
+            "the walk returned {} thread(s), so this process has nothing for the \
+             comparison below to be about",
+            walked.len()
+        );
+        assert!(snapshot_answered, "the system snapshot answers");
+        assert!(
+            snapshotted.len() < ROOM,
+            "the snapshot filled its buffer ({} of {ROOM})",
+            snapshotted.len()
+        );
+        assert!(
+            snapshotted.contains(&hidden_id),
+            "thread {hidden_id} is not in this process's system snapshot, so it \
+             is not live and this test is about nothing"
+        );
+        // THE ANTI-VACUITY ASSERTIONS, and neither of them is a thread COUNT.
+        //
+        // A count comparison was written first and taken out: the walk
+        // legitimately lists MORE than the snapshot, because the kernel keeps a
+        // terminated thread in the process list until it is reaped while
+        // toolhelp drops it at once (the reason
+        // `the_kernel_walk_lists_every_thread_the_system_snapshot_lists` only
+        // asserts one direction, and it takes a FREEZE so both answers describe
+        // one instant -- which this test cannot do, because the freeze it is
+        // about refuses). `walked.len() < snapshotted.len()` was therefore a
+        // race, not a proof.
+        //
+        // `!walked.contains(&hidden_id)` IS ALSO NOT ENOUGH ALONE, and it is
+        // worth saying why: a thread the walk RETURNS but cannot identify is
+        // recorded here as id 0, because `GetThreadId` needs a query right the
+        // empty DACL also takes. So the empty-DACL thread is absent from
+        // `walked` BY ID while present in it as an entry, and this assertion
+        // passes for a case this test is not about.
+        //
+        // WHAT CARRIES IT IS `after == None` ABOVE, plus the refusal below.
+        // `OpenThread(MAXIMUM_ALLOWED)` returning nothing means this process
+        // cannot open the thread at ANY access, and the walk opens with that
+        // same mask -- and `FreezeRefusal::RosterUnheld` is only reachable from
+        // a quiet pass, which a returned-but-unsuspendable thread can never
+        // produce: it refuses as `ThreadRights` inside the walk loop instead.
+        // The refusal below is therefore itself the proof that the walk skipped
+        // this thread, and it needs no second enumeration to say so.
+        //
+        // The direct observation is on record where a race cannot reach it:
+        // `runs/ju_ix_residuals/owner_rights_sid_raw.txt`, both build profiles,
+        // empty DACL `walk_threads=6 toolhelp_threads=6` against OWNER RIGHTS
+        // `walk_threads=5 toolhelp_threads=6`.
+        assert!(
+            !walked.contains(&hidden_id),
+            "the MAXIMUM_ALLOWED walk named thread {hidden_id}, so the OWNER \
+             RIGHTS ACE did not deny this process every access to it"
+        );
+        assert_eq!(
+            named,
+            Ok(Some(hidden_id)),
+            "thread {hidden_id} is live in this process and INVISIBLE to the \
+             walk, so the roster is the only thing that can name it; it did not"
+        );
+        match frozen {
+            Err(FreezeRefusal::RosterUnheld { thread, passes }) => {
+                assert_eq!(
+                    thread, hidden_id,
+                    "the freeze refused for a thread other than the hidden one"
+                );
+                assert_eq!(
+                    passes, MAX_PASSES,
+                    "a thread the walk can never reach must cost the whole pass \
+                     budget before the freeze gives up on it"
+                );
+                assert!(
+                    refused_confirmations_after > refused_confirmations_before,
+                    "the freeze refused as RosterUnheld without any roster \
+                     confirmation having refused, which means the refusal was \
+                     reached by some path other than the roster naming the thread"
+                );
+            }
+            Err(FreezeRefusal::ThreadRights { thread, granted }) => panic!(
+                "the freeze refused as ThreadRights (thread {thread}, granted \
+                 {granted:#010x}), which is the EMPTY-DACL outcome: the walk saw \
+                 the thread. The OWNER RIGHTS construction did not reach the \
+                 hole this test exists for"
+            ),
+            Err(other) => panic!(
+                "a live thread of this process that the walk cannot see at all \
+                 must refuse the freeze as RosterUnheld, not as {other:?}"
+            ),
+            Ok(held) => panic!(
+                "the freeze SUCCEEDED holding {held} thread(s) while thread \
+                 {hidden_id} was live, unsuspended, and invisible to the walk; \
+                 that thread was still running when the patch would have landed"
+            ),
+        }
     }
 
     /// Falsifiable: fails if a roster this module cannot make sense of is read

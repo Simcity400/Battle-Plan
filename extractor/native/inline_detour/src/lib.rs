@@ -507,26 +507,53 @@ mod windows_impl {
     ///
     /// [`enable`] freezes the whole process per call, and a freeze is at least
     /// two walks of this process's thread list plus a suspend/resume of every
-    /// other thread, followed by MinHook's own system-wide snapshot.
+    /// other thread, followed by MinHook's own work inside the same window.
+    ///
+    /// THAT WORK DOMINATES THE WINDOW, MEASURED
+    /// (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`, paired samples
+    /// timed from freeze acquisition to release): `MinHook::apply_queued` is
+    /// 74.7-95.3% of every production frozen window sampled, and acquiring the
+    /// freeze is 4.6-24.9% of it.
+    ///
+    /// THIS COMMENT USED TO CALL THAT REMAINDER "MinHook's own system-wide
+    /// snapshot" AS A FACT. It is an INFERENCE and is labelled as one now:
+    /// MinHook's source was not read here and its internals were not timed.
+    /// What IS measured is that the call dominates, shows no per-target trend
+    /// across batches of 1/3/6/12 targets, and is the same order as the
+    /// system-wide snapshot pass `freeze.rs` replaced. Confirming step: time
+    /// MinHook's `Freeze()`/`Unfreeze()` directly, or read the vendored
+    /// `minhook 0.9.0` C source.
     ///
     /// THE PER-FREEZE COST HAS FALLEN and the reason this exists has not. When
-    /// it was written a freeze was 129-258 ms, because each pass was a
-    /// `CreateToolhelp32Snapshot` over every thread on the machine; the freeze
-    /// now enumerates with `NtGetNextThread` and confirms the fixed point once
-    /// against a materialised roster, and a clean freeze was OBSERVED at
-    /// 15.4-25.1 ms over eight debug samples on one machine holding seven
-    /// threads (`runs/ix_batch_freeze/enumeration_cost_measured.txt`), of which
-    /// the walking is 114-334 us. That is a sample and not a bound, and the two
-    /// halves scale differently: the walk, the granted-access query, the suspend
-    /// and the context read are PER THREAD and hoi4.exe holds far more than
-    /// seven, while the roster is per FREEZE and is paid once however many
-    /// threads there are. Batching therefore buys back real milliseconds again
-    /// -- one roster instead of one per detour -- and it buys ATOMICITY ON TOP
-    /// OF THEM, which is the reason it was written when the milliseconds had
-    /// gone: the whole set becomes live inside ONE window, so no game thread
-    /// runs between one detour being patched and the next -- see "Atomic in EFFECT" below -- and MinHook's own
-    /// snapshot, which this module cannot make cheaper, is taken once instead of
-    /// once per target.
+    /// it was written a freeze was one `CreateToolhelp32Snapshot` per pass over
+    /// every thread on the machine, OBSERVED at >=87-111 ms for a clean
+    /// two-pass freeze and identical in both build profiles because none of the
+    /// work was ours. The freeze now enumerates with `NtGetNextThread` and
+    /// confirms the fixed point once against a materialised roster, and a clean
+    /// freeze was OBSERVED at 1.85-2.13 ms IN THE SHIPPED RELEASE BUILD and
+    /// 14.6-19.2 ms in debug, on one machine holding ten threads
+    /// (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`; the
+    /// 15.4-25.1 ms this comment used to quote from
+    /// `runs/ix_batch_freeze/enumeration_cost_measured.txt` is the debug row).
+    /// That is a sample and not a bound, and the two halves scale differently:
+    /// the walk, the granted-access query, the suspend and the context read are
+    /// PER THREAD and hoi4.exe holds far more than ten, while the roster is per
+    /// FREEZE and tracks the MACHINE's process table rather than ours. Batching
+    /// therefore still buys milliseconds -- one roster instead of one per detour
+    /// -- though far less than the ~350 ms the debug figure implied, and the
+    /// install's freeze count is itself unverified on this tree
+    /// (`runs/ju_ix_residuals/freeze_cost_by_build_profile.txt`: lane IX's
+    /// census said fourteen, `PRODUCTION_INSTALL_UNITS` is now declared with
+    /// twelve, and a fresh census is the named step). What it buys that is
+    /// not measured in milliseconds is ATOMICITY, which is the reason it was
+    /// written when the milliseconds had gone: the whole set becomes live inside
+    /// ONE window, so no game thread
+    /// runs between one detour being patched and the next -- see "Atomic in EFFECT" below -- and
+    /// `MinHook::apply_queued`, whose cost dominates the window and which this
+    /// module has never been shown able to make cheaper, is paid ONCE instead of
+    /// once per target. (This sentence used to name that cost as "MinHook's own
+    /// snapshot". It is measured to be `apply_queued`; that the cost INSIDE it
+    /// is a thread snapshot is an inference, per the note above.)
     ///
     /// The shipped roster is every non-`bootstrap.` entry of
     /// `compact_contract::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1` (the
