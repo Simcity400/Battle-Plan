@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Replay ingest and scrubbable world timeline for .battleplan recordings"
 
+# Construction seams for CONSUMER crates' tests (game_ui). Enabled only through
+# game_ui's [dev-dependencies], which the v2 resolver does not unify into a
+# normal build, so default product resolution does not compile them. An explicit
+# --all-features build does; see
+# `PackagedStaticArtifact::unauthenticated_for_consumer_tests`.
+[features]
+test_support = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

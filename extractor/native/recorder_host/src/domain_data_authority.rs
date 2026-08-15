@@ -3192,7 +3192,8 @@ fn decode_compact_tech_data_payload(
                 "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
             ));
         }
-        if flags & !0b1_1111 != 0 {
+        // Bit 5 is the derived ahead-of-time authority.
+        if flags & !0b11_1111 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has unknown flags {flags}"
             ));
@@ -3350,11 +3351,67 @@ fn decode_compact_tech_data_payload(
             }
             cursor += 176;
             add_compact_domain_data_unit(summary, 13, "observed_ahead_provenance_rows", 1);
-        } else if flags & (1 << 3) != 0 {
+        }
+        // The DERIVED authority: the recorder's own inputs in place of a
+        // producer receipt. This decoder sees a payload without its record's
+        // hour, so the SAME-HOUR gate stays where the frame hour is known
+        // (`world_fold.rs::fold_tech`); what is checked here is everything that
+        // is decidable from the bytes alone, and nothing beyond it. That
+        // boundary matters in one direction only: `stream_fold` consults this
+        // decoder before applying the payload at all, so a row refused here
+        // never reaches `WorldFold`, and a rule that is merely STRICTER here
+        // silently deletes the domain.
+        if flags & (1 << 5) != 0 {
+            if flags & (1 << 3) == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} A29 derived authority without ahead quartet"
+                ));
+            }
+            if flags & (1 << 4) != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} carries both observed and derived A29 authority"
+                ));
+            }
+            if payload.len() < cursor + 16 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} is too short for the A29 derived authority"
+                ));
+                return;
+            }
+            let authority = u32::from_le_bytes(payload[cursor..cursor + 4].try_into().unwrap());
+            let producer_game_hour_raw =
+                i32::from_le_bytes(payload[cursor + 4..cursor + 8].try_into().unwrap());
+            let penalty_factor_raw =
+                i64::from_le_bytes(payload[cursor + 8..cursor + 16].try_into().unwrap());
+            if authority != 1
+                || producer_game_hour_raw <= 0
+                || !(0..=10_000_000_000i64).contains(&penalty_factor_raw)
+            {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech active row {row_index} A29 derived authority is invalid"
+                ));
+            }
+            cursor += 16;
+            add_compact_domain_data_unit(summary, 13, "derived_ahead_authority_rows", 1);
+        } else if flags & (1 << 4) == 0 && flags & (1 << 3) != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: tech active row {row_index} has an unauthenticated ahead quartet"
             ));
         }
+    }
+    // D13's XUI09 witness tail (G4-X9S1, landed by lane JO). This decoder
+    // authenticates the A29 provenance and the row structure; the FOLD is the
+    // authority on the witness itself. But the exact-consumption check below
+    // cannot tell a tail from corruption, so the tail's length has to be
+    // accounted for here or every record carrying one is refused. On the t53
+    // live capture that is precisely what happened: 59 D13 records excluded,
+    // "trailing byte(s)" counts of 923752 (whole payload) and 2244 (patch),
+    // both exactly the tail's own length.
+    match crate::world_fold::compact_tech_xui09_tail_len(payload, cursor) {
+        Ok(len) => cursor += len,
+        Err(error) => summary
+            .parse_errors
+            .push(format!("offset {offset}: {error}")),
     }
     if cursor != payload.len() {
         summary.parse_errors.push(format!(

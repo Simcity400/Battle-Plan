@@ -1,8 +1,8 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `world_fold.rs:17437`-`:17751`
+//! Derived from `world_fold.rs:17389`-`:17764`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=17437-17751 sha256=ac52cc7674d2ffc3c716e916bdd81f4b3256986c88650b7884a9079352a90aff closure=908e1b5efcf47a092c954c5b089b0059b0d70ea9891d954119843646ee298d88
+// @world-fold-authority domain=13 functions=fold_tech lines=17389-17764 sha256=24afda804dea444f7c82b1575ab37670864fb5bca6b6b02a48acccba0b6d49e7 closure=01f56645438efdf7698610d8dfbfb8a56ea9efc749def363a30866d926b9ad9a
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the
@@ -82,12 +82,19 @@
 //! | `+8`  | u32 | `tech_handle_raw`          | raw       | none |
 //! | `+12` | u32 | `tech_def_index_raw`       | raw       | none |
 //! | `+16` | u32 | `progress_raw`             | **/1000** (rendered) | none |
-//! | `+20` | u32 | `flags`                    | —         | `& !0b1_1111` rejected (`world_fold.rs::fold_tech`) |
+//! | `+20` | u32 | `flags`                    | —         | `& !0b11_1111` rejected (`world_fold.rs::fold_tech`) |
 //! | `+24` | i64 | `live_progress_raw`        | **/100000** (rendered) | `1<<0` |
 //! | `+32` | i64 | `base_required_points_raw` | **/100000** (rendered) | `1<<1` |
 //! | tail  | u16-prefixed UTF-8 | `tech_name` | —        | `1<<2` (`world_fold.rs::fold_tech`) |
 //! | tail  | 4 × i64 | ahead-of-time quartet   | **/100000** (rendered) | `1<<3` (`world_fold.rs::fold_tech`) |
 //! | tail  | 176 B | A29 producer provenance   | —         | `1<<4` (`world_fold.rs::fold_tech`) |
+//! | tail  | 16 B  | A29 derived authority     | —         | `1<<5` (`world_fold.rs::fold_tech`) |
+//!
+//! **After the last active row comes lane JO's XUI09 witness tail** — the G4
+//! completed-membership and X9S1 classifier vectors, per country. It is not part
+//! of the active table and this port decides nothing about it, but it must be
+//! MEASURED here, because the payload ends after it and this port enforces exact
+//! consumption. See [`xui09_tail_len`].
 //!
 //! **Two scales in one row, and this port carries neither.** `progress_raw`
 //! divides by `TECH_PROGRESS_SCALE = 1000` (`:154`, applied `world_fold.rs::fold_tech`) while
@@ -268,6 +275,18 @@ pub const ACTIVE_ROW_FIXED_LEN: usize = 40;
 pub const AHEAD_QUARTET_LEN: usize = 32;
 /// `world_fold.rs::fold_tech` — the A29 producer provenance block.
 pub const A29_PROVENANCE_LEN: usize = 176;
+/// `world_fold.rs::fold_tech` — the derived quartet's authority tail:
+/// `authority: u32`, `producer_game_hour_raw: i32`, `penalty_factor_raw: i64`.
+///
+/// Not ported to the schema, for the same reason the 176-byte provenance block
+/// is not: it is a receipt, and its three integers exist to be checked
+/// together against the quartet rather than read individually. A consumer that
+/// wants them recomputes the quartet from them; a consumer that does not is not
+/// helped by three loose numbers. The row length still accounts for it here so
+/// that a stream carrying derived quartets does not desynchronise this port.
+pub const A29_DERIVED_AUTHORITY_LEN: usize = 16;
+/// `world_fold.rs::fold_tech` — the only value the derived authority word takes.
+pub const A29_DERIVED_AUTHORITY: u32 = 1;
 
 /// Country-row flag bits. **The fold never reads this word**; the collector packs
 /// it at `attach_log.rs:69214`-`:69225` and it is the only authority on why a
@@ -289,8 +308,15 @@ pub const ACTIVE_FLAG_BASE_REQUIRED_POINTS: u32 = 1 << 1;
 pub const ACTIVE_FLAG_TECH_NAME: u32 = 1 << 2;
 pub const ACTIVE_FLAG_AHEAD_QUARTET: u32 = 1 << 3;
 pub const ACTIVE_FLAG_A29_PROVENANCE: u32 = 1 << 4;
-/// `world_fold.rs::fold_tech` — `flags & !0b1_1111` is a hard error.
-pub const ACTIVE_KNOWN_FLAGS: u32 = 0b1_1111;
+/// `world_fold.rs::fold_tech` — the DERIVED quartet's authority tail: the hour
+/// the recorder read and the live `BASE_YEAR_AHEAD_PENALTY_FACTOR`. Mutually
+/// exclusive with [`ACTIVE_FLAG_A29_PROVENANCE`]; exactly one of the two must
+/// accompany [`ACTIVE_FLAG_AHEAD_QUARTET`].
+pub const ACTIVE_FLAG_AHEAD_DERIVED: u32 = 1 << 5;
+/// `world_fold.rs::fold_tech` — `flags & !0b11_1111` is a hard error.
+///
+/// Bit 5 is the derived ahead-of-time authority ([`ACTIVE_FLAG_AHEAD_DERIVED`]).
+pub const ACTIVE_KNOWN_FLAGS: u32 = 0b11_1111;
 
 /// `TECH_PROGRESS_SCALE`, `world_fold.rs::TECH_PROGRESS_SCALE`. Applies to `progress_raw` alone
 /// (`:13366`). The header word at `+20` carries it too (`attach_log.rs:69209`).
@@ -517,6 +543,13 @@ pub fn active_row_spans(
         spans.push(cursor..end);
         cursor = end;
     }
+    // Lane JO's XUI09 witness tail follows the last active row. This port
+    // decides nothing about it — the fold is the authority on what it MEANS —
+    // but the payload ends after it, so a splitter that enforces exact
+    // consumption has to know how long it is.
+    cursor = cursor
+        .checked_add(xui09_tail_len(&active[cursor..])?)
+        .ok_or_else(|| "tech XUI09 tail length overflows".to_string())?;
     // `world_fold.rs::fold_tech`.
     if cursor != active.len() {
         return Err(format!(
@@ -525,6 +558,90 @@ pub fn active_row_spans(
         ));
     }
     Ok(spans)
+}
+
+/// `XU09`, the first word of the witness tail
+/// (`collector/src/attach_log.rs`, mirrored in `world_fold.rs`).
+///
+/// Mirrored rather than shared, for the same crate-direction reason the fold
+/// mirrors it: this port is an independent reference implementation of
+/// `WIRE_FORMAT.md` and takes no recorder dependency.
+pub const XUI09_TAIL_MAGIC: u32 = u32::from_le_bytes(*b"XU09");
+/// `magic`, `flags`, `dictionary_count`, `measured_count`, `refused_count`,
+/// `vector_count`, one `u32` each.
+pub const XUI09_TAIL_HEADER_LEN: usize = 24;
+/// A country vector whose per-technology states are one byte each rather than
+/// five (`world_fold.rs::COMPACT_TECH_XUI09_COUNTRY_FLAG_DENSE`).
+pub const XUI09_COUNTRY_FLAG_DENSE: u32 = 1;
+
+/// The byte length of the XUI09 witness tail beginning at `rest[0]`, or `0` when
+/// there is none.
+///
+/// LENGTH ONLY. `world_fold.rs::fold_tech_xui09_witness` is the authority on
+/// what the tail means and validates every byte of it; this measures it, exactly
+/// as `recorder_host::world_fold::compact_tech_xui09_tail_len` does for the
+/// canonical validator.
+///
+/// It exists because a decoder that does not know the tail reports it as
+/// trailing bytes and refuses a perfectly good payload. That is not a
+/// hypothetical: on the t53 live capture the canonical validator did precisely
+/// that and 59 D13 records — the whole domain — were excluded
+/// (`runs/jt_a29_values/LIVE_D13_EXCLUSION.md`). This port was the next decoder
+/// in line with the same gap.
+pub fn xui09_tail_len(rest: &[u8]) -> core::result::Result<usize, String> {
+    if rest.is_empty() {
+        return Ok(0);
+    }
+    let need = |cursor: usize, extra: usize, what: &str| -> core::result::Result<usize, String> {
+        let end = cursor
+            .checked_add(extra)
+            .ok_or_else(|| format!("tech XUI09 {what} length overflows"))?;
+        if end > rest.len() {
+            return Err(format!(
+                "tech XUI09 {what} needs {end} bytes, {} present",
+                rest.len()
+            ));
+        }
+        Ok(end)
+    };
+    let mut cursor = need(0, XUI09_TAIL_HEADER_LEN, "tail header")?;
+    let magic = u32_at(rest, 0);
+    if magic != XUI09_TAIL_MAGIC {
+        return Err(format!(
+            "tech XUI09 tail magic {magic:#010x} is not {XUI09_TAIL_MAGIC:#010x}"
+        ));
+    }
+    let dictionary_count = u32_at(rest, 8) as usize;
+    let measured_count = u32_at(rest, 12) as usize;
+    let refused_count = u32_at(rest, 16) as usize;
+    let vector_count = u32_at(rest, 20) as usize;
+    for _ in 0..dictionary_count {
+        let after_len = need(cursor, 6, "dictionary entry")?;
+        let len = u16::from_le_bytes([rest[cursor + 4], rest[cursor + 5]]) as usize;
+        cursor = need(after_len, len, "dictionary id bytes")?;
+    }
+    let fixed = measured_count
+        .checked_mul(4)
+        .and_then(|value| value.checked_add(refused_count.checked_mul(8)?))
+        .ok_or_else(|| "tech XUI09 measured/refusal set length overflows".to_string())?;
+    cursor = need(cursor, fixed, "measured and refusal sets")?;
+    for _ in 0..vector_count {
+        let after_header = need(cursor, 16, "country vector")?;
+        let country_flags = u32_at(rest, cursor + 4);
+        let state_count = u32_at(rest, cursor + 8) as usize;
+        let completed_count = u32_at(rest, cursor + 12) as usize;
+        let state_bytes = if country_flags & XUI09_COUNTRY_FLAG_DENSE != 0 {
+            1usize
+        } else {
+            5usize
+        };
+        let rows = state_count
+            .checked_mul(state_bytes)
+            .and_then(|value| value.checked_add(completed_count.checked_mul(4)?))
+            .ok_or_else(|| "tech XUI09 country vector length overflows".to_string())?;
+        cursor = need(after_header, rows, "country vector rows")?;
+    }
+    Ok(cursor)
 }
 
 /// The total length of the active-research row that starts at `rest[0]`, or an
@@ -571,11 +688,27 @@ pub fn active_row_len(rest: &[u8]) -> core::result::Result<usize, String> {
         if rest.len() < len {
             return Err("row is too short for the A29 provenance block".into());
         }
-    } else if flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
-        // `world_fold.rs::fold_tech` — the converse. The fold reaches it only after
+    }
+    if flags & ACTIVE_FLAG_AHEAD_DERIVED != 0 {
+        // `world_fold.rs::fold_tech` — a derived quartet carries its inputs
+        // rather than a producer receipt, and the two authorities are mutually
+        // exclusive.
+        if flags & ACTIVE_FLAG_AHEAD_QUARTET == 0 {
+            return Err("A29 derived authority without ahead quartet".into());
+        }
+        if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
+            return Err("A29 quartet carries both observed and derived authority".into());
+        }
+        len += A29_DERIVED_AUTHORITY_LEN;
+        if rest.len() < len {
+            return Err("row is too short for the A29 derived authority".into());
+        }
+    } else if flags & ACTIVE_FLAG_A29_PROVENANCE == 0 && flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
+        // `world_fold.rs::fold_tech` — the converse. A quartet with neither
+        // authority is unauthenticated, and the fold reaches this only after
         // consuming the quartet, which is why it is checked after the length is
         // known rather than beside the flag mask.
-        return Err("ahead quartet lacks observed A29 producer provenance".into());
+        return Err("ahead quartet lacks an A29 producer authority".into());
     }
     Ok(len)
 }
@@ -707,7 +840,7 @@ pub fn record_from_active_row(
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
-    if active_row_carries_a29_provenance(row)? {
+    if active_row_carries_a29_authority(row)? {
         return Err(
             "tech active row carries A29 provenance, whose same-hour authority gate needs the \
              frame's game_hour_raw; call record_from_active_row_at_hour"
@@ -728,6 +861,22 @@ pub fn active_row_carries_a29_provenance(row: &[u8]) -> core::result::Result<boo
         ));
     }
     Ok(u32_at(row, 20) & ACTIVE_FLAG_A29_PROVENANCE != 0)
+}
+
+/// Whether an active-research row carries EITHER A29 authority tail.
+///
+/// Both are same-hour gated, so both are undecidable at the entry point that
+/// has only a §6 tick. [`record_from_active_row`] refuses on this rather than
+/// on provenance alone — otherwise a derived row would walk straight past a
+/// gate written to stop exactly it.
+pub fn active_row_carries_a29_authority(row: &[u8]) -> core::result::Result<bool, String> {
+    if row.len() < ACTIVE_ROW_FIXED_LEN {
+        return Err(format!(
+            "tech active row length {} < {ACTIVE_ROW_FIXED_LEN}",
+            row.len()
+        ));
+    }
+    Ok(u32_at(row, 20) & (ACTIVE_FLAG_A29_PROVENANCE | ACTIVE_FLAG_AHEAD_DERIVED) != 0)
 }
 
 /// Whether any active-research row in a whole DATA payload carries the A29
@@ -882,6 +1031,32 @@ fn parse_active_row(
     } else {
         None
     };
+
+    if flags & ACTIVE_FLAG_AHEAD_DERIVED != 0 {
+        // `world_fold.rs::fold_tech`. Delimiting this tail without reading it
+        // would leave the port silently ignoring the authority, the hour and
+        // the factor in release, and tripping the consumption assertion below
+        // in debug.
+        if quartet.is_none() {
+            return Err("tech A29 derived authority without ahead quartet".into());
+        }
+        if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
+            return Err("tech A29 quartet carries both observed and derived authority".into());
+        }
+        let authority = u32_at(row, cursor);
+        let producer_game_hour_raw = i32_at(row, cursor + 4);
+        let penalty_factor_raw = i64_at(row, cursor + 8);
+        if authority != A29_DERIVED_AUTHORITY {
+            return Err("tech A29 derived authority is not the known authority".into());
+        }
+        if frame_game_hour.is_some_and(|hour| producer_game_hour_raw != hour) {
+            return Err("tech A29 derived authority is not same-hour".into());
+        }
+        if !(0..=AHEAD_RAW_MAX).contains(&penalty_factor_raw) {
+            return Err("tech A29 derived penalty factor is out of range".into());
+        }
+        cursor += A29_DERIVED_AUTHORITY_LEN;
+    }
 
     debug_assert_eq!(cursor, row.len());
     Ok(ActiveRow {

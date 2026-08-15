@@ -22,7 +22,19 @@
 
 
 
-Ahead-of-time presentation must come from the observed engine producer, not reconstruction from authored year, current date, `BASE_YEAR_AHEAD_PENALTY_FACTOR`, and an aggregate reduction field. Those inputs are corroborative only and cannot manufacture the effective quartet.
+Ahead-of-time values come from the engine's own arithmetic, by either of two routes. They are NOT presentation and they are not UI-only.
+
+
+Two producers, one number:
+
+| Route | Authority | When |
+|---|---|---|
+| observed | 176-byte selected-Present receipt (`1<<4`) | the A29 UI hook is armed, i.e. dev captures only — it is gated off in passive product captures |
+| derived | the recorder's inputs (`1<<5`): read hour + live `BASE_YEAR_AHEAD_PENALTY_FACTOR` | always available, no UI callback, no staged interaction |
+
+The derived route re-evaluates the engine's own function on the engine's own resident words: authored year `template + 0x3D8`, current raw date `gamestate + 0x468`, effective reduction `CTechnology + 0x1C0`, and the define at RVA `0x331A4B0` read LIVE (it is zero in the static image because defines load at startup, and any mod may override it — it is never compiled in). Exactly one authority accompanies a quartet; a quartet with neither is refused by both the fold and the wire port. Where the engine substitutes its `0xffffffff` overflow sentinel, the derived producer REFUSES instead: the sentinel renders as `42949.67`, a plausible non-negative float the consumer would admit.
+
+Cross-check against a real reading: on the paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Technology is 0.88 years ahead of time.` The derivation yields 324 days and `88_767` fixed-5 = 0.88767 years, which agrees at the two decimals the engine printed. The late-attach capture that contained the active research census but no quartet was an ARMING gap in the observed route, not evidence that the values were unavailable.
 
 Exact-a729 producer chain:
 

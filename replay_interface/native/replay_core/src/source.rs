@@ -366,6 +366,45 @@ impl PackagedStaticArtifact {
     pub fn bytes(&self) -> &[u8] {
         self.bytes.as_ref()
     }
+
+    /// Author an artifact from loose bytes, WITHOUT the recorder→index→
+    /// container-role→content-epoch join that every real one goes through.
+    ///
+    /// It exists so a consumer test can drive a semantic catalog admission
+    /// (`static_research_catalog.rs`) over bytes it wrote itself, which is the
+    /// only way to test a consumer against a catalog whose contents the test
+    /// controls. The bytes it produces are unauthenticated by construction, so
+    /// this must not be reachable from the product: it is behind the
+    /// `test_support` feature, which only `game_ui`'s `[dev-dependencies]` turn
+    /// on. Cargo's v2 resolver does not unify a dev-dependency feature into a
+    /// normal build, so DEFAULT product resolution does not compile this at all
+    /// — a stronger position than `#[doc(hidden)] pub`, which is always present.
+    ///
+    /// It is not an absolute exclusion, and should not be described as one: an
+    /// explicit `--all-features` or an explicit feature selection turns it on in
+    /// any profile. What holds then is only that no product source calls it,
+    /// which is an ordinary review property rather than a compiler-enforced one.
+    ///
+    /// Everything downstream of it still runs for real: the semantic parse, the
+    /// embedded self-hash, the cross-artifact content-epoch equality and every
+    /// row-level rule are unchanged, so a test that hands it malformed bytes is
+    /// refused exactly as a recording would be.
+    #[cfg(feature = "test_support")]
+    pub fn unauthenticated_for_consumer_tests(
+        name: &str,
+        path: &str,
+        sha256: &str,
+        content_manifest_digest_sha256: &str,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            path: path.to_string(),
+            sha256: sha256.to_string(),
+            content_manifest_digest_sha256: content_manifest_digest_sha256.to_string(),
+            bytes: Arc::from(bytes.into_boxed_slice()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -13,6 +13,12 @@ replay_test_gates = { path = "../replay_test_gates" }
 
 [dev-dependencies]
 replay_test_gates = { path = "../replay_test_gates" }
+# Turns on replay_core's `test_support` seam so this crate's tests can author
+# packaged static-catalog bytes and drive the real semantic admission over them.
+# Declared here rather than in [dependencies] because the v2 resolver does not
+# unify a dev-dependency feature into a normal build: default product resolution
+# does not compile the seam. An explicit --all-features build still would.
+replay_core = { path = "../replay_core", features = ["test_support"] }
 
 [dependencies]
 # Consumers read world state ONLY through replay_core's typed views

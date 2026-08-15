@@ -150,6 +150,7 @@
       "clear_xui09_witness",
       "compact_expected_partial_tolerance_applies",
       "compact_failure_flags_after_expected_partial_tolerance",
+      "compact_tech_xui09_tail_len",
       "domain_name",
       "json",
       "need",

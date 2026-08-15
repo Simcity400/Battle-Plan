@@ -184,6 +184,11 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_penalty_raw: Leaf::Measured(300_000),
         ahead_of_time_reduction_years_raw: Leaf::Measured(50_000),
         ahead_of_time_reduced_penalty_raw: Leaf::Measured(200_000),
+        // This row is the OBSERVED producer's, so it carries no derived
+        // authority: the two are mutually exclusive on the wire.
+        ahead_of_time_authority: Leaf::Absent,
+        ahead_of_time_derived_producer_game_hour_raw: Leaf::Absent,
+        ahead_of_time_derived_penalty_factor_raw: Leaf::Absent,
         ahead_of_time_provenance_authority: Leaf::Measured(
             "a729_observed_research_ahead_selected_present_v3".into(),
         ),

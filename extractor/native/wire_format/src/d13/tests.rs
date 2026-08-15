@@ -1133,6 +1133,108 @@ fn active_row_spans_walks_variable_tails_and_enforces_exact_consumption() {
     assert_eq!(active_row_spans(&[], 0).expect("empty"), Vec::new());
 }
 
+/// Lane JO's XUI09 witness tail, as the producer appends it after the last
+/// active row. `dictionary`/`measured`/`refused`/`vector` counts of zero give
+/// the smallest legal tail; the counts drive the walk, so the shapes below
+/// exercise every arm of it.
+fn xui09_tail(dictionary: &[&str], measured: u32, refused: u32, vectors: &[(u32, u32, u32)]) -> Vec<u8> {
+    let mut tail = Vec::new();
+    tail.extend_from_slice(&XUI09_TAIL_MAGIC.to_le_bytes());
+    tail.extend_from_slice(&0u32.to_le_bytes()); // flags
+    tail.extend_from_slice(&(dictionary.len() as u32).to_le_bytes());
+    tail.extend_from_slice(&measured.to_le_bytes());
+    tail.extend_from_slice(&refused.to_le_bytes());
+    tail.extend_from_slice(&(vectors.len() as u32).to_le_bytes());
+    assert_eq!(tail.len(), XUI09_TAIL_HEADER_LEN);
+    for id in dictionary {
+        tail.extend_from_slice(&0u32.to_le_bytes()); // definition index
+        tail.extend_from_slice(&(id.len() as u16).to_le_bytes());
+        tail.extend_from_slice(id.as_bytes());
+    }
+    tail.extend(std::iter::repeat(0u8).take(measured as usize * 4 + refused as usize * 8));
+    for (country_flags, state_count, completed_count) in vectors {
+        tail.extend_from_slice(&0u32.to_le_bytes()); // tag_db_id
+        tail.extend_from_slice(&country_flags.to_le_bytes());
+        tail.extend_from_slice(&state_count.to_le_bytes());
+        tail.extend_from_slice(&completed_count.to_le_bytes());
+        let state_bytes = if country_flags & XUI09_COUNTRY_FLAG_DENSE != 0 { 1 } else { 5 };
+        tail.extend(std::iter::repeat(0u8).take(
+            *state_count as usize * state_bytes + *completed_count as usize * 4,
+        ));
+    }
+    tail
+}
+
+/// kills: this port not knowing about the XUI09 witness tail — which is what it
+/// did until now, and which made it refuse every payload a shipping recorder
+/// writes, `active_count == 0` included.
+///
+/// This is the same defect that cost the t53 capture all 59 of its D13 records
+/// (`runs/jt_a29_values/LIVE_D13_EXCLUSION.md`): a decoder that has not been
+/// taught the tail reports it as trailing bytes. The canonical validator was
+/// the third D13 decoder with this gap; this port was the fourth.
+#[test]
+fn the_active_table_splitter_measures_the_xui09_witness_tail() {
+    let rows = vec![
+        active_row(&ActiveSpec {
+            slot_index: 4,
+            ..measured_active_spec()
+        }),
+        active_row(&full_active_spec()),
+    ];
+    let table: Vec<u8> = rows.iter().flatten().copied().collect();
+
+    for tail in [
+        xui09_tail(&[], 0, 0, &[]),
+        xui09_tail(&["infantry_weapons", "fighter1"], 2, 1, &[(0, 5, 2)]),
+        xui09_tail(&["fighter1"], 1, 0, &[(XUI09_COUNTRY_FLAG_DENSE, 7, 3), (0, 2, 0)]),
+    ] {
+        assert_eq!(xui09_tail_len(&tail).expect("walks"), tail.len());
+
+        let mut with_tail = table.clone();
+        with_tail.extend_from_slice(&tail);
+        let spans = active_row_spans(&with_tail, 2).expect("the tail is measured, not refused");
+        assert_eq!(spans.len(), 2);
+        for (span, row) in spans.iter().zip(&rows) {
+            assert_eq!(&with_tail[span.clone()], &row[..]);
+        }
+
+        // A payload with no active rows at all still ends with the tail, and
+        // that shape is the one an unchanged hour actually emits.
+        assert_eq!(
+            active_row_spans(&tail, 0).expect("a tail with no rows before it"),
+            Vec::new()
+        );
+
+        // And a whole payload folds, which is the entry point the benchmark and
+        // the provenance scan use.
+        let s = schema();
+        let payload = payload_with(&[full_country_row()], &rows, 0, |p| {
+            p.extend_from_slice(&tail);
+        });
+        folded(&s, &payload).expect("a payload carrying the tail folds");
+    }
+
+    // Measuring is not trusting: bytes that are not a tail are still refused.
+    let mut wrong_magic = xui09_tail(&[], 0, 0, &[]);
+    wrong_magic[0] ^= 0xff;
+    assert!(xui09_tail_len(&wrong_magic).is_err(), "only XU09 is a tail");
+    let truncated = xui09_tail(&["fighter1"], 0, 0, &[(0, 3, 0)]);
+    for len in 1..truncated.len() {
+        assert!(
+            xui09_tail_len(&truncated[..len]).is_err(),
+            "a tail truncated at {len} must be refused, not measured short"
+        );
+    }
+    let mut trailing = table.clone();
+    trailing.extend_from_slice(&xui09_tail(&[], 0, 0, &[]));
+    trailing.push(0);
+    assert!(
+        active_row_spans(&trailing, 2).is_err(),
+        "bytes after the tail are still trailing bytes"
+    );
+}
+
 // --- The frame boundary ------------------------------------------------------
 
 /// The whole state after folding one payload into a fresh accumulator.
@@ -1548,3 +1650,78 @@ fn a_frame_to_frame_delta_replays_to_the_folds_own_state() {
     );
 }
 
+
+// ---------------------------------------------------------------------------
+// Lane JT — the DERIVED ahead-of-time authority (`1<<5`).
+// ---------------------------------------------------------------------------
+
+/// An active row carrying only the fixed head plus whatever tails `flags` asks
+/// for, with every tail filled with zeroes. Only the LENGTHS matter here.
+fn active_row_with_tails(flags: u32) -> Vec<u8> {
+    let mut row = vec![0u8; ACTIVE_ROW_FIXED_LEN - 16];
+    row[20..24].copy_from_slice(&flags.to_le_bytes());
+    row.extend_from_slice(&0i64.to_le_bytes());
+    row.extend_from_slice(&0i64.to_le_bytes());
+    assert_eq!(row.len(), ACTIVE_ROW_FIXED_LEN);
+    if flags & ACTIVE_FLAG_AHEAD_QUARTET != 0 {
+        row.extend_from_slice(&[0u8; AHEAD_QUARTET_LEN]);
+    }
+    if flags & ACTIVE_FLAG_A29_PROVENANCE != 0 {
+        row.extend_from_slice(&[0u8; A29_PROVENANCE_LEN]);
+    }
+    if flags & ACTIVE_FLAG_AHEAD_DERIVED != 0 {
+        row.extend_from_slice(&[0u8; A29_DERIVED_AUTHORITY_LEN]);
+    }
+    row
+}
+
+/// kills: any relaxation that lets an ahead-of-time quartet onto the wire
+/// without an authority, and any reintroduction of the old rule that the ONLY
+/// admissible authority is the UI-observed producer receipt.
+///
+/// The quartet is four plausible non-negative numbers. Unauthenticated, the
+/// replay consumer cannot tell a derived value from an observed one from a
+/// corrupted one, so exactly one of the two authority tails must accompany it —
+/// never neither, and never both.
+#[test]
+fn an_ahead_quartet_needs_exactly_one_a29_authority() {
+    let quartet_only = active_row_with_tails(ACTIVE_FLAG_AHEAD_QUARTET);
+    let error = active_row_len(&quartet_only)
+        .expect_err("a quartet with no authority is unauthenticated");
+    assert!(error.contains("lacks an A29 producer authority"), "{error}");
+
+    // The derived authority admits it, and the row length accounts for the tail
+    // so a stream of them cannot desynchronise this port.
+    let derived = active_row_with_tails(ACTIVE_FLAG_AHEAD_QUARTET | ACTIVE_FLAG_AHEAD_DERIVED);
+    assert_eq!(
+        active_row_len(&derived).expect("derived authority admits the quartet"),
+        ACTIVE_ROW_FIXED_LEN + AHEAD_QUARTET_LEN + A29_DERIVED_AUTHORITY_LEN
+    );
+
+    // The observed receipt still admits it, unchanged.
+    let observed = active_row_with_tails(ACTIVE_FLAG_AHEAD_QUARTET | ACTIVE_FLAG_A29_PROVENANCE);
+    assert_eq!(
+        active_row_len(&observed).expect("observed receipt admits the quartet"),
+        ACTIVE_ROW_FIXED_LEN + AHEAD_QUARTET_LEN + A29_PROVENANCE_LEN
+    );
+
+    // Both at once is a contradiction: the row would claim the values were
+    // simultaneously witnessed through the UI and derived without it.
+    let both = active_row_with_tails(
+        ACTIVE_FLAG_AHEAD_QUARTET | ACTIVE_FLAG_A29_PROVENANCE | ACTIVE_FLAG_AHEAD_DERIVED,
+    );
+    let error = active_row_len(&both).expect_err("two authorities disagree");
+    assert!(
+        error.contains("both observed and derived"),
+        "{error}"
+    );
+
+    // And an authority with nothing to authenticate is refused from either side.
+    let derived_alone = active_row_with_tails(ACTIVE_FLAG_AHEAD_DERIVED);
+    let error =
+        active_row_len(&derived_alone).expect_err("an authority needs its quartet");
+    assert!(
+        error.contains("derived authority without ahead quartet"),
+        "{error}"
+    );
+}

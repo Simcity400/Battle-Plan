@@ -8497,6 +8497,7 @@ mod tests {
                 world_hour: 25,
                 research_slot_count: 0,
                 nodes: Vec::new(),
+                refused_countries: Vec::new(),
             },
         }
     }
