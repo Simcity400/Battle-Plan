@@ -305,12 +305,6 @@ impl Drop for DecoderCallGuard {
 struct HookState {
     latest_trait_component: Option<DecodedTraitComponent>,
     latest_ace_component: Option<DecodedAceComponent>,
-    trait_refresh_count: u64,
-    trait_tooltip_count: u64,
-    trait_reason_join_count: u64,
-    ace_refresh_count: u64,
-    ace_bind_count: u64,
-    rejected_observation_count: u64,
     /// Last exact sprite-set observation for a materialized portrait widget.
     /// This is process-local cache state only and is cleared on reinstall.
     ace_portrait_by_widget: BTreeMap<usize, String>,
@@ -836,29 +830,32 @@ impl ExactA729BoundaryDecoder for CatalogBoundaryDecoder {
     }
 }
 
-/// Reserved d82 source. It is useful to the capture harness now, but cannot
-/// authenticate as a production source while the promotion constant is false.
+/// Reserved d82 source. It cannot authenticate as a production source while
+/// the promotion constant is false, and proving that is now its whole job:
+/// `collect_and_encode` is generic over `ExactCharacterPresentationSource` and
+/// this is the only concrete implementor, so
+/// `production_activation_is_fail_closed` is what holds the refusal.
+///
+/// It carried an `expected_game_hour_raw` field until 2026-08-15. The only
+/// reader was the retired harness-only `decode_fixture_candidate`, which
+/// passed it to `peek_character_presentation_candidate`; production reaches
+/// that API directly with the hour it is building, so the field went with the
+/// A39 evidence workflow.
 #[derive(Clone, Copy, Debug)]
-pub struct A729ObservedCharacterPresentationSource {
-    expected_game_hour_raw: i32,
-}
+pub struct A729ObservedCharacterPresentationSource;
 
 impl A729ObservedCharacterPresentationSource {
-    pub const fn new(expected_game_hour_raw: i32) -> Self {
-        Self {
-            expected_game_hour_raw,
-        }
+    pub const fn new() -> Self {
+        Self
     }
 
-    /// Harness-only candidate decode used to generate the missing mixed
-    /// fixtures. This never changes the source authentication result.
-    pub fn decode_fixture_candidate(&self) -> Result<CharacterPresentationSnapshot, String> {
-        let reservation = peek_character_presentation_candidate(self.expected_game_hour_raw)?
-            .ok_or("A39 decoded trait/ace component pair is incomplete")?;
-        let snapshot = reservation.snapshot.clone();
-        commit_character_presentation_candidate(reservation.reservation_id)?;
-        Ok(snapshot)
-    }
+    // RETIRED 2026-08-15 (owner ruling): `decode_fixture_candidate` was a
+    // harness-only peek+commit used to generate mixed CPR1 fixtures. Its only
+    // caller anywhere in the tree was the collector's `A39EvidenceOwner`, which
+    // is deleted with the A39 evidence workflow, so it went with it. The
+    // transactional `peek_character_presentation_candidate` /
+    // `commit_character_presentation_candidate` pair it wrapped is the
+    // PRODUCTION publication API and is untouched.
 }
 
 impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSource {
@@ -899,28 +896,16 @@ pub struct InstalledAddresses {
     pub trait_tooltip_formatter: usize,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HookDiagnostics {
-    /// The hook set is installed and its lifecycle is healthy.
-    ///
-    /// This was `installed_for_fixture_capture`, from when a fixture-only
-    /// installer stood beside `install()`. That installer is retired and
-    /// `install()` is the only way in, so the old name described a caller that
-    /// no longer exists while the value it reports never distinguished them.
-    pub hook_set_installed: bool,
-    pub lifecycle_healthy: bool,
-    pub teardown_active: bool,
-    pub in_flight_callbacks: usize,
-    pub production_activation_authorized: bool,
-    pub trait_refresh_count: u64,
-    pub trait_tooltip_count: u64,
-    pub trait_reason_join_count: u64,
-    pub ace_refresh_count: u64,
-    pub ace_bind_count: u64,
-    pub rejected_observation_count: u64,
-    pub has_complete_boundary_batch: bool,
-    pub current_error: Option<String>,
-}
+// RETIRED 2026-08-15 (owner ruling, A39 evidence-workflow retirement, lane JX):
+// `HookDiagnostics` and `diagnostics()` stood here. Their only caller anywhere
+// in the tree was the collector's A39 evidence receipt, which is deleted, and
+// `diagnostics()` was the ONLY reader of six `HookState` counters
+// (`trait_refresh_count`, `trait_tooltip_count`, `trait_reason_join_count`,
+// `ace_refresh_count`, `ace_bind_count`, `rejected_observation_count`) - so the
+// counters and the increments that maintained them went with it. The writes
+// happened inside live d82 callbacks, but the VALUES were consumed by nothing:
+// removing them narrows no capture. `current_error`, `latest_trait_component`
+// and `latest_ace_component` are read by the live production path and stay.
 
 /// The ONLY entry point. It cannot install until the evidence gate changes.
 ///
@@ -1525,43 +1510,6 @@ fn validate_shared_runtime_install_custody(
     Ok(())
 }
 
-pub fn diagnostics() -> HookDiagnostics {
-    let Some(state) = STATE.get().and_then(|state| state.lock().ok()) else {
-        return HookDiagnostics {
-            production_activation_authorized: PRODUCTION_ACTIVATION_AUTHORIZED,
-            lifecycle_healthy: LIFECYCLE_HEALTHY.load(Ordering::Acquire),
-            teardown_active: TEARDOWN_ACTIVE.load(Ordering::Acquire),
-            in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
-            ..HookDiagnostics::default()
-        };
-    };
-    HookDiagnostics {
-        hook_set_installed: INSTALLED.load(Ordering::Acquire)
-            && LIFECYCLE_HEALTHY.load(Ordering::Acquire),
-        lifecycle_healthy: LIFECYCLE_HEALTHY.load(Ordering::Acquire),
-        teardown_active: TEARDOWN_ACTIVE.load(Ordering::Acquire),
-        in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
-        production_activation_authorized: PRODUCTION_ACTIVATION_AUTHORIZED,
-        trait_refresh_count: state.trait_refresh_count,
-        trait_tooltip_count: state.trait_tooltip_count,
-        trait_reason_join_count: state.trait_reason_join_count,
-        ace_refresh_count: state.ace_refresh_count,
-        ace_bind_count: state.ace_bind_count,
-        rejected_observation_count: state.rejected_observation_count,
-        has_complete_boundary_batch: INSTALLED.load(Ordering::Acquire)
-            && LIFECYCLE_HEALTHY.load(Ordering::Acquire)
-            && state
-                .latest_trait_component
-                .as_ref()
-                .zip(state.latest_ace_component.as_ref())
-                .is_some_and(|(traits, aces)| {
-                    traits.identity_catalog_epoch == aces.identity_catalog_epoch
-                })
-            && state.current_error.is_none(),
-        current_error: state.current_error.clone(),
-    }
-}
-
 /// Consumes one already pointer-free trait fixture component.
 pub fn drain_decoded_trait_candidate() -> Result<(u64, Vec<TraitTreeObservation>), String> {
     if !INSTALLED.load(Ordering::Acquire) || !LIFECYCLE_HEALTHY.load(Ordering::Acquire) {
@@ -1877,9 +1825,6 @@ unsafe extern "system" fn hook_trait_tooltip_formatter(
         if let Some(locator) = locator {
             match read_msvc_text(output_text_ptr) {
                 Ok(expected_text) if !expected_text.is_empty() => {
-                    if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-                        state.trait_tooltip_count = state.trait_tooltip_count.saturating_add(1);
-                    }
                     ACTIVE_TRAIT_REASON.with(|slot| {
                         *slot.borrow_mut() = Some(PendingTraitReason {
                             item_ptr,
@@ -1955,7 +1900,6 @@ fn record_trait_refresh(controller_ptr: usize, refresh_argument_raw: i32) {
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
-    state.trait_refresh_count = state.trait_refresh_count.saturating_add(1);
     state.trait_items.clear();
     match decoded {
         Ok(component) if state.current_error.is_none() && trait_items.is_some() => {
@@ -2076,7 +2020,6 @@ fn record_ace_bind(
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
-    state.ace_bind_count = state.ace_bind_count.saturating_add(1);
     let portrait_gfx = match portrait_set.portrait_gfx {
         Some(portrait_gfx) => {
             state
@@ -2343,7 +2286,6 @@ unsafe extern "system" fn a39_post_text_setter_observer(
     }
     let target = &mut component.rows[pending.locator.tree_index].nodes[pending.locator.node_index];
     target.reason_context_id = Some(context.context_id);
-    state.trait_reason_join_count = state.trait_reason_join_count.saturating_add(1);
 }
 
 fn read_process_local_trait_trees(
@@ -2592,7 +2534,6 @@ fn finish_ace_refresh(controller_ptr: usize) {
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
-    state.ace_refresh_count = state.ace_refresh_count.saturating_add(1);
     match decoded {
         Ok(component) if state.current_error.is_none() => {
             state.latest_ace_component = Some(component);
@@ -2630,7 +2571,6 @@ fn read_process_local_ace_context(
 }
 
 fn reject(state: &mut HookState, message: &str) {
-    state.rejected_observation_count = state.rejected_observation_count.saturating_add(1);
     state.current_error = Some(message.into());
     state.latest_trait_component = None;
     state.latest_ace_component = None;
@@ -3426,7 +3366,7 @@ mod tests {
     #[test]
     fn production_activation_is_fail_closed() {
         let _decoder = Decoder;
-        let source = A729ObservedCharacterPresentationSource::new(1);
+        let source = A729ObservedCharacterPresentationSource::new();
         assert!(!PRODUCTION_ACTIVATION_AUTHORIZED);
         assert!(!CURRENT_EIGHT_SITE_UI_OWNER_PROMOTABLE);
         assert!(!SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED);

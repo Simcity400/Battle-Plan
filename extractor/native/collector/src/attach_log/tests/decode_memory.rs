@@ -475,7 +475,13 @@ fn names_identifier(code: &str, name: &str) -> bool {
 /// block comments (Rust allows them), char literals, normal strings with
 /// backslash escapes, and raw strings with any prefix (`r`, `br`, `cr`) and any
 /// number of hashes.
-fn sanitize_lines(source: &str) -> Vec<String> {
+/// Visible to the parent test module since 2026-08-15: lane JX's
+/// `no_collector_module_calls_the_a25_runtime_text_installer` scans EVERY
+/// collector source file, and `code_only` mis-lexes hashed raw strings, which
+/// would let a forbidden call hide behind one (Codex 01a00360 round 2,
+/// finding 1). This handles the lexical grammar once, which is why it is
+/// shared rather than re-implemented.
+pub(super) fn sanitize_lines(source: &str) -> Vec<String> {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Code,
@@ -882,6 +888,15 @@ fn the_sanitizer_blanks_only_what_is_not_code() {
     // A word ENDING in `r` before a quote is NOT a raw-string opener — the
     // false positive the previous version fired on.
     assert!(joined("f(\"NUL terminator\"); read_u64(addr);").contains("read_u64(addr)"));
+    // A HASHED RAW STRING CONTAINING A BARE `"` ENDS AT ITS OWN `"#`, AND THE
+    // CODE AFTER IT SURVIVES. This is the exact escape that made lane JX share
+    // this sanitizer instead of using `code_only`: under a lexer that treats
+    // the embedded quote as the terminator, everything after it reads as
+    // string, so a call written there vanishes and an absence test passes
+    // while the path it guards is live (Codex 01a00360 round 2, finding 1).
+    assert!(joined(r####"let s = r#"one " quote"#; read_u64(addr);"####)
+        .contains("read_u64(addr)"));
+    assert!(!joined(r####"let s = r#"one " read_u64(addr)"#;"####).contains("read_u64"));
 
     // Char literals, and an escaped quote inside one.
     assert!(!joined(r"let c = '\'';").contains('\''));
