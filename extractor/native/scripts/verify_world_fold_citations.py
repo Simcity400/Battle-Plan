@@ -2760,6 +2760,29 @@ def verify_no_unregistered_users(
             )
 
 
+def _walk_pruned(base: Path, pattern_name: str, skip: frozenset[str]) -> list[Path]:
+    """Walk `base` for files named `pattern_name` (or `*.rs` when it starts
+    with `*.`), PRUNING skipped directories instead of visiting-then-filtering.
+
+    `Path.rglob` descends into every directory first and filters afterwards, so
+    a skipped tree that is being written by someone else at that moment -- a
+    lane worktree's `.cargo-target` under `.claude/`, whose rustc scratch dirs
+    appear and vanish mid-walk -- raised FileNotFoundError from inside the
+    walk and failed a landing gate over a directory this gate never wanted to
+    read (2026-08-16). Pruning at os.walk time means skipped trees are never
+    entered at all; a directory that vanishes elsewhere is a real error still.
+    """
+    import os
+    suffix = pattern_name[1:] if pattern_name.startswith("*.") else None
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for name in filenames:
+            if (suffix is not None and name.endswith(suffix)) or name == pattern_name:
+                found.append(Path(dirpath) / name)
+    return found
+
+
 def leaf_scan_manifests(repo_root: Path) -> list[Path]:
     """Every Cargo manifest under the scan roots.
 
@@ -2776,7 +2799,10 @@ def leaf_scan_manifests(repo_root: Path) -> list[Path]:
                 f"leaf marker scan root {root.as_posix()} is missing; the scan "
                 f"that catches an unregistered marker would cover nothing"
             )
-        for path in base.rglob("Cargo.toml"):
+        # Pruned at walk time (see `_walk_pruned`); parts are still checked
+        # relative to `base`, so a checkout living under a skipped name is not
+        # skipped wholesale.
+        for path in _walk_pruned(base, "Cargo.toml", LEAF_MANIFEST_SKIP_DIRECTORIES):
             if any(
                 part in LEAF_MANIFEST_SKIP_DIRECTORIES
                 for part in path.relative_to(base).parts
@@ -2796,11 +2822,11 @@ def leaf_scan_files(repo_root: Path) -> list[Path]:
                 f"leaf marker scan root {root.as_posix()} is missing; the scan "
                 f"that catches an unregistered marker would cover nothing"
             )
-        for path in base.rglob("*.rs"):
-            # Relative parts, not the absolute path's: a checkout that happens
-            # to live under a directory called `runs` or `target` -- a lane
-            # worktree can -- would otherwise skip the entire tree and report a
-            # confident PASS over nothing.
+        # Pruned at walk time (see `_walk_pruned`).  Relative parts, not the
+        # absolute path's: a checkout that happens to live under a directory
+        # called `runs` or `target` -- a lane worktree can -- would otherwise
+        # skip the entire tree and report a confident PASS over nothing.
+        for path in _walk_pruned(base, "*.rs", LEAF_SCAN_SKIP_DIRECTORIES):
             if any(
                 part in LEAF_SCAN_SKIP_DIRECTORIES
                 for part in path.relative_to(base).parts
