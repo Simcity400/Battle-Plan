@@ -72,7 +72,7 @@ use std::path::{Path, PathBuf};
 /// join actually compares**.
 ///
 /// This is deliberately the full tuple from `validate_used_content_match`
-/// (`mod_resolver.rs:3475`) — winning layer ordinal, layer KIND, layer ID,
+/// (`mod_resolver.rs::validate_used_content_match`) — winning layer ordinal, layer KIND, layer ID,
 /// source digest, payload digest, payload length — and not a convenient subset.
 /// A guard that compared only ordinal and payload hash would pass while the two
 /// disagreed about the identity of the layer they had both picked, which is
@@ -187,7 +187,7 @@ fn write_bytes(root: &Path, rel: &str, bytes: &[u8]) {
 /// Write a `descriptor.mod` in **Latin-1, not UTF-8**.
 ///
 /// `parse_mod_descriptor` reads descriptors through `read_latin1`
-/// (`util.rs:22`), which maps each BYTE to the codepoint of the same value.
+/// (`util.rs::read_latin1`), which maps each BYTE to the codepoint of the same value.
 /// Writing UTF-8 here makes the fixture lie: `µ` (U+00B5) goes out as
 /// `0xC2 0xB5` and comes back as `Âµ`, so a declaration silently matches
 /// nothing and a test built on it "proves" a divergence that is really this
@@ -719,10 +719,10 @@ fn agreement_on_non_ascii_case_pairs_that_ntfs_really_folds() {
 /// first version of this file missed entirely.
 ///
 /// A stores a mod's declared replace paths folded with `filesystem_case_key`
-/// (`mod_resolver.rs:1523`) and tests them against `immediate_parent` of the
-/// FOLDED requested path (`mod_resolver.rs:1563`). B stores them canonicalized
+/// (`mod_resolver.rs::with_mod_layers`) and tests them against `immediate_parent` of the
+/// FOLDED requested path (`mod_resolver.rs::resolve_optional_file_with_layer`). B stores them canonicalized
 /// by `normalize_game_relative_path` (ASCII lowercase) and tests them against an
-/// ASCII-lowercased `logical_parent` (`effective_vfs.rs:178`). For an ordinary
+/// ASCII-lowercased `logical_parent` (`effective_vfs.rs::resolve`). For an ordinary
 /// ASCII directory the two agree; the folds differ only where
 /// `filesystem_case_key` and ASCII-lowercasing differ.
 ///
@@ -796,10 +796,10 @@ fn agreement_on_an_ordinary_replace_path() {
 /// The `replace_path` split, MEASURED and pinned as open.
 ///
 /// A folds a declared replace path with `filesystem_case_key`
-/// (`mod_resolver.rs:1523`) and matches it against the folded parent of the
-/// request (`mod_resolver.rs:1563`); B canonicalizes with
+/// (`mod_resolver.rs::with_mod_layers`) and matches it against the folded parent of the
+/// request (`mod_resolver.rs::resolve_optional_file_with_layer`); B canonicalizes with
 /// `normalize_game_relative_path` (ASCII lowercase) and matches an
-/// ASCII-lowercased `logical_parent` (`effective_vfs.rs:178`). So a mod
+/// ASCII-lowercased `logical_parent` (`effective_vfs.rs::resolve`). So a mod
 /// declaring `common/µ` (U+00B5) is expected to suppress a lower layer's
 /// `common/μ/...` (U+03BC) in A — one folded key — and not in B, which keeps
 /// them as two names, matching the two directories NTFS actually has.
@@ -824,7 +824,7 @@ fn pinned_divergence_replace_path_folding_differs_on_a_non_ascii_directory() {
     // The mod holds NOTHING under either spelling. This is the whole point of
     // the fixture and the first version of it got this wrong: if the mod also
     // shipped `common/µ/unit.txt`, A would select that file through its ORDINARY
-    // lookup over-fold (`find_dir_in_layer` folds µ onto μ, mod_resolver.rs:3281)
+    // lookup over-fold (`find_dir_in_layer` folds µ onto μ, mod_resolver.rs::find_dir_in_layer)
     // and the A-vs-B difference would appear with or without the declaration —
     // i.e. it would be divergence #1 wearing a replace_path costume. With the
     // mod empty, the ONLY thing that can suppress the lower layer is the
@@ -918,7 +918,7 @@ fn pinned_divergence_replace_path_folding_differs_on_a_non_ascii_directory() {
 /// two matches. An uncolliding sibling in the same directory still resolves —
 /// asserted below, and asserted in production too by
 /// `memoized_session_reproduces_refusals_and_their_order`
-/// (`mod_resolver.rs:4021`). What DOES refuse wholesale is the directory
+/// (`mod_resolver.rs::memoized_session_reproduces_refusals_and_their_order`). What DOES refuse wholesale is the directory
 /// LISTING, and therefore any complete-census admission over that directory.
 /// The "one bad sibling poisons every point lookup" behaviour is a different
 /// defect (lane KR's residual R1) and belongs to the layer-ESCAPE check, not to
