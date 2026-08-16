@@ -512,6 +512,89 @@ pub fn seal_g2_capture_artifacts(
     })
 }
 
+/// A requested G2 observation that did NOT reach the replay seal, named with
+/// the reason it did not.
+///
+/// The owner's ruling, asked whether a seal should fail when the two G2
+/// screenshot files are still held by a real-time scanner: *"Why would I care
+/// about reading screenshots"*. The G2 pair is a supplemental rendering
+/// observation — a BMP and its identity — and the recording beside it is hours
+/// of authoritative multiplayer state that cannot be produced again. Losing the
+/// screenshot must therefore cost the screenshot, not the recording. That is
+/// the standing "partial data still seals" rule: exclude, and account for it by
+/// name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct G2CaptureExclusion {
+    pub observation_id: String,
+    pub absence_reason: String,
+}
+
+/// What finalization learned about the requested G2 observation. Two outcomes,
+/// and NEITHER of them is an error.
+///
+/// This is deliberately not a `Result`. A first version of this returned
+/// `Result<G2CaptureArtifactSeal, G2CaptureExclusion>` and leaned on the absence
+/// of a `From` conversion into `String` to stop a caller writing `?`. A reviewer
+/// pointed out that `.map_err(|error| error.absence_reason)?`, `.unwrap()` and
+/// `.expect(..)` all compile just as well, so the type was not carrying the
+/// guarantee its own comment claimed. An enum with no error position carries it:
+/// there is nothing to `?`, nothing to unwrap, and a `match` on it must handle
+/// both arms. Putting the recording back behind the screenshot now takes an
+/// explicit `return Err(..)` written into the exclusion arm, which is a visible
+/// act rather than a punctuation mark — and `main`'s
+/// `the_finalizer_cannot_abort_a_recording_over_the_g2_screenshots` reads the
+/// arm and fails if one appears.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum G2CaptureDisposition {
+    Sealed(G2CaptureArtifactSeal),
+    Excluded(G2CaptureExclusion),
+}
+
+/// Seal the requested G2 observation, or EXCLUDE it by name.
+///
+/// This is the only entry point finalization may use.
+///
+/// EVERY failure of the seal is excluded, not just an exhausted scanner wait.
+/// The narrower rule — "exclude only a read failure" — was considered and
+/// rejected: every other failure this seal can report (identity drift between
+/// the witness and the launch authority, a malformed BMP header, an unexpected
+/// extra file in the G2 directory) is likewise a statement about the
+/// SUPPLEMENTAL pair and about nothing the recording carries.
+///
+/// Nor does excluding here hide a fact nothing else checks. Each authority the
+/// admission re-tests was already validated earlier on the same run: the launch
+/// manifest when it was constructed and again when the H4CT channel was
+/// prepared, the capture receipt when it was constructed, and the intent's
+/// context authority before the engine was resumed. What is left that only this
+/// seal can find is a statement about the two files.
+///
+/// Every reason is written into the recorder manifest and onto stderr, so
+/// nothing about the loss is silent. The replay side does admit and
+/// authenticate a DECLARED pair, and refuses a malformed one — but G2 is
+/// optional there, an absent pair is simply not consumed, and no shipped replay
+/// code reads a G2 pixel.
+pub fn seal_or_exclude_g2_capture_artifacts(
+    intent: &G2CaptureIntent,
+    output_directory: &Path,
+    manifest: &EarlyRenderLaunchManifest,
+    receipt: &EarlyRenderCaptureReceipt,
+    content_manifest_digest_sha256: &str,
+) -> G2CaptureDisposition {
+    match seal_g2_capture_artifacts(
+        intent,
+        output_directory,
+        manifest,
+        receipt,
+        content_manifest_digest_sha256,
+    ) {
+        Ok(seal) => G2CaptureDisposition::Sealed(seal),
+        Err(absence_reason) => G2CaptureDisposition::Excluded(G2CaptureExclusion {
+            observation_id: intent.observation_id.clone(),
+            absence_reason,
+        }),
+    }
+}
+
 pub fn staged_hook_count_for_group_mask(mask: u64) -> Result<u32, String> {
     compact_contract::early_render_control::staged_hook_count_for_group_mask(mask).ok_or_else(
         || "diagnostic staged-hook mask has invalid group or packed COM-selector bits".into(),
@@ -4190,6 +4273,78 @@ mod tests {
             crate::fs_sharing_retry::take_proven_read_count(),
             8,
             "a G2 seal must perform exactly eight waiting reads"
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    /// A scanner that NEVER lets go costs the screenshot and nothing else.
+    ///
+    /// The other half of the class-A pair. Its sibling
+    /// `a_scanner_holding_the_g2_witness_does_not_cost_the_seal` releases the
+    /// handle from inside the retry loop and proves the wait RECOVERS; this one
+    /// holds a real `share_mode(0)` handle — the antimalware scanner's exact
+    /// shape — for the whole call and never releases it, so the wait is
+    /// genuinely exhausted and the seal genuinely cannot be produced. Owner
+    /// ruling on exactly that situation: "Why would I care about reading
+    /// screenshots."
+    ///
+    /// Two things are asserted, and both matter. The call must return an
+    /// EXCLUSION rather than a seal — the recording continues — and the
+    /// exclusion must still carry the real `os error 32` and the observation
+    /// id, so the loss is named rather than swallowed.
+    ///
+    /// kills: making `seal_or_exclude_g2_capture_artifacts` return the seal
+    /// error in any form a caller could `?` (the exclusion arm would stop
+    /// existing and this would not compile); and dropping the reason or the
+    /// observation id from the exclusion, which would seal a recording that
+    /// cannot say what it lost.
+    #[cfg(windows)]
+    #[test]
+    fn an_exhausted_scanner_wait_excludes_the_g2_observation_instead_of_the_recording() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = temp_root("g2_seal_scanner_never_releases");
+        let fixture = g2_admitted_fixture(&root);
+        let witness_path = fixture.output.join(G2_ENGINE_WITNESS_FILE);
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&witness_path)
+            .unwrap();
+        // The premise, asserted rather than assumed: while that handle is alive
+        // an ordinary read really is refused with os error 32.
+        assert_eq!(
+            fs::read(&witness_path).unwrap_err().raw_os_error(),
+            Some(32),
+            "the exclusive holder must actually exclude an ordinary read"
+        );
+
+        // The retry allowance is per-thread and is SPENT, not refilled, so the
+        // assertion below is only sound on a thread that has not already
+        // waited. Reset it here rather than assuming the harness handed this
+        // test a fresh one.
+        crate::fs_sharing_retry::reset_wait_allowance_for_test();
+        let disposition = seal_or_exclude_g2_capture_artifacts(
+            &fixture.intent,
+            &fixture.output,
+            &fixture.manifest,
+            &fixture.receipt,
+            &fixture.content_digest,
+        );
+        crate::fs_sharing_retry::reset_wait_allowance_for_test();
+        drop(holder);
+        let G2CaptureDisposition::Excluded(exclusion) = disposition else {
+            panic!("a held witness cannot produce a seal");
+        };
+
+        assert_eq!(
+            exclusion.observation_id, fixture.intent.observation_id,
+            "the exclusion must name which requested observation was lost"
+        );
+        assert!(
+            exclusion.absence_reason.contains("os error 32"),
+            "an exhausted wait must still report the real error: {}",
+            exclusion.absence_reason
         );
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
