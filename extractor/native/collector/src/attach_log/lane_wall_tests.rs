@@ -276,6 +276,7 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
         read_time_us,
         row_count: 0,
         status_flags: 0,
+        worker_panic_reason: None,
         technology_ids: Arc::new(TechnologyIdDictionary::default()),
     };
     let country_lanes = country_lane_attribution(&[

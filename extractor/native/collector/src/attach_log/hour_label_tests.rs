@@ -234,8 +234,8 @@ fn the_policy_switch_changes_the_refusal_and_not_the_measurement() {
 /// The instrument is priced in DOMAIN-HOURS, which is what the capture loses,
 /// and not in brackets, which is not.
 ///
-/// One bracket does not cover one domain. The country-bundle worker reads
-/// domains 10..=17 in a single pass under `LW_TAG_COUNTRY_BUNDLE`, so ONE
+/// One bracket does not cover one domain. The country focus+tech child reads
+/// domains 12 AND 13 in a single pass under `LW_TAG_COUNTRY_FOCUS_TECH`, so ONE
 /// mismatched bracket there costs EIGHT domain-hours -- and the reserved probe
 /// domain is never refused at all, so a bracket held for it costs none. A
 /// bracket count would have understated the first and overstated the second,
@@ -246,29 +246,32 @@ fn the_policy_switch_changes_the_refusal_and_not_the_measurement() {
 ///   `brackets.iter().filter(|b| bracket_hour_verdict(b, hour) ==
 ///    BracketHourVerdict::LabelMismatch).count()`, with `brackets.len()` as the
 ///   denominator.
-/// OBSERVED: `one bundle bracket costs eight domain-hours, not one` — left
-/// `(2, 3)`, right `(8, 9)`. Both errors show at once: the bundle's eight
+/// OBSERVED: `one focus+tech bracket costs two domain-hours, not one` — left
+/// `(1, 2)`, right `(2, 3)`. Both errors show at once: the child's two
 /// domain-hours collapse to one, and the probe bracket is priced as a refusal
 /// that will never happen. Every other test in this file stays green, because
 /// every other bracket in them covers exactly its own domain.
 #[test]
 fn the_instrument_prices_a_mismatch_in_domain_hours_not_in_brackets() {
     let brackets = [
-        // Covers domains 10..=17: eight domain-hours behind one bracket.
-        bracket(LW_TAG_COUNTRY_BUNDLE, LABEL_HOUR + 1, LABEL_HOUR + 1),
+        // Covers domains 12 AND 13: two domain-hours behind one bracket. Since
+        // lane KS this is the widest country bracket there is -- the other six
+        // children cover exactly one domain each -- and it is the honest case
+        // for that price, because that child really does read both in one walk.
+        bracket(LW_TAG_COUNTRY_FOCUS_TECH, LABEL_HOUR + 1, LABEL_HOUR + 1),
         // Never refused, so it must never be priced.
         bracket(RC_PROBE_DOMAIN_ID, LABEL_HOUR + 1, LABEL_HOUR + 1),
         bracket(DOMAIN_ID, LABEL_HOUR, LABEL_HOUR),
     ];
     assert_eq!(
         hour_label_mismatched_bracket_count(&brackets, LABEL_HOUR, &BTreeSet::new()),
-        (8, 9),
-        "one bundle bracket costs eight domain-hours, not one; and the probe \
+        (2, 3),
+        "one focus+tech bracket costs two domain-hours, not one; and the probe \
          domain costs none"
     );
     assert_eq!(
         rejected_bracket_domains(&brackets, LABEL_HOUR, HourLabelMismatchPolicy::Refuse).len(),
-        8,
+        2,
         "the instrument must equal what Refuse would actually reject"
     );
 }

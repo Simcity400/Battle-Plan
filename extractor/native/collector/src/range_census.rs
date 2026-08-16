@@ -24,8 +24,10 @@
 //! per WORKER, not per domain. Most workers read exactly one domain and the tag
 //! is that domain's id, but two kinds of worker do not:
 //!
-//!  * `LW_TAG_COUNTRY_BUNDLE` (tag 200) is a synthetic id for the single worker
-//!    that walks the per-country domains 10..=17 in one pass;
+//!  * the country children (tags 201..207) are synthetic ids for the workers
+//!    that walk the per-country domains 10..=17 — one child per domain except
+//!    focus+tech (203), which walks 12 and 13 in one pass. Their parent, tag
+//!    200, reads nothing and covers no domain;
 //!  * some workers cover a neighbour (domain 49's bracket also covers 50).
 //!
 //! So a row is "everything one bracket read", and a bundle row is the union of
