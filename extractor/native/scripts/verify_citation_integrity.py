@@ -191,8 +191,12 @@ CACHE_SCHEMA = "battle-plan.citation_integrity_cache.v1"
 # `target` and `.cargo-target` are build outputs: a basename that resolves into
 # one resolves to a copy nobody edits, which would make an ambiguous citation
 # look resolvable.
+# `.pnpm-store`, `.reference`, `.t3-worktrees`: foreign tool caches/checkouts that
+# appeared in the checkout root (2026-08-16/17); one contains files this process
+# cannot read, which turned a landing gate red over content that is not ours.
 SKIP_DIRS = frozenset(
-    {"target", ".git", ".claude", "node_modules", ".cargo-target", ".venv"}
+    {"target", ".git", ".claude", "node_modules", ".cargo-target", ".venv",
+     ".pnpm-store", ".reference", ".t3-worktrees"}
 )
 # Append-only evidence.  Named as directory components, matched at any depth.
 FROZEN_DIRS = frozenset({"runs", "re_evidence"})

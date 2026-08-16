@@ -428,7 +428,7 @@ LEAF_MARKER_SCAN_ROOTS = (Path("."),)
 # what was true, not a claim about this tree.
 LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
     {"runs", "target", ".git", "re_evidence", ".cargo-target", "node_modules",
-     ".claude"}
+     ".claude", ".pnpm-store", ".reference", ".t3-worktrees"}
 )
 # MANIFESTS are skipped in fewer places than sources.  An evidence tree is
 # append-only prose and a marker quoted inside one is a record, not a claim --
@@ -441,7 +441,8 @@ LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
 # Their manifests and sources are claims about THEIR trees, not this one; a
 # gate that reads them certifies (or refuses) work that is not here.
 LEAF_MANIFEST_SKIP_DIRECTORIES = frozenset(
-    {"target", ".git", ".cargo-target", "node_modules", ".claude"}
+    {"target", ".git", ".cargo-target", "node_modules", ".claude",
+     ".pnpm-store", ".reference", ".t3-worktrees"}
 )
 # A leaf's attested files: its manifest and every Rust source under it, wherever
 # it sits (`src/`, `tests/`, `benches/`, a `build.rs`).  The set is what the
