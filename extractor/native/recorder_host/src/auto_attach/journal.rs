@@ -813,7 +813,9 @@ mod tests {
             assert_eq!(s1, 1);
         }
         // Reopen: seq continues at 2.
-        let j2 = Journal::open(&path).unwrap();
+        let j2 = portable_test_fs_retry::with_read_guard(&path, || Journal::open(&path))
+            .expect("hold the journal open across the scanner's window")
+            .unwrap();
         assert_eq!(j2.next_seq(), 2);
         let _ = std::fs::remove_file(&path);
     }
@@ -976,7 +978,8 @@ mod tests {
             b"{\"schema\":\"auto_attach_journal.v1\",\"event_seq\":0,\"state_to\":\"Injecting\"",
         )
         .unwrap();
-        let err = Journal::open(&path)
+        let err = portable_test_fs_retry::with_read_guard(&path, || Journal::open(&path))
+            .expect("hold the journal open across the scanner's window")
             .err()
             .expect("malformed recovery must fail");
         assert!(err.contains("line 1 is invalid"), "{err}");
@@ -1019,7 +1022,7 @@ mod tests {
                     ReasonCode::Detected,
                 ))
                 .unwrap();
-            let prefix = std::fs::read(&path).unwrap();
+            let prefix = portable_test_fs_retry::read(&path).unwrap();
             journal
                 .append(JournalRecord::transition(
                     0,
@@ -1035,7 +1038,8 @@ mod tests {
         };
 
         std::fs::write(&path, prefix).unwrap();
-        let err = Journal::open(&path)
+        let err = portable_test_fs_retry::with_read_guard(&path, || Journal::open(&path))
+            .expect("hold the journal open across the scanner's window")
             .err()
             .expect("rollback must make restart fail closed");
         assert!(err.contains("anchor") || err.contains("rollback"), "{err}");
@@ -1059,11 +1063,13 @@ mod tests {
                 ))
                 .unwrap();
         }
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        let mut file =
+            portable_test_fs_retry::open_with(OpenOptions::new().append(true), &path).unwrap();
         write!(file, " \t\r\n").unwrap();
         drop(file);
 
-        let err = Journal::open(&path)
+        let err = portable_test_fs_retry::with_read_guard(&path, || Journal::open(&path))
+            .expect("hold the appended journal open across the scanner's window")
             .err()
             .expect("trailing non-record bytes must fail closed");
         assert!(err.contains("trailing") || err.contains("line 2"), "{err}");

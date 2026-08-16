@@ -920,7 +920,11 @@ mod tests {
     #[test]
     fn exact_container_roles_index_bytes_bmp_and_recorder_authority_are_admitted() {
         let (path, authority) = package(false);
-        let store = Store::open_replay(&path, &snapshot::ExpectedIdentity::default()).unwrap();
+        let store = portable_test_fs_retry::with_read_guard(&path, || {
+            Store::open_replay(&path, &snapshot::ExpectedIdentity::default())
+        })
+        .expect("hold the package open across the scanner's window")
+        .unwrap();
         let capture = admit_from_store(&store, "g", Some(&authority))
             .unwrap()
             .expect("declared G2 capture");
@@ -945,7 +949,11 @@ mod tests {
     #[test]
     fn replay_source_exposes_only_the_fully_admitted_packaged_capture() {
         let (path, _) = package(false);
-        let source = crate::source::open_recording(&path).unwrap();
+        let source = portable_test_fs_retry::with_read_guard(&path, || {
+            crate::source::open_recording(&path)
+        })
+        .expect("hold the package open across the scanner's window")
+        .unwrap();
         let capture = source.g2_engine_capture().expect("admitted G2 package");
         assert_eq!(capture.witness.viewport_width, 1);
         assert_eq!(capture.selected_game_id, "g");
@@ -965,7 +973,11 @@ mod tests {
     #[test]
     fn duplicate_g2_role_is_rejected_even_when_the_index_selects_one_path() {
         let (path, authority) = package(true);
-        let store = Store::open_replay(&path, &snapshot::ExpectedIdentity::default()).unwrap();
+        let store = portable_test_fs_retry::with_read_guard(&path, || {
+            Store::open_replay(&path, &snapshot::ExpectedIdentity::default())
+        })
+        .expect("hold the package open across the scanner's window")
+        .unwrap();
         let error = admit_from_store(&store, "g", Some(&authority)).unwrap_err();
         assert!(error.contains("exactly one"), "{error}");
         drop(store);
@@ -976,7 +988,11 @@ mod tests {
     fn index_declaration_must_equal_recorder_packaging_seal() {
         let (path, mut authority) = package(false);
         authority["replay_packaging"]["g2_engine_capture"]["bmp_bytes"] = json!(59);
-        let store = Store::open_replay(&path, &snapshot::ExpectedIdentity::default()).unwrap();
+        let store = portable_test_fs_retry::with_read_guard(&path, || {
+            Store::open_replay(&path, &snapshot::ExpectedIdentity::default())
+        })
+        .expect("hold the package open across the scanner's window")
+        .unwrap();
         let error = admit_from_store(&store, "g", Some(&authority)).unwrap_err();
         assert!(error.contains("differs"), "{error}");
         drop(store);
@@ -1015,7 +1031,11 @@ mod tests {
             pack("g", &entries, &PackIdentity::default(), false).unwrap(),
         )
         .unwrap();
-        let store = Store::open_replay(&path, &snapshot::ExpectedIdentity::default()).unwrap();
+        let store = portable_test_fs_retry::with_read_guard(&path, || {
+            Store::open_replay(&path, &snapshot::ExpectedIdentity::default())
+        })
+        .expect("hold the package open across the scanner's window")
+        .unwrap();
         let manifest = json!({"replay_packaging": {"g2_engine_capture": null}});
         assert!(admit_from_store(&store, "g", manifest.as_object()).unwrap().is_none());
         drop(store);

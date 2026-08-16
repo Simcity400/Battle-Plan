@@ -16,3 +16,8 @@ portable_content_manifest = { path = "../../../../portable_replay/native/content
 [[bin]]
 name = "compact_replay_gate"
 path = "src/main.rs"
+
+[dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../../portable_replay/native/test_fs_retry" }

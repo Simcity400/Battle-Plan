@@ -487,7 +487,7 @@ mod tests {
         fs::create_dir_all(relocated.parent().unwrap()).unwrap();
         fs::write(&relocated, &encoded).unwrap();
         let decoded: StaticGeometrySource =
-            serde_json::from_slice(&fs::read(&relocated).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&relocated).unwrap()).unwrap();
         let selected = resource(
             "terrain.geometry",
             ContentLayerKind::IntegratedDlc,

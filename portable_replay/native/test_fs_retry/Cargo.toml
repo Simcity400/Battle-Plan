@@ -1,0 +1,14 @@
+[package]
+name = "portable_test_fs_retry"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only bounded retry around the Windows sharing violation (os error 32) on freshly written files"
+publish = false
+
+# NO third-party dependencies, on purpose. This crate is reached as a
+# `[dev-dependencies]` entry from packages in three separate cargo roots; a
+# registry dependency here would have to resolve identically in all of them.
+[dependencies]
+
+[lib]
+path = "src/lib.rs"

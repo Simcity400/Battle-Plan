@@ -6958,7 +6958,16 @@ mod tests {
         fs::write(path, packed).unwrap();
     }
 
-    fn write_portable_binary_replay_fixture(path: &Path, valid_checkpoint_role: bool) {
+    /// Returns a retained read handle on the container it just wrote.
+    ///
+    /// Every caller opens it on the next statement, and on Windows that is
+    /// exactly when a real-time scanner still holds it. Bind the result
+    /// (`let _guard = ...`) so it lives for the length of the test.
+    #[must_use = "the scanner guard must be held until the recording is opened"]
+    fn write_portable_binary_replay_fixture(
+        path: &Path,
+        valid_checkpoint_role: bool,
+    ) -> std::fs::File {
         write_portable_binary_replay_fixture_with_composition(
             path,
             valid_checkpoint_role,
@@ -6970,11 +6979,12 @@ mod tests {
     /// composition. The cache, the index descriptor and the recorder identity
     /// are byte-for-byte the same in both; only whether the raw H4CR entry is
     /// packaged (and what the documents declare) changes.
+    #[must_use = "the scanner guard must be held until the recording is opened"]
     fn write_portable_binary_replay_fixture_with_composition(
         path: &Path,
         valid_checkpoint_role: bool,
         packaging: snapshot::RawStreamPackaging,
-    ) {
+    ) -> std::fs::File {
         let game = "binary-game";
         let source_bytes = b"H4CRcanonical-world-source";
         let source_sha256 = snapshot::sha256::Sha256::hex(source_bytes);
@@ -7192,13 +7202,16 @@ mod tests {
         )
         .unwrap();
         fs::write(path, packed).unwrap();
+        // The caller opens this on its next statement; the guard it holds is
+        // what keeps a scanner from getting there first.
+        portable_test_fs_retry::open(path).expect("hold the fixture open across the scanner's window")
     }
 
     #[test]
     fn packaged_binary_replay_reconstructs_exact_hours_without_json_snapshots() {
         let root = temp_root("binary_replay");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture(&recording, true);
+        let _scanner_guard = write_portable_binary_replay_fixture(&recording, true);
 
         let source = open_recording(&recording).unwrap();
         assert_eq!(source.game_id(), "binary-game");
@@ -7236,7 +7249,7 @@ mod tests {
     fn cache_only_recording_replays_every_hour_without_the_raw_stream() {
         let root = temp_root("binary_replay_cache_only");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Omitted,
@@ -7306,7 +7319,7 @@ mod tests {
     fn a_packaged_cache_opened_through_a_spool_base_matches_the_resident_read() {
         let root = temp_root("binary_replay_cache_spooled");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Omitted,
@@ -7408,7 +7421,7 @@ mod tests {
     fn a_rotted_packaged_cache_entry_confines_its_hours_instead_of_the_recording() {
         let root = temp_root("binary_replay_rotted_cache");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Omitted,
@@ -7487,7 +7500,7 @@ mod tests {
         let root = temp_root("binary_replay_smuggled_stream");
         let recording = root.join("binary.battleplan");
         // Build the stream-on container, then rewrite ONLY the declaration.
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Packaged,
@@ -7511,7 +7524,10 @@ mod tests {
         });
         fs::write(&recording, repacked).unwrap();
 
-        let error = open_recording(&recording)
+        let error = portable_test_fs_retry::with_read_guard(&recording, || {
+            open_recording(&recording)
+        })
+        .expect("hold the recording open across the scanner's window")
             .err()
             .expect("a declared cache-only recording carrying a stream must fail closed");
         let text = error.to_string();
@@ -7531,7 +7547,7 @@ mod tests {
     fn unassigned_composition_spelling_rejects_at_replay_admission() {
         let root = temp_root("binary_replay_bad_composition");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Packaged,
@@ -7544,7 +7560,10 @@ mod tests {
         });
         fs::write(&recording, repacked).unwrap();
 
-        let error = open_recording(&recording)
+        let error = portable_test_fs_retry::with_read_guard(&recording, || {
+            open_recording(&recording)
+        })
+        .expect("hold the recording open across the scanner's window")
             .err()
             .expect("an unassigned composition spelling must reject");
         let text = error.to_string();
@@ -7566,7 +7585,7 @@ mod tests {
     fn index_descriptor_composition_must_agree_with_the_recorder_authority() {
         let root = temp_root("binary_replay_index_composition");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture_with_composition(
+        let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Packaged,
@@ -7581,7 +7600,10 @@ mod tests {
         });
         fs::write(&recording, repacked).unwrap();
 
-        let error = open_recording(&recording)
+        let error = portable_test_fs_retry::with_read_guard(&recording, || {
+            open_recording(&recording)
+        })
+        .expect("hold the recording open across the scanner's window")
             .err()
             .expect("an index descriptor that disagrees about the composition must reject");
         let text = error.to_string();
@@ -7662,7 +7684,7 @@ mod tests {
     fn packaged_binary_replay_rejects_an_incomplete_role_graph() {
         let root = temp_root("binary_replay_role");
         let recording = root.join("binary.battleplan");
-        write_portable_binary_replay_fixture(&recording, false);
+        let _scanner_guard = write_portable_binary_replay_fixture(&recording, false);
 
         let error = match open_recording(&recording) {
             Ok(_) => panic!("binary replay with a mismatched checkpoint role must fail closed"),
@@ -7876,7 +7898,10 @@ mod tests {
         .unwrap();
         fs::write(&recording, packed).unwrap();
 
-        let error = open_recording(&recording)
+        let error = portable_test_fs_retry::with_read_guard(&recording, || {
+            open_recording(&recording)
+        })
+        .expect("hold the recording open across the scanner's window")
             .err()
             .expect("a packaged snapshot recording must be bound to its stream entry");
         assert!(
@@ -9302,6 +9327,9 @@ fn bad(root: &std::path::Path) {
             "{new_module_violations:?}"
         );
 
+        // The two `File::open` calls below are PLANTED SOURCE TEXT that the
+        // pathname audit is asked to scan; they are not calls this test makes.
+        // They must stay spelled exactly as the audit recognises them.
         let after_test = r#"
 #[cfg(test)]
 mod tests {

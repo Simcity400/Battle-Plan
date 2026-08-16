@@ -14,3 +14,8 @@ zstd = "0.13.3"
 # benign (the workspace root carries the same setting).
 [profile.release]
 overflow-checks = true
+
+[dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

@@ -85,6 +85,9 @@ mimalloc = "0.1.52"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 collector = { path = "../collector", features = ["test-support"] }
 compact_contract = { path = "../compact_contract", features = ["test-support"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

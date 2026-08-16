@@ -2542,7 +2542,8 @@ mod tests {
         fs::create_dir_all(dir.join("logs")).unwrap();
         let log = dir.join("logs").join("game.log");
         fs::write(&log, "held").unwrap();
-        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let held =
+            portable_test_fs_retry::open_with(fs::OpenOptions::new().append(true), &log).unwrap();
         let (found, source) = locate_user_dir(std::process::id(), Some(&dir)).unwrap();
         assert_eq!(found, fs::canonicalize(&dir).unwrap());
         assert_eq!(source, "override");
@@ -2778,7 +2779,8 @@ mod tests {
         assert!(err.contains("holds no open handle"), "{err}");
 
         // THIS process holds the handle -> corroborated for OUR pid...
-        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let held =
+            portable_test_fs_retry::open_with(fs::OpenOptions::new().append(true), &log).unwrap();
         assert!(corroborate_user_dir_live(&dir, my_pid).is_ok());
         // ...but NOT for a different pid (the wrong-process case).
         assert!(corroborate_user_dir_live(&dir, my_pid.wrapping_add(7919)).is_err());
@@ -2802,7 +2804,8 @@ mod tests {
         fs::create_dir_all(&real_logs).unwrap();
         let log = real_logs.join("game.log");
         fs::write(&log, b"[12:00] boot").unwrap();
-        let held = fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let held =
+            portable_test_fs_retry::open_with(fs::OpenOptions::new().append(true), &log).unwrap();
         // Sanity: the REAL dir corroborates while we hold the handle.
         corroborate_user_dir_live(&real, my_pid).unwrap();
 

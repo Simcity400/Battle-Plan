@@ -251,12 +251,17 @@ dependencies = [
  "libc",
  "portable_compact_stream",
  "portable_content_manifest",
+ "portable_test_fs_retry",
  "serde",
  "serde_json",
  "unicode-normalization",
  "windows-sys",
  "zstd",
 ]
+
+[[package]]
+name = "portable_test_fs_retry"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro2"

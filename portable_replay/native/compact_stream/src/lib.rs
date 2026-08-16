@@ -256,6 +256,19 @@ pub fn detect(path: impl AsRef<Path>) -> io::Result<StreamCompression> {
 }
 
 fn detect_storage(path: &Path) -> io::Result<StreamCompression> {
+    // TEST-ONLY: wait out a real-time scanner still holding a file this process
+    // wrote moments ago. On Windows a scanner opens a freshly written file with
+    // a share mode that refuses other openers, so the `File::open` below
+    // returns `os error 32` — the flake this guard exists for. It is RETAINED
+    // across the open (an open-and-drop probe leaves the gap unheld), and every
+    // failure is ignored, so a missing file or a real refusal reaches the open
+    // exactly as before. It can only DELAY this call, never redirect it.
+    //
+    // It sits at the crate's own opener rather than at each test, because every
+    // test in this module reads back through here and a per-test list is the
+    // kind of thing that goes stale.
+    #[cfg(test)]
+    let _scanner_guard = portable_test_fs_retry::open(path).ok();
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     let read = read_up_to(&mut file, &mut magic)?;
@@ -296,6 +309,8 @@ pub fn open_with_compression_at(
     let path = path.as_ref();
     // Offset zero is not "the journal-aware caller chose the start"; it is a
     // read of the released prefix wearing the explicit API's clothes.
+    #[cfg(test)]
+    let _scanner_guard = portable_test_fs_retry::open(path).ok();
     if stored_offset == 0 {
         refuse_released_prefix(path)?;
     }
@@ -707,6 +722,8 @@ impl StreamWriter {
         }
         let path = path.as_ref();
         refuse_trimmed_write_target(path)?;
+        #[cfg(test)]
+        let _scanner_guard = portable_test_fs_retry::open(path).ok();
         let file = fs::OpenOptions::new().append(true).open(path)?;
         let stored_len = file.metadata()?.len();
         if stored_len != resume.stored_offset {
@@ -1097,11 +1114,18 @@ mod tests {
         let (decoded_len, encoded_len) =
             encode_file(&raw_path, &zstd_path, StreamCompression::Zstd).unwrap();
         assert_eq!(decoded_len, bytes.len() as u64);
-        assert_eq!(detect(&zstd_path).unwrap(), StreamCompression::Zstd);
+        // `encode_file` wrote this file moments ago and `detect` opens it, so
+        // the guard is held across the probe.
+        assert_eq!(
+            portable_test_fs_retry::with_read_guard(&zstd_path, || detect(&zstd_path))
+                .expect("hold the freshly encoded stream open across the scanner's window")
+                .unwrap(),
+            StreamCompression::Zstd
+        );
         assert!(encoded_len < decoded_len);
 
         decode_file(&zstd_path, &decoded_path).unwrap();
-        assert_eq!(std::fs::read(decoded_path).unwrap(), bytes);
+        assert_eq!(portable_test_fs_retry::read(decoded_path).unwrap(), bytes);
     }
 
     #[test]
@@ -1119,11 +1143,13 @@ mod tests {
         std::fs::write(&raw_path, &bytes).unwrap();
         encode_file(&raw_path, &zstd_path, StreamCompression::Zstd).unwrap();
 
-        let mut stored = std::fs::read(&zstd_path).unwrap();
+        let mut stored = portable_test_fs_retry::read(&zstd_path).unwrap();
         stored.pop().expect("checksummed zstd frame is non-empty");
         std::fs::write(&zstd_path, stored).unwrap();
 
-        let mut reader = open(&zstd_path).unwrap();
+        let mut reader = portable_test_fs_retry::with_read_guard(&zstd_path, || open(&zstd_path))
+            .expect("hold the rewritten stream open across the scanner's window")
+            .unwrap();
         let mut decoded = Vec::new();
         let err = reader
             .read_to_end(&mut decoded)
@@ -1155,13 +1181,15 @@ mod tests {
         writer.write_all(&bytes).unwrap();
         writer.finish().unwrap();
 
-        let mut stored = std::fs::read(&zstd_path).unwrap();
+        let mut stored = portable_test_fs_retry::read(&zstd_path).unwrap();
         assert_ne!(stored[4] & 0x04, 0, "zstd frame checksum flag must be set");
         let flip_at = stored.len() / 2;
         stored[flip_at] ^= 0x01;
         std::fs::write(&zstd_path, stored).unwrap();
 
-        let mut reader = open(&zstd_path).unwrap();
+        let mut reader = portable_test_fs_retry::with_read_guard(&zstd_path, || open(&zstd_path))
+            .expect("hold the rewritten stream open across the scanner's window")
+            .unwrap();
         let mut decoded = Vec::new();
         let err = reader
             .read_to_end(&mut decoded)
@@ -1378,7 +1406,9 @@ mod tests {
         let boundary = receipt.frame_boundaries[2];
 
         // Simulate the trimmed prefix the recorder host deallocates: zeros.
-        let mut stored = fs::read(&path).unwrap();
+        // This read does not pass through any of the crate's guarded openers,
+        // so it takes the helper directly.
+        let mut stored = portable_test_fs_retry::read(&path).unwrap();
         for byte in &mut stored[..boundary.stored_offset as usize] {
             *byte = 0;
         }
@@ -1511,7 +1541,7 @@ mod tests {
         .unwrap();
         assert_eq!(decoded, bytes.len() as u64);
         assert_eq!(stored, sink.len() as u64);
-        assert_eq!(sink, fs::read(&path).unwrap());
+        assert_eq!(sink, portable_test_fs_retry::read(&path).unwrap());
     }
 
     #[test]

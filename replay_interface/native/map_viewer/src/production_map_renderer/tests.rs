@@ -1846,7 +1846,7 @@ fn o04_city_outputs_are_vfs_admitted_relocated_and_executed_exactly_once() {
     fs::create_dir_all(relocated_path.parent().unwrap()).unwrap();
     fs::write(&relocated_path, encoded).unwrap();
     let relocated: ProductionRenderFrame =
-        serde_json::from_slice(&fs::read(&relocated_path).unwrap()).unwrap();
+        serde_json::from_slice(&portable_test_fs_retry::read(&relocated_path).unwrap()).unwrap();
 
     let left_plan = left.prepare_frame(Some(&frame)).unwrap();
     let right_plan = right.prepare_frame(Some(&relocated)).unwrap();
@@ -2047,10 +2047,10 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
         capture_gpu.display()
     );
     let vertices =
-        fs::read(capture_gpu.join("trees_frame_draw000_ia_vertex_buffer_slot0.bin")).unwrap();
-    let indices = fs::read(capture_gpu.join("trees_frame_draw000_ia_index_buffer.bin")).unwrap();
+        portable_test_fs_retry::read(capture_gpu.join("trees_frame_draw000_ia_vertex_buffer_slot0.bin")).unwrap();
+    let indices = portable_test_fs_retry::read(capture_gpu.join("trees_frame_draw000_ia_index_buffer.bin")).unwrap();
     let vertex_shader =
-        fs::read(capture_gpu.join("map_vertex_shader_02bd512fa7acd53f.bin")).unwrap();
+        portable_test_fs_retry::read(capture_gpu.join("map_vertex_shader_02bd512fa7acd53f.bin")).unwrap();
     assert_eq!(vertices.len(), 168);
     assert_eq!(indices.len(), 6);
     assert_eq!(
@@ -2217,7 +2217,7 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
     fs::create_dir_all(relocated.parent().unwrap()).unwrap();
     fs::copy(&source_file, &relocated).unwrap();
     let relocated_frame: ProductionRenderFrame =
-        serde_json::from_slice(&fs::read(&relocated).unwrap()).unwrap();
+        serde_json::from_slice(&portable_test_fs_retry::read(&relocated).unwrap()).unwrap();
 
     let left_plan = left.prepare_frame(Some(&frame)).unwrap();
     let right_plan = right.prepare_frame(Some(&relocated_frame)).unwrap();

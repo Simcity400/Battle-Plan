@@ -12,6 +12,9 @@ build = "build.rs"
 replay_test_gates = { path = "../replay_test_gates" }
 
 [dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 replay_test_gates = { path = "../replay_test_gates" }
 # Turns on replay_core's `test_support` seam so this crate's tests can author
 # packaged static-catalog bytes and drive the real semantic admission over them.

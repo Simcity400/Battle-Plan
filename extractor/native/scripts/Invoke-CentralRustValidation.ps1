@@ -2551,7 +2551,7 @@ try {
     $hasSpecificTarget = $Lib -or $Bin.Count -gt 0 -or $TestTarget.Count -gt 0
 
     # Read only when something will actually USE it. Reading the graph walks
-    # `cargo metadata` in all ten cargo roots, so building it for a -Package
+    # `cargo metadata` in all eleven cargo roots, so building it for a -Package
     # run whose expansion is then suppressed would make a previously
     # single-root invocation (a targeted -Bin, the Evidence tier) fail on an
     # unrelated root's metadata -- a caller that worked before this change.
@@ -3118,7 +3118,7 @@ try {
     # return and before the first compile, because every mode below reports a
     # verdict about "the repository" and none of them could see this crate.
     # It costs one `cargo metadata --no-deps --offline` per root: 1.4 s for all
-    # ten, measured, and it is not conditional on the diff -- an orphan nobody
+    # eleven, measured, and it is not conditional on the diff -- an orphan nobody
     # edited is exactly the one that stays hidden.
     Assert-BatteryEveryPackageIsRegistered -RepoRoot $repoRoot
 
@@ -3956,7 +3956,7 @@ try {
         }
     }
 
-    # THE STANDALONE ROOTS, FOR ITERATE. Eight of this repository's ten cargo
+    # THE STANDALONE ROOTS, FOR ITERATE. Nine of this repository's eleven cargo
     # roots are not members of either workspace, so the loop above never enters
     # them. An affected package living in one of them would otherwise be
     # selected, counted, and never run - which is the exact shape of "reported

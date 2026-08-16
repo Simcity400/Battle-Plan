@@ -580,7 +580,7 @@ fn exact_descriptor_set_rejects_rehashed_payload_mutation() {
         .iter_mut()
         .find(|entry| entry.role == ArtifactRole::StateBlock)
         .unwrap();
-    let mut bytes = std::fs::read(&block.file_path).unwrap();
+    let mut bytes = portable_test_fs_retry::read(&block.file_path).unwrap();
     bytes.push(0);
     std::fs::write(&block.file_path, &bytes).unwrap();
     block.len += 1;
@@ -831,8 +831,8 @@ fn raw_path_retained_raw_and_retained_zstd_reopen_the_same_decoded_source() {
         zstd::stream::encode_all(stream.as_slice(), 3).unwrap(),
     )
     .unwrap();
-    let raw_file = File::open(&raw_path).unwrap();
-    let zstd_file = File::open(&zstd_path).unwrap();
+    let raw_file = portable_test_fs_retry::open(&raw_path).unwrap();
+    let zstd_file = portable_test_fs_retry::open(&zstd_path).unwrap();
 
     let from_bytes = inspect_d81_session(legacy_bytes_session(&stream)).unwrap();
     let from_path = inspect_d81_session(H4crSession {
@@ -893,7 +893,7 @@ fn public_entry_source_parity_gate_refolds_the_authenticated_h4cr() {
             let file = retained
                 .get(path)
                 .ok_or_else(|| format!("missing retained artifact {path}"))?;
-            std::fs::read(file).map_err(|error| error.to_string())
+            portable_test_fs_retry::read(file).map_err(|error| error.to_string())
         },
         BundleBuildConfig::default(),
         std::slice::from_ref(&branch),
@@ -1126,7 +1126,7 @@ fn authenticated_h4dg_torn_gap_preserves_tick_witness_and_rebaselines() {
         .iter()
         .find(|entry| entry.role == ArtifactRole::GapRecord)
         .map(|entry| {
-            wire_format::gap::decode_record(&std::fs::read(&entry.file_path).unwrap()).unwrap()
+            wire_format::gap::decode_record(&portable_test_fs_retry::read(&entry.file_path).unwrap()).unwrap()
         })
         .unwrap();
     assert_eq!(gap.reason, GapReason::TornSweep);
@@ -1202,7 +1202,7 @@ fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
             .iter()
             .find(|entry| entry.role == ArtifactRole::GapRecord)
             .map(|entry| {
-                wire_format::gap::decode_record(&std::fs::read(&entry.file_path).unwrap()).unwrap()
+                wire_format::gap::decode_record(&portable_test_fs_retry::read(&entry.file_path).unwrap()).unwrap()
             })
             .unwrap();
         assert_eq!(gap.reason, GapReason::Backpressure);
@@ -1709,7 +1709,7 @@ fn exact_selection_uses_sequence_and_decoded_byte_endpoints_and_emits_tail_gap()
     let temp = TestDir::create();
     let source_path = temp.path("selected-source.h4cr");
     std::fs::write(&source_path, &stream).unwrap();
-    let retained_source = File::open(source_path).unwrap();
+    let retained_source = portable_test_fs_retry::open(source_path).unwrap();
     let retained_session = H4crSession {
         branch: 0,
         identity_mode: StreamIdentityMode::Legacy,
@@ -1721,7 +1721,7 @@ fn exact_selection_uses_sequence_and_decoded_byte_endpoints_and_emits_tail_gap()
             let file = retained_paths
                 .get(path)
                 .ok_or_else(|| format!("missing retained artifact {path}"))?;
-            std::fs::read(file).map_err(|error| error.to_string())
+            portable_test_fs_retry::read(file).map_err(|error| error.to_string())
         },
         BundleBuildConfig::default(),
         std::slice::from_ref(&branch),
@@ -1859,7 +1859,7 @@ fn retained_selection_preserves_internal_gap_and_post_gap_baseline() {
     let temp = TestDir::create();
     let source_path = temp.path("selected-internal-gap.h4cr");
     std::fs::write(&source_path, &stream).unwrap();
-    let retained_source = File::open(source_path).unwrap();
+    let retained_source = portable_test_fs_retry::open(source_path).unwrap();
     let retained_session = H4crSession {
         branch: 0,
         identity_mode: StreamIdentityMode::Legacy,
@@ -1871,7 +1871,7 @@ fn retained_selection_preserves_internal_gap_and_post_gap_baseline() {
             let file = retained_paths
                 .get(path)
                 .ok_or_else(|| format!("missing retained artifact {path}"))?;
-            std::fs::read(file).map_err(|error| error.to_string())
+            portable_test_fs_retry::read(file).map_err(|error| error.to_string())
         },
         BundleBuildConfig::default(),
         std::slice::from_ref(&branch),

@@ -53,6 +53,15 @@ fn decoded_fixture(len: usize) -> Vec<u8> {
 
 struct Fixture {
     _dir: TmpDir,
+    /// A retained read handle on every artifact the fixture just wrote.
+    ///
+    /// `trim_spool_prefix` and the receipt verifier reopen the stream, the
+    /// hour index and the checkpoint cache immediately after this returns, and
+    /// on Windows that is exactly when a real-time scanner still holds them —
+    /// `os error 32` at the reader. Holding them on the FIXTURE means every
+    /// test in this file is covered by construction, including ones added
+    /// later, rather than by a list that goes stale.
+    _scanner_guards: Vec<std::fs::File>,
     stream_path: PathBuf,
     decoded: Vec<u8>,
     frames: SpoolFrames,
@@ -120,8 +129,11 @@ fn fixture(tag: &str, decoded_len: usize, frame_bytes: u64) -> Fixture {
         fold_covered_decoded_end: decoded.len() as u64,
     };
 
+    let _scanner_guards = portable_test_fs_retry::tree_read_guards(&dir.0)
+        .expect("hold the spool fixture open across the scanner's window");
     Fixture {
         _dir: dir,
+        _scanner_guards,
         stream_path,
         decoded,
         frames,
@@ -399,13 +411,13 @@ fn a_receipt_whose_cache_is_not_on_disk_cannot_release_anything() {
 #[test]
 fn a_rewritten_cache_cannot_release_anything() {
     let fixture = fixture("rewritten_cache", 4 << 20, 1 << 20);
-    let mut bytes = fs::read(&fixture.receipt.checkpoint_cache_path).unwrap();
+    let mut bytes = portable_test_fs_retry::read(&fixture.receipt.checkpoint_cache_path).unwrap();
     let flip = bytes.len() / 2;
     bytes[flip] ^= 0xFF;
     fs::write(&fixture.receipt.checkpoint_cache_path, &bytes).unwrap();
     let coverage_path = &fixture.receipt.published_coverage_path;
     let mut coverage: serde_json::Value =
-        serde_json::from_slice(&fs::read(coverage_path).unwrap()).unwrap();
+        serde_json::from_slice(&portable_test_fs_retry::read(coverage_path).unwrap()).unwrap();
     coverage["checkpoint_cache_sha256"] = json!(Sha256::hex(&bytes));
     fs::write(coverage_path, serde_json::to_vec_pretty(&coverage).unwrap()).unwrap();
 
@@ -421,8 +433,10 @@ fn a_rewritten_cache_cannot_release_anything() {
 #[test]
 fn a_truncated_hour_index_cannot_release_anything() {
     let fixture = fixture("short_index", 4 << 20, 1 << 20);
-    let bytes = fs::read(&fixture.receipt.hour_index_path).unwrap();
+    let bytes = portable_test_fs_retry::read(&fixture.receipt.hour_index_path).unwrap();
     fs::write(&fixture.receipt.hour_index_path, &bytes[..bytes.len() - 1]).unwrap();
+    let _scanner_guard = portable_test_fs_retry::open(&fixture.receipt.hour_index_path)
+        .expect("hold the REWRITTEN index open across the scanner's window");
     let error = trim_spool_prefix(&fixture.stream_path, &fixture.frames, &fixture.receipt)
         .expect_err("a truncated hour index must never authorise a release");
     assert!(error.contains("not bound to this"), "{error}");
@@ -767,7 +781,7 @@ fn a_tampered_coverage_receipt_cannot_release_anything() {
     let frames = coarsen(&fixture.frames, 5);
     let path = &fixture.receipt.published_coverage_path;
     let original: serde_json::Value =
-        serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        serde_json::from_slice(&portable_test_fs_retry::read(path).unwrap()).unwrap();
 
     // Raising the coverage: the exact move that used to work.
     let mut raised = original.clone();
@@ -839,9 +853,11 @@ fn short_published_coverage_lowers_the_release_watermark() {
     let frames = coarsen(&fixture.frames, 8);
     let path = &fixture.receipt.published_coverage_path;
     let mut short: serde_json::Value =
-        serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        serde_json::from_slice(&portable_test_fs_retry::read(path).unwrap()).unwrap();
     short["published_decoded_end_offset"] = json!(2u64 << 20);
     fs::write(path, serde_json::to_vec_pretty(&short).unwrap()).unwrap();
+    // The verifier below re-reads this file, so the rewrite is the exposed edge.
+    let _scanner_guard = portable_test_fs_retry::open(path).expect("hold the rewritten receipt");
     // Both halves move together, because a real short fold reports the same
     // number in memory and on disk.
     let mut receipt = fixture.receipt.clone();

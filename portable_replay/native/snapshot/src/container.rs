@@ -3698,6 +3698,25 @@ fn verify_and_read(
 
 #[cfg(test)]
 mod tests {
+
+    /// `Container::open` with the whole fixture tree held across it.
+    ///
+    /// Every test here writes a container and opens it on the next line, which
+    /// on Windows is exactly when a real-time scanner holds the file and the
+    /// open returns `os error 32`. The guard lives in the TEST module, not in
+    /// `open_retained_container_file`: that function's exact source lines are
+    /// registered in the replay side's pathname-capability audit
+    /// (`replay_core/src/source.rs`), and editing a production file-access site
+    /// to carry test scaffolding both fails that gate and puts test-only text
+    /// into a production registry.
+    fn open_container_guarded(
+        path: &std::path::Path,
+        expected: &ExpectedIdentity,
+    ) -> Result<Container, ContainerError> {
+        portable_test_fs_retry::with_tree_read_guard(path, || Container::open(path, expected))
+            .expect("hold the container open across the scanner's window")
+    }
+
     use super::*;
     use crate::pack::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
     use crate::COMPACT_STREAM_ROLE;
@@ -3811,10 +3830,10 @@ mod tests {
         let bytes = compact_container_bytes(b"route equivalence payload");
         let archive = TempContainerFile::write("route_equivalence", &bytes);
 
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         container.verify_all().expect("intact container verifies");
         drop(container);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         container
             .verify_all_streaming()
             .expect("intact container verifies streamed");
@@ -3830,12 +3849,12 @@ mod tests {
         corrupted[offset] ^= 0x01;
         let archive = TempContainerFile::write("route_equivalence_bad", &corrupted);
 
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let materializing = container
             .verify_all()
             .expect_err("a corrupted entry must not verify");
         drop(container);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let streamed = container
             .verify_all_streaming()
             .expect_err("a corrupted entry must not verify streamed");
@@ -3884,7 +3903,7 @@ mod tests {
         let path = TempContainerFile::write("backend_selection", &bytes);
 
         let file_backed =
-            Container::open(&path.0, &ExpectedIdentity::default()).expect("path container opens");
+            open_container_guarded(&path.0, &ExpectedIdentity::default()).expect("path container opens");
         assert!(matches!(&file_backed.archive, ContainerArchive::File(_)));
 
         let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default())
@@ -3906,7 +3925,7 @@ mod tests {
         )
         .unwrap();
         let archive = TempContainerFile::write("bounded_spool", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("bounded");
         let destination = root.join("compact.bin");
         let error = container
@@ -3959,7 +3978,7 @@ mod tests {
         // Use permissively shared test handles so the hook can model a writer
         // that already existed before the production deny-write handle opened.
         // The production path has no hook and uses open_retained_container_file.
-        let reader = File::open(&path.0).expect("open retained test reader");
+        let reader = portable_test_fs_retry::open(&path.0).expect("open retained test reader");
         let mut mutator = OpenOptions::new()
             .read(true)
             .write(true)
@@ -4015,7 +4034,7 @@ mod tests {
         // built on a real retained-handle container or it never reaches the
         // publication path it claims to guard.
         let archive = TempContainerFile::write("post_sync_substitution", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
         let root = TempSpoolDir::create("race");
         let destination = root.join("compact.bin");
@@ -4065,7 +4084,7 @@ mod tests {
         } else {
             let receipt = result.expect("Windows retained handles deny the mutation attempt");
             assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
-            assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
+            assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), AUTHENTICATED);
         }
 
     }
@@ -4109,7 +4128,7 @@ mod tests {
             )
             .unwrap();
             let archive = TempContainerFile::write(&format!("retained_handle_{label}"), &bytes);
-            let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+            let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
             let root = TempSpoolDir::create(&format!("retained_{label}"));
             let destination = root.join("retained.bin");
 
@@ -4169,7 +4188,7 @@ mod tests {
         // File-backed for the same reason as the post-sync substitution test:
         // the failure-atomicity path only exists behind the retained handle.
         let archive = TempContainerFile::write("post_link_failure", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
         let root = TempSpoolDir::create("post_link");
         let destination = root.join("post-link.bin");
@@ -4208,7 +4227,7 @@ mod tests {
             .spool_entry_to_file_transactionally("payload/g/post-link.bin", &destination)
             .expect("hard-link commit with no post-publication work succeeds");
         assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
-        assert_eq!(fs::read(&destination).unwrap(), AUTHENTICATED);
+        assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), AUTHENTICATED);
     }
 
     /// A junction anywhere in the destination's directory chain is refused
@@ -4221,7 +4240,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"reparse guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("reparse_component", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("reparse");
 
         let target = root.join("target");
@@ -4275,7 +4294,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"filesystem root guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("filesystem_root", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
 
         let volume_root = std::env::temp_dir()
             .ancestors()
@@ -4313,7 +4332,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"lexical destination guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("lexical_destination", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("lexical");
 
         // Both of these name objects OUTSIDE the scratch root, so a regressed
@@ -4410,7 +4429,7 @@ mod tests {
         const OCCUPIED: &[u8] = b"occupied by another writer";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("unique_name_window", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("unique_name_window");
         let destination = root.join("compact.bin");
         let destination_name = destination.file_name().unwrap().to_owned();
@@ -4454,7 +4473,7 @@ mod tests {
         assert!(!destination.exists());
         for blocker in &occupied {
             assert_eq!(
-                fs::read(blocker).unwrap(),
+                portable_test_fs_retry::read(blocker).unwrap(),
                 OCCUPIED,
                 "an occupied candidate name must never be opened or truncated"
             );
@@ -4558,7 +4577,7 @@ mod tests {
         const FOREIGN: &[u8] = b"an object this rollback did not publish";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("rollback_rebind", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("rollback_rebind");
         let destination = root.join("compact.bin");
         let rebound = Arc::new(AtomicBool::new(false));
@@ -4595,7 +4614,7 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(
-            fs::read(&destination).unwrap(),
+            portable_test_fs_retry::read(&destination).unwrap(),
             FOREIGN,
             "rollback must never unlink an object it did not publish"
         );
@@ -4625,7 +4644,7 @@ mod tests {
         const FILE_SHARE_WRITE: u32 = 0x0000_0002;
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("rollback_undeletable", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("rollback_undeletable");
         let destination = root.join("compact.bin");
         let held: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(None));
@@ -4665,7 +4684,7 @@ mod tests {
             "the deny-delete handle must have been taken"
         );
         assert_eq!(
-            fs::read(&destination).unwrap(),
+            portable_test_fs_retry::read(&destination).unwrap(),
             PAYLOAD,
             "the destination the rollback could not remove is still the published object"
         );
@@ -4689,7 +4708,7 @@ mod tests {
         const FOREIGN: &[u8] = b"an object this spool did not create";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("temp_cleanup_identity", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("temp_cleanup_identity");
         let destination = root.join("compact.bin");
         let rebound = Arc::new(AtomicBool::new(false));
@@ -4721,10 +4740,10 @@ mod tests {
             "the post-release window must still be reached"
         );
         assert_eq!(receipt.uncompressed_len(), PAYLOAD.len() as u64);
-        assert_eq!(fs::read(&destination).unwrap(), PAYLOAD);
+        assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), PAYLOAD);
         let temp = temp_seen.lock().unwrap().clone();
         assert_eq!(
-            fs::read(&temp).unwrap(),
+            portable_test_fs_retry::read(&temp).unwrap(),
             FOREIGN,
             "a rebound temporary pathname must never be unlinked"
         );
@@ -4753,7 +4772,7 @@ mod tests {
 
         let archive = TempContainerFile::write("whole_file_receipt", &bytes);
         let file_backed =
-            Container::open(&archive.0, &ExpectedIdentity::default()).expect("path container opens");
+            open_container_guarded(&archive.0, &ExpectedIdentity::default()).expect("path container opens");
         let (len, sha256) = file_backed
             .retained_file_receipt()
             .expect("a retained container answers with its receipt");
@@ -4770,7 +4789,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"requested spool sha256 payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("requested_sha256", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let ContainerArchive::File(file_archive) = &container.archive else {
             panic!("the fixture must be file-backed");
         };
@@ -4822,7 +4841,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"authenticate entry payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("authenticate_entry", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
 
         let receipt = container
             .authenticate_entry("payload/g/compact.bin")
@@ -4851,7 +4870,7 @@ mod tests {
             .expect("the stored payload is locatable in the packed container");
         tampered[offset] ^= 0xff;
         let tampered_archive = TempContainerFile::write("authenticate_entry_tampered", &tampered);
-        let tampered_container = Container::open(&tampered_archive.0, &ExpectedIdentity::default())
+        let tampered_container = open_container_guarded(&tampered_archive.0, &ExpectedIdentity::default())
             .expect("entry bytes are authenticated lazily, so the container still opens");
         let error = tampered_container
             .authenticate_entry("payload/g/compact.bin")
@@ -4882,7 +4901,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"unpublished writer payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("unpublished_writer", &bytes);
-        let container = Container::open(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
 
         let mut sink = Vec::new();
         let receipt = container

@@ -1681,8 +1681,8 @@ mod tests {
         fs::write(&output, b"last-good").unwrap();
 
         let error = atomic_write_with(&output, b"replacement", |temporary, destination| {
-            assert_eq!(fs::read(temporary).unwrap(), b"replacement");
-            assert_eq!(fs::read(destination).unwrap(), b"last-good");
+            assert_eq!(portable_test_fs_retry::read(temporary).unwrap(), b"replacement");
+            assert_eq!(portable_test_fs_retry::read(destination).unwrap(), b"last-good");
             Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "injected replace failure",
@@ -1691,7 +1691,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert_eq!(fs::read(&output).unwrap(), b"last-good");
+        assert_eq!(portable_test_fs_retry::read(&output).unwrap(), b"last-good");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1704,7 +1704,7 @@ mod tests {
 
         atomic_write(&output, b"replacement").unwrap();
 
-        assert_eq!(fs::read(&output).unwrap(), b"replacement");
+        assert_eq!(portable_test_fs_retry::read(&output).unwrap(), b"replacement");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }

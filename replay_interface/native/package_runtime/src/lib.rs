@@ -1833,8 +1833,14 @@ mod tests {
         fs::create_dir_all(root).unwrap();
         fs::write(root.join("replay_app.exe"), version.as_bytes()).unwrap();
         fs::write(root.join("NOTICE.txt"), b"fixture notice").unwrap();
-        let mut manifest =
-            build_unsigned_manifest(root, version, "fixture-x86_64", "replay_app.exe").unwrap();
+        // `build_unsigned_manifest` hashes both files that were just written.
+        let guards = [root.join("replay_app.exe"), root.join("NOTICE.txt")];
+        let guards = guards.iter().map(|p| p.as_path()).collect::<Vec<_>>();
+        let mut manifest = portable_test_fs_retry::with_read_guards(&guards, || {
+            build_unsigned_manifest(root, version, "fixture-x86_64", "replay_app.exe")
+        })
+        .expect("hold the release payload open across the scanner's window")
+        .unwrap();
         if signed {
             let payload =
                 decode_sha256(&manifest.package_digest_sha256, "fixture package digest").unwrap();
@@ -2013,7 +2019,7 @@ mod tests {
         )
         .is_err());
         assert_eq!(
-            fs::read(occupied.join("untrusted.exe")).unwrap(),
+            portable_test_fs_retry::read(occupied.join("untrusted.exe")).unwrap(),
             b"do not replace"
         );
         let _ = fs::remove_dir_all(root);
@@ -2025,6 +2031,11 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("replay_app.exe"), b"fixture").unwrap();
         fs::hard_link(root.join("replay_app.exe"), root.join("alias.exe")).unwrap();
+        // The guards matter MORE for a negative test than a positive one: this
+        // asserts only `is_err()`, so a scanner's `os error 32` would satisfy it
+        // and the hard-link refusal it exists to prove would go unproven.
+        let _scanner_guards = portable_test_fs_retry::tree_read_guards(&root)
+            .expect("hold the release payload open across the scanner's window");
         assert!(build_unsigned_manifest(
             &root,
             "1.0.0",

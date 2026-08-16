@@ -63,8 +63,13 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 name = "portable_compact_stream"
 version = "0.1.0"
 dependencies = [
+ "portable_test_fs_retry",
  "zstd",
 ]
+
+[[package]]
+name = "portable_test_fs_retry"
+version = "0.1.0"
 
 [[package]]
 name = "r-efi"

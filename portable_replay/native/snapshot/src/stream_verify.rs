@@ -294,6 +294,18 @@ pub fn verify_replay_container_streaming(
     game_id: &str,
     stream_role: &str,
 ) -> Result<StreamVerifyReport, String> {
+    // TEST-ONLY: wait out a real-time scanner still holding a file this process
+    // wrote moments ago. On Windows a scanner opens a freshly written file with
+    // a share mode that refuses other openers, so the open below returns
+    // `os error 32` — the flake this guard exists for. It is RETAINED for the
+    // whole call (an open-and-drop probe leaves the gap unheld), every failure
+    // is ignored, and its own share mode admits an ordinary reader, so a
+    // missing file or a real refusal reaches the real open exactly as before.
+    //
+    // It sits at the crate's own reader rather than at each test, because every
+    // test in this crate reads back through here and a per-test list goes stale.
+    #[cfg(test)]
+    let _scanner_guard = portable_test_fs_retry::open(path).ok();
     let mut file =
         File::open(path).map_err(|e| format!("open container {}: {e}", path.display()))?;
     verify_replay_container_streaming_file(&mut file, game_id, stream_role)
@@ -1744,6 +1756,27 @@ fn eocd_comment_ends_at_eof(tail: &[u8], off: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// `Container::open` with the whole fixture tree held across it.
+    ///
+    /// Every test here writes a container and opens it on the next line, which
+    /// on Windows is exactly when a real-time scanner holds the file and the
+    /// open returns `os error 32`. The guard lives in the TEST module, not in
+    /// `open_retained_container_file`: that function's exact source lines are
+    /// registered in the replay side's pathname-capability audit
+    /// (`replay_core/src/source.rs`), and editing a production file-access site
+    /// to carry test scaffolding both fails that gate and puts test-only text
+    /// into a production registry.
+    fn open_container_guarded(
+        path: &std::path::Path,
+        expected: &ExpectedIdentity,
+    ) -> Result<Container, crate::ContainerError> {
+        portable_test_fs_retry::with_tree_read_guard(path, || {
+            crate::Container::open(path, expected)
+        })
+        .expect("hold the container open across the scanner's window")
+    }
+
     use super::*;
     use crate::container::{Container, ExpectedIdentity};
     use crate::pack::{
@@ -1934,7 +1967,7 @@ mod tests {
     }
 
     fn entry_data_range(path: &Path, name: &str) -> (u64, u64) {
-        let mut file = fs::File::open(path).unwrap();
+        let mut file = portable_test_fs_retry::open(path).unwrap();
         let file_len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, file_len).unwrap();
         let entry = entries.iter().find(|entry| entry.name == name).unwrap();
@@ -1949,7 +1982,7 @@ mod tests {
     }
 
     fn write_with_duplicate_stream_role_manifest(source: &Path, output: &Path) {
-        let bytes = fs::read(source).unwrap();
+        let bytes = portable_test_fs_retry::read(source).unwrap();
         let eocd = find_eocd(&bytes).expect("fixture EOCD");
         assert!(
             find_zip64_locator(&bytes, eocd).is_none(),
@@ -2079,14 +2112,14 @@ mod tests {
         let dir = TmpDir::new("deflate_trailing");
         let clean_path = dir.join("clean.zip");
         fs::write(&clean_path, crate::zip::test_deflate_zip_with_trailing(0)).unwrap();
-        let mut file = fs::File::open(&clean_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).expect("clean CD parses");
         hash_entry_streaming(&mut file, &entries[0]).expect("clean deflate entry hashes");
 
         let dirty_path = dir.join("dirty.zip");
         fs::write(&dirty_path, crate::zip::test_deflate_zip_with_trailing(16)).unwrap();
-        let mut file = fs::File::open(&dirty_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&dirty_path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).expect("structure still parses");
         let err = hash_entry_streaming(&mut file, &entries[0])
@@ -2116,7 +2149,7 @@ mod tests {
             crate::zip::test_zstd_zip_with_skippable(ZstdSmuggle::None),
         )
         .unwrap();
-        let mut file = fs::File::open(&clean_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).expect("clean CD parses");
         hash_entry_streaming(&mut file, &entries[0]).expect("clean zstd entry hashes");
@@ -2124,7 +2157,7 @@ mod tests {
         for smuggle in [ZstdSmuggle::Trailing, ZstdSmuggle::Leading] {
             let path = dir.join(&format!("dirty_{smuggle:?}.zip"));
             fs::write(&path, crate::zip::test_zstd_zip_with_skippable(smuggle)).unwrap();
-            let mut file = fs::File::open(&path).unwrap();
+            let mut file = portable_test_fs_retry::open(&path).unwrap();
             let len = file.metadata().unwrap().len();
             let entries = read_central_directory(&mut file, len).expect("structure still parses");
             let err = hash_entry_streaming(&mut file, &entries[0])
@@ -2167,7 +2200,7 @@ mod tests {
             zip64_empty_with_entry_count(MAX_READER_ENTRIES + 1, 0),
         )
         .unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
 
         let err = match read_central_directory(&mut file, len) {
@@ -2185,7 +2218,7 @@ mod tests {
         let dir = TmpDir::new("zip64_tail");
         let path = dir.join("zip64_max_comment.battleplan");
         fs::write(&path, zip64_empty_with_entry_count(0, 0xFFFF)).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
 
         let entries = read_central_directory(&mut file, len)
@@ -2237,7 +2270,7 @@ mod tests {
         // the locator, exactly as the in-memory parser does.
         let path = dir.join("sector_max_comment.battleplan");
         fs::write(&path, zip64_empty_with_extensible_sector(4096, 0xFFFF)).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len)
             .expect("Zip64 EOCD with extensible data sector and max comment parses");
@@ -2247,7 +2280,7 @@ mod tests {
         // any comment-sized tail window.
         let path = dir.join("large_sector.battleplan");
         fs::write(&path, zip64_empty_with_extensible_sector(70_000, 0)).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len)
             .expect("Zip64 EOCD with >64KiB extensible data sector parses");
@@ -2263,7 +2296,7 @@ mod tests {
             zip64_empty_with_extensible_sector(2 * 1024 * 1024, 0),
         )
         .unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let err = read_central_directory(&mut file, len)
             .expect_err("a record spanning past the sane cap is a typed refusal");
@@ -2324,7 +2357,7 @@ mod tests {
         let dir = TmpDir::new("unaccounted_prefix");
         let clean_path = dir.join("clean.zip");
         fs::write(&clean_path, &clean).unwrap();
-        let mut file = fs::File::open(&clean_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
         let len = file.metadata().unwrap().len();
         let (entries, cd_off) = read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES).unwrap();
         validate_local_headers_file(&mut file, &entries, len, cd_off)
@@ -2342,7 +2375,7 @@ mod tests {
 
         let path = dir.join("prefixed.zip");
         fs::write(&path, &hostile).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let (entries, cd_off) =
             read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES)
@@ -2378,7 +2411,7 @@ mod tests {
         let dir = TmpDir::new("zip64_undeclared_gap");
         let path = dir.join("gap.battleplan");
         fs::write(&path, &bytes).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let err = read_central_directory(&mut file, len)
             .expect_err("an undeclared gap before the locator must be refused streaming");
@@ -2400,7 +2433,7 @@ mod tests {
         // Control: the untampered entry hashes cleanly.
         let clean_path = dir.join("clean.zip");
         fs::write(&clean_path, &base).unwrap();
-        let mut file = fs::File::open(&clean_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).unwrap();
         hash_entry_streaming(&mut file, &entries[0]).expect("clean entry hashes");
@@ -2410,7 +2443,7 @@ mod tests {
         tampered[4] = tampered[4].wrapping_add(1); // LFH at 0; version-needed at +4
         let path = dir.join("version_drift.zip");
         fs::write(&path, &tampered).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).unwrap();
         let err = hash_entry_streaming(&mut file, &entries[0])
@@ -2422,7 +2455,7 @@ mod tests {
         tampered[10] = tampered[10].wrapping_add(1); // LFH mod-time at +10
         let path = dir.join("timestamp_drift.zip");
         fs::write(&path, &tampered).unwrap();
-        let mut file = fs::File::open(&path).unwrap();
+        let mut file = portable_test_fs_retry::open(&path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).unwrap();
         let err = hash_entry_streaming(&mut file, &entries[0])
@@ -2437,8 +2470,8 @@ mod tests {
         // refuse the same nonzero-field container instead of promoting it.
         let dir = TmpDir::new("dd_zero_fields");
         let (container_path, _, _) = build_store_streaming_container(&dir, "dd_zero_fields");
-        let mut bytes = fs::read(&container_path).unwrap();
-        let mut file = fs::File::open(&container_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&container_path).unwrap();
         let len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, len).unwrap();
         let entry = entries
@@ -2455,7 +2488,7 @@ mod tests {
         let tampered_path = dir.join("dd_zero_fields_tampered.battleplan");
         fs::write(&tampered_path, &bytes).unwrap();
 
-        let mut file = fs::File::open(&tampered_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&tampered_path).unwrap();
         let entries = read_central_directory(&mut file, len).unwrap();
         let entry = entries
             .iter()
@@ -2633,7 +2666,7 @@ mod tests {
 
         // (2) product file-backed reader opens the streamed container and reads
         // each entry back individually (data-descriptor ZIP is compatible).
-        let container = Container::open(&container_path, &ExpectedIdentity::default())
+        let container = open_container_guarded(&container_path, &ExpectedIdentity::default())
             .expect("file-backed Container opens streamed container");
         let got_stream = container
             .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
@@ -2646,12 +2679,14 @@ mod tests {
 
         // (3) tamper the stream on disk -> streaming verify must reject.
         let bad_path = dir.join("bad.battleplan");
-        let mut bytes = fs::read(&container_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
         // flip a byte in the compressed stream region (well before the central dir).
         bytes[200] ^= 0xff;
         fs::write(&bad_path, &bytes).unwrap();
-        let tampered =
-            verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream");
+        let tampered = portable_test_fs_retry::with_read_guard(&bad_path, || {
+            verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+        })
+        .expect("hold the tampered container open across the scanner's window");
         assert!(tampered.is_err(), "tampered container must fail verify");
     }
 
@@ -2661,7 +2696,7 @@ mod tests {
         let (container_path, stream_bytes, stream_sha) =
             build_zstd_streaming_container(&dir, "zstd_roundtrip");
 
-        let mut file = fs::File::open(&container_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&container_path).unwrap();
         let file_len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, file_len).unwrap();
         assert_eq!(
@@ -2690,7 +2725,7 @@ mod tests {
         );
         assert_eq!(report.stream_entry_bytes, stream_bytes.len() as u64);
 
-        let container = Container::open(&container_path, &ExpectedIdentity::default())
+        let container = open_container_guarded(&container_path, &ExpectedIdentity::default())
             .expect("in-RAM reader opens zstd container");
         let got_stream = container
             .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
@@ -2762,7 +2797,7 @@ mod tests {
         );
         assert_eq!(report.stream_entry_bytes, raw.len() as u64);
         let container =
-            crate::Container::open(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
+            open_container_guarded(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
         assert_eq!(
             container
                 .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
@@ -2877,7 +2912,7 @@ mod tests {
         assert_eq!(report.stream_entry_bytes, raw.len() as u64);
 
         // (2) the entry really is zstd (a silent STORE would hide a level bug).
-        let mut file = fs::File::open(&replay_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&replay_path).unwrap();
         let file_len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, file_len).unwrap();
         assert_eq!(
@@ -2891,7 +2926,7 @@ mod tests {
 
         // (3) full byte-identity through the production reader = zero data loss.
         let container =
-            crate::Container::open(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
+            open_container_guarded(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
         let got = container
             .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
             .unwrap();
@@ -2941,7 +2976,7 @@ mod tests {
         let archive_for = |bytes: &[u8], tag: &str| -> FileBackedArchive {
             let path = dir.join(&format!("{tag}.battleplan"));
             fs::write(&path, bytes).unwrap();
-            let file = fs::File::open(&path).unwrap();
+            let file = portable_test_fs_retry::open(&path).unwrap();
             FileBackedArchive::open(file, crate::zip::MAX_READER_ENTRIES)
                 .unwrap_or_else(|error| panic!("{tag} must still open: {error}"))
         };
@@ -2955,7 +2990,7 @@ mod tests {
 
         // (1) Corrupt compressed bytes: the zstd decoder fails inside the
         // declared region. This is the class the earlier revision lost.
-        let mut corrupt = fs::read(&container_path).unwrap();
+        let mut corrupt = portable_test_fs_retry::read(&container_path).unwrap();
         corrupt[(data_start + comp_size / 2) as usize] ^= 0x40;
         let archive = archive_for(&corrupt, "corrupt_payload");
         let index = index_of(&archive);
@@ -2969,7 +3004,7 @@ mod tests {
 
         // (2) A mutated zstd FRAME HEADER: the decoder cannot even be built
         // over the declared region. Same class — the payload does not decode.
-        let mut bad_header = fs::read(&container_path).unwrap();
+        let mut bad_header = portable_test_fs_retry::read(&container_path).unwrap();
         for offset in 0..4u64 {
             bad_header[(data_start + offset) as usize] ^= 0x5a;
         }
@@ -2985,9 +3020,9 @@ mod tests {
 
         // (3) Structural control: a local file header whose signature is gone
         // is a malformed archive, NOT corrupt authenticated bytes.
-        let mut structural = fs::read(&container_path).unwrap();
+        let mut structural = portable_test_fs_retry::read(&container_path).unwrap();
         let header_off = {
-            let mut file = fs::File::open(&container_path).unwrap();
+            let mut file = portable_test_fs_retry::open(&container_path).unwrap();
             let file_len = file.metadata().unwrap().len();
             let entries = read_central_directory(&mut file, file_len).unwrap();
             entries
@@ -3019,7 +3054,7 @@ mod tests {
         assert!(comp_size > 16);
 
         let bad_path = dir.join("zstd_corrupt_bad.battleplan");
-        let mut bytes = fs::read(&container_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
         bytes[(data_start + comp_size / 2) as usize] ^= 0x40;
         fs::write(&bad_path, &bytes).unwrap();
 
@@ -3078,10 +3113,10 @@ mod tests {
             )
             .unwrap();
         }
-        let bytes = fs::read(&container_path).unwrap();
+        let bytes = portable_test_fs_retry::read(&container_path).unwrap();
         assert!(bytes.windows(4).any(|w| w == b"PK\x06\x06"));
         assert!(bytes.windows(4).any(|w| w == b"PK\x06\x07"));
-        let mut file = fs::File::open(&container_path).unwrap();
+        let mut file = portable_test_fs_retry::open(&container_path).unwrap();
         let file_len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, file_len).unwrap();
         assert_eq!(
@@ -3093,7 +3128,7 @@ mod tests {
             ZIP_METHOD_ZSTD
         );
 
-        let container = Container::open(&container_path, &ExpectedIdentity::default())
+        let container = open_container_guarded(&container_path, &ExpectedIdentity::default())
             .expect("file-backed reader accepts zip64 entry count");
         assert_eq!(container.entries().len(), borrowed.len() + 1);
         assert_eq!(
@@ -3149,7 +3184,7 @@ mod tests {
         );
         assert_eq!(report.stream_entry_bytes, uncomp_size);
 
-        let err = match Container::open(&container_path, &ExpectedIdentity::default()) {
+        let err = match open_container_guarded(&container_path, &ExpectedIdentity::default()) {
             Ok(_) => panic!("materializing product reader keeps 2 GiB per-entry cap"),
             Err(err) => err,
         };
@@ -3451,12 +3486,15 @@ mod tests {
         );
 
         let bad_path = dir.join("crc_bad.battleplan");
-        let mut bytes = fs::read(&container_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
         bytes[data_start as usize] ^= 0xff;
         fs::write(&bad_path, &bytes).unwrap();
 
-        let err = verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
-            .expect_err("payload corruption must fail CRC verification");
+        let err = portable_test_fs_retry::with_read_guard(&bad_path, || {
+            verify_replay_container_streaming(&bad_path, "g", "collector_compact_stream")
+        })
+        .expect("hold the tampered container open across the scanner's window")
+        .expect_err("payload corruption must fail CRC verification");
         assert!(err.contains("crc32"), "{err}");
     }
 
@@ -3471,7 +3509,7 @@ mod tests {
         let descriptor_crc_offset = data_start + comp_size + 4;
 
         let bad_path = dir.join("descriptor_bad.battleplan");
-        let mut bytes = fs::read(&container_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
         bytes[descriptor_crc_offset as usize] ^= 0x01;
         fs::write(&bad_path, &bytes).unwrap();
 

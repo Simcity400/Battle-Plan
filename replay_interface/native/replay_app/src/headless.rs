@@ -868,24 +868,44 @@ mod tests {
         let path = root.join("frame.bmp");
         let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         write_bmp(&path, 2, 2, &pixels).unwrap();
-        let (width, height, decoded) = read_xmap22_bmp(&path).unwrap();
+        let (width, height, decoded) =
+            portable_test_fs_retry::with_read_guard(&path, || read_xmap22_bmp(&path))
+                .expect("hold the freshly written BMP open across the scanner's window")
+                .unwrap();
         assert_eq!((width, height), (2, 2));
         assert_eq!(decoded, pixels);
 
-        let mut corrupt = std::fs::read(&path).unwrap();
+        let mut corrupt = portable_test_fs_retry::read(&path).unwrap();
         corrupt.push(0);
         let corrupt_path = root.join("corrupt.bmp");
         std::fs::write(&corrupt_path, corrupt).unwrap();
-        assert!(read_xmap22_bmp(&corrupt_path).is_err());
+        // The guard matters MORE here than on the positive case above: this
+        // asserts only `is_err()`, so a scanner's `os error 32` would satisfy
+        // it and the truncation refusal would go unproven.
+        assert!(
+            portable_test_fs_retry::with_read_guard(&corrupt_path, || read_xmap22_bmp(
+                &corrupt_path
+            ))
+            .expect("hold the corrupt fixture open across the scanner's window")
+            .is_err()
+        );
 
         for offset in [6usize, 34, 38, 42, 46, 50] {
-            let mut corrupt = std::fs::read(&path).unwrap();
+            let mut corrupt = portable_test_fs_retry::read(&path).unwrap();
             corrupt[offset] ^= 1;
             let corrupt_path = root.join(format!("corrupt-header-{offset}.bmp"));
             std::fs::write(&corrupt_path, corrupt).unwrap();
-            assert!(read_xmap22_bmp(&corrupt_path).is_err(), "offset {offset}");
+            // Same reason as above: `is_err()` alone would accept error 32.
+            assert!(
+                portable_test_fs_retry::with_read_guard(&corrupt_path, || read_xmap22_bmp(
+                    &corrupt_path
+                ))
+                .expect("hold the corrupt fixture open across the scanner's window")
+                .is_err(),
+                "offset {offset}"
+            );
         }
-        std::fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -900,7 +920,7 @@ mod tests {
         write_create_new_or_equal(&path, b"complete receipt bytes\n", "test receipt").unwrap();
         write_create_new_or_equal(&path, b"complete receipt bytes\n", "test receipt").unwrap();
         assert!(write_create_new_or_equal(&path, b"different\n", "test receipt").is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"complete receipt bytes\n");
+        assert_eq!(portable_test_fs_retry::read(&path).unwrap(), b"complete receipt bytes\n");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -956,7 +976,7 @@ mod tests {
             std::error::Error::source(typed).is_some(),
             "the underlying collision error must be preserved as the source"
         );
-        assert_eq!(std::fs::read(&out).unwrap(), b"published bmp bytes");
+        assert_eq!(portable_test_fs_retry::read(&out).unwrap(), b"published bmp bytes");
 
         let payload = b"bgra"; // 4 bytes, matching the receipt below
         std::fs::write(occupation_secondary_h2_payload_path(&out), b"other\n").unwrap();
@@ -1035,9 +1055,9 @@ mod tests {
         // Verified bytes publish the raw plane AND the receipt, idempotently.
         let (receipt_path, payload_path) =
             write_snow_mud_h2_evidence(&out, &receipt, &bytes).unwrap();
-        assert_eq!(std::fs::read(&payload_path).unwrap(), bytes);
+        assert_eq!(portable_test_fs_retry::read(&payload_path).unwrap(), bytes);
         let written: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&receipt_path).unwrap()).unwrap();
         assert_eq!(
             written["readback_sha256"],
             serde_json::Value::from(receipt.readback_sha256.as_str())
@@ -1143,7 +1163,11 @@ mod tests {
     #[test]
     fn recording_keying_seam_receives_all_owners_and_controller_overrides_without_d3d() {
         let path = packed_political_keying_recording();
-        let source = replay_core::open_recording(&path).expect("open packed keying recording");
+        let source = portable_test_fs_retry::with_read_guard(&path, || {
+            replay_core::open_recording(&path)
+        })
+        .expect("hold the recording open across the scanner's window")
+        .expect("open packed keying recording");
         let timeline = replay_core::WorldTimeline::open(source).expect("keying timeline");
         let provider = crate::timeline::RecordingTimeline::new_with_policy(timeline, None);
         let keying = load_frame_keying(&provider, 16_959_373).expect("headless keying frame");
@@ -1168,7 +1192,7 @@ mod tests {
             16_959_373
         );
         drop(provider);
-        std::fs::remove_dir_all(path.parent().expect("recording parent"))
+        portable_test_fs_retry::remove_dir_all(path.parent().expect("recording parent"))
             .expect("remove keying recording");
     }
 

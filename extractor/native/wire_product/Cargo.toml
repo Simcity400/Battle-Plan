@@ -12,3 +12,8 @@ portable_content_manifest = { path = "../../../portable_replay/native/content_ma
 sha2 = "0.10"
 wire_format = { path = "../wire_format" }
 zstd = "0.13"
+
+[dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

@@ -1039,7 +1039,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"selected-dlc").unwrap();
         writer.finish().unwrap();
-        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let archive_sha = sha256_bytes(&portable_test_fs_retry::read(&archive_path).unwrap());
         let base_mount = EffectiveVfsLayerMount {
             ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -1097,7 +1097,7 @@ mod tests {
             writer.write_all(b"payload").unwrap();
         }
         writer.finish().unwrap();
-        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let archive_sha = sha256_bytes(&portable_test_fs_retry::read(&archive_path).unwrap());
         let error = EffectiveVfs::new(
             "c".repeat(64),
             [
@@ -1147,7 +1147,7 @@ mod tests {
         let archive_path = root.join("empty.zip");
         let writer = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
         writer.finish().unwrap();
-        let archive_sha = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let archive_sha = sha256_bytes(&portable_test_fs_retry::read(&archive_path).unwrap());
         let error = EffectiveVfs::new(
             "d".repeat(64),
             [

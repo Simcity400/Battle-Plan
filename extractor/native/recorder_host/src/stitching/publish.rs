@@ -2659,7 +2659,7 @@ mod tests {
             identity_mode:
                 compact_contract::stream_validator::StreamIdentityMode::Legacy,
             file_path: path.clone(),
-            file: File::open(&path).unwrap(),
+            file: portable_test_fs_retry::open(&path).unwrap(),
             stored_sha256: decode_sha256_hex(&Sha256::hex(original)).unwrap(),
             selection: wire_product::H4crSelection {
                 first_sequence: 0,
@@ -2757,7 +2757,7 @@ mod tests {
                 .clone(),
             identity_mode: compact_contract::stream_validator::StreamIdentityMode::Legacy,
             file_path: path.clone(),
-            file: File::open(&path).unwrap(),
+            file: portable_test_fs_retry::open(&path).unwrap(),
             stored_sha256: decode_sha256_hex(&Sha256::hex(&stream)).unwrap(),
             selection: wire_product::H4crSelection {
                 first_sequence: 1,
@@ -2842,7 +2842,7 @@ mod tests {
             identity_mode:
                 compact_contract::stream_validator::StreamIdentityMode::Legacy,
             file_path: source_path.clone(),
-            file: File::open(&source_path).unwrap(),
+            file: portable_test_fs_retry::open(&source_path).unwrap(),
             stored_sha256: decode_sha256_hex(&Sha256::hex(&stream)).unwrap(),
             selection,
         };
@@ -2883,7 +2883,7 @@ mod tests {
         let verified = wire_product::verify_entry_source_against_h4cr(
             &descriptors,
             |path| {
-                fs::read(
+                portable_test_fs_retry::read(
                     artifacts
                         .get(path)
                         .ok_or_else(|| format!("missing stitched artifact {path}"))?,
@@ -2920,7 +2920,7 @@ mod tests {
         let error = wire_product::verify_entry_source_against_h4cr(
             &descriptors,
             |path| {
-                fs::read(artifacts.get(path).unwrap()).map_err(|error| error.to_string())
+                portable_test_fs_retry::read(artifacts.get(path).unwrap()).map_err(|error| error.to_string())
             },
             wire_product::BundleBuildConfig::default(),
             &branches,
@@ -2960,7 +2960,7 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "temp artifact leaked on success");
 
-        let bytes = fs::read(&dest).unwrap();
+        let bytes = portable_test_fs_retry::read(&dest).unwrap();
         let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
         assert!(container.index().is_stitched());
         let h2 = container
@@ -3026,7 +3026,7 @@ mod tests {
         let dest = dir.0.join("replay.battleplan");
         let source = MemorySource::for_plan(&plan);
         publish_stitched_container_retained(&plan, &source, &dest).unwrap();
-        let prior = fs::read(&dest).unwrap();
+        let prior = portable_test_fs_retry::read(&dest).unwrap();
 
         let drifting = DriftingRetainedSource(MemorySource::for_plan(&plan));
         let error = publish_stitched_container_retained(&plan, &drifting, &dest).unwrap_err();
@@ -3034,7 +3034,7 @@ mod tests {
             error.contains("length") || error.contains("sha256") || error.contains("hash"),
             "unexpected drift failure: {error}"
         );
-        assert_eq!(fs::read(&dest).unwrap(), prior, "prior replay was replaced");
+        assert_eq!(portable_test_fs_retry::read(&dest).unwrap(), prior, "prior replay was replaced");
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter_map(Result::ok)
@@ -3054,7 +3054,7 @@ mod tests {
 
         let error = publish_stitched_container_retained(&plan, &source, &dest).unwrap_err();
         assert!(error.contains("retained-handle replacement"), "{error}");
-        assert_eq!(fs::read(&dest).unwrap(), b"prior-replay-sentinel");
+        assert_eq!(portable_test_fs_retry::read(&dest).unwrap(), b"prior-replay-sentinel");
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter_map(Result::ok)
@@ -3072,9 +3072,9 @@ mod tests {
         let dest = dir.0.join("replay.battleplan");
 
         publish_stitched_container_retained(&plan, &source, &dest).unwrap();
-        let first = fs::read(&dest).unwrap();
+        let first = portable_test_fs_retry::read(&dest).unwrap();
         publish_stitched_container_retained(&plan, &source, &dest).unwrap();
-        let second = fs::read(&dest).unwrap();
+        let second = portable_test_fs_retry::read(&dest).unwrap();
         assert_eq!(second, first);
         assert!(Container::from_bytes(second, &ExpectedIdentity::default()).is_ok());
     }
@@ -3127,7 +3127,7 @@ mod tests {
         // A valid prior replay is already published.
         let good = rollback_plan();
         publish_stitched_container(&good, &MemorySource::for_plan(&good), &dest).unwrap();
-        let prior_bytes = fs::read(&dest).unwrap();
+        let prior_bytes = portable_test_fs_retry::read(&dest).unwrap();
 
         // A new publish whose payload source is missing a snapshot fails.
         let plan = rollback_plan();
@@ -3138,7 +3138,7 @@ mod tests {
 
         // The prior replay is byte-for-byte intact and no temp artifact leaked.
         assert_eq!(
-            fs::read(&dest).unwrap(),
+            portable_test_fs_retry::read(&dest).unwrap(),
             prior_bytes,
             "prior replay was disturbed"
         );
@@ -3205,7 +3205,7 @@ mod tests {
         assert_eq!(report.visible_snapshot_hours, 3);
 
         // Re-open and confirm the standalone source payload is not embedded.
-        let bytes = fs::read(&dest).unwrap();
+        let bytes = portable_test_fs_retry::read(&dest).unwrap();
         let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
         assert!(
             container.entries_by_role("raw_source").is_empty(),

@@ -1672,7 +1672,7 @@ mod tests {
         fs::remove_file(&source_path).unwrap();
         #[cfg(not(windows))]
         {
-            assert_eq!(fs::read(&source_path).unwrap(), replacement);
+            assert_eq!(portable_test_fs_retry::read(&source_path).unwrap(), replacement);
             fs::remove_file(&source_path).unwrap();
             fs::remove_file(&displaced).unwrap();
         }
@@ -1837,7 +1837,7 @@ mod tests {
         ) -> Result<PrefoldedSpool, PrefoldDecodeError> {
             let (game_id, raw_path, snapshot_dir, source_len, source_sha256) = request.into_parts();
             let raw =
-                fs::read(raw_path).map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
+                portable_test_fs_retry::read(raw_path).map_err(|error| PrefoldDecodeError::new(error.to_string()))?;
             if raw != b"H4CRfixture-stream"
                 || raw.len() as u64 != source_len
                 || snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(&raw))
@@ -1906,7 +1906,10 @@ mod tests {
         // R18-5: ordinary open refuses the compact-stream-only container with
         // the typed subclass (compact evidence present in the manifest role).
         assert!(matches!(
-            replay_core::open_recording(&container_path),
+            portable_test_fs_retry::with_tree_read_guard(&container_path, || {
+                replay_core::open_recording(&container_path)
+            })
+            .expect("hold the container open across the scanner's window"),
             Err(SourceError::UnsupportedCompactStreamOnly(_))
         ));
 

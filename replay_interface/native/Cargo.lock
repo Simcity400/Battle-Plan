@@ -146,6 +146,7 @@ dependencies = [
  "map_viewer",
  "portable_content_manifest",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "replay_core",
  "replay_test_gates",
  "serde",
@@ -226,6 +227,7 @@ dependencies = [
  "portable_render_stream",
  "portable_replay_format",
  "portable_terrain_fixture",
+ "portable_test_fs_retry",
  "replay_core",
  "replay_test_gates",
  "serde",
@@ -313,6 +315,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable_test_fs_retry"
+version = "0.1.0"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,6 +350,7 @@ dependencies = [
  "map_viewer",
  "portable_content_manifest",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "replay_core",
  "replay_test_gates",
  "serde",
@@ -360,6 +367,7 @@ dependencies = [
  "portable_content_manifest",
  "portable_render_stream",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "serde",
  "serde_json",
  "sha2",
@@ -379,6 +387,7 @@ dependencies = [
 name = "replay_package_runtime"
 version = "0.1.0"
 dependencies = [
+ "portable_test_fs_retry",
  "serde",
  "serde_json",
  "sha2",

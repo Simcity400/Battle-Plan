@@ -1648,7 +1648,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"archive-payload").unwrap();
         writer.finish().unwrap();
-        let archive_sha = Sha256::digest(&fs::read(&archive_path).unwrap());
+        let archive_sha = Sha256::digest(&portable_test_fs_retry::read(&archive_path).unwrap());
         let authority = "a".repeat(64);
         let vfs = EffectiveVfs::new(
             authority.clone(),

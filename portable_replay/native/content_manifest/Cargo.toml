@@ -17,3 +17,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # benign (the workspace root carries the same setting).
 [profile.release]
 overflow-checks = true
+
+[dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file. Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

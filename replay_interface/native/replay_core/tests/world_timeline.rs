@@ -405,7 +405,16 @@ fn write_container(path: &Path) {
 }
 
 fn open_timeline(path: &Path) -> WorldTimeline {
-    WorldTimeline::open(open_recording(path).unwrap()).unwrap()
+    // The store was written moments ago, so a real-time scanner may still hold
+    // its files; the guards are retained across the open rather than probed and
+    // dropped. THE TREE FORM, because most callers hand this a directory store
+    // and the loader opens files inside it that this function never names — a
+    // single-path guard on the directory would not hold one of them, and on
+    // Windows could not even be acquired.
+    portable_test_fs_retry::with_tree_read_guard(path, || {
+        WorldTimeline::open(open_recording(path).unwrap()).unwrap()
+    })
+    .expect("hold the store open across the scanner's window")
 }
 
 fn write_absence_unavailable_store(root: &Path) {
@@ -606,7 +615,7 @@ fn modern_unavailable_faction_status_beats_stale_legacy_value() {
     let root = unique_temp_dir("faction_roster_modern_precedence");
     write_faction_roster_status_store(&root);
     let serialized: Value = serde_json::from_slice(
-        &fs::read(
+        &portable_test_fs_retry::read(
             root.join("faction_roster_status")
                 .join("000000000020.snapshot.json"),
         )
@@ -1342,7 +1351,10 @@ fn compact_stream_container_fails_closed() {
     let path = root.join("compact_only.battleplan");
     fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
 
-    let err = open_recording(&path).err().expect("must fail closed");
+    let err = portable_test_fs_retry::with_tree_read_guard(&path, || open_recording(&path))
+        .expect("hold the container open across the scanner's window")
+        .err()
+        .expect("must fail closed");
     match &err {
         // R18-5: compact-stream evidence selects the typed subclass so the
         // snapshot-native preflight can waive it without matching text.
@@ -1458,11 +1470,16 @@ fn explicit_portable_prefolder_wires_a_stream_only_container() {
 
     // R18-5: the stream-only container carries compact evidence, so ordinary
     // open refuses with the typed compact-stream-only subclass.
-    assert!(matches!(
-        open_recording(&path),
-        Err(SourceError::UnsupportedCompactStreamOnly(_))
-    ));
-    let source = open_recording_with_decoder(&path, &FixtureCertifiedPrefolder).unwrap();
+    // ONE guard across BOTH openers: the second is the first consumer that has
+    // to succeed, so releasing between them would leave it exposed.
+    let source = portable_test_fs_retry::with_tree_read_guard(&path, || {
+        assert!(matches!(
+            open_recording(&path),
+            Err(SourceError::UnsupportedCompactStreamOnly(_))
+        ));
+        open_recording_with_decoder(&path, &FixtureCertifiedPrefolder).unwrap()
+    })
+    .expect("hold the container open across the scanner's window");
     assert_eq!(source.game_id(), game);
     assert_eq!(source.hours(), &[7]);
     let receipt = source.prefold_receipt().expect("compact source receipt");
@@ -1545,7 +1562,11 @@ fn compact_prefold_reconciles_first_generated_snapshot_provenance() {
     let path = root.join("provenance_mismatch.battleplan");
     fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
 
-    let error = match open_recording_with_decoder(&path, &ConflictingProvenancePrefolder) {
+    let outcome = portable_test_fs_retry::with_tree_read_guard(&path, || {
+        open_recording_with_decoder(&path, &ConflictingProvenancePrefolder)
+    })
+    .expect("hold the container open across the scanner's window");
+    let error = match outcome {
         Err(error) => error,
         Ok(_) => panic!("conflicting prefold provenance must be rejected"),
     };
@@ -1689,7 +1710,17 @@ fn absent_static_artifact_roster() -> Vec<Value> {
     .collect()
 }
 
-fn write_portable_metadata_container(root: &Path, tag: &str, snapshot: Value) -> PathBuf {
+/// Returns the container path AND a retained read handle on it.
+///
+/// Every caller opens it on the next statement; on Windows that is exactly when
+/// a real-time scanner still holds the freshly written file. Bind the guard so
+/// it lives for the length of the test.
+#[must_use = "the scanner guard must be held until the container is opened"]
+fn write_portable_metadata_container(
+    root: &Path,
+    tag: &str,
+    snapshot: Value,
+) -> (PathBuf, std::fs::File) {
     let game = format!("metadata_{tag}");
     let content = portable_content_manifest_fixture();
     let mut recorder_manifest = resolved_recorder_manifest();
@@ -1760,7 +1791,11 @@ fn write_portable_metadata_container(root: &Path, tag: &str, snapshot: Value) ->
         .unwrap(),
     )
     .unwrap();
-    path
+    // The caller opens this on its next statement; the guard is what keeps a
+    // scanner from getting there first.
+    let guard = portable_test_fs_retry::open(&path)
+        .expect("hold the container open across the scanner's window");
+    (path, guard)
 }
 
 fn write_metadata_container(
@@ -2254,7 +2289,11 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
 
     // 1. THE FIX, END TO END.
     let admitted = build("admitted", &|_, _| {});
-    let source = open_recording(&admitted).expect(
+    let source = portable_test_fs_retry::with_tree_read_guard(&admitted, || {
+        open_recording(&admitted)
+    })
+    .expect("hold the recording open across the scanner's window")
+    .expect(
         "a KIND C recording opens — including its A34 decision catalog, whose own loader used to \
          demand a portable content manifest no shipped recorder can produce",
     );
@@ -3100,7 +3139,7 @@ fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens(
 #[test]
 fn recorder_metadata_binds_session_metadata_end_to_end() {
     let root = unique_temp_dir("recorder_metadata_e2e");
-    let path = write_portable_metadata_container(
+    let (path, _scanner_guard) = write_portable_metadata_container(
         &root,
         "canonical",
         metadata_snapshot("metadata_canonical", json!({"world": {"scenario": {}}})),
@@ -3403,7 +3442,7 @@ fn snapshot_session_or_scenario_conflicts_are_rejected_before_injection() {
         ),
     ];
     for (tag, rest, expected_context) in cases {
-        let path = write_portable_metadata_container(
+        let (path, _scanner_guard) = write_portable_metadata_container(
             &root,
             tag,
             metadata_snapshot(&format!("metadata_{tag}"), rest),
@@ -3642,7 +3681,7 @@ fn canonical_portable_opens_recorder_directory_rejects_and_legacy_directory_open
         "{message}"
     );
 
-    let canonical_path = write_portable_metadata_container(
+    let (canonical_path, _scanner_guard) = write_portable_metadata_container(
         &root,
         "canonical_portable",
         metadata_snapshot("metadata_canonical_portable", json!({})),

@@ -1063,14 +1063,20 @@ mod tests {
         manifest.with_computed_digest().unwrap()
     }
 
-    fn fixture(tag: &str) -> (PathBuf, PathBuf) {
+    /// Returns the tree's scanner guards as its third element; bind them
+    /// (`let (root, descriptor, _guards) = fixture(..)`) so they live for the
+    /// length of the test.
+    fn fixture(tag: &str) -> (PathBuf, PathBuf, Vec<std::fs::File>) {
         fixture_with_storage(tag, None)
     }
 
     /// `storage` overrides the member's STORAGE identity (bytes, digest) so it
     /// differs from the decoded identity, which is what a compressed member
     /// looks like. `None` keeps them equal, which is what a raw member is.
-    fn fixture_with_storage(tag: &str, storage: Option<(u64, String)>) -> (PathBuf, PathBuf) {
+    fn fixture_with_storage(
+        tag: &str,
+        storage: Option<(u64, String)>,
+    ) -> (PathBuf, PathBuf, Vec<std::fs::File>) {
         let root = std::env::temp_dir().join(format!(
             "replay_core_rollover_set_{tag}_{}_{}",
             std::process::id(),
@@ -1241,12 +1247,19 @@ mod tests {
         });
         let descriptor = root.join(ROLLOVER_PACKAGE_SET_FILE);
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        (root, descriptor)
+        // Everything under `root` was written moments ago, and `open` plus
+        // `select` read the descriptor, the manifests and the packages. The
+        // guards go back to the caller rather than being leaked: this binary
+        // runs every test in the crate, and handles held for the process
+        // lifetime would accumulate across all of them.
+        let guards = portable_test_fs_retry::tree_read_guards(&root)
+            .expect("hold the package tree open across the scanner's window");
+        (root, descriptor, guards)
     }
 
     #[test]
     fn explicit_selection_authenticates_one_independent_package() {
-        let (root, descriptor) = fixture("select");
+        let (root, descriptor, _scanner_guards) = fixture("select");
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         assert_eq!(set.ordered_streams()[0].logical_stream_id, 0);
         let selected = set.select(0).unwrap();
@@ -1258,7 +1271,7 @@ mod tests {
 
     #[test]
     fn pathname_replacement_after_selection_cannot_change_replay_source() {
-        let (root, descriptor) = fixture("replace_after_admission");
+        let (root, descriptor, _scanner_guards) = fixture("replace_after_admission");
         let selected = RolloverPackageSet::open(&descriptor).unwrap().select(0).unwrap();
         let selected_path = selected.path().to_path_buf();
         #[cfg(windows)]
@@ -1298,7 +1311,7 @@ mod tests {
     /// than as the wrong field being compared.
     #[test]
     fn admission_joins_the_container_entry_to_the_decoded_member_identity() {
-        let (root, descriptor) = fixture_with_storage(
+        let (root, descriptor, _scanner_guards) = fixture_with_storage(
             "compressed_storage",
             Some((11, "5c".repeat(32))),
         );
@@ -1317,12 +1330,15 @@ mod tests {
     /// is refused rather than accepted because some other field matched.
     #[test]
     fn a_misstated_decoded_identity_is_still_refused() {
-        let (root, descriptor) = fixture("decoded_tamper");
+        let (root, descriptor, _scanner_guards) = fixture("decoded_tamper");
         let mut value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["ordered_streams"][0]["raw_decoded_sha256"] = json!("6d".repeat(32));
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        let error = RolloverPackageSet::open(&descriptor)
+        let error = portable_test_fs_retry::with_read_guard(&descriptor, || {
+            RolloverPackageSet::open(&descriptor)
+        })
+        .expect("hold the rewritten descriptor open across the scanner's window")
             .unwrap()
             .select(0)
             .unwrap_err();
@@ -1337,7 +1353,7 @@ mod tests {
 
     #[test]
     fn descriptor_never_defaults_to_segment_zero() {
-        let (root, descriptor) = fixture("explicit");
+        let (root, descriptor, _scanner_guards) = fixture("explicit");
         let error = authenticate_rollover_segment(&descriptor, None).unwrap_err();
         assert!(
             matches!(error, RolloverAuthenticationError::Unsupported(_)),
@@ -1349,7 +1365,7 @@ mod tests {
 
     #[test]
     fn selected_package_hash_is_checked_before_replay_open() {
-        let (root, descriptor) = fixture("package_tamper");
+        let (root, descriptor, _scanner_guards) = fixture("package_tamper");
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         let replacement_game = "valid-but-unselected-package";
         let replacement = pack(
@@ -1391,10 +1407,10 @@ mod tests {
 
     #[test]
     fn post_pack_external_manifest_mutation_cannot_become_rollover_authority() {
-        let (root, descriptor) = fixture("external_manifest_mutation");
+        let (root, descriptor, _scanner_guards) = fixture("external_manifest_mutation");
         let manifest_path = root.join("native_session_manifest.json");
         let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&manifest_path).unwrap()).unwrap();
         manifest["host_finalize"] = json!({"post_pack_only": true});
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         fs::write(&manifest_path, &manifest_bytes).unwrap();
@@ -1403,10 +1419,13 @@ mod tests {
         // those bytes equal the recorder_manifest already sealed in the
         // selected container.
         let mut value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["ordered_streams"][0]["manifest_sha256"] = json!(hash(&manifest_bytes));
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        let error = RolloverPackageSet::open(&descriptor)
+        let error = portable_test_fs_retry::with_read_guard(&descriptor, || {
+            RolloverPackageSet::open(&descriptor)
+        })
+        .expect("hold the rewritten descriptor open across the scanner's window")
             .unwrap()
             .select(0)
             .unwrap_err();
@@ -1423,11 +1442,15 @@ mod tests {
 
     #[test]
     fn recovery_member_is_never_admitted_to_product_playback() {
-        let (root, descriptor) = fixture("recovery");
-        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+        let (root, descriptor, _scanner_guards) = fixture("recovery");
+        let mut value: serde_json::Value = serde_json::from_slice(&portable_test_fs_retry::read(
+            &descriptor
+        ).unwrap()).unwrap();
         value["ordered_streams"][0]["recovery"] = json!(true);
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        let set = RolloverPackageSet::open(&descriptor).unwrap();
+        let set = portable_test_fs_retry::with_read_guard(&descriptor, || RolloverPackageSet::open(&descriptor))
+            .expect("hold the rewritten descriptor open across the scanner's window")
+            .unwrap();
         let error = set.select(0).unwrap_err();
         assert!(
             matches!(error, RolloverAuthenticationError::Unsupported(_)),
@@ -1439,11 +1462,15 @@ mod tests {
 
     #[test]
     fn unknown_fields_and_non_contiguous_ids_fail_closed() {
-        let (root, descriptor) = fixture("strict");
-        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+        let (root, descriptor, _scanner_guards) = fixture("strict");
+        let mut value: serde_json::Value = serde_json::from_slice(&portable_test_fs_retry::read(
+            &descriptor
+        ).unwrap()).unwrap();
         value["unexpected"] = json!(true);
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        assert!(RolloverPackageSet::open(&descriptor).is_err());
+        assert!(portable_test_fs_retry::with_read_guard(&descriptor, || RolloverPackageSet::open(&descriptor))
+            .expect("hold the rewritten descriptor open across the scanner's window")
+            .is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1466,9 +1493,9 @@ mod tests {
     /// product boundary would headline "recording not playable by this build".
     #[test]
     fn tampered_manifest_member_classifies_as_integrity() {
-        let (root, descriptor) = fixture("manifest_tamper");
+        let (root, descriptor, _scanner_guards) = fixture("manifest_tamper");
         let manifest_path = root.join("native_session_manifest.json");
-        let mut bytes = fs::read(&manifest_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&manifest_path).unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
         fs::write(&manifest_path, &bytes).unwrap();
@@ -1490,9 +1517,9 @@ mod tests {
     /// pinned by the package-set descriptor) is likewise an integrity failure.
     #[test]
     fn tampered_source_descriptor_classifies_as_integrity() {
-        let (root, descriptor) = fixture("source_tamper");
+        let (root, descriptor, _scanner_guards) = fixture("source_tamper");
         let source_path = root.join("logical-streams/logical-stream-set.json");
-        let mut bytes = fs::read(&source_path).unwrap();
+        let mut bytes = portable_test_fs_retry::read(&source_path).unwrap();
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
         fs::write(&source_path, &bytes).unwrap();
@@ -1514,9 +1541,9 @@ mod tests {
     /// never a malformed-descriptor Structure error.
     #[test]
     fn unknown_package_set_schema_classifies_as_unsupported() {
-        let (root, descriptor) = fixture("future_schema");
+        let (root, descriptor, _scanner_guards) = fixture("future_schema");
         let mut value: serde_json::Value =
-            serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+            serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["schema"] = json!("cid1-rollover-package-set-v2");
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
         let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
@@ -1540,7 +1567,7 @@ mod tests {
     /// Integrity, not Structure.
     #[test]
     fn unparseable_tampered_package_member_classifies_as_integrity() {
-        let (root, descriptor) = fixture("zip_structure_tamper");
+        let (root, descriptor, _scanner_guards) = fixture("zip_structure_tamper");
         fs::write(
             root.join("native_session.battleplan"),
             b"these bytes are not a zip container at all",
@@ -1565,7 +1592,7 @@ mod tests {
     /// integrity is reserved for bytes that lost against a declared digest.
     #[test]
     fn malformed_descriptor_classifies_as_structure() {
-        let (root, descriptor) = fixture("malformed_descriptor");
+        let (root, descriptor, _scanner_guards) = fixture("malformed_descriptor");
         fs::write(&descriptor, b"{ not json").unwrap();
         let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
         assert!(

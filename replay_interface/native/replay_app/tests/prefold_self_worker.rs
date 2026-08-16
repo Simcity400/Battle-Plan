@@ -126,7 +126,7 @@ fn stream() -> Vec<u8> {
 }
 
 fn executable_sha256(path: &Path) -> String {
-    snapshot::sha256::Sha256::hex(&std::fs::read(path).expect("read replay_app image"))
+    snapshot::sha256::Sha256::hex(&portable_test_fs_retry::read(path).expect("read replay_app image"))
 }
 
 fn open_substitutable_read_handle(path: &Path) -> File {
@@ -181,6 +181,10 @@ fn shipped_cli_opens_compact_recording_through_the_production_parent_worker() {
     // container that necessarily executes ProductionPrefoldWorker end to end:
     // retained source admission, bounded child/job collection, self-image
     // revalidation, receipt authentication, and PrefoldedSpool construction.
+    // The CHILD process opens this container, so the guard has to be held in
+    // the parent across the whole spawn-and-wait.
+    let _scanner_guard = portable_test_fs_retry::open(&recording)
+        .expect("hold the recording open across the scanner's window");
     let output = bounded_output(
         Command::new(env!("CARGO_BIN_EXE_replay_app"))
             .arg("--validate-recording")
@@ -261,7 +265,7 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
     let entry = entries[0].as_object().expect("entry object");
     let file_name = entry["file_name"].as_str().expect("snapshot file name");
     let snapshot_path = snapshot_dir.join(file_name);
-    let snapshot_bytes = std::fs::read(snapshot_path).expect("read emitted snapshot");
+    let snapshot_bytes = portable_test_fs_retry::read(snapshot_path).expect("read emitted snapshot");
     let snapshot_sha256 = snapshot::sha256::Sha256::hex(&snapshot_bytes);
     assert_eq!(entry["byte_len"].as_u64(), Some(snapshot_bytes.len() as u64));
     assert_eq!(entry["sha256"].as_str(), Some(snapshot_sha256.as_str()));
@@ -275,7 +279,7 @@ fn shipped_replay_app_worker_rejects_the_wrong_self_image_hash_before_folding() 
     std::fs::create_dir(&snapshot_dir).expect("create snapshot spool");
     let bytes = stream();
     std::fs::write(&source_path, &bytes).expect("write compact source");
-    let source = File::open(&source_path).expect("open compact source");
+    let source = portable_test_fs_retry::open(&source_path).expect("open compact source");
 
     let output = bounded_output(
         Command::new(env!("CARGO_BIN_EXE_replay_app"))

@@ -1586,13 +1586,13 @@ mod tests {
         // The first payload was replaced and the second was not — exactly the
         // mixed state the old manifest would have described as coherent.
         assert_eq!(
-            fs::read(root.join("province_ids.r32"))
+            portable_test_fs_retry::read(root.join("province_ids.r32"))
                 .expect("read payload")
                 .len(),
             8
         );
         assert_eq!(
-            fs::read(root.join("heightmap.r8")).expect("read payload"),
+            portable_test_fs_retry::read(root.join("heightmap.r8")).expect("read payload"),
             [9u8]
         );
         let _ = fs::remove_dir_all(&root);
@@ -1717,7 +1717,9 @@ mod tests {
         import_runtime_texture_input(&options).expect("import SnowMudData runtime texture");
 
         let runtime: TerrainRuntimeInputs =
-            serde_json::from_slice(&fs::read(root.join(&manifest.files.terrain_runtime)).unwrap())
+            serde_json::from_slice(&portable_test_fs_retry::read(
+                root.join(&manifest.files.terrain_runtime)
+            ).unwrap())
                 .expect("read runtime contract");
         let snow = runtime
             .runtime_textures
@@ -1783,7 +1785,7 @@ mod tests {
             .expect("import ProvinceSecondaryColorMap runtime texture");
 
         let runtime: TerrainRuntimeInputs =
-            serde_json::from_slice(&fs::read(root.join(&manifest.files.terrain_runtime)).unwrap())
+            serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
                 .expect("read runtime contract");
         let secondary = runtime
             .runtime_textures
@@ -1839,7 +1841,7 @@ mod tests {
         import_runtime_constant_buffer_input(&options).expect("import TerrainSceneCB0");
 
         let runtime: TerrainRuntimeInputs =
-            serde_json::from_slice(&fs::read(root.join(&manifest.files.terrain_runtime)).unwrap())
+            serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
                 .expect("read runtime contract");
         let cb0 = runtime
             .runtime_constant_buffers
@@ -1920,7 +1922,7 @@ mod tests {
         import_runtime_vertex_buffer_input(&options).expect("import TerrainVertexBuffer");
 
         let runtime: TerrainRuntimeInputs =
-            serde_json::from_slice(&fs::read(root.join(&manifest.files.terrain_runtime)).unwrap())
+            serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
                 .expect("read runtime contract");
         let vertex_buffer = runtime
             .runtime_vertex_buffers
@@ -1981,7 +1983,7 @@ mod tests {
         import_runtime_input_layout(&options).expect("import TerrainInputLayout");
 
         let runtime: TerrainRuntimeInputs =
-            serde_json::from_slice(&fs::read(root.join(&manifest.files.terrain_runtime)).unwrap())
+            serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
                 .expect("read runtime contract");
         let input_layout = runtime
             .runtime_input_layouts

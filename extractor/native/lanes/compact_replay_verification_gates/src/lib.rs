@@ -4658,12 +4658,60 @@ fn truncate_for_refusal(value: &Value) -> String {
     format!("{head}…")
 }
 
+/// TEST-ONLY: hold a read handle on everything under `run_dir` for as long as
+/// the caller keeps the returned value.
+///
+/// On Windows a real-time antimalware scanner opens a file the moment it is
+/// written, with a share mode that refuses other openers; anything that reads
+/// it in the next few milliseconds gets `os error 32`. This crate's unit tests
+/// write a whole run directory and hand it straight to
+/// `load_verified_replay_authority`, and that is how they flaked.
+///
+/// The guards are RETAINED rather than probed and dropped: while a handle is
+/// open the scanner cannot take the file back, which an open-and-drop probe
+/// cannot promise. They are taken over the WHOLE directory rather than at each
+/// reader because the loader reaches many — the container, the stored stream,
+/// the compression probe that opens it first, and every retained
+/// static-evidence artifact — and one guard set at the entry cannot be got
+/// wrong the way a per-reader list can.
+///
+/// Every failure is ignored on purpose. A missing file, a refused permission,
+/// or a violation that never clears all fall straight through to the real
+/// reader, so every existing error and every assertion on it is unchanged.
+/// These guards can only DELAY the loader, never redirect it.
+#[cfg(test)]
+fn scanner_guards(run_dir: &Path) -> Vec<std::fs::File> {
+    fn walk(directory: &Path, guards: &mut Vec<std::fs::File>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => walk(&path, guards),
+                Ok(kind) if kind.is_file() => {
+                    if let Ok(file) = portable_test_fs_retry::open(&path) {
+                        guards.push(file);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut guards = Vec::new();
+    walk(run_dir, &mut guards);
+    guards
+}
+
 fn load_verified_replay_authority(
     external_manifest: &Value,
     external_manifest_bytes: &[u8],
     run_dir: &Path,
     max_stream_bytes: u64,
 ) -> Result<VerifiedReplayAuthority, String> {
+    // Held for the whole call; see `scanner_guards`.
+    #[cfg(test)]
+    let _scanner_guards = scanner_guards(run_dir);
     // The recording's declared composition decides WHICH proof this gate can
     // run. It is never inferred from a missing entry.
     //
@@ -6264,6 +6312,14 @@ fn read_stream_artifact(
         "zstd" => compact_stream::StreamCompression::Zstd,
         other => return Err(format!("unsupported manifest stream compression {other:?}")),
     };
+    // TEST-ONLY, and held for the WHOLE function rather than at either reader:
+    // this is reached both from `load_verified_replay_authority` (which already
+    // guards the run directory) and DIRECTLY from unit tests that wrote this
+    // file moments ago. It reads the file twice — the compression probe and the
+    // full read below — so a guard around either one alone would leave the
+    // other exposed. Failures are ignored; see `scanner_guards`.
+    #[cfg(test)]
+    let _scanner_guard = portable_test_fs_retry::open(path).ok();
     // This gate re-derives the stream identity from byte zero. A spool whose
     // storage prefix was released after the checkpoint cache took ownership of
     // it can no longer answer that, and its zeroed prefix must not be scanned
@@ -9858,8 +9914,12 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        fs::write(run_dir.join("collector_stream.bin"), b"stream").unwrap();
-        fs::write(run_dir.join("native_session.battleplan"), b"replay").unwrap();
+        fs::write(
+            run_dir.join("collector_stream.bin"), b"stream"
+        ).unwrap();
+        fs::write(
+            run_dir.join("native_session.battleplan"), b"replay"
+        ).unwrap();
         let alias = outer.0.join("run_alias");
         if std::os::windows::fs::symlink_dir(&run_dir, &alias).is_err() {
             return;
@@ -9886,7 +9946,7 @@ mod tests {
             let mut writer = compact_stream::StreamWriter::create(&path, compression).unwrap();
             writer.write_all(&decoded).unwrap();
             writer.finish().unwrap();
-            let stored = fs::read(&path).unwrap();
+            let stored = portable_test_fs_retry::read(&path).unwrap();
             let manifest = json!({
                 "stream_storage": {
                     "compression": compression.as_str(),
@@ -10832,7 +10892,7 @@ mod tests {
 
         // The fixture really is sealed the production way: the two fields hold
         // the two different vocabularies, exactly as a live capture does.
-        let sealed = fs::read(dir.0.join("native_session.battleplan")).unwrap();
+        let sealed = portable_test_fs_retry::read(dir.0.join("native_session.battleplan")).unwrap();
         let sealed_manifest: Value = serde_json::from_slice(
             &Container::from_bytes(sealed, &ExpectedIdentity::default())
                 .unwrap()
@@ -11046,7 +11106,7 @@ mod tests {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture_with_static_mutation(&dir.0, "g", &manifest_bytes, true, |_, _| {});
         let replay_path = dir.0.join("native_session.battleplan");
-        let mut packed = fs::read(&replay_path).unwrap();
+        let mut packed = portable_test_fs_retry::read(&replay_path).unwrap();
         // Flip the packaged stream's PAYLOAD in place — the literal b"stream",
         // not the two copies of "collector_stream.bin" in the zip headers — so
         // the container entry digest no longer covers these bytes.
@@ -11912,7 +11972,9 @@ mod tests {
         // A DIFFERENT file, absolute and real, whose basename does not bind to
         // the sealed entry.
         let decoy = dir.0.join("decoy_verifier.py");
-        fs::write(&decoy, b"# fixture static bundle verifier\n").unwrap();
+        fs::write(
+            &decoy, b"# fixture static bundle verifier\n"
+        ).unwrap();
         let mut unbound = base_run_dir.clone();
         unbound["static_bundle"]["verifier"]["path"] =
             json!(fs::canonicalize(&decoy).unwrap().display().to_string());
@@ -12042,7 +12104,7 @@ mod tests {
                 .as_str()
                 .unwrap(),
         );
-        let retained_bytes = fs::read(&retained_path).unwrap();
+        let retained_bytes = portable_test_fs_retry::read(&retained_path).unwrap();
         let mut retained = snapshot::parse_json_strict(&retained_bytes).unwrap();
         let arbitrary = "a".repeat(64);
         retained["bundle_id"] = json!(arbitrary);
@@ -12972,7 +13034,9 @@ mod tests {
                 let artifact = replay_test_static_artifact_value(role);
                 let artifact_bytes = serde_json::to_vec(&artifact).unwrap();
                 let artifact_file = required_static_bundle_file(role).unwrap();
-                fs::write(bundle_dir.join(artifact_file), &artifact_bytes).unwrap();
+                fs::write(
+                    bundle_dir.join(artifact_file), &artifact_bytes
+                ).unwrap();
                 let artifact_sha256 = artifact["artifact_sha256"].as_str().unwrap();
                 let report = json!({
                     "schema": format!("fixture.{role}.static_gate_report.v1"),
@@ -12981,7 +13045,9 @@ mod tests {
                 });
                 let report_bytes = serde_json::to_vec_pretty(&report).unwrap();
                 let report_file = required_static_gate_report_file(role).unwrap();
-                fs::write(bundle_dir.join(&report_file), &report_bytes).unwrap();
+                fs::write(
+                    bundle_dir.join(&report_file), &report_bytes
+                ).unwrap();
                 json!({
                     "role": role,
                     "file": artifact_file,
@@ -13053,7 +13119,9 @@ mod tests {
         });
         let source_inventory_bytes = serde_json::to_vec_pretty(&source_inventory).unwrap();
         let source_inventory_path = external_dir.join("source_inventory.json");
-        fs::write(&source_inventory_path, &source_inventory_bytes).unwrap();
+        fs::write(
+            &source_inventory_path, &source_inventory_bytes
+        ).unwrap();
         fs::write(
             embedded_bindings_dir.join("source_inventory.json"),
             &source_inventory_bytes,
@@ -13100,7 +13168,9 @@ mod tests {
             "provenance": {"fixture": true},
         }))
         .unwrap();
-        fs::write(bundle_dir.join("token_join_report.json"), &token_join).unwrap();
+        fs::write(
+            bundle_dir.join("token_join_report.json"), &token_join
+        ).unwrap();
 
         let mut retained_bindings = serde_json::Map::new();
         retained_bindings.insert(
@@ -13161,7 +13231,9 @@ mod tests {
         retained_manifest["bundle_id"] = json!(bundle_id);
         let retained_manifest_bytes = serde_json::to_vec_pretty(&retained_manifest).unwrap();
         let retained_manifest_path = bundle_dir.join("static_bundle_manifest.json");
-        fs::write(&retained_manifest_path, &retained_manifest_bytes).unwrap();
+        fs::write(
+            &retained_manifest_path, &retained_manifest_bytes
+        ).unwrap();
 
         let verifier_bytes = b"# fixture static bundle verifier\n".to_vec();
         let verifier_path = external_dir.join("static_bundle.py");
@@ -13400,7 +13472,9 @@ mod tests {
             false,
         )
         .unwrap();
-        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        fs::write(
+            dir.join("native_session.battleplan"), packed
+        ).unwrap();
         sealed_bytes
     }
 
@@ -14573,7 +14647,9 @@ mod tests {
             false,
         )
         .unwrap();
-        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        fs::write(
+            dir.join("native_session.battleplan"), packed
+        ).unwrap();
         sealed_bytes
     }
 
@@ -15055,12 +15131,18 @@ mod tests {
             // provokes is the identity check.
             rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, 8);
         }
-        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
+        fs::write(
+            dir.join("native_session.battleplan"), packed
+        ).unwrap();
         if !breakage.omit_run_dir_stream {
             let on_disk = breakage.run_dir_stream_override.as_ref().unwrap_or(&stream);
-            fs::write(dir.join("collector_stream.bin"), on_disk).unwrap();
+            fs::write(
+                dir.join("collector_stream.bin"), on_disk
+            ).unwrap();
         }
-        fs::write(dir.join("native_session_manifest.json"), &manifest_bytes).unwrap();
+        fs::write(
+            dir.join("native_session_manifest.json"), &manifest_bytes
+        ).unwrap();
         CacheOnlyRecording {
             manifest,
             manifest_bytes,

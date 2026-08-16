@@ -214,6 +214,7 @@ dependencies = [
  "compact_stream",
  "diplomacy_intel_operatives_live",
  "portable_content_manifest",
+ "portable_test_fs_retry",
  "recorder_host",
  "serde_json",
  "snapshot",
@@ -805,6 +806,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable_test_fs_retry"
+version = "0.1.0"
+
+[[package]]
 name = "postfx_exposure"
 version = "0.1.0"
 dependencies = [
@@ -930,6 +935,7 @@ dependencies = [
  "portable_admission",
  "portable_content_manifest",
  "portable_render_stream",
+ "portable_test_fs_retry",
  "power_balance_presentation_live_lane",
  "production_render_submit_live_lane",
  "resolved_tooltip_instances_live_lane",
@@ -1162,6 +1168,7 @@ dependencies = [
  "minhook_h4",
  "portable_admission",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "serde",
  "serde_json",
  "winapi",
@@ -1314,6 +1321,7 @@ dependencies = [
  "compact_contract",
  "compact_stream",
  "portable_content_manifest",
+ "portable_test_fs_retry",
  "sha2",
  "wire_format",
  "zstd",

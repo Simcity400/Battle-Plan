@@ -1302,12 +1302,31 @@ fn streaming_entry_decoded_len(entry: &StreamingFileEntry<'_>) -> std::io::Resul
     if entry.source_compression == compact_stream::StreamCompression::None {
         return Ok(fs::metadata(entry.file_path)?.len());
     }
+    #[cfg(test)]
+    let _scanner_guard = scanner_guard(entry.file_path);
     let mut reader =
         compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
     std::io::copy(&mut reader, &mut std::io::sink())
 }
 
+/// TEST-ONLY: wait out a real-time scanner still holding a source file this
+/// process wrote moments ago.
+///
+/// The packer OPENS the source paths it is handed, and this crate's tests write
+/// them immediately beforehand. It has to live HERE rather than in the stream
+/// crate the open goes through: a `#[cfg(test)]` guard there is compiled only
+/// for THAT crate's own tests, not for this one's.
+///
+/// Retained by the caller across the open, and every failure is ignored — a
+/// missing file or a real refusal reaches the real open exactly as before.
+#[cfg(test)]
+fn scanner_guard(path: &std::path::Path) -> Option<std::fs::File> {
+    portable_test_fs_retry::open(path).ok()
+}
+
 fn sha256_streaming_entry(entry: &StreamingFileEntry<'_>) -> std::io::Result<(String, u64)> {
+    #[cfg(test)]
+    let _scanner_guard = scanner_guard(entry.file_path);
     let mut reader =
         compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
     let mut hasher = Sha256::new();
@@ -1656,6 +1675,8 @@ fn write_zip_file_streaming_with_entry_limit<W: Write>(
     write_all_counted(out, written, name.as_bytes())?;
 
     // --- stream the payload, hashing + measuring as we go ---
+    #[cfg(test)]
+    let _scanner_guard = scanner_guard(entry.file_path);
     let mut file =
         compact_stream::open_with_compression(entry.file_path, entry.source_compression)?;
     let mut hasher = crc32fast::Hasher::new();

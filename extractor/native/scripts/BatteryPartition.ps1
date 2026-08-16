@@ -1,4 +1,4 @@
-# The central battery's serial/parallel partition.
+﻿# The central battery's serial/parallel partition.
 #
 # WHY THIS FILE EXISTS
 #
@@ -120,7 +120,15 @@ $script:BatteryCargoRoots = @(
     # (exit 101). Its three `#[cfg(test)]` tests had never run, while the
     # fixture they guard is what `map_viewer`'s constant-buffer contract test
     # argues over.
-    'portable_replay\native\terrain_fixture'
+    'portable_replay\native\terrain_fixture',
+    # Lane KY. A cargo root of its own for the same reason `test_fs_retry` has
+    # to exist at all: it is a `[dev-dependencies]` entry of 13 packages across
+    # BOTH workspaces, and only `portable_replay` is a tree both may depend on.
+    # Being a path dependency of thirteen packages is exactly what does NOT get
+    # it selected -- LD's guard above threw on this crate before this line was
+    # added, naming it as a member of no cargo root, which is the check working
+    # as designed rather than a second copy of LD's lesson.
+    'portable_replay\native\test_fs_retry'
 )
 
 # Directory names never scanned: build output, git metadata, and the append-only
@@ -1151,7 +1159,7 @@ function Select-BatteryFeaturesForRoot {
     replay_decoder/dq-v3-prototype` is valid in the extractor workspace and
     meaningless in the replay one, which contains no such package -- and cargo
     does not shrug at that, it EXITS 101 with "none of the selected packages
-    contains this feature". Passing the caller's whole list to all ten roots
+    contains this feature". Passing the caller's whole list to all eleven roots
     therefore turned a legitimate `-Mode Iterate -DepInfo -Features ...` into a
     refusal from the very throw that was added to make failures loud.
 
