@@ -186,6 +186,21 @@ pub const READ_PREDICATE_FRAME_STATUS_PERMITTED_READ: u32 = 0x0002_000F;
 /// from the two other things that look like one on the wire — a delta frame
 /// with no changes, and a reader that could not run at all.
 pub const READ_PREDICATE_SOURCE_ANSWERED_EMPTY: u32 = 0x0002_0010;
+/// This domain's diagnosis was RECONSTRUCTED from the record it published,
+/// because its producer recorded no outcome of its own.
+///
+/// The one thing a migrated site failing silently used to be countable by was
+/// [`READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME`], and that is a FRAME
+/// finding — it refuses the hour, taking every other domain's data with it,
+/// which under the partial-data law is the wrong price for an accounting
+/// defect. The collector now substantiates such a record into a per-domain
+/// outcome instead, and this predicate is what keeps the fact typed and
+/// countable rather than leaving it as prose in a reason string.
+///
+/// A producer code, unlike `..._MIGRATED_SITE_PUBLISHED_OUTCOME`: the claim is
+/// about one domain's read, it rides on that domain's offender entry, and it is
+/// therefore constructible from [`READ_PREDICATES`].
+pub const READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD: u32 = 0x0002_0011;
 
 /// Every domain read predicate, for the uniqueness and non-zero checks.
 ///
@@ -234,6 +249,10 @@ pub const READ_PREDICATES: &[(u32, &str)] = &[
     (
         READ_PREDICATE_SOURCE_ANSWERED_EMPTY,
         "source_answered_empty",
+    ),
+    (
+        READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD,
+        "outcome_substantiated_from_record",
     ),
 ];
 

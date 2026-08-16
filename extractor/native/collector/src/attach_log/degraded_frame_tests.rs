@@ -409,12 +409,15 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
     assert_eq!(
         routed,
         vec![
+            "COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS",
+            "COMPACT_DOMAIN_AIR_VARIANT_RESERVES",
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
             "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
         ],
-        "D18, D65, D66 and D91 publish a reader-computed status word and must substantiate it"
+        "every emit site that publishes a reader-computed status word must substantiate it; \
+         D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class"
     );
 }
 
@@ -1191,5 +1194,464 @@ fn a_full_roster_degraded_summary_reaches_the_log_whole() {
         !record_format::format_record(pid, creation, "frame_degraded", &text).contains(&tail),
         "the fixture must be large enough that a single record WOULD have lost the tail; \
          otherwise this test cannot fail"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The silent-PERF class, closed for every declared domain at once
+// ---------------------------------------------------------------------------
+
+/// Every failure bit a DOMAIN READ can put on its own PERF word — which is
+/// exactly `READER_OWNED_FAILURE_BITS`, spelled out here so that adding a bit to
+/// that constant without extending this list is visible.
+///
+/// The other four members of `COMPACT_STATUS_FAILURE_MASK` are absent on
+/// purpose, and `a_frame_prologue_bit_alone_is_left_to_refuse_the_frame` below
+/// is where that is asserted rather than assumed.
+const EVERY_READER_OWNED_FAILURE_BIT: &[u32] = &[
+    COMPACT_STATUS_SOURCE_UNAVAILABLE,
+    COMPACT_STATUS_PARTIAL_DATA,
+    COMPACT_STATUS_WORKER_PANIC,
+    COMPACT_STATUS_NO_CLOCK,
+    COMPACT_STATUS_CONTROL_INVALID,
+];
+
+/// THE CLASS KILLER.
+///
+/// `migrated_site_published_outcome` was fixed for D91 by lane KT and then
+/// reported again, by the very next capture, for domains 36 and 38. It is not a
+/// per-domain defect: `MIGRATED_OUTCOME_DOMAINS` declares a domain migrated on
+/// the strength of its WORKER JOIN, and every one of those domains whose reader
+/// can return a failing status word without panicking is latently in the class.
+/// So this asserts the property for EVERY declared domain and EVERY failure bit
+/// the contract has, rather than for the two the last capture happened to name.
+///
+/// The `before` half is what stops this being vacuous: it proves each case
+/// really did produce the frame-refusing finding, so a sweep that silently
+/// stopped firing would fail here rather than pass trivially.
+///
+/// Production change that makes this fail: deleting the
+/// `substantiate_silent_domain_outcomes` call before `FRAME_END`, narrowing it
+/// so it stops covering a bit or a domain, or adding a domain to
+/// `MIGRATED_OUTCOME_DOMAINS` whose emit path can bypass it.
+#[test]
+fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
+    let mut exercised = 0usize;
+    for domain_id in MIGRATED_OUTCOME_DOMAINS.iter().copied() {
+        // The escape hatch is a DIFFERENT state: those domains keep the
+        // reserved `undeclared` predicate and never produced the frame finding,
+        // so they are not in this class. Their test is
+        // `a_worker_success_does_not_turn_a_partially_migrated_domain_failure_into_a_frame_fault`.
+        if PARTIALLY_MIGRATED_OUTCOME_DOMAINS.contains(&domain_id) {
+            continue;
+        }
+        for bit in EVERY_READER_OWNED_FAILURE_BIT.iter().copied() {
+            let failed =
+                compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
+                    domain_id, bit,
+                );
+            if failed == 0 {
+                // A tolerated PARTIAL for this domain is not an offence at all,
+                // so there is no finding to kill.
+                continue;
+            }
+            // The exact input state the defect needs: the worker join recorded
+            // SUCCESS, and nothing else spoke.
+            let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+            record_read_succeeded(
+                &mut outcomes,
+                domain_id,
+                compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+            );
+            let (records, _) = assembled_frame(&[(domain_id, bit)]);
+
+            // BEFORE: this is the frame-refusing finding, on this domain, now.
+            let before = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+            assert!(
+                before.iter().any(|finding| {
+                    finding.frame_finding.as_ref().is_some_and(|frame| {
+                        frame.predicate.name
+                            == compact_contract::domain_outcome::READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME_NAME
+                    })
+                }),
+                "domain {domain_id} with status {bit:#010x} did not reproduce the defect, so \
+                 the `after` half below proves nothing"
+            );
+            assert!(
+                matches!(
+                    classify_frame_completeness(&before),
+                    FrameCompletenessVerdict::Refused
+                ),
+                "domain {domain_id} with status {bit:#010x} must refuse the frame before the sweep"
+            );
+
+            // AFTER: the sweep runs where production runs it.
+            let substantiated = substantiate_silent_domain_outcomes(&records, &mut outcomes, 0);
+            assert_eq!(
+                substantiated, 1,
+                "the sweep must substantiate domain {domain_id}'s {bit:#010x} word"
+            );
+            assert_eq!(
+                classify_production_outcome_coverage(domain_id, &outcomes),
+                compact_contract::domain_outcome::OutcomeCoverage::Declared,
+                "domain {domain_id} with status {bit:#010x} is still silent after the sweep"
+            );
+
+            let after = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+            assert!(
+                after.iter().all(|finding| finding.frame_finding.is_none()),
+                "domain {domain_id} with status {bit:#010x} still carries a FRAME finding: {:?}",
+                after.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+            );
+            // Substantiating must not trade one frame-refusing finding for
+            // another: an outcome claiming a bit the record does not carry
+            // would raise `published_status_matches_outcome` instead.
+            assert!(
+                !after.iter().any(|finding| finding
+                    .frame_finding
+                    .as_ref()
+                    .is_some_and(|frame| frame.predicate.name
+                        == "published_status_matches_outcome")),
+                "domain {domain_id} with status {bit:#010x} made the record and the diagnosis \
+                 disagree: {:?}",
+                after.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+            );
+            // The domain is EXCLUDED AND ACCOUNTED -- the partial-data law --
+            // rather than taking the frame down with it.
+            let FrameCompletenessVerdict::Degraded(degraded) = classify_frame_completeness(&after)
+            else {
+                panic!(
+                    "domain {domain_id} with status {bit:#010x} must become a per-domain \
+                     degradation, not a verdict about the frame"
+                );
+            };
+            assert_eq!(degraded.len(), 1);
+            assert_eq!(degraded[0].domain_id, domain_id);
+            // ...and it says why, in a string a stream census can count.
+            assert!(
+                degraded[0].reason.contains("recorded no outcome of its own"),
+                "domain {domain_id} with status {bit:#010x} degraded without naming the silence: {}",
+                degraded[0].reason
+            );
+            assert!(
+                !degraded[0]
+                    .reason
+                    .contains(compact_contract::diagnostic_channel::PREDICATE_UNDECLARED_NAME),
+                "domain {domain_id} must not fall back to the reserved undeclared predicate"
+            );
+            exercised += 1;
+        }
+    }
+    // The loop above must actually have run. A `MIGRATED_OUTCOME_DOMAINS` that
+    // emptied itself, or a tolerance that swallowed every bit, would otherwise
+    // make every assertion above unreachable and this test green.
+    assert!(
+        exercised >= MIGRATED_OUTCOME_DOMAINS.len(),
+        "only {exercised} (domain, bit) cases ran across {} declared domains",
+        MIGRATED_OUTCOME_DOMAINS.len()
+    );
+}
+
+/// The sweep speaks only for the record in front of it.
+///
+/// A domain that DID diagnose its own failure keeps its producer's reason: the
+/// sweep would otherwise overwrite the one artefact naming the real cause with
+/// a restatement of the bits, which is the same loss
+/// `record_worker_panic_outcome` exists to prevent.
+///
+/// Production change that makes this fail: dropping the `MigratedButSilent`
+/// guard and substantiating every failing record unconditionally.
+#[test]
+fn the_sweep_never_displaces_a_producers_own_diagnosis() {
+    let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+    );
+    let published = record_reader_status_outcome(
+        &mut outcomes,
+        domain_id,
+        0,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        || "d36 air-variant reserves: the producer's own words".to_string(),
+        Vec::new(),
+    );
+    let (records, _) = assembled_frame(&[(domain_id, published)]);
+    assert_eq!(
+        substantiate_silent_domain_outcomes(&records, &mut outcomes, 0),
+        0,
+        "a domain that already diagnosed itself must not be swept"
+    );
+    assert_eq!(
+        compact_contract::domain_outcome::failure_diagnosis(&outcomes, domain_id)
+            .expect("the producer's failure is the diagnosis")
+            .reason,
+        "d36 air-variant reserves: the producer's own words"
+    );
+}
+
+/// A CLEAN record is not swept. The sweep exists to stop a failing word from
+/// refusing the frame; inventing a failure for a domain that succeeded would be
+/// the same accounting defect pointed the other way.
+///
+/// Production change that makes this fail: sweeping on record type alone instead
+/// of on the tolerance-adjusted failure flags.
+#[test]
+fn the_sweep_leaves_a_clean_record_alone() {
+    let domain_id = COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS;
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+    );
+    let (records, _) = assembled_frame(&[(domain_id, 0)]);
+    assert_eq!(
+        substantiate_silent_domain_outcomes(&records, &mut outcomes, 0),
+        0
+    );
+    assert!(
+        compact_contract::domain_outcome::failure_diagnosis(&outcomes, domain_id).is_none(),
+        "a clean domain must not acquire a failure it never had"
+    );
+}
+
+/// The BOUNDARY of the sweep, asserted rather than assumed.
+///
+/// A domain whose only failure bit is one the outcome vocabulary cannot speak
+/// for is deliberately NOT swept: `DomainOutcome::is_failure` is decided by
+/// completion/extent/clock/authority, and every one of those derives a bit
+/// inside `DERIVED_STATUS_MASK`, so any outcome recorded for such a word would
+/// claim a bit the record does not carry and trade one frame-refusing finding
+/// for `published_status_matches_outcome`.
+///
+/// That is safe because the state is not reachable from a READ for the domains
+/// the sweep covers. `state_unavailable`, `profile_mismatch` and
+/// `no_scalar_source` are each set exactly once, in the frame-scoped status
+/// prologue, and `bridge_unavailable`'s only `|=` in the tree belongs to a
+/// domain on `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`. So reaching here means the
+/// FRAME failed, every domain inherited its word, and the frame is refused by
+/// the FRAME_END status finding -- the correct verdict for a frame-wide fault,
+/// and not the accounting defect the sweep removes.
+///
+/// Production change that makes this fail: sweeping unconditionally on
+/// `failed != 0` (the outcome claims `source_unavailable`, the record does not
+/// carry it, and the walk objects), or dropping the FRAME_END status finding
+/// that makes refusing the frame here correct for its own reason.
+#[test]
+fn a_frame_prologue_bit_alone_is_left_to_refuse_the_frame() {
+    let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
+    for bit in [
+        COMPACT_STATUS_PROFILE_MISMATCH,
+        COMPACT_STATUS_NO_SCALAR_SOURCE,
+        compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE,
+    ] {
+        assert_eq!(
+            bit & READER_OWNED_FAILURE_BITS,
+            0,
+            "{bit:#010x} is a reader-owned bit and belongs in the swept set"
+        );
+        let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        record_read_succeeded(
+            &mut outcomes,
+            domain_id,
+            compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+        );
+        let (records, _) = assembled_frame(&[(domain_id, bit)]);
+        assert_eq!(
+            substantiate_silent_domain_outcomes(&records, &mut outcomes, bit),
+            0,
+            "a word an outcome cannot speak for must not be swept"
+        );
+        let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
+        assert!(
+            findings.iter().any(|finding| {
+                finding.frame_finding.as_ref().is_some_and(|frame| {
+                    frame.predicate.name
+                        == compact_contract::domain_outcome::READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME_NAME
+                })
+            }),
+            "the finding must remain, loudly, for a word nothing can diagnose"
+        );
+    }
+}
+
+/// The frame's word makes every domain an offender, and the sweep must not turn
+/// that into a per-domain accusation against reads that succeeded.
+///
+/// Production change that makes this fail: dropping the `frame_base_status`
+/// argument, or computing `own_bits` against zero -- either makes the outcome
+/// say this domain's reader failed to return its rows when the only thing wrong
+/// with the hour was the frame's clock.
+#[test]
+fn a_bit_the_frame_contributed_is_attributed_to_the_frame() {
+    let domain_id = COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS;
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+    );
+    let (records, _) = assembled_frame(&[(domain_id, COMPACT_STATUS_NO_CLOCK)]);
+    assert_eq!(
+        substantiate_silent_domain_outcomes(&records, &mut outcomes, COMPACT_STATUS_NO_CLOCK),
+        1
+    );
+    let outcome = compact_contract::domain_outcome::failure_diagnosis(&outcomes, domain_id)
+        .expect("the frame's bit still makes this domain an offender that must be diagnosed");
+    assert_eq!(
+        outcome.authority,
+        compact_contract::diagnostic_channel::Authority::OtherDomain(
+            compact_contract::COMPACT_DOMAIN_FRAME
+        ),
+        "a bit the domain did not add is not the domain's defect"
+    );
+    // The predicate says what this outcome IS -- a diagnosis reconstructed from
+    // the record -- for a frame-contributed bit exactly as for a reader's own.
+    // WHO the failure belongs to is the authority above, and that is the field
+    // a consumer must read to tell the two apart; overloading the predicate
+    // with it would cost the countable silent-producer signal.
+    assert_eq!(
+        outcome.predicate.code.get(),
+        compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD
+    );
+    assert!(
+        outcome.reason.contains("no_clock"),
+        "the reason must still name the bit that offended: {}",
+        outcome.reason
+    );
+}
+
+/// The class killer above proves the SWEEP closes the class. This proves the
+/// sweep is actually wired in, which the behavioural test cannot: it calls the
+/// helper itself, so deleting the production call leaves it green.
+///
+/// The rule is positional AND structural: every frame this function seals must
+/// have been swept first, from the same block.
+/// `build_compact_extraction_gate_records` has two exits that seal a frame --
+/// the state-unavailable early return and the ordinary one -- and each
+/// `append_compact_frame_end_record(` in it must be preceded by a
+/// `substantiate_silent_domain_outcomes(` at the SAME brace depth, with no other
+/// frame seal in between.
+///
+/// The depth is what stops the obvious way to satisfy a textual scan while
+/// changing nothing: `if false { substantiate_silent_domain_outcomes(..) }`
+/// immediately before the seal reads as preceding it and never runs.
+///
+/// And it is honest about its limit. A source scan cannot prove the call
+/// EXECUTES, only that it sits where execution reaches it unconditionally.
+/// Proving execution means driving the gate function, which needs a live game
+/// process; the behavioural tests above prove what the sweep DOES, and this
+/// proves it is where the frame passes.
+///
+/// Production change that makes this fail: deleting either call, moving one
+/// after the seal it protects, gating one behind a condition, or adding a third
+/// sealing exit without one.
+#[test]
+fn every_frame_seal_is_preceded_by_the_silent_outcome_sweep() {
+    const SOURCE: &str = include_str!("../attach_log.rs");
+    let lines: Vec<&str> = SOURCE.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.starts_with("fn build_compact_extraction_gate_records("))
+        .expect("the gate function is in this file");
+    let end = start
+        + 1
+        + lines[start + 1..]
+            .iter()
+            .position(|line| *line == "}")
+            .expect("the gate function ends at a column-zero brace");
+
+    // Brace depth relative to the function body, computed off CODE only: the
+    // same string-literal stripper the frame-scoped status scan uses, so a `{}`
+    // inside a reason string cannot move it.
+    let mut depth = 0i32;
+    let mut swept_at: Option<i32> = None;
+    let mut seals = 0usize;
+    let mut sweeps = 0usize;
+    for line in &lines[start..end] {
+        let trimmed = line.trim_start();
+        let code = super::tests::without_string_literals(trimmed);
+        // The depth a statement sits AT is the depth left after this line's own
+        // closers, before its openers.
+        let depth_here = depth - code.matches('}').count() as i32;
+        if trimmed.starts_with("substantiate_silent_domain_outcomes(") {
+            swept_at = Some(depth_here);
+            sweeps += 1;
+        }
+        if trimmed.starts_with("append_compact_frame_end_record(") {
+            seals += 1;
+            assert_eq!(
+                swept_at,
+                Some(depth_here),
+                "frame seal number {seals} in build_compact_extraction_gate_records is not \
+                 preceded by substantiate_silent_domain_outcomes at the same brace depth \
+                 (seal depth {depth_here}, last sweep {swept_at:?}). A sweep nested deeper is \
+                 conditional, and a migrated domain that published a failing PERF word without \
+                 saying why would refuse that whole hour."
+            );
+            swept_at = None;
+        }
+        depth = depth - code.matches('}').count() as i32 + code.matches('{').count() as i32;
+    }
+    // The scan must have found the thing it is policing. A renamed function or
+    // a changed call spelling would otherwise make this pass vacuously.
+    assert!(
+        seals >= 2,
+        "expected both sealing exits of the gate function, found {seals}"
+    );
+    assert!(sweeps >= seals, "found {sweeps} sweep(s) for {seals} seal(s)");
+}
+
+/// The reserved predicate the sweep publishes is a REAL one, constructible from
+/// the contract's table, and distinct from the frame finding it replaces.
+///
+/// `migrated_site_published_outcome` is deliberately absent from
+/// `READ_PREDICATES` -- it is the completeness walk's own predicate, not a check
+/// a producer runs -- so an outcome that tried to carry it would silently
+/// degrade to `Predicate::undeclared()` and the countable signal would be lost
+/// in exactly the way that looks fine in review.
+///
+/// Production change that makes this fail: pointing the sweep at the frame
+/// finding's code, or at any code not declared in the table.
+#[test]
+fn the_substantiated_outcome_carries_a_typed_countable_predicate() {
+    let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
+    let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+    record_read_succeeded(
+        &mut outcomes,
+        domain_id,
+        compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
+    );
+    let (records, _) = assembled_frame(&[(domain_id, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
+    assert_eq!(
+        substantiate_silent_domain_outcomes(&records, &mut outcomes, 0),
+        1
+    );
+    let outcome = compact_contract::domain_outcome::failure_diagnosis(&outcomes, domain_id)
+        .expect("the sweep records a failure");
+    assert!(
+        !outcome.predicate.is_undeclared(),
+        "the substantiated outcome fell back to the reserved undeclared predicate"
+    );
+    assert_eq!(
+        outcome.predicate.code.get(),
+        compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD
+    );
+    assert_eq!(outcome.predicate.name, "outcome_substantiated_from_record");
+    // ...and it is a code a consumer can count, which is the whole reason it
+    // exists rather than being left as prose in the reason string.
+    assert_eq!(
+        compact_contract::domain_outcome::read_predicate_name(
+            compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD
+        ),
+        Some("outcome_substantiated_from_record")
+    );
+    assert_ne!(
+        compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD,
+        compact_contract::domain_outcome::READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME,
+        "the per-domain signal and the frame finding must stay separable"
     );
 }
