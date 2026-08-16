@@ -60,9 +60,31 @@ pub enum FreezeCensusPlacement {
 
 /// Pure placement authority. Every consumer that admits an H4FC record routes
 /// through this one function, so the grammar above has a single definition.
+///
+/// # The install slot does not depend on the stream's identity mode
+///
+/// This function once took a `campaign_identity_present` flag and refused any
+/// install record that did not sit behind an admitted CID1. That was WRONG for
+/// half of production, and every shipped recording proved it: the recorder runs
+/// [`StreamIdentityMode::IdentityV1`] only for auto-attach captures, and
+/// [`StreamIdentityMode::Legacy`] -- no CID1 at all -- for every capture that
+/// attaches to a game already running. In legacy mode there is no sequence-zero
+/// record, so the install census is the first physical record in the file, and
+/// the flag made the 22 whole-stream scanners refuse a stream the fold accepted
+/// (the fold passed the flag as a hardcoded `true`).
+///
+/// The rule that is actually being stated, and that holds in BOTH modes, is
+/// **the install census is the first ORDINARY record of its logical stream**:
+/// sequence 1, no ordinary record before it, no ordinary predecessor. Identity
+/// presence is a property of the stream MODE, not of this record's placement,
+/// and it is enforced where identity is: in `IdentityV1` the CID1 is mandatory
+/// at sequence zero and the stateful stream validator refuses a stream without
+/// it, which no standalone scan over bytes alone can decide anyway.
+///
+/// [`StreamIdentityMode::IdentityV1`]: crate::stream_validator::StreamIdentityMode
+/// [`StreamIdentityMode::Legacy`]: crate::stream_validator::StreamIdentityMode
 pub fn validate_freeze_census_placement_policy(
     phase: FreezeCensusPhase,
-    campaign_identity_present: bool,
     sequence: u64,
     ordinary_record_count: u64,
     previous_record_type: Option<KnownRecordType>,
@@ -70,13 +92,9 @@ pub fn validate_freeze_census_placement_policy(
 ) -> Result<FreezeCensusPlacement, String> {
     match phase {
         FreezeCensusPhase::Install => {
-            if !campaign_identity_present
-                || sequence != 1
-                || ordinary_record_count != 0
-                || previous_record_type.is_some()
-            {
+            if sequence != 1 || ordinary_record_count != 0 || previous_record_type.is_some() {
                 return Err(
-                    "install FREEZE_CENSUS must be sequence 1 immediately after an admitted CID1"
+                    "install FREEZE_CENSUS must be sequence 1 and the first ordinary record of its logical stream"
                         .to_string(),
                 );
             }
@@ -1645,7 +1663,6 @@ mod tests {
         assert_eq!(
             validate_freeze_census_placement_policy(
                 FreezeCensusPhase::Release,
-                true,
                 9,
                 8,
                 Some(KnownRecordType::FrameEnd),
@@ -1658,7 +1675,6 @@ mod tests {
         assert_eq!(
             validate_freeze_census_placement_policy(
                 FreezeCensusPhase::Release,
-                true,
                 9,
                 8,
                 Some(KnownRecordType::FrameRefused),
@@ -1669,7 +1685,6 @@ mod tests {
         // NEGATIVE: a second release record.
         assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
-            true,
             10,
             9,
             Some(KnownRecordType::FrameEnd),
@@ -1692,7 +1707,6 @@ mod tests {
             assert!(
                 validate_freeze_census_placement_policy(
                     FreezeCensusPhase::Release,
-                    true,
                     9,
                     8,
                     Some(predecessor),
@@ -1706,7 +1720,6 @@ mod tests {
         // NEGATIVE: no ordinary record precedes it at all (no hour was closed).
         assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
-            true,
             1,
             0,
             None,
@@ -1716,7 +1729,6 @@ mod tests {
         // NEGATIVE: sequence is not contiguous with the records before it.
         assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
-            true,
             10,
             8,
             Some(KnownRecordType::FrameEnd),
@@ -1728,28 +1740,31 @@ mod tests {
     /// kills: dropping the install-preamble slot rule, which would let an
     /// install record float anywhere in the stream, or let it masquerade as the
     /// terminal epilogue.
+    ///
+    /// kills: re-adding a stream-identity requirement to the install slot. The
+    /// FIRST assertion is the whole legacy-mode production case -- an install
+    /// census as the first ordinary record with no CID1 anywhere -- and putting
+    /// a `campaign_identity_present` gate back into the policy makes it fail.
     #[test]
-    fn install_preamble_placement_is_sequence_one_only() {
+    fn install_preamble_placement_is_the_first_ordinary_record_in_both_identity_modes() {
+        // The ONE shape, and it is the same call in both modes. In `Legacy`
+        // there is no sequence-zero record and this census is the first
+        // physical record in the file; in `IdentityV1` the CID1 occupies
+        // sequence zero, is not an ordinary record, and is not an ordinary
+        // predecessor. Neither mode changes any argument here, which is the
+        // point: identity presence is not part of this record's placement.
         assert_eq!(
-            validate_freeze_census_placement_policy(
-                FreezeCensusPhase::Install,
-                true,
-                1,
-                0,
-                None,
-                false,
-            ),
+            validate_freeze_census_placement_policy(FreezeCensusPhase::Install, 1, 0, None, false,),
             Ok(FreezeCensusPlacement::InstallPreamble)
         );
-        for (identity, sequence, ordinary, previous) in [
-            (false, 1, 0, None),
-            (true, 2, 0, None),
-            (true, 1, 1, None),
-            (true, 1, 0, Some(KnownRecordType::FrameEnd)),
+        for (sequence, ordinary, previous) in [
+            (2, 0, None),
+            (1, 1, None),
+            (1, 0, Some(KnownRecordType::FrameEnd)),
+            (1, 0, Some(KnownRecordType::StreamHeader)),
         ] {
             assert!(validate_freeze_census_placement_policy(
                 FreezeCensusPhase::Install,
-                identity,
                 sequence,
                 ordinary,
                 previous,

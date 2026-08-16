@@ -97,7 +97,8 @@ param(
     [int]$WorldReadyTimeoutSeconds = 600,
 
     # Startup + finalize headroom allowed on top of -DurationSeconds before the
-    # recorder is treated as wedged rather than slow.
+    # recorder is treated as wedged rather than slow. `-1` DERIVES it from
+    # -DurationSeconds; any other value is used exactly as given.
     #
     # This is the STARTING bound only. It is a wall clock with no relation to
     # the amount of post-capture work, and on 2026-08-06 that cost three live
@@ -108,8 +109,36 @@ param(
     # gives way to the progress bound below, which is the fact rather than the
     # guess. Raising this number was never the fix -- a wall clock cannot be
     # made correct, only made longer.
-    [ValidateRange(30, 3600)]
-    [int]$RecorderOverheadSeconds = 300,
+    #
+    # It was nonetheless far too SHORT, and a flat 300 rested on nothing. The
+    # derivation now behind the default, from the two live speed-5 trials the
+    # teardown lanes ran on this box (evidence
+    # `extractor/native/runs/lq_teardown_census`):
+    #
+    #   t65: a 60 s capture recorded 322 game hours / 1.70 GB of decoded stream
+    #        and its own RECORDER_FINALIZE_PROGRESS_V1.json reports
+    #        elapsed_ms = 661,213 from the READY anchor to phase "complete".
+    #        Take the 60 s capture window off that and the recorder's non-capture
+    #        work measured 601 s -- twice the whole default budget.
+    #        601 s / 322 hours = 1.87 s of recorder work per recorded hour.
+    #   t64: the same capture length recorded 630 hours / 2.42 GB and never
+    #        finished under the 300 s default at all.
+    #
+    # Recorded hours are what the work scales with, and at max game speed they
+    # scale with capture length: 322/60 = 5.4 h/s in t65 and 630/60 = 10.5 h/s
+    # in t64. Worst observed rate times the measured per-hour cost is
+    # 10.5 * 1.87 = 19.6 s of overhead per second of capture; doubled for margin
+    # gives the factor below. For the 60 s captures both trials ran that yields
+    # 2400 s, which is exactly the override t65 needed to complete.
+    #
+    # OVERRIDE: pass -RecorderOverheadSeconds explicitly to pin a flat budget
+    # (e.g. a short smoke capture on a fast box, or a deliberately tight bound
+    # while reproducing a wedge). An explicit value is never derived from and
+    # never reduced.
+    # The upper bound is 40 * the largest admitted -DurationSeconds, so the
+    # derived default can never assign past its own range.
+    [ValidateRange(-1, 3456000)]
+    [int]$RecorderOverheadSeconds = -1,
 
     # How long the recorder's published finalize work quantity may stand STILL
     # before finalization is called wedged rather than slow.
@@ -240,6 +269,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# Resolve the derived default. See the parameter's own derivation: 19.6 s of
+# measured recorder work per second of speed-5 capture, doubled for margin, with
+# the old flat 300 kept as a floor so a very short capture is never given LESS
+# headroom than it used to have. An explicit operator value is never touched.
+$recorderOverheadDerived = $false
+if ($RecorderOverheadSeconds -lt 0) {
+    # NOT clamped. The parameter's range below is widened to hold the largest
+    # value this can derive (40 * the largest admitted -DurationSeconds), so the
+    # budget goes on scaling with the measured work instead of flattening out
+    # above a 36-minute capture and letting the recorder be called wedged while
+    # it is still folding (Codex review
+    # 01a00a62-58f3-70a0-8ca1-62a2c83feec6, MED 2).
+    $RecorderOverheadSeconds = [Math]::Max(300, 40 * [long]$DurationSeconds)
+    $recorderOverheadDerived = $true
+}
+Write-Host "phase=recorder_overhead_resolved overhead_s=$RecorderOverheadSeconds derived=$recorderOverheadDerived duration_s=$DurationSeconds"
 
 function Get-SettingsGuardBaseException {
     param([Parameter(Mandatory = $true)][System.Exception]$Exception)

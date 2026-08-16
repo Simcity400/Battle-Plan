@@ -96,7 +96,6 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
                 .map_err(|error| format!("offset {offset}: {error}"))?;
             let placement = validate_freeze_census_placement_policy(
                 census.phase(),
-                identity_present,
                 header.sequence,
                 ordinary_record_count,
                 previous_record_type,
@@ -392,7 +391,6 @@ impl StatefulStreamValidator {
                         .map_err(StreamValidationError::InvalidRecordSemantics)?;
                     validate_freeze_census_placement_policy(
                         census.phase(),
-                        self.identity.is_some(),
                         header.sequence,
                         self.ordinary_record_count,
                         self.last_ordinary_record_type,
@@ -646,14 +644,45 @@ mod tests {
             .is_err());
     }
 
-    /// kills: admitting type-11 install telemetry without the CID1 that defines
-    /// the logical stream it must immediately follow.
+    /// LEGACY MODE CARRIES AN INSTALL CENSUS, and this test used to assert the
+    /// opposite.
+    ///
+    /// The old rule was "type-11 install telemetry requires the CID1 that
+    /// defines the logical stream it must immediately follow". The recorder
+    /// refutes it: `capture_identity_mode` in recorder_host selects
+    /// `IdentityV1` only for auto-attach captures and `Legacy` -- no CID1 at
+    /// all -- for every capture that attaches to a game already running, and
+    /// those captures write the install census as their first physical record
+    /// at sequence 1. So the rule refused the recorder's own shipped output on
+    /// half of production, and the recorder_host fold accepted it anyway by
+    /// passing the identity flag as a hardcoded `true`. Identity presence is a
+    /// property of the stream MODE; the install census's placement is that it
+    /// is the first ORDINARY record of its logical stream, in both modes.
+    ///
+    /// kills: re-introducing any stream-identity condition on the install slot
+    /// (the first assertion fails), and dropping the slot rule itself so an
+    /// install census could float anywhere (the second and third fail).
     #[test]
-    fn legacy_mode_cannot_carry_an_install_census() {
+    fn legacy_mode_carries_an_install_census_as_its_first_ordinary_record() {
         let census = census_payload(FreezeCensusPhase::Install);
         let mut validator = StatefulStreamValidator::legacy();
-        assert!(validator
+        validator
             .validate_record(&census_header(1, &census), &census)
+            .expect("a legacy stream's first ordinary record may be the install census");
+
+        // A second one is still refused, exactly as in identity mode.
+        assert!(validator
+            .validate_record(&census_header(2, &census), &census)
+            .is_err());
+
+        // And a LATE one is still refused: the slot is the first ordinary
+        // record, not "anywhere in a legacy stream".
+        let data = b"DATA";
+        let mut late = StatefulStreamValidator::legacy();
+        late.validate_record(&data_header(1, 18, data), data)
+            .unwrap();
+        assert!(late
+            .validate_record(&census_header(2, &census), &census)
             .is_err());
     }
 

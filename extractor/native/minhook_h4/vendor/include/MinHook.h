@@ -124,6 +124,11 @@ extern "C" {
     // must restore the queue to the state it found.
     MH_STATUS WINAPI MH_HookIsEnabled(LPVOID pTarget, BOOL *pEnabled);
 
+    // FORK ADDITION. Is this target's last write written-but-unpublished?
+    // Its bytes are changed; what is not established is that every processor
+    // will execute them. See MH_HookIsIncoherent in hook.c.
+    MH_STATUS WINAPI MH_HookIsIncoherent(LPVOID pTarget, BOOL *pIncoherent);
+
     // FORK ADDITION. How many hooks exist. Bounds every pending set, so a
     // caller can reserve before it freezes the process.
     MH_STATUS WINAPI MH_HookCount(UINT *pCount);

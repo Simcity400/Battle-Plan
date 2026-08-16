@@ -1569,3 +1569,114 @@ mod inertness {
         );
     }
 }
+
+/// A RELEASE whose apply refuses leaves one target's restore WRITTEN AND
+/// UNPUBLISHED, and this batch now clears it inside its own freeze.
+///
+/// The shape, exactly as production reaches it: `MH_ApplyQueued` refuses at one
+/// target, whose bytes are already restored, whose `isEnabled` is already FALSE
+/// and whose `incoherent` latch is set. The completion loop then calls
+/// `MH_DisableHook` on it, MinHook answers `MH_ERROR_DISABLED` because
+/// `isEnabled` already matches -- WITHOUT calling `EnableHookLL` -- and that was
+/// folded into `Ok` and into `already_released`. So a release batch reported a
+/// clean teardown over a target whose restore no processor was guaranteed to
+/// execute, and MinHook then refused to remove that entry for the life of the
+/// process (lane LT, residual 1).
+///
+/// The only thing that clears the latch is to re-enable the detour and disable
+/// it again, which patches the running game to heal a bookkeeping latch. OWNER
+/// RULING 2026-08-16: allowed, inside the freeze the release already holds.
+///
+/// What production change would make this fail?
+///   * deleting the heal loop: `incoherent_cleared()` is empty (assertion 2)
+///     and the removal below refuses with `MH_ERROR_MEMORY_PROTECT`
+///     (assertion 4), which is the whole defect;
+///   * healing without asking MinHook again -- reporting cleared on the strength
+///     of the two calls returning `Ok` -- leaves assertion 3 unchecked, so that
+///     assertion is written against `hook_is_incoherent` and not against them;
+///   * moving the heal outside the freeze: the re-enabled detour becomes
+///     observable to a game thread, which is what the ruling bounds. Not
+///     assertable here (nothing else runs), and stated in the code.
+///
+/// NOT DRIVABLE HERE: the UNHEALED branch. The seam is one-shot and is consumed
+/// by the apply, so a second completion failure cannot be injected into the
+/// heal's own re-enable. That branch is argued from `EnableHookLL`'s source --
+/// it re-runs the same completion and re-latches on the same failure -- and its
+/// report path is the same one every other refusal in this function takes.
+#[test]
+fn a_release_whose_apply_refused_clears_the_unpublished_restore_it_left() {
+    serialised!();
+    let targets = create_trio();
+    let custody = HookCustody::of(&targets);
+    let faulted = targets[1].1;
+
+    let enabled = unsafe { enable_batch(&targets) };
+    assert!(
+        enabled.all_succeeded(),
+        "the fixture must start with three live detours: {enabled:?}"
+    );
+
+    let armed = minhook::EnableIncoherentFault::arm(faulted);
+    let report = unsafe { disable_batch(&targets) };
+
+    // 0. THE FAULT WAS CONSUMED AND ITS BRANCH RAN. Without this the test is
+    //    about an ordinary release and asserts nothing.
+    assert!(
+        minhook::EnableIncoherentFault::armed().is_none(),
+        "the injected completion failure was never reached"
+    );
+    assert_eq!(
+        minhook::EnableIncoherentFault::witness(),
+        Some("MH_H4_FAULT_INJECTION_PRESENT"),
+        "the injected branch inside EnableHookLL must have executed"
+    );
+    drop(armed);
+
+    // 1. The batch still names the refusal it met.
+    assert!(
+        report.apply_refusal().is_some(),
+        "an apply that refused must be named whatever the per-target outcomes say: {report:?}"
+    );
+
+    // 2. The unpublished restore was found and named BY NAME.
+    assert_eq!(
+        report.incoherent_cleared(),
+        [targets[1].0],
+        "the target whose restore was written and not published must be named: {report:?}"
+    );
+    assert!(
+        report.incoherent_retained().is_empty(),
+        "the heal completed, so nothing may be reported as still unpublished: {report:?}"
+    );
+
+    // 3. ASKED OF MINHOOK, not inferred from the two calls returning Ok.
+    let lock = minhook::MinHookLock::acquire().expect("the fork's library lock");
+    assert_eq!(
+        MinHook::hook_is_incoherent(&lock, faulted),
+        Ok(false),
+        "the latch must be clear, not merely reported clear"
+    );
+    assert_eq!(
+        MinHook::hook_is_enabled(&lock, faulted),
+        Ok(false),
+        "the heal must leave the detour DOWN, not reinstated"
+    );
+    drop(lock);
+
+    // 4. THE POINT OF ALL OF IT: MinHook refuses to remove an incoherent entry,
+    //    so an uncleared latch strands the trampoline for the life of the
+    //    process. A cleared one removes.
+    for &(name, target) in &targets {
+        unsafe { remove(target) }
+            .unwrap_or_else(|status| panic!("{name} must be removable after a healed release: {status}"));
+    }
+    // The originals answer again: nothing is detoured.
+    for (index, &(name, _)) in targets.iter().enumerate() {
+        assert_eq!(
+            trio()[index].1(1),
+            undetoured_answer(index),
+            "{name} is still detoured after a healed release"
+        );
+    }
+    std::mem::forget(custody);
+}

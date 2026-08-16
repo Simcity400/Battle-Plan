@@ -284,6 +284,8 @@ foreach ($required in @(
     'pinned_hook_site_count',
     'pinned_hook_site_baseline_sha256',
     'pinned_hook_site_restored_sha256',
+    'collector_terminal_report',
+    'phase=collector_terminal_report',
     'clock_observation_ordinal',
     'battle-plan.capture_ready.scheduler_config.v1',
     'battle-plan.capture_ready.read_only_clock_witness.v1',
@@ -900,6 +902,26 @@ foreach ($anchor in @(
             'first post-launch supervision step. A throw in between leaves cleanup ' +
             'with a null deadline, and a null deadline skips the wait entirely ' +
             'instead of waiting the recorder out (run t38).')
+}
+# The recorder overhead budget is DERIVED, not a flat guess.
+#
+# A flat 300 s rested on nothing and was less than half of what a 60 s speed-5
+# capture on the reference box actually needs: t65's own
+# RECORDER_FINALIZE_PROGRESS_V1.json measured 601 s of non-capture recorder work
+# for 322 recorded hours, and t64 never finished under the flat default at all.
+# The factor below is the derivation stated in the parameter's own comment
+# (19.6 s of measured work per second of capture, doubled for margin), and the
+# 300 floor is the old default kept so a very short capture never LOSES headroom.
+# Deleting either half puts the wall clock back to a number nobody measured.
+foreach ($required in @(
+    '[Math]::Max(300, 40 * [long]$DurationSeconds)',
+    'phase=recorder_overhead_resolved',
+    '[ValidateRange(-1, 3456000)]'
+)) {
+    Assert-Policy `
+        -Condition ($harness.IndexOf($required, [StringComparison]::Ordinal) -ge 0) `
+        -Message ("The headless capture harness lost its derived recorder-overhead " +
+            "budget token '$required'; a flat wall clock is a number nobody measured.")
 }
 $launchIndex = $harness.IndexOf(
     '$recorderProcess = Start-Process -FilePath $collectorRecord',

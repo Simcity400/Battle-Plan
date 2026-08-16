@@ -507,6 +507,41 @@ MH_STATUS WINAPI MH_HookIsEnabled(LPVOID pTarget, BOOL *pEnabled)
 }
 
 //-------------------------------------------------------------------------
+// FORK ADDITION. Did this target's last write fail to PUBLISH?
+//
+// `incoherent` is set when the bytes were written but the page protection was
+// not restored or the instruction cache was not flushed: memory is what the
+// state says, and what is not established is that every processor will execute
+// it. Until now nothing could ask. A release batch therefore folded an
+// unpublished restore into success -- `MH_DisableHook` answers
+// `MH_ERROR_DISABLED` for a target whose `isEnabled` is already FALSE, without
+// calling `EnableHookLL`, so the latch neither cleared nor surfaced and the
+// caller saw a clean teardown over a target a thread may still be executing the
+// old stream of.
+//
+// The one caller is that batch, which asks after its completion loop and heals
+// what it finds (owner ruling 2026-08-16: a teardown MAY re-enable and disable
+// a target inside its own freeze to clear this).
+MH_STATUS WINAPI MH_HookIsIncoherent(LPVOID pTarget, BOOL *pIncoherent)
+{
+    UINT pos;
+
+    if (!LockedByCallingThread())
+        return MH_ERROR_NOT_LOCKED;
+    if (g_hHeap == NULL)
+        return MH_ERROR_NOT_INITIALIZED;
+    if (pIncoherent == NULL)
+        return MH_ERROR_UNSUPPORTED_FUNCTION;
+
+    pos = FindHookEntry(pTarget);
+    if (pos == INVALID_HOOK_POS)
+        return MH_ERROR_NOT_CREATED;
+
+    *pIncoherent = g_hooks.pItems[pos].incoherent ? TRUE : FALSE;
+    return MH_OK;
+}
+
+//-------------------------------------------------------------------------
 // FORK ADDITION. How many hooks exist, which bounds every pending set.
 //
 // The caller reserves its footprint buffer from this BEFORE it freezes the

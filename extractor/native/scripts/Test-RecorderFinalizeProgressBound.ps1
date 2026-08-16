@@ -5,7 +5,7 @@ recorder.
 
 .DESCRIPTION
 `Invoke-HeadlessRawCapture.ps1` used to bound post-capture finalization with a
-fixed wall clock (`-RecorderOverheadSeconds`, default 300 s) that had no
+fixed wall clock (`-RecorderOverheadSeconds`, then a flat 300 s default) that had no
 relation to the amount of work. On 2026-08-06 that cost three live trials:
 t27/t28/t29 were declared unresolved while their folds were provably still
 incomplete -- counting the per-hour records in each run's `checkpoints.h4cp`

@@ -2329,7 +2329,15 @@ function Test-PassiveCaptureTeardownReceipt {
         # exported function's prologue while the primitive writes only an IAT
         # store). The count of verified import slots rides the receipt. t24
         # was refused 29-vs-28 by this exact-property pin before this line.
-        'pinned_hook_import_slot_count'
+        'pinned_hook_import_slot_count',
+        # Lane LU 2026-08-16: the collector's OWN terminal verdicts, or $null
+        # when it published none. Every other field here is the host's evidence
+        # about the target's bytes, and none of it can see that the collector's
+        # teardown sequence did not run: four live captures ended with the
+        # bounded orphaned-registry recovery driver giving up, hook-site
+        # restoration UNPROVEN and the attach worker exiting, while this receipt
+        # said nothing at all. It is CHECKED below, not merely admitted.
+        'collector_terminal_report'
     )
     Assert-PassiveExactPropertySet `
         -Value $teardown `
@@ -2421,8 +2429,23 @@ function Test-PassiveCaptureTeardownReceipt {
         [string]$teardown.collector_dll_sha256 -cne
             [string]$ReadyAuthority.CollectorDllSha256 -or
         [string]$teardown.host_binding_sha256 -cne
-            [string]$ReadyAuthority.HostBindingSha256) {
-        throw 'Teardown receipt failed schema, target epoch, identity, EOF, hook release, DLL unload, READY, or host-binding admission.'
+            [string]$ReadyAuthority.HostBindingSha256 -or
+        # ADMITTING A PROPERTY IS NOT CHECKING IT. The collector's terminal
+        # report is $null when it published nothing terminal, and a non-empty
+        # string otherwise; an empty string, whitespace, or any other type is a
+        # producer that lost the field's meaning.
+        ($null -ne $teardown.collector_terminal_report -and
+         ($teardown.collector_terminal_report -isnot [string] -or
+          [string]::IsNullOrWhiteSpace([string]$teardown.collector_terminal_report)))) {
+        throw 'Teardown receipt failed schema, target epoch, identity, EOF, hook release, DLL unload, READY, host-binding, or collector terminal-report admission.'
+    }
+    # A collector that reported a TERMINAL verdict did not close cleanly,
+    # whatever the host's byte evidence says. It is surfaced rather than thrown
+    # on, because the byte evidence above is still true and the recording still
+    # seals: a degraded outcome names its cause, it does not destroy the run.
+    if ($null -ne $teardown.collector_terminal_report) {
+        Write-Host ("phase=collector_terminal_report report=" +
+            [string]$teardown.collector_terminal_report)
     }
 
     return [pscustomobject]@{
@@ -2441,5 +2464,9 @@ function Test-PassiveCaptureTeardownReceipt {
         PinnedHookSiteCount = [uint32]$expectedHookCount
         PinnedHookSiteBaselineSha256 = [string]$teardown.pinned_hook_site_baseline_sha256
         PinnedHookSiteRestoredSha256 = [string]$teardown.pinned_hook_site_restored_sha256
+        CollectorTerminalReport = $(
+            if ($null -eq $teardown.collector_terminal_report) { $null }
+            else { [string]$teardown.collector_terminal_report }
+        )
     }
 }

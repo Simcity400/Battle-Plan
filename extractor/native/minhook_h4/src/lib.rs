@@ -245,6 +245,29 @@ impl MinHook {
         }
     }
 
+    /// Did this target's last write fail to PUBLISH?
+    ///
+    /// The bytes ARE written -- `hook_is_enabled` describes memory correctly --
+    /// but the page protection was not restored or the instruction cache was not
+    /// flushed, so a processor may still execute the previous stream. MinHook
+    /// refuses to REMOVE such an entry, because its trampoline is what a thread
+    /// executing that stream would return into.
+    ///
+    /// The one caller is `disable_batch`, which asks after its completion loop.
+    /// Nothing else could: `MH_DisableHook` on a target whose `isEnabled` is
+    /// already FALSE returns `MH_ERROR_DISABLED` without calling `EnableHookLL`,
+    /// so an unpublished restore neither cleared the latch nor surfaced at all.
+    pub fn hook_is_incoherent(
+        _lock: &MinHookLock,
+        target: *mut c_void,
+    ) -> Result<bool, MH_STATUS> {
+        let mut incoherent: i32 = 0;
+        match unsafe { ffi::MH_HookIsIncoherent(target, &mut incoherent) } {
+            MH_STATUS::MH_OK => Ok(incoherent != 0),
+            status => Err(status),
+        }
+    }
+
     /// How many hooks exist. Bounds every pending set.
     ///
     /// Asked BEFORE the caller freezes the process, so the buffer that
@@ -811,11 +834,12 @@ mod tests {
             );
         }
         let checked = source.matches("if (!LockedByCallingThread())").count();
-        // MH_LockRelease, MH_PatchFootprint, MH_HookIsEnabled, MH_HookCount,
-        // MH_PendingPatchFootprint, MH_Initialize, MH_Uninitialize,
-        // MH_CreateHook, MH_RemoveHook, EnableHook, QueueHook, MH_ApplyQueued.
+        // MH_LockRelease, MH_PatchFootprint, MH_HookIsEnabled,
+        // MH_HookIsIncoherent, MH_HookCount, MH_PendingPatchFootprint,
+        // MH_Initialize, MH_Uninitialize, MH_CreateHook, MH_RemoveHook,
+        // EnableHook, QueueHook, MH_ApplyQueued.
         assert_eq!(
-            checked, 12,
+            checked, 13,
             "every entry point that touches library state must refuse an \
              unlocked caller; found {checked} checks"
         );

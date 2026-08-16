@@ -34,6 +34,7 @@ extern "system" {
 
     /// FORK ADDITION. Is this target's detour live right now?
     pub fn MH_HookIsEnabled(pTarget: *mut c_void, pEnabled: *mut i32) -> MH_STATUS;
+    pub fn MH_HookIsIncoherent(pTarget: *mut c_void, pIncoherent: *mut i32) -> MH_STATUS;
 
     /// FORK ADDITION. How many hooks exist, which bounds every pending set.
     pub fn MH_HookCount(pCount: *mut u32) -> MH_STATUS;

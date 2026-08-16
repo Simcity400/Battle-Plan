@@ -433,6 +433,58 @@ pub fn terminal_release_pending_from(installed: bool, created_mask: usize) -> bo
     installed || created_mask != 0
 }
 
+/// Whether this lane still owns RELEASE CUSTODY that no transaction has
+/// resolved: it published its three released-hook receipts during a seal, and
+/// nothing has committed or aborted the reservation that seal opened.
+///
+/// This is a DIFFERENT question from [`terminal_release_pending`], which asks
+/// whether a detour may still be patched into the executable. A seal restores
+/// every detour, clears `INSTALLED` and clears `CREATED_HOOK_MASK`, so after a
+/// seal whose reservation was ROLLED BACK -- the shape a failed terminal frame
+/// leaves -- both of those answer false while the released receipts sit here
+/// with `release_delivery_committed == false` and the drained records still in
+/// custody.
+///
+/// That state was invisible to every registry predicate, and it is a DEAD END:
+/// `take_released_hook_receipts` refuses it with "terminal released hook
+/// receipts await sink commit", and only a sealed-reservation commit or abort
+/// can ever clear the flag. A production teardown therefore refused
+/// byte-identically forever, its bounded recovery driver gave up, and the
+/// attach worker exited with the collector pinned. Reporting it here is what
+/// puts the group back into the registry's terminal-custody recovery, whose
+/// abort transaction resolves the custody with a counted discard.
+///
+/// `aborted_install_removed` is deliberately NOT consulted: a failed install
+/// archives its receipts through `archive_resolved_aborted_install`, which is
+/// its own resolution.
+pub fn terminal_release_custody_unresolved() -> bool {
+    let receipts = match HOOK_RECEIPTS
+        .get_or_init(|| Mutex::new(HookReceiptState::default()))
+        .lock()
+    {
+        Ok(receipts) => receipts,
+        // A poisoned receipt mutex is not evidence that custody was resolved.
+        Err(_) => return true,
+    };
+    terminal_release_custody_unresolved_from(
+        receipts.released.iter().any(Option::is_some),
+        receipts.release_delivery_committed,
+    )
+}
+
+/// The state logic of [`terminal_release_custody_unresolved`], separated from
+/// the process globals so it can be exercised offline.
+///
+/// Held-and-uncommitted is the unresolved state. Held-and-committed is the
+/// ordinary window between a commit and the registry's receipt handoff, and
+/// nothing-held is either a fresh lane or one whose handoff already happened.
+pub const fn terminal_release_custody_unresolved_from(
+    any_released_receipt_held: bool,
+    release_delivery_committed: bool,
+) -> bool {
+    any_released_receipt_held && !release_delivery_committed
+}
+
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 3], String> {
     let state = HOOK_RECEIPTS
         .get_or_init(|| Mutex::new(HookReceiptState::default()))

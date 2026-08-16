@@ -650,11 +650,24 @@ def grade_passive_lifecycle(
         # receipt the recorder actually writes as
         # `capture_teardown_property_set_invalid`.
         "pinned_hook_import_slot_count",
+        # Lane LU 2026-08-16: the collector's own terminal verdicts, or null
+        # when it published none. The host's byte evidence above cannot see
+        # that the collector's teardown sequence did not run.
+        "collector_terminal_report",
     }
     require(set(ready) == ready_keys, "capture_ready_property_set_invalid", problems)
     require(
         set(teardown) == teardown_keys,
         "capture_teardown_property_set_invalid",
+        problems,
+    )
+    # ADMITTING A PROPERTY IS NOT CHECKING IT. Null means the collector
+    # published no terminal verdict; anything else must be a non-empty string.
+    _terminal_report = teardown.get("collector_terminal_report")
+    require(
+        _terminal_report is None
+        or (isinstance(_terminal_report, str) and _terminal_report.strip() != ""),
+        "capture_teardown_collector_terminal_report_invalid",
         problems,
     )
     digest_fields = {

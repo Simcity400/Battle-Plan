@@ -733,6 +733,20 @@ mod windows_impl {
         outcomes: Vec<BatchOutcome<InlineDetourReleaseError>>,
         apply_refusal: Option<InlineDetourReleaseError>,
         already_released: Vec<&'static str>,
+        /// Targets whose write was found unpublished and whose latch the
+        /// owner-ruled re-enable/disable CLEARED, by name.
+        incoherent_cleared: Vec<&'static str>,
+        /// Targets whose write is STILL unpublished, by name. Their outcome is
+        /// an error and they are counted as retained detours.
+        incoherent_retained: Vec<&'static str>,
+        /// EMPTY, or exactly one entry per target in the caller's order.
+        ///
+        /// Empty means this batch never read liveness: `remove_batch` does not
+        /// (a removed target is gone, not live-or-not), and neither does an
+        /// empty batch. A caller must therefore check the length before
+        /// indexing, which `was_taken_down` does for it.
+        live_at_entry: Vec<bool>,
+        live_at_exit: Vec<bool>,
         freezes: u64,
     }
 
@@ -754,6 +768,56 @@ mod windows_impl {
         /// exposing it here would erase exactly that distinction.
         pub fn already_released(&self) -> &[&'static str] {
             &self.already_released
+        }
+
+        /// Targets whose restore was written but NOT PUBLISHED, and whose
+        /// latch this batch cleared by re-enabling and disabling them inside
+        /// its own freeze (owner ruling 2026-08-16).
+        ///
+        /// Reported even though the outcome is `Ok`, for the same reason
+        /// `apply_refusal` is kept over an all-`Ok` batch: it is a real event.
+        /// A roster that keeps appearing here is a page-protection or cache
+        /// problem that healing is papering over, and it can only be seen if
+        /// the healing says so.
+        pub fn incoherent_cleared(&self) -> &[&'static str] {
+            &self.incoherent_cleared
+        }
+
+        /// Targets whose restore is STILL unpublished after that attempt.
+        ///
+        /// Their bytes are the original ones, but no processor is guaranteed to
+        /// execute them, MinHook will refuse to remove the entry, and a thread
+        /// may still be running the detour. Their outcome is an error and they
+        /// are counted in the retained-detour census.
+        pub fn incoherent_retained(&self) -> &[&'static str] {
+            &self.incoherent_retained
+        }
+
+        /// Was each target patched into the running game when this batch
+        /// began? EMPTY when this batch did not read liveness at all -- see the
+        /// field. A refused freeze reports every target live, because a freeze
+        /// that never happened unpatched nothing and this census may not err
+        /// towards saying a detour is gone.
+        pub fn live_at_entry(&self) -> &[bool] {
+            &self.live_at_entry
+        }
+
+        /// Per target, in the caller's order: was it patched when this batch
+        /// dropped its freeze?
+        ///
+        /// The exit half of the pair a partial seal needs to build its restore
+        /// set from. `enable_batch`'s precondition is that no target may
+        /// already be enabled, so "restore the whole roster" is not available
+        /// and the correct set is the DIFFERENCE -- live at entry and not live
+        /// now. Both halves are answered by MinHook under the same freeze, not
+        /// inferred from a status that means two different things.
+        pub fn was_taken_down(&self, index: usize) -> bool {
+            self.live_at_entry.get(index).copied().unwrap_or(false)
+                && !self.live_at_exit.get(index).copied().unwrap_or(false)
+        }
+
+        pub fn live_at_exit(&self) -> &[bool] {
+            &self.live_at_exit
         }
 
         /// Was this target one MinHook reported as already released?
@@ -1460,6 +1524,10 @@ mod windows_impl {
                 outcomes,
                 apply_refusal: None,
                 already_released,
+                incoherent_cleared: Vec::new(),
+                incoherent_retained: Vec::new(),
+                live_at_entry: Vec::new(),
+                live_at_exit: Vec::new(),
                 freezes: 0,
             };
         }
@@ -1481,6 +1549,21 @@ mod windows_impl {
         // detour, from inside a teardown, and the caller's custody mask does
         // not name it. This is what stops that.
         let mut live_at_entry: Vec<bool> = Vec::with_capacity(targets.len());
+        // EVERY vector the frozen window writes into is reserved HERE, outside
+        // the freeze. A `Vec::new()` that grows on its first push allocates,
+        // and an allocation while every other game thread is suspended
+        // deadlocks the teardown for good if one of them holds the allocator
+        // lock. `Vec::with_capacity(0)` allocates nothing, so the capacity has
+        // to be the real bound, and `targets.len()` is it: no loop below can
+        // push more than one entry per target (Codex review
+        // 01a00a62-58f3-70a0-8ca1-62a2c83feec6, HIGH 1).
+        let mut live_at_exit: Vec<bool> = Vec::with_capacity(targets.len());
+        // Targets found with an unpublished write after the completion loop,
+        // the subset the owner-ruled re-enable/disable could not clear, and the
+        // status of a heal call that itself failed.
+        let mut incoherent_at_entry: Vec<usize> = Vec::with_capacity(targets.len());
+        let mut unhealed_incoherent: Vec<usize> = Vec::with_capacity(targets.len());
+        let mut heal_failures: Vec<(usize, MH_STATUS)> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
         // Set when a held thread was stopped inside bytes this release would
         // have restored. Nothing is unpatched then, so no target's own MinHook
@@ -1505,6 +1588,13 @@ mod windows_impl {
                     outcomes,
                     apply_refusal: Some(retained),
                     already_released,
+                    incoherent_cleared: Vec::new(),
+                    incoherent_retained: Vec::new(),
+                    // A refused freeze touched nothing, so entry and exit are
+                    // the same state and neither was read: every target is
+                    // reported still live, which is what a retained detour is.
+                    live_at_entry: vec![true; targets.len()],
+                    live_at_exit: vec![true; targets.len()],
                     freezes: super::freeze::freeze_attempts_on_this_thread()
                         .saturating_sub(freezes_before),
                 };
@@ -1624,6 +1714,74 @@ mod windows_impl {
         // `isEnabled` is what `MH_ApplyQueued` compares `queueEnable` against,
         // so asking for it is asking the exact question this loop exists to
         // answer. A target MinHook cannot find has no entry to leave divergent.
+        // CLEAR AN UNPUBLISHED RESTORE, INSIDE THIS SAME FREEZE.
+        //
+        // `EnableHookLL` writes the bytes and then latches `incoherent` when it
+        // cannot restore the page protection or flush the instruction cache.
+        // The bytes are the ORIGINAL ones; what is not established is that
+        // every processor will execute them. On the enable side the rollback's
+        // disable re-completes that write, because `isEnabled` is TRUE and
+        // differs from the requested FALSE. On THIS side `isEnabled` is already
+        // FALSE, so `MH_DisableHook` returns `MH_ERROR_DISABLED` without
+        // calling `EnableHookLL` at all -- the latch never cleared, MinHook
+        // refused to remove the entry ever after, and this batch folded the
+        // whole thing into `Ok` (lane LT, residual 1).
+        //
+        // The only thing that clears it is to RE-ENABLE the detour and disable
+        // it again, which patches the running game to heal a bookkeeping latch.
+        // OWNER RULING 2026-08-16: ALLOWED, and only inside the freeze the
+        // release already holds -- which is why it is here and not in a caller.
+        // Both halves run under one freeze, so no game thread observes the
+        // detour reinstated: it is put back and taken down again between two
+        // suspensions of every other thread.
+        //
+        // Asked of MinHook per target rather than inferred, for the reason the
+        // normalisation below is: `MH_ERROR_MEMORY_PROTECT` is answered both
+        // before anything is written and after a write that only failed to
+        // publish, so a status cannot tell them apart.
+        for (index, &(_, target)) in targets.iter().enumerate() {
+            if !matches!(
+                MinHook::hook_is_incoherent(frozen.minhook_lock(), target),
+                Ok(true)
+            ) {
+                continue;
+            }
+            incoherent_at_entry.push(index);
+            // Re-enable, then disable. Each call goes through `EnableHookLL`
+            // because the requested state differs from `isEnabled` every time,
+            // so each RETRIES the completion this latch records the failure of.
+            let reinstated =
+                unsafe { MinHook::enable_hook(frozen.minhook_lock(), target) };
+            let outcome = match reinstated {
+                Ok(()) => unsafe { MinHook::disable_hook(frozen.minhook_lock(), target) },
+                Err(status) => Err(status),
+            };
+            if let Err(status) = outcome {
+                // THE HEAL ITSELF REFUSED, and its own status is what the
+                // ledger and the outcome must carry. Reporting the earlier
+                // completion-loop status would name an operation that is not
+                // the one that failed.
+                heal_failures.push((index, status));
+            }
+            // ASKED AGAIN, and the two answers are DIFFERENT FACTS.
+            //
+            // `MH_ERROR_MEMORY_PROTECT` is answered both before anything is
+            // written and after a write that only failed to publish, so a
+            // failed heal does not tell you which state the target is in. A
+            // disable that refused its first `VirtualProtect` wrote nothing:
+            // the target is coherently LIVE and its latch is clear, and calling
+            // that "still unpublished" would be a diagnosis contradicting the
+            // physical state (Codex review
+            // 01a00a62-58f3-70a0-8ca1-62a2c83feec6, MED 3). Only a latch that
+            // is still set -- or that cannot be read at all -- is an
+            // unpublished restore.
+            if matches!(
+                MinHook::hook_is_incoherent(frozen.minhook_lock(), target),
+                Ok(true) | Err(_)
+            ) {
+                unhealed_incoherent.push(index);
+            }
+        }
         for &(_, target) in targets.iter() {
             match MinHook::hook_is_enabled(frozen.minhook_lock(), target) {
                 Ok(true) => {
@@ -1634,6 +1792,18 @@ mod windows_impl {
                 }
                 Err(_) => {}
             }
+        }
+        // LT RESIDUAL 2. The exit half of the entry/exit difference the two
+        // terminal seals need to build a restore set from: "was live before
+        // this batch AND is not live now". `live_at_entry` was already the
+        // entry half; this is one more per-target read before the freeze is
+        // dropped, so both halves are answered by MinHook under the same
+        // suspension rather than inferred from statuses that mean two things.
+        for &(_, target) in targets.iter() {
+            live_at_exit.push(matches!(
+                MinHook::hook_is_enabled(frozen.minhook_lock(), target),
+                Ok(true)
+            ));
         }
         drop(frozen);
         let mut retained = 0u64;
@@ -1653,6 +1823,34 @@ mod windows_impl {
                 ReleaseOperation::Disable,
                 raw,
             );
+            // A HEAL THAT REFUSED IS ITS OWN LEDGER ENTRY, recorded with the
+            // status of the call that actually failed rather than folded into
+            // the earlier completion-loop status.
+            let healed = heal_failures
+                .iter()
+                .find(|(healed_index, _)| *healed_index == index)
+                .map(|(_, status)| *status);
+            if let Some(status) = healed {
+                crate::release_ledger::record_release_attempt(
+                    target as usize,
+                    ReleaseOperation::Disable,
+                    Err(InlineDetourReleaseError::MinHook(status)),
+                );
+            }
+            // AN UNPUBLISHED RESTORE IS NOT A RELEASE, whatever the earlier
+            // status says: the bytes are back but no processor is guaranteed to
+            // execute them, and MinHook will refuse to remove the entry forever
+            // after. Neither is a target the heal left LIVE. Both are refusals,
+            // and each carries the status that describes it.
+            let raw = if unhealed_incoherent.contains(&index) {
+                Err(InlineDetourReleaseError::MinHook(
+                    MH_STATUS::MH_ERROR_MEMORY_PROTECT,
+                ))
+            } else if let Some(status) = healed {
+                Err(InlineDetourReleaseError::MinHook(status))
+            } else {
+                raw
+            };
             match raw {
                 Ok(()) => outcomes.push((name, Ok(()))),
                 Err(error) if error.already_released() => {
@@ -1676,6 +1874,17 @@ mod windows_impl {
             outcomes,
             apply_refusal,
             already_released,
+            incoherent_cleared: incoherent_at_entry
+                .iter()
+                .filter(|index| !unhealed_incoherent.contains(index))
+                .map(|index| targets[*index].0)
+                .collect(),
+            incoherent_retained: unhealed_incoherent
+                .iter()
+                .map(|index| targets[*index].0)
+                .collect(),
+            live_at_entry,
+            live_at_exit,
             freezes: super::freeze::freeze_attempts_on_this_thread().saturating_sub(freezes_before),
         }
     }
@@ -1714,6 +1923,10 @@ mod windows_impl {
                 outcomes: Vec::new(),
                 apply_refusal: None,
                     already_released: Vec::new(),
+                incoherent_cleared: Vec::new(),
+                incoherent_retained: Vec::new(),
+                live_at_entry: Vec::new(),
+                live_at_exit: Vec::new(),
                 freezes: 0,
             };
         }
@@ -1747,6 +1960,13 @@ mod windows_impl {
                     outcomes,
                     apply_refusal: Some(retained),
                     already_released: Vec::new(),
+                    incoherent_cleared: Vec::new(),
+                    incoherent_retained: Vec::new(),
+                    // A refused freeze touched nothing, so entry and exit are
+                    // the same state and neither was read: every target is
+                    // reported still live, which is what a retained detour is.
+                    live_at_entry: vec![true; targets.len()],
+                    live_at_exit: vec![true; targets.len()],
                     freezes: super::freeze::freeze_attempts_on_this_thread()
                         .saturating_sub(freezes_before),
                 };
@@ -1831,6 +2051,13 @@ mod windows_impl {
                 outcomes,
                 apply_refusal: Some(retained),
                 already_released: Vec::new(),
+                    incoherent_cleared: Vec::new(),
+                    incoherent_retained: Vec::new(),
+                    // A refused freeze touched nothing, so entry and exit are
+                    // the same state and neither was read: every target is
+                    // reported still live, which is what a retained detour is.
+                    live_at_entry: vec![true; targets.len()],
+                    live_at_exit: vec![true; targets.len()],
                 freezes: super::freeze::freeze_attempts_on_this_thread()
                     .saturating_sub(freezes_before),
             };
@@ -1866,6 +2093,13 @@ mod windows_impl {
             outcomes,
             apply_refusal: None,
             already_released,
+            // REMOVAL, not release. MinHook already refuses to remove an
+            // incoherent entry by name, so this batch has no unpublished write
+            // to heal, and a removed target is gone rather than live-or-not.
+            incoherent_cleared: Vec::new(),
+            incoherent_retained: Vec::new(),
+            live_at_entry: Vec::new(),
+            live_at_exit: Vec::new(),
             freezes: super::freeze::freeze_attempts_on_this_thread().saturating_sub(freezes_before),
         }
     }

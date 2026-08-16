@@ -4497,6 +4497,10 @@ pub fn observer_only() {}
         # roster authority the verifier compares against -- a literal would
         # stop tracking the roster and make the check vacuous.
         pinned_hook_import_slot_count = [int]$hookAuthority.ImportSlotCount
+        # Lane LU 2026-08-16: the collector's own terminal verdicts, $null on a
+        # capture whose collector published none -- which is what this fixture
+        # models. Present because the verifier's property set is EXACT.
+        collector_terminal_report = $null
     }
     $teardownPath = Join-Path $captureRun 'CAPTURE_TEARDOWN_V1.json'
     [IO.File]::WriteAllText(

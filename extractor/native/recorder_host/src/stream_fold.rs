@@ -1687,11 +1687,19 @@ impl BoundaryTracker {
                             return;
                         }
                     };
+                // Ordinary records are numbered from one in BOTH identity
+                // modes -- `IdentityV1` puts its CID1 at sequence zero, and
+                // `Legacy` has no sequence-zero record at all -- so this is the
+                // count of ordinary records before this one without the fold
+                // having to know which mode produced the stream. The identity
+                // flag this call used to pass was a hardcoded `true`, which
+                // made the fold accept an install census that the 22
+                // whole-stream scanners refused on every legacy production
+                // capture; the flag is gone from the policy for that reason.
                 let ordinary_before = header.sequence.saturating_sub(1);
                 match compact_contract::freeze_census_record::
                     validate_freeze_census_placement_policy(
                         census.phase(),
-                        true,
                         header.sequence,
                         ordinary_before,
                         previous_record_type,
@@ -6371,6 +6379,203 @@ mod tests {
         );
         // The same last record, judged without that acceptance, is refused.
         assert!(!boundary_eof_policy(tracker.last_record_kind, false));
+    }
+
+    fn install_census_payload() -> Vec<u8> {
+        use compact_contract::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+        };
+        FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Install,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn install_census_header(sequence: u64, payload_len: usize) -> CompactRecordHeader {
+        boundary_header(
+            sequence,
+            0,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            payload_len,
+            0,
+        )
+    }
+
+    /// The exact H4CR framing on disk, so the scanner side of the differential
+    /// below reads real bytes rather than the same header structs the fold got.
+    fn serialize_records(records: &[(CompactRecordHeader, Vec<u8>)]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for (header, payload) in records {
+            raw.extend_from_slice(COMPACT_RECORD_MAGIC);
+            raw.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+            raw.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+            raw.extend_from_slice(&header.sequence.to_le_bytes());
+            raw.extend_from_slice(&header.game_hour_raw.to_le_bytes());
+            raw.extend_from_slice(&header.domain_id.to_le_bytes());
+            raw.extend_from_slice(&header.record_type.to_le_bytes());
+            raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            raw.extend_from_slice(&header.record_flags.to_le_bytes());
+            raw.extend_from_slice(payload);
+        }
+        raw
+    }
+
+    /// The record sequence a LEGACY-mode production capture actually writes:
+    /// NO CID1 stream header, the install freeze census as the first physical
+    /// record at sequence 1, then one ordinary hour, then the release epilogue
+    /// behind that hour's FRAME_END.
+    ///
+    /// `compact_stream_identity_mode = legacy` is what the recorder selects for
+    /// every capture that attaches to a game already running (`main.rs`:
+    /// `capture_identity_mode`), which is the mode of the live captures this
+    /// lane was staffed from.
+    fn legacy_capture_records(with_epilogue: bool) -> Vec<(CompactRecordHeader, Vec<u8>)> {
+        let install = install_census_payload();
+        let hour = raw_for(HOUR_A);
+        let data = country_identity_payload(&[(47, "GER")]);
+        let seal = frame_end_payload(0, 0, 0, 0);
+        let mut records = vec![
+            (install_census_header(1, install.len()), install),
+            (
+                boundary_header(2, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+                data,
+            ),
+            (
+                boundary_header(
+                    3,
+                    hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    seal.len(),
+                    0,
+                ),
+                seal,
+            ),
+        ];
+        if with_epilogue {
+            let release = release_census_payload();
+            records.push((release_census_header(4, release.len()), release));
+        }
+        records
+    }
+
+    /// Both authorities' verdicts over the SAME records: the fold's
+    /// `BoundaryTracker` (which applies every record and then certifies at EOF)
+    /// and `validate_freeze_census_stream_placement`, which is the single entry
+    /// point all 22 whole-stream domain scanners call.
+    fn both_verdicts(records: &[(CompactRecordHeader, Vec<u8>)]) -> (Result<(), String>, bool) {
+        let mut tracker = BoundaryTracker::default();
+        let mut at = 0u64;
+        for (header, payload) in records {
+            tracker.observe(header, payload, at);
+            at += (COMPACT_RECORD_HEADER_LEN + payload.len()) as u64;
+        }
+        let fold = tracker.eof_check(0);
+        let scanner = compact_contract::stream_validator::validate_freeze_census_stream_placement(
+            &serialize_records(records),
+        );
+        (fold, scanner.is_ok())
+    }
+
+    /// THE DIFFERENTIAL. The fold and the shared secondary-scanner entry point
+    /// must reach the same verdict on the same bytes, and specifically on the
+    /// shape production actually ships.
+    ///
+    /// They did not. The fold passed `campaign_identity_present: true` as a
+    /// HARDCODED literal, while the scanner DERIVED it from whether the first
+    /// record was a CID1 -- so on every legacy capture (no CID1, install census
+    /// at sequence 1) the fold accepted the recording and all 22 scanners
+    /// refused it with "install FREEZE_CENSUS must be sequence 1 immediately
+    /// after an admitted CID1". The rule now states what it means -- the
+    /// install census is the first ORDINARY record of its logical stream -- and
+    /// takes no identity argument at all, so there is nothing left to hardcode
+    /// and nothing left to derive differently.
+    ///
+    /// kills: re-introducing any stream-identity condition into the install
+    /// slot (the legacy case below flips to refused on the scanner side while
+    /// the fold still accepts, or both refuse the shipped shape); and killing
+    /// the shared routing by giving either authority its own local rule.
+    #[test]
+    fn the_fold_and_the_secondary_scanners_agree_on_a_legacy_capture() {
+        // POSITIVE: the shipped legacy shape, with and without the epilogue.
+        for with_epilogue in [false, true] {
+            let (fold, scanner) = both_verdicts(&legacy_capture_records(with_epilogue));
+            assert_eq!(fold, Ok(()), "fold refused a legacy capture");
+            assert!(scanner, "secondary scanners refused a legacy capture");
+        }
+
+        // POSITIVE: the identity-mode shape. The CID1 at sequence zero is not
+        // an ordinary record and is not an ordinary predecessor, so the install
+        // census still answers sequence 1 / zero ordinary records / no
+        // predecessor -- the same call, unchanged.
+        let mut identity = legacy_capture_records(true);
+        let cid1 = {
+            let observation = Cid1Observation {
+                game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_owned(),
+                game_unique_seed: -947_102,
+                game_hour_raw: raw_for(HOUR_A),
+            };
+            let fields = Cid1Fields::from_stable_observations(
+                observation.clone(),
+                observation,
+                "vanilla_latest_2026_07_15".to_owned(),
+                Cid1Witnesses::default(),
+            )
+            .unwrap();
+            encode_cid1(&fields).unwrap()
+        };
+        identity.insert(
+            0,
+            (
+                boundary_header(
+                    0,
+                    raw_for(HOUR_A),
+                    COMPACT_DOMAIN_STREAM_HEADER,
+                    COMPACT_RECORD_TYPE_STREAM_HEADER,
+                    cid1.len(),
+                    0,
+                ),
+                cid1,
+            ),
+        );
+        let (_, scanner) = both_verdicts(&identity);
+        assert!(scanner, "secondary scanners refused an identity capture");
+
+        // NEGATIVE, and BOTH must refuse it: an install census that is not the
+        // first ordinary record. A data record precedes it, so it names a slot
+        // it does not occupy.
+        let install = install_census_payload();
+        let hour = raw_for(HOUR_A);
+        let data = country_identity_payload(&[(47, "GER")]);
+        let seal = frame_end_payload(0, 0, 0, 0);
+        let misplaced = vec![
+            (
+                boundary_header(1, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+                data,
+            ),
+            (install_census_header(2, install.len()), install),
+            (
+                boundary_header(
+                    3,
+                    hour,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    seal.len(),
+                    0,
+                ),
+                seal,
+            ),
+        ];
+        let (fold, scanner) = both_verdicts(&misplaced);
+        assert!(fold.is_err(), "fold admitted a misplaced install census");
+        assert!(
+            !scanner,
+            "secondary scanners admitted a misplaced install census"
+        );
     }
 
     /// kills: letting a FREEZE_CENSUS close a stream without the placement
