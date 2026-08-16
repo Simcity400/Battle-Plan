@@ -365,7 +365,7 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
             }
             compact_contract::KnownRecordType::FreezeCensus => {
                 if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
-                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }

@@ -6628,21 +6628,98 @@ fn freeze_census_manifest_from_scan(summary: &HeaderScanSummary, decoded_sha256:
             "{install_records} install-phase freeze census records are present; expected one"
         ));
     }
+    // The per-phase half of the section. Reconstructed here from the sealed
+    // bytes INDEPENDENTLY of the recorder's own builder; the equality check in
+    // `validate_freeze_census_stream_authority` is what makes any drift between
+    // the two a hard gate failure rather than a silent disagreement.
+    let phase_section = |phase: FreezeCensusPhase, problems: &mut Vec<String>| {
+        let mut record_count = 0u64;
+        let mut phase_rows = 0u64;
+        let mut phase_unrepresented = 0u64;
+        let mut phase_window = 0u64;
+        let mut phase_acquire = 0u64;
+        let mut phase_minhook = 0u64;
+        let mut phase_refused = 0u64;
+        let mut lossy = false;
+        let mut sequences = Vec::<u64>::new();
+        for (sequence, record) in summary
+            .freeze_census_records
+            .iter()
+            .filter(|(_, record)| record.phase() == phase)
+        {
+            let quality = record.quality();
+            record_count += 1;
+            sequences.push(*sequence);
+            phase_rows = phase_rows.saturating_add(record.rows().len() as u64);
+            phase_unrepresented =
+                phase_unrepresented.saturating_add(record.attempts_unrepresented_total());
+            phase_window = phase_window.saturating_add(record.present_window_us_sum());
+            phase_acquire = phase_acquire.saturating_add(record.present_acquire_us_sum());
+            phase_minhook = phase_minhook.saturating_add(record.present_minhook_us_sum());
+            phase_refused = phase_refused.saturating_add(record.present_refused_row_count());
+            // Every quality bit that means this phase's own numbers do not
+            // add up. `counter_reconciliation_issue` belongs here for the same
+            // reason the other three do: the record is telling you it cannot
+            // reconcile its counters, which is not a complete measurement even
+            // when every attempt it did carry has a row.
+            lossy |= quality.census_dropped_during_phase()
+                || quality.encoder_bound_truncated()
+                || quality.census_overflowed_before_phase()
+                || quality.counter_reconciliation_issue();
+        }
+        let status = if record_count == 0 {
+            "absent"
+        } else if record_count == 1 && phase_unrepresented == 0 && !lossy {
+            "complete"
+        } else {
+            "partial"
+        };
+        if record_count == 0 {
+            problems.push(format!(
+                "no {}-phase freeze census record is present; those freeze durations were not recorded in this logical stream",
+                phase.canonical_name()
+            ));
+        } else if record_count > 1 {
+            problems.push(format!(
+                "{record_count} {}-phase freeze census records are present; expected one",
+                phase.canonical_name()
+            ));
+        }
+        json!({
+            "status": status,
+            "record_count": record_count,
+            "sequences": sequences,
+            "rows_present": phase_rows,
+            "attempts_unrepresented": phase_unrepresented,
+            "present_window_us_upper_bound_sum": phase_window,
+            "present_acquire_us_sum": phase_acquire,
+            "present_minhook_us_sum": phase_minhook,
+            "present_refused_rows": phase_refused,
+        })
+    };
+    let install_phase = phase_section(FreezeCensusPhase::Install, &mut problems);
+    let release_phase = phase_section(FreezeCensusPhase::Release, &mut problems);
+    let phase_complete = |phase: &Value| phase.get("status") == Some(&json!("complete"));
     let status = if summary.freeze_census_records.is_empty() {
         "absent"
-    } else if install_records == 1 && attempts_unrepresented == 0 {
+    } else if phase_complete(&install_phase) && phase_complete(&release_phase) {
         "complete"
     } else {
         "partial"
     };
     json!({
-        "schema": "hoi4.freeze-census.v1",
+        "schema": "hoi4.freeze-census.v2",
         "source": {
             "kind": "sealed_h4cr",
             "record_type": compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
             "decoded_stream_sha256": decoded_sha256,
         },
         "status": status,
+        "duration_semantics": "every *_window_us_upper_bound_* value is an upper bound on stopped time, not a stopwatch reading: the census clock opens before the first suspension and closes after the last handle is released",
+        "phases": {
+            "install": install_phase,
+            "release": release_phase,
+        },
         "recording_totals": {
             "record_count": summary.freeze_census_records.len(),
             "rows_present": rows_present,
@@ -6823,8 +6900,6 @@ fn scan_compact_stream_with_identity_mode(
                             == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                         summary.freeze_census_records.push((sequence, record));
                         final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(
-                            compact_contract::freeze_census_record::
-                                RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
                             previous_physical_was_clean_world_boundary,
                             phase,
                             release_epilogue_seen,
@@ -7750,18 +7825,172 @@ mod tests {
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// kills: hard-wiring the shipped false policy, or accepting an epilogue
-    /// without a clean preceding world boundary, breaks this both-state proof.
-    #[test]
-    fn release_epilogue_final_record_policy_compiles_both_owner_rulings() {
+    /// One release-phase H4FC payload, bounded and self-consistent.
+    fn release_census_payload() -> Vec<u8> {
         use compact_contract::freeze_census_record::{
-            release_epilogue_closes_stream_policy, FreezeCensusPhase,
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
         };
-        assert!(!release_epilogue_closes_stream_policy(false, true, FreezeCensusPhase::Release, false));
-        assert!(release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Release, false));
-        assert!(!release_epilogue_closes_stream_policy(true, false, FreezeCensusPhase::Release, false));
-        assert!(!release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Install, false));
-        assert!(!release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Release, true));
+        FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Release,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn append_release_census(raw: &mut Vec<u8>, sequence: u64) {
+        append_record(
+            raw,
+            sequence,
+            0,
+            DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            &release_census_payload(),
+        );
+    }
+
+    /// A minimal legal stream: PERF, DATA, FRAME_END for one hour.
+    fn one_closed_hour() -> Vec<u8> {
+        let mut raw = Vec::new();
+        append_record(&mut raw, 1, 100, 10, RECORD_TYPE_DOMAIN_PERF, &perf_payload(0));
+        append_record(
+            &mut raw,
+            2,
+            100,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        append_record(
+            &mut raw,
+            3,
+            100,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+        raw
+    }
+
+    /// POSITIVE FIXTURE for the independent verification gate: exactly one
+    /// release census behind the final FRAME_END, and EOF.
+    ///
+    /// kills: reverting the gate to "the last physical record must be a
+    /// boundary", which refuses every recording the shipped recorder now
+    /// produces.
+    #[test]
+    fn the_gate_accepts_one_release_census_after_the_final_boundary() {
+        let mut raw = one_closed_hour();
+        append_release_census(&mut raw, 4);
+        let summary = scan_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
+        assert_eq!(summary.freeze_census_records.len(), 1);
+    }
+
+    /// NEGATIVE FIXTURES for the independent verification gate. Each one is a
+    /// distinct way the "exactly one bounded record after a closed hour, then
+    /// EOF" rule can be broken.
+    ///
+    /// kills: dropping the duplicate guard, the boundary-predecessor rule, the
+    /// EOF rule, the record-type rule, or the fixed size ceiling from the gate.
+    #[test]
+    fn the_gate_refuses_every_other_shape_after_the_final_boundary() {
+        // Two records after the end: a second census.
+        let mut two_censuses = one_closed_hour();
+        append_release_census(&mut two_censuses, 4);
+        append_release_census(&mut two_censuses, 5);
+        assert!(
+            !scan_compact_stream(&two_censuses).parse_errors.is_empty(),
+            "a second release census was accepted"
+        );
+
+        // Two records after the end: census then an ordinary record.
+        let mut census_then_data = one_closed_hour();
+        append_release_census(&mut census_then_data, 4);
+        append_record(
+            &mut census_then_data,
+            5,
+            101,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        assert!(
+            !scan_compact_stream(&census_then_data).parse_errors.is_empty(),
+            "a record after the epilogue was accepted"
+        );
+
+        // A record after the end that is NOT the census type: unchanged, still
+        // malformed, and it must be malformed for the pre-existing reason.
+        let mut data_after_end = one_closed_hour();
+        append_record(
+            &mut data_after_end,
+            4,
+            101,
+            10,
+            RECORD_TYPE_DOMAIN_DATA,
+            &fuel_empty_payload(),
+        );
+        assert!(
+            !scan_compact_stream(&data_after_end).parse_errors.is_empty(),
+            "an ordinary record was allowed to close the stream"
+        );
+
+        // The census without a proper FRAME_END before it.
+        let mut no_boundary = Vec::new();
+        append_record(
+            &mut no_boundary,
+            1,
+            100,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_release_census(&mut no_boundary, 2);
+        assert!(
+            !scan_compact_stream(&no_boundary).parse_errors.is_empty(),
+            "a release census without a preceding closed hour was accepted"
+        );
+
+        // Oversize: past the fixed H4FC payload ceiling.
+        let mut oversize = one_closed_hour();
+        let mut payload = release_census_payload();
+        payload.resize(
+            compact_contract::freeze_census_record::FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1,
+            0,
+        );
+        append_record(
+            &mut oversize,
+            4,
+            0,
+            DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            &payload,
+        );
+        assert!(
+            !scan_compact_stream(&oversize).parse_errors.is_empty(),
+            "an oversize release census was accepted"
+        );
+
+        // Opens an hour: the envelope must keep the zero no-coverage sentinel.
+        let mut hour_bearing = one_closed_hour();
+        append_record(
+            &mut hour_bearing,
+            4,
+            100,
+            DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            &release_census_payload(),
+        );
+        assert!(
+            !scan_compact_stream(&hour_bearing).parse_errors.is_empty(),
+            "a release census carrying a game hour was accepted"
+        );
     }
 
     /// kills: trusting the mutable manifest instead of independently deriving

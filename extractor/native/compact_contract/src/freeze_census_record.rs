@@ -26,24 +26,41 @@ pub const FREEZE_CENSUS_MAX_PAYLOAD_LEN: usize = FREEZE_CENSUS_HEADER_LEN
     + FREEZE_CENSUS_MAX_ROWS * FREEZE_CENSUS_ROW_LEN
     + FREEZE_CENSUS_MAX_LABEL_BLOB_LEN;
 
-/// Shared release-epilogue policy authority.
+/// THE RELEASE-EPILOGUE GRAMMAR (owner ruling 2026-08-16, option (a)).
 ///
-/// Flipping this is an OWNER RULING selecting option (a), a bounded H4CR
-/// record after the last frame boundary. It is false while the owner may
-/// instead select option (b), an authenticated container receipt, or option
-/// (c), a pre-release flush that cannot observe teardown freezes.
-pub const RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED: bool = false;
-
+/// A recording may carry EXACTLY ONE bounded H4FC record after its last frame
+/// boundary, and nothing at all after that. Concretely, and enforced by the two
+/// pure functions below plus [`FreezeCensusRecordV1::decode`]:
+///
+/// * exactly one -- a second release record is refused
+///   ([`validate_freeze_census_placement_policy`], `release_epilogue_already_seen`);
+/// * fixed maximum size -- [`FREEZE_CENSUS_MAX_PAYLOAD_LEN`], refused by the decoder;
+/// * it must be the FREEZE_CENSUS record type in its release phase -- any other
+///   record type after the boundary is malformed exactly as it was before;
+/// * immediately after a canonical closed-hour boundary. `FRAME_END` and
+///   `FRAME_REFUSED` both close a game hour, and a stream is allowed to end on
+///   either, so both are accepted predecessors and nothing else is. Narrowing
+///   this to `FRAME_END` alone would call an honestly-refused final hour
+///   malformed the moment the epilogue rides behind it;
+/// * end of file immediately after it
+///   ([`validate_record_allowed_after_release_epilogue`]);
+/// * it opens no hour and claims no coverage: domain 1000, game-hour sentinel
+///   zero, contiguous sequence, no coverage span (enforced by the H4CR envelope
+///   checks in `record_semantics` and by every consumer routing the record away
+///   from its hour bookkeeping).
+///
+/// There is deliberately no enable/disable switch: the ruling is shipped, so
+/// the refusing branch is gone rather than parked behind a constant that is
+/// always true.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeCensusPlacement {
     InstallPreamble,
     ReleaseEpilogue,
 }
 
-/// Pure placement authority compiled for both the shipped policy and the
-/// owner-ruled epilogue policy in tests.
+/// Pure placement authority. Every consumer that admits an H4FC record routes
+/// through this one function, so the grammar above has a single definition.
 pub fn validate_freeze_census_placement_policy(
-    release_epilogue_enabled: bool,
     phase: FreezeCensusPhase,
     campaign_identity_present: bool,
     sequence: u64,
@@ -66,12 +83,6 @@ pub fn validate_freeze_census_placement_policy(
             Ok(FreezeCensusPlacement::InstallPreamble)
         }
         FreezeCensusPhase::Release => {
-            if !release_epilogue_enabled {
-                return Err(
-                    "release FREEZE_CENSUS epilogue is disabled pending an owner ruling"
-                        .to_string(),
-                );
-            }
             if release_epilogue_already_seen {
                 return Err("release FREEZE_CENSUS epilogue is duplicated".to_string());
             }
@@ -113,14 +124,18 @@ pub fn validate_record_allowed_after_release_epilogue(
 
 /// Pure physical-EOF policy shared by whole-stream consumers. A release row
 /// closes the stream only once, immediately after a clean world boundary.
+///
+/// `previous_record_closed_world` is the caller's own "the record I just
+/// finished was a canonical closed-hour boundary" bit, which is exactly the
+/// `FRAME_END`/`FRAME_REFUSED` predecessor rule stated above. An install-phase
+/// record never closes a stream, so this returns false for it and the caller's
+/// pre-existing terminal requirement stands unchanged.
 pub const fn release_epilogue_closes_stream_policy(
-    release_epilogue_enabled: bool,
     previous_record_closed_world: bool,
     phase: FreezeCensusPhase,
     release_epilogue_already_seen: bool,
 ) -> bool {
-    release_epilogue_enabled
-        && previous_record_closed_world
+    previous_record_closed_world
         && matches!(phase, FreezeCensusPhase::Release)
         && !release_epilogue_already_seen
 }
@@ -1618,25 +1633,17 @@ mod tests {
         }
     }
 
-    /// kills: shipping release acceptance while the policy is false, or making
-    /// option (a) impossible to activate with one ruling. Both boolean states
-    /// compile and exercise the same pure policy function.
+    /// kills: relaxing the shipped epilogue grammar in the ONE place that
+    /// defines it. Each assertion below fails on a specific production change:
+    /// dropping the duplicate guard, dropping the sequence-contiguity check,
+    /// admitting a release record after a non-boundary predecessor, admitting
+    /// one with no ordinary records at all, or admitting one after a record
+    /// type that closes no hour.
     #[test]
-    fn release_epilogue_policy_is_compiled_for_false_and_true() {
-        assert!(!RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED);
-        let disabled = validate_freeze_census_placement_policy(
-            false,
-            FreezeCensusPhase::Release,
-            true,
-            9,
-            8,
-            Some(KnownRecordType::FrameEnd),
-            false,
-        );
-        assert!(disabled.is_err());
+    fn release_epilogue_placement_accepts_exactly_the_ruled_shape() {
+        // POSITIVE: one release record, contiguous, straight after a FRAME_END.
         assert_eq!(
             validate_freeze_census_placement_policy(
-                true,
                 FreezeCensusPhase::Release,
                 true,
                 9,
@@ -1646,18 +1653,21 @@ mod tests {
             ),
             Ok(FreezeCensusPlacement::ReleaseEpilogue)
         );
+        // POSITIVE: FRAME_REFUSED closes an hour too, and a stream is allowed
+        // to end on one, so the epilogue may ride behind it.
+        assert_eq!(
+            validate_freeze_census_placement_policy(
+                FreezeCensusPhase::Release,
+                true,
+                9,
+                8,
+                Some(KnownRecordType::FrameRefused),
+                false,
+            ),
+            Ok(FreezeCensusPlacement::ReleaseEpilogue)
+        );
+        // NEGATIVE: a second release record.
         assert!(validate_freeze_census_placement_policy(
-            true,
-            FreezeCensusPhase::Release,
-            true,
-            9,
-            8,
-            Some(KnownRecordType::DomainData),
-            false,
-        )
-        .is_err());
-        assert!(validate_freeze_census_placement_policy(
-            true,
             FreezeCensusPhase::Release,
             true,
             10,
@@ -1666,8 +1676,45 @@ mod tests {
             true,
         )
         .is_err());
+        // NEGATIVE: not immediately after a boundary -- every record type that
+        // closes no game hour is refused as the predecessor.
+        for predecessor in [
+            KnownRecordType::DomainData,
+            KnownRecordType::DomainPerf,
+            KnownRecordType::DomainGap,
+            KnownRecordType::FrameDegraded,
+            KnownRecordType::CaptureTerminated,
+            KnownRecordType::ClockUnreadableInterval,
+            KnownRecordType::UntrustedClockRecovery,
+            KnownRecordType::FreezeCensus,
+            KnownRecordType::StreamHeader,
+        ] {
+            assert!(
+                validate_freeze_census_placement_policy(
+                    FreezeCensusPhase::Release,
+                    true,
+                    9,
+                    8,
+                    Some(predecessor),
+                    false,
+                )
+                .is_err(),
+                "release epilogue admitted after {}",
+                predecessor.canonical_name()
+            );
+        }
+        // NEGATIVE: no ordinary record precedes it at all (no hour was closed).
         assert!(validate_freeze_census_placement_policy(
+            FreezeCensusPhase::Release,
             true,
+            1,
+            0,
+            None,
+            false,
+        )
+        .is_err());
+        // NEGATIVE: sequence is not contiguous with the records before it.
+        assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
             true,
             10,
@@ -1676,30 +1723,99 @@ mod tests {
             false,
         )
         .is_err());
+    }
+
+    /// kills: dropping the install-preamble slot rule, which would let an
+    /// install record float anywhere in the stream, or let it masquerade as the
+    /// terminal epilogue.
+    #[test]
+    fn install_preamble_placement_is_sequence_one_only() {
+        assert_eq!(
+            validate_freeze_census_placement_policy(
+                FreezeCensusPhase::Install,
+                true,
+                1,
+                0,
+                None,
+                false,
+            ),
+            Ok(FreezeCensusPlacement::InstallPreamble)
+        );
+        for (identity, sequence, ordinary, previous) in [
+            (false, 1, 0, None),
+            (true, 2, 0, None),
+            (true, 1, 1, None),
+            (true, 1, 0, Some(KnownRecordType::FrameEnd)),
+        ] {
+            assert!(validate_freeze_census_placement_policy(
+                FreezeCensusPhase::Install,
+                identity,
+                sequence,
+                ordinary,
+                previous,
+                false,
+            )
+            .is_err());
+        }
+        // An install record never closes a stream, whatever preceded it.
+        assert!(!release_epilogue_closes_stream_policy(
+            true,
+            FreezeCensusPhase::Install,
+            false,
+        ));
+    }
+
+    /// kills: dropping the "EOF immediately after it" half of the grammar, so
+    /// a second record -- of ANY type -- could follow the epilogue.
+    #[test]
+    fn nothing_may_follow_the_release_epilogue() {
         assert_eq!(
             validate_record_allowed_after_release_epilogue(false),
             Ok(())
         );
         assert!(validate_record_allowed_after_release_epilogue(true).is_err());
-        // kills: changing any consumer-facing EOF predicate so disabled policy
-        // accepts release, duplicates are accepted, or the world boundary is optional.
-        assert!(!release_epilogue_closes_stream_policy(
-            false,
-            true,
-            FreezeCensusPhase::Release,
-            false,
-        ));
+    }
+
+    /// kills: changing the consumer-facing EOF predicate so duplicates are
+    /// accepted, the world boundary becomes optional, or an install record is
+    /// allowed to stand as the stream's terminal boundary.
+    #[test]
+    fn release_epilogue_closes_stream_only_once_after_a_boundary() {
         assert!(release_epilogue_closes_stream_policy(
             true,
-            true,
+            FreezeCensusPhase::Release,
+            false,
+        ));
+        assert!(!release_epilogue_closes_stream_policy(
+            false,
             FreezeCensusPhase::Release,
             false,
         ));
         assert!(!release_epilogue_closes_stream_policy(
             true,
-            true,
             FreezeCensusPhase::Release,
             true,
         ));
+    }
+
+    /// kills: raising or removing the fixed payload ceiling. A payload one byte
+    /// past the maximum is refused by the decoder, so an oversize epilogue can
+    /// never be admitted by any consumer -- they all decode before placing.
+    #[test]
+    fn oversize_payload_is_refused_by_the_decoder() {
+        let mut payload = vec![0u8; FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1];
+        payload[0..4].copy_from_slice(FREEZE_CENSUS_MAGIC);
+        payload[4..6].copy_from_slice(&FREEZE_CENSUS_VERSION.to_le_bytes());
+        payload[6..8].copy_from_slice(&(FREEZE_CENSUS_HEADER_LEN as u16).to_le_bytes());
+        payload[8] = FreezeCensusPhase::Release as u8;
+        payload[9] = 0;
+        payload[10..12].copy_from_slice(&(FREEZE_CENSUS_ROW_LEN as u16).to_le_bytes());
+        payload[12..16]
+            .copy_from_slice(&((FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1) as u32).to_le_bytes());
+        let error = FreezeCensusRecordV1::decode(&payload).unwrap_err();
+        assert!(
+            error.contains(&FREEZE_CENSUS_MAX_PAYLOAD_LEN.to_string()),
+            "oversize refusal did not name the ceiling: {error}"
+        );
     }
 }

@@ -475,6 +475,11 @@ pub fn verify_domain51_h4cr_stream(
             "minimum_game_hour_advancements {minimum_game_hour_advancements} cannot be converted to an inclusive closed-hour requirement"
         ));
     }
+    if let Err(error) = crate::stream_validator::validate_freeze_census_stream_placement(raw) {
+        report
+            .errors
+            .push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut pending_hour: Option<i32> = None;
@@ -706,7 +711,7 @@ pub fn verify_domain51_h4cr_stream(
             KnownRecordType::DomainPerf | KnownRecordType::DomainData => {}
             KnownRecordType::FreezeCensus => {
                 if let Ok(census) = crate::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
-                    terminal_frame_end_authoritative = crate::freeze_census_record::release_epilogue_closes_stream_policy(crate::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    terminal_frame_end_authoritative = crate::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
                     release_epilogue_seen |= census.phase() == crate::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }

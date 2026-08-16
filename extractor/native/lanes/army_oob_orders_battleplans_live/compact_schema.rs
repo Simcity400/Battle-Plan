@@ -248,6 +248,9 @@ fn main() {
 
 pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
     let mut summary = CompactGateSummary::default();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut last_sequence = None::<u64>;
     let mut open_hour = None::<i32>;
@@ -452,7 +455,7 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
             | compact_contract::KnownRecordType::DomainPerf => {}
             compact_contract::KnownRecordType::FreezeCensus => {
                 if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
-                    last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }

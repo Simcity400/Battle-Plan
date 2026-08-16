@@ -10,35 +10,47 @@ use crate::campaign_identity::{parse_cid1_record, Cid1Error, ValidatedCid1};
 use crate::domain_gap::DomainGapRecordV1;
 use crate::freeze_census_record::{
     validate_freeze_census_placement_policy, validate_record_allowed_after_release_epilogue,
-    FreezeCensusPlacement, FreezeCensusRecordV1, RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+    FreezeCensusPlacement, FreezeCensusRecordV1,
 };
 use crate::record_header::{parse_compact_record_header, CompactRecordHeader, COMPACT_RECORD_HEADER_LEN};
 use crate::record_semantics::{
-    validate_compact_record_semantics, KnownRecordType, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_STREAM_HEADER,
+    validate_compact_record_semantics, KnownRecordType, COMPACT_DOMAIN_FRAME,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
 
 /// Validate the H4FC placement slice of one H4CR byte stream's stateful grammar.
 ///
-/// The first envelope selects IdentityV1 only when it is the assigned CID1
-/// type; there is no fallback if that protocol then fails. This helper exists
-/// so secondary whole-stream scanners cannot accidentally validate only each
-/// record's stateless payload while accepting a late/duplicate H4FC. Other
-/// framing and semantic errors remain the caller's existing diagnostics.
+/// This helper exists so secondary whole-stream scanners cannot accidentally
+/// validate only each record's stateless payload while accepting a late,
+/// duplicate, misplaced, or hour-bearing H4FC. Every such scanner calls it, so
+/// it is the shipped definition of the epilogue grammar for all of them.
+///
+/// It runs a DEDICATED placement scan rather than the full stateful validator.
+/// The full validator stops at the first rule any record breaks, and it used to
+/// return `Ok(())` when that rule was not an H4FC rule — on the assumption that
+/// the calling scanner independently refuses the stream for the other reason.
+/// That assumption does not hold in general: a scanner that tolerates something
+/// the stateful validator rejects (reserved domain zero, for instance) would
+/// then get a silent pass on the H4FC rules AND accept the stream, which is the
+/// loophole the owner ruling was written to avoid. This scan therefore never
+/// short-circuits on a semantic rule it does not own.
+///
+/// It stops only on a FRAMING failure — a header that will not parse, or a
+/// declared length that overruns the buffer. Past that point there are no
+/// further records to locate, and every caller reports its own framing error
+/// and refuses the stream, so stopping there cannot let a stream through.
 pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String> {
     if raw.is_empty() {
         return Ok(());
     }
-    let first = match parse_compact_record_header(raw) {
-        Ok(header) => header,
-        Err(_) => return Ok(()),
-    };
-    let mut validator = if first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER {
-        StatefulStreamValidator::identity_v1()
-    } else {
-        StatefulStreamValidator::legacy()
-    };
+    let identity_present = parse_compact_record_header(raw)
+        .map(|first| first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER)
+        .unwrap_or(false);
+
     let mut offset = 0usize;
+    let mut ordinary_record_count = 0u64;
+    let mut previous_record_type: Option<KnownRecordType> = None;
+    let mut release_epilogue_seen = false;
     while offset < raw.len() {
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
@@ -49,16 +61,59 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
             return Ok(());
         }
         let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
-        if let Err(error) = validator.validate_record(&header, payload) {
-            let rendered = error.to_string();
-            if rendered.contains("FREEZE_CENSUS") {
-                return Err(format!("offset {offset}: {rendered}"));
+
+        // The EOF half of the grammar: once a release epilogue was accepted,
+        // no further physical record may follow it, whatever its type.
+        validate_record_allowed_after_release_epilogue(release_epilogue_seen)
+            .map_err(|error| format!("offset {offset}: {error}"))?;
+
+        let known = KnownRecordType::try_from(header.record_type).ok();
+        if known == Some(KnownRecordType::FreezeCensus) {
+            // It closes no hour and claims no coverage, so its envelope must
+            // carry domain 1000 and the zero no-coverage sentinel.
+            if header.domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "offset {offset}: FREEZE_CENSUS domain {} is not {COMPACT_DOMAIN_FRAME}",
+                    header.domain_id
+                ));
             }
-            // This helper supplies the stateful H4FC placement check to
-            // secondary scanners. Every other framing/semantic failure stays
-            // with that scanner's existing diagnostics, avoiding duplicate
-            // errors and preserving its domain-specific evidence.
-            return Ok(());
+            if header.game_hour_raw != 0 {
+                return Err(format!(
+                    "offset {offset}: FREEZE_CENSUS H4CR hour {} is not the zero no-coverage sentinel",
+                    header.game_hour_raw
+                ));
+            }
+            if header.payload_len != payload.len() {
+                return Err(format!(
+                    "offset {offset}: FREEZE_CENSUS declared payload length {} does not equal {}",
+                    header.payload_len,
+                    payload.len()
+                ));
+            }
+            // Decoding enforces the fixed maximum payload size and every
+            // self-consistency rule the record makes about its own counters.
+            let census = FreezeCensusRecordV1::decode(payload)
+                .map_err(|error| format!("offset {offset}: {error}"))?;
+            let placement = validate_freeze_census_placement_policy(
+                census.phase(),
+                identity_present,
+                header.sequence,
+                ordinary_record_count,
+                previous_record_type,
+                release_epilogue_seen,
+            )
+            .map_err(|error| format!("offset {offset}: {error}"))?;
+            if placement == FreezeCensusPlacement::ReleaseEpilogue {
+                release_epilogue_seen = true;
+            }
+        }
+
+        // Sequence zero is the identity record and is not an ordinary record;
+        // it is also not a legal predecessor for anything but the install
+        // preamble, which the placement policy states directly.
+        if !(identity_present && offset == 0) {
+            ordinary_record_count = ordinary_record_count.saturating_add(1);
+            previous_record_type = known;
         }
         offset += record_len;
     }
@@ -336,7 +391,6 @@ impl StatefulStreamValidator {
                     let census = FreezeCensusRecordV1::decode(payload)
                         .map_err(StreamValidationError::InvalidRecordSemantics)?;
                     validate_freeze_census_placement_policy(
-                        RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
                         census.phase(),
                         self.identity.is_some(),
                         header.sequence,
@@ -614,27 +668,230 @@ mod tests {
         assert!(validator.validate_record(&bad_header, &census).is_err());
     }
 
-    /// kills: shipping release-epilogue acceptance while the shared owner
-    /// ruling constant remains false.
-    #[test]
-    fn shipped_validator_rejects_release_census_after_a_boundary() {
+    fn frame_end_header(sequence: u64) -> CompactRecordHeader {
+        header(
+            sequence,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &[0u8; COMPACT_FRAME_END_PAYLOAD_LEN],
+        )
+    }
+
+    /// Validator that has just accepted a FRAME_END as ordinary sequence 1.
+    fn validator_at_a_closed_boundary() -> StatefulStreamValidator {
         let boundary = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
-        let release = census_payload(FreezeCensusPhase::Release);
         let mut validator = StatefulStreamValidator::legacy();
         validator
-            .validate_record(
-                &header(
-                    1,
-                    COMPACT_DOMAIN_FRAME,
-                    COMPACT_RECORD_TYPE_FRAME_END,
-                    &boundary,
-                ),
-                &boundary,
-            )
+            .validate_record(&frame_end_header(1), &boundary)
             .unwrap();
+        validator
+    }
+
+    /// kills: refusing the shipped teardown epilogue. If the release branch is
+    /// removed, narrowed to install-only, or gated behind a flag again, the
+    /// recorder's own teardown record stops being readable and this fails.
+    ///
+    /// POSITIVE FIXTURE for the stream validator.
+    #[test]
+    fn one_release_census_after_a_boundary_is_accepted() {
+        let release = census_payload(FreezeCensusPhase::Release);
+        let mut validator = validator_at_a_closed_boundary();
+        assert_eq!(
+            validator.validate_record(&census_header(2, &release), &release),
+            Ok(AcceptedRecordKind::Ordinary)
+        );
+    }
+
+    /// kills: dropping the "exactly one, then EOF" half of the grammar. Two
+    /// records after the boundary -- a second census, or any other record type
+    /// -- must be refused, and the refusal must be the epilogue rule rather
+    /// than an incidental sequence error.
+    ///
+    /// NEGATIVE FIXTURE: two records after the end.
+    #[test]
+    fn nothing_may_follow_the_release_census() {
+        let release = census_payload(FreezeCensusPhase::Release);
+        let data = b"DATA";
+
+        let mut second_census = validator_at_a_closed_boundary();
+        second_census
+            .validate_record(&census_header(2, &release), &release)
+            .unwrap();
+        assert!(second_census
+            .validate_record(&census_header(3, &release), &release)
+            .is_err());
+
+        let mut then_data = validator_at_a_closed_boundary();
+        then_data
+            .validate_record(&census_header(2, &release), &release)
+            .unwrap();
+        assert!(then_data
+            .validate_record(&data_header(3, 18, data), data)
+            .is_err());
+
+        let mut then_boundary = validator_at_a_closed_boundary();
+        then_boundary
+            .validate_record(&census_header(2, &release), &release)
+            .unwrap();
+        assert!(then_boundary
+            .validate_record(
+                &frame_end_header(3),
+                &[0u8; COMPACT_FRAME_END_PAYLOAD_LEN]
+            )
+            .is_err());
+    }
+
+    /// kills: admitting the epilogue behind a record that closes no hour, which
+    /// is what turns "one bounded record after the end" into "anything may
+    /// follow anything".
+    ///
+    /// NEGATIVE FIXTURE: a record after the end without a proper FRAME_END.
+    #[test]
+    fn a_release_census_needs_a_closed_hour_immediately_before_it() {
+        let release = census_payload(FreezeCensusPhase::Release);
+        let data = b"DATA";
+
+        let mut after_data = StatefulStreamValidator::legacy();
+        after_data
+            .validate_record(&data_header(1, 18, data), data)
+            .unwrap();
+        assert!(after_data
+            .validate_record(&census_header(2, &release), &release)
+            .is_err());
+
+        // No ordinary record at all before it.
+        let mut first_record = StatefulStreamValidator::legacy();
+        assert!(first_record
+            .validate_record(&census_header(1, &release), &release)
+            .is_err());
+    }
+
+    /// kills: letting the epilogue open an hour. Its H4CR envelope must keep
+    /// the zero no-coverage sentinel exactly as the install record does, or it
+    /// would enter an hour's coverage span and swallow real bytes.
+    ///
+    /// NEGATIVE FIXTURE: the epilogue opens an hour.
+    #[test]
+    fn a_release_census_may_not_carry_a_game_hour() {
+        let release = census_payload(FreezeCensusPhase::Release);
+        let mut hour_bearing = census_header(2, &release);
+        hour_bearing.game_hour_raw = game_hour();
+        let mut validator = validator_at_a_closed_boundary();
+        assert!(validator.validate_record(&hour_bearing, &release).is_err());
+    }
+
+    /// kills: raising or removing the fixed size ceiling on the epilogue. A
+    /// payload past `FREEZE_CENSUS_MAX_PAYLOAD_LEN` is refused before placement
+    /// is ever considered.
+    ///
+    /// NEGATIVE FIXTURE: oversize.
+    #[test]
+    fn an_oversize_release_census_is_refused() {
+        use crate::freeze_census_record::FREEZE_CENSUS_MAX_PAYLOAD_LEN;
+        let mut release = census_payload(FreezeCensusPhase::Release);
+        release.resize(FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1, 0);
+        let mut validator = validator_at_a_closed_boundary();
         assert!(validator
             .validate_record(&census_header(2, &release), &release)
             .is_err());
+    }
+
+    /// kills: letting the epilogue ride behind a FRAME_REFUSED without the
+    /// whole-stream helper agreeing, and letting that helper go quiet on a
+    /// malformed epilogue. `validate_freeze_census_stream_placement` is the one
+    /// entry point every secondary scanner uses, so its verdict is the rule
+    /// those scanners actually enforce.
+    #[test]
+    fn the_secondary_scanner_helper_agrees_with_the_stateful_validator() {
+        let release = census_payload(FreezeCensusPhase::Release);
+        let boundary = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
+        let data = b"DATA".to_vec();
+
+        // Serialize the exact H4CR framing `parse_compact_record_header` reads,
+        // so this test drives the helper over real bytes rather than a mock.
+        let serialized = |records: &[(CompactRecordHeader, Vec<u8>)]| {
+            let mut raw = Vec::new();
+            for (header, payload) in records {
+                raw.extend_from_slice(crate::record_header::COMPACT_RECORD_MAGIC);
+                raw.extend_from_slice(&crate::record_header::COMPACT_RECORD_VERSION.to_le_bytes());
+                raw.extend_from_slice(
+                    &(crate::record_header::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes(),
+                );
+                raw.extend_from_slice(&header.sequence.to_le_bytes());
+                raw.extend_from_slice(&header.game_hour_raw.to_le_bytes());
+                raw.extend_from_slice(&header.domain_id.to_le_bytes());
+                raw.extend_from_slice(&header.record_type.to_le_bytes());
+                raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                raw.extend_from_slice(&header.record_flags.to_le_bytes());
+                raw.extend_from_slice(payload);
+            }
+            raw
+        };
+
+        let good = serialized(&[
+            (frame_end_header(1), boundary.to_vec()),
+            (census_header(2, &release), release.clone()),
+        ]);
+        assert_eq!(validate_freeze_census_stream_placement(&good), Ok(()));
+
+        let two_after_the_end = serialized(&[
+            (frame_end_header(1), boundary.to_vec()),
+            (census_header(2, &release), release.clone()),
+            (census_header(3, &release), release.clone()),
+        ]);
+        assert!(validate_freeze_census_stream_placement(&two_after_the_end).is_err());
+
+        let no_boundary = serialized(&[
+            (data_header(1, 18, &data), data.clone()),
+            (census_header(2, &release), release.clone()),
+        ]);
+        assert!(validate_freeze_census_stream_placement(&no_boundary).is_err());
+
+        // An epilogue whose envelope carries a game hour. It closes no hour and
+        // claims no coverage, so a nonzero hour is a lie about what it observed.
+        let mut hour_bearing_header = census_header(2, &release);
+        hour_bearing_header.game_hour_raw = game_hour();
+        let hour_bearing = serialized(&[
+            (frame_end_header(1), boundary.to_vec()),
+            (hour_bearing_header, release.clone()),
+        ]);
+        assert!(validate_freeze_census_stream_placement(&hour_bearing).is_err());
+
+        // THE EARLY-BAIL REGRESSION. A record that breaks some OTHER stateful
+        // rule -- here reserved domain zero -- used to make this helper return
+        // success without ever looking at the H4FC that followed. A scanner
+        // that tolerates domain zero then accepted a malformed epilogue. The
+        // dedicated placement scan owns only the H4FC rules and never
+        // short-circuits on a rule it does not own.
+        //
+        // kills: restoring the "stop at the first non-FREEZE_CENSUS error"
+        // behaviour, which makes both of these pass silently.
+        let mut reserved_domain = data_header(1, 18, &data);
+        reserved_domain.domain_id = 0;
+        let mut hour_bearing_after_reserved = census_header(3, &release);
+        hour_bearing_after_reserved.game_hour_raw = game_hour();
+        let masked = serialized(&[
+            (reserved_domain, data.clone()),
+            (frame_end_header(2), boundary.to_vec()),
+            (hour_bearing_after_reserved, release.clone()),
+        ]);
+        assert!(
+            validate_freeze_census_stream_placement(&masked).is_err(),
+            "a preceding non-census rule break silenced the placement scan"
+        );
+
+        let mut reserved_domain = data_header(1, 18, &data);
+        reserved_domain.domain_id = 0;
+        let masked_duplicate = serialized(&[
+            (reserved_domain, data.clone()),
+            (frame_end_header(2), boundary.to_vec()),
+            (census_header(3, &release), release.clone()),
+            (census_header(4, &release), release.clone()),
+        ]);
+        assert!(
+            validate_freeze_census_stream_placement(&masked_duplicate).is_err(),
+            "a preceding non-census rule break silenced the duplicate check"
+        );
     }
 
     #[test]

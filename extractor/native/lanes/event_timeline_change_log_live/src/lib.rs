@@ -1960,7 +1960,7 @@ pub fn gate_event_compact_stream(
             }
             compact_contract::KnownRecordType::FreezeCensus => {
                 if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
-                    last_record_was_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    last_record_was_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }

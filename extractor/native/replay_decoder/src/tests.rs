@@ -1718,6 +1718,189 @@ fn identity_cursor_names_freeze_census_without_changing_world_state() {
     assert!(censused.stats().certification_verdict().is_ok());
 }
 
+/// End-to-end through the replay decoder: a recording that carries the ruled
+/// teardown epilogue decodes to the SAME hours and the SAME snapshots as the
+/// identical recording without it, and it still certifies complete. The
+/// epilogue is telemetry; it must be invisible to replay.
+///
+/// kills: letting the epilogue reach world folding or hour coverage (the
+/// snapshot comparison breaks), and refusing an epilogue-carrying recording at
+/// certification (the verdict breaks) -- which is what the pre-ruling terminal
+/// rule did and is why this had to be re-proved on the shipped decoder.
+///
+/// POSITIVE FIXTURE for the replay decoder.
+#[test]
+fn the_replay_decoder_reads_an_epilogue_carrying_recording_identically() {
+    use compact_contract::freeze_census_record::{
+        FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+    };
+    let cid = compact_contract::parse_compact_record_header(&identity_v1_stream()).unwrap();
+    let with_tail = identity_v1_stream();
+    let cid_bytes = &with_tail[..cid.record_len()];
+    let hour = raw_for(HOUR_A);
+
+    let mut plain_bytes = cid_bytes.to_vec();
+    push_record(
+        &mut plain_bytes,
+        1,
+        hour,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut plain_bytes,
+        2,
+        hour,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let release = FreezeCensusRecordV1::encode_bounded(
+        FreezeCensusPhase::Release,
+        FreezeCensusCounterSnapshot::default(),
+        FreezeCensusCounterSnapshot::default(),
+        &[],
+    )
+    .unwrap();
+    let mut epilogue_bytes = plain_bytes.clone();
+    push_record(
+        &mut epilogue_bytes,
+        3,
+        0,
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+        &release,
+    );
+
+    let read = |bytes: Vec<u8>| {
+        let len = bytes.len() as u64;
+        let mut reader = open_reader_with_identity_mode(
+            Cursor::new(bytes),
+            len,
+            "fold_check",
+            StreamIdentityMode::IdentityV1,
+        );
+        let hours = reader.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+        let stats = reader.stats().clone();
+        (hours, stats)
+    };
+    let (plain_hours, plain_stats) = read(plain_bytes);
+    let (epilogue_hours, epilogue_stats) = read(epilogue_bytes);
+
+    assert_eq!(plain_hours.len(), epilogue_hours.len());
+    assert_eq!(plain_hours[0].snapshot, epilogue_hours[0].snapshot);
+    assert_eq!(plain_stats.frame_end_records, epilogue_stats.frame_end_records);
+    assert_eq!(plain_stats.data_records, epilogue_stats.data_records);
+    assert_eq!(epilogue_stats.freeze_census_records, 1);
+    assert_eq!(epilogue_stats.other_records, 0);
+    assert!(
+        epilogue_stats.certification_verdict().is_ok(),
+        "{:?}",
+        epilogue_stats.certification_verdict()
+    );
+}
+
+/// NEGATIVE FIXTURES for the replay decoder: the shapes the ruling does not
+/// admit must fail certification, not decode into a shorter recording.
+///
+/// kills: dropping the duplicate guard, the "EOF immediately after" rule, or
+/// the boundary-predecessor rule from the decoder's certification path.
+#[test]
+fn the_replay_decoder_refuses_every_other_shape_after_the_final_boundary() {
+    use compact_contract::freeze_census_record::{
+        FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+    };
+    let with_tail = identity_v1_stream();
+    let cid = compact_contract::parse_compact_record_header(&with_tail).unwrap();
+    let cid_bytes = &with_tail[..cid.record_len()];
+    let hour = raw_for(HOUR_A);
+    let release = FreezeCensusRecordV1::encode_bounded(
+        FreezeCensusPhase::Release,
+        FreezeCensusCounterSnapshot::default(),
+        FreezeCensusCounterSnapshot::default(),
+        &[],
+    )
+    .unwrap();
+
+    let one_closed_hour = || {
+        let mut bytes = cid_bytes.to_vec();
+        push_record(
+            &mut bytes,
+            1,
+            hour,
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            &country_identity_payload(&[(47, "GER")]),
+        );
+        push_record(
+            &mut bytes,
+            2,
+            hour,
+            DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            &frame_end_payload(),
+        );
+        bytes
+    };
+    let push_epilogue = |bytes: &mut Vec<u8>, sequence: u64| {
+        push_record(
+            bytes,
+            sequence,
+            0,
+            DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            &release,
+        );
+    };
+    let refuses = |bytes: Vec<u8>, what: &str| {
+        let len = bytes.len() as u64;
+        let mut reader = open_reader_with_identity_mode(
+            Cursor::new(bytes),
+            len,
+            "fold_check",
+            StreamIdentityMode::IdentityV1,
+        );
+        let drained = reader.by_ref().collect::<Result<Vec<_>, _>>();
+        let refused =
+            drained.is_err() || reader.stats().certification_verdict().is_err();
+        assert!(refused, "{what} was accepted");
+    };
+
+    // Two records after the end: a second epilogue.
+    let mut two = one_closed_hour();
+    push_epilogue(&mut two, 3);
+    push_epilogue(&mut two, 4);
+    refuses(two, "a second teardown epilogue");
+
+    // Two records after the end: the epilogue then an ordinary record.
+    let mut then_data = one_closed_hour();
+    push_epilogue(&mut then_data, 3);
+    push_record(
+        &mut then_data,
+        4,
+        raw_for(HOUR_B),
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    refuses(then_data, "a record after the teardown epilogue");
+
+    // The epilogue without a closed hour before it.
+    let mut no_boundary = cid_bytes.to_vec();
+    push_record(
+        &mut no_boundary,
+        1,
+        hour,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_epilogue(&mut no_boundary, 2);
+    refuses(no_boundary, "a teardown epilogue with no closed hour before it");
+}
+
 #[test]
 fn rollover_stream_set_authenticates_every_cid1_before_yielding_world_hours() {
     let dir = TmpDir::new("rollover_set");

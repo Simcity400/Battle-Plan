@@ -1660,6 +1660,21 @@ impl BoundaryTracker {
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.
             KnownRecordType::FreezeCensus => {
+                // It closes no hour and claims no coverage, so its envelope
+                // must carry the zero no-coverage sentinel. Without this the
+                // record would name a real hour it never observed, and the
+                // install record -- which is sequence 1, before any world
+                // record -- would open an hour-zero coverage span that swallows
+                // the first real frame's bytes. The stateful validator has this
+                // rule; the fold is a separate authority and must not have to
+                // borrow it.
+                if header.game_hour_raw != 0 {
+                    self.violation = Some(format!(
+                        "FREEZE_CENSUS at byte {at_byte} is framed for hour {}, not the zero no-coverage sentinel",
+                        header.game_hour_raw
+                    ));
+                    return;
+                }
                 let census =
                     match compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(
                         payload,
@@ -1675,8 +1690,6 @@ impl BoundaryTracker {
                 let ordinary_before = header.sequence.saturating_sub(1);
                 match compact_contract::freeze_census_record::
                     validate_freeze_census_placement_policy(
-                        compact_contract::freeze_census_record::
-                            RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
                         census.phase(),
                         true,
                         header.sequence,
@@ -1736,14 +1749,11 @@ impl BoundaryTracker {
         // A stream may legitimately end on a refusal: that hour was closed, it
         // simply closed without publishing. Requiring FRAME_END here would call
         // an honestly-refused stream malformed.
-        let physical_close_is_valid = boundary_eof_policy(
-            compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
-            self.last_record_kind,
-            self.release_freeze_census_seen,
-        );
+        let physical_close_is_valid =
+            boundary_eof_policy(self.last_record_kind, self.release_freeze_census_seen);
         if !physical_close_is_valid {
             return Err(format!(
-                "stream ends after record type {}; final record must be a canonical FRAME_END or FRAME_REFUSED boundary",
+                "stream ends after record type {}; final record must be a canonical FRAME_END or FRAME_REFUSED boundary, or the single release FREEZE_CENSUS epilogue behind one",
                 self.last_record_kind
                     .map_or_else(|| "none".to_string(), |kind| kind.to_string())
             ));
@@ -1752,16 +1762,16 @@ impl BoundaryTracker {
     }
 }
 
-fn boundary_eof_policy(
-    release_epilogue_enabled: bool,
-    last_record_kind: Option<u16>,
-    release_freeze_census_seen: bool,
-) -> bool {
+/// A stream ends on a canonical closed-hour boundary, or on the single release
+/// FREEZE_CENSUS epilogue that the owner ruling allows to sit behind one. The
+/// `release_freeze_census_seen` bit is only ever set by
+/// `validate_freeze_census_placement_policy` ACCEPTING that record, so this
+/// predicate can never be reached by an epilogue that was placed illegally.
+fn boundary_eof_policy(last_record_kind: Option<u16>, release_freeze_census_seen: bool) -> bool {
     matches!(
         last_record_kind,
         Some(COMPACT_RECORD_TYPE_FRAME_END) | Some(COMPACT_RECORD_TYPE_FRAME_REFUSED)
-    ) || (release_epilogue_enabled
-        && release_freeze_census_seen
+    ) || (release_freeze_census_seen
         && matches!(last_record_kind, Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS)))
 }
 
@@ -6195,24 +6205,205 @@ mod tests {
         );
     }
 
-    /// kills: accepting phase-2 bytes in the shipped policy or forgetting the
-    /// ruled-on epilogue path makes one of these two pure-policy assertions fail.
+    /// One release-phase H4FC payload, bounded and self-consistent.
+    fn release_census_payload() -> Vec<u8> {
+        use compact_contract::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+        };
+        FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Release,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap()
+    }
+
+    /// The H4CR envelope the ruling fixes for the epilogue: domain 1000, the
+    /// zero no-coverage hour sentinel, no flags.
+    fn release_census_header(sequence: u64, payload_len: usize) -> CompactRecordHeader {
+        boundary_header(
+            sequence,
+            0,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            payload_len,
+            0,
+        )
+    }
+
+    /// A tracker that has walked one clean hour and closed it with FRAME_END.
+    fn tracker_at_a_closed_hour() -> (BoundaryTracker, u64, u64) {
+        let mut tracker = BoundaryTracker::default();
+        let mut sequence = 1u64;
+        let mut at = 0u64;
+        walk_clean_hours(&mut tracker, &mut sequence, &[1], &mut at);
+        (tracker, sequence, at)
+    }
+
+    /// POSITIVE FIXTURE for the fold: the epilogue is accepted, the stream
+    /// certifies at EOF, and the record opens no hour and claims no coverage --
+    /// the hour the fold published is exactly the one the FRAME_END closed.
+    ///
+    /// kills: refusing the shipped epilogue at EOF, or letting the record enter
+    /// hour bookkeeping (which would open an hour-zero coverage span).
     #[test]
-    fn release_epilogue_eof_policy_is_compiled_for_both_owner_rulings() {
-        assert!(!boundary_eof_policy(
-            false,
-            Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
-            true,
-        ));
+    fn the_fold_accepts_one_release_epilogue_and_it_opens_no_hour() {
+        let (mut tracker, sequence, at) = tracker_at_a_closed_hour();
+        let closed_before = tracker.last_closed_hour;
+        let payload = release_census_payload();
+        tracker.observe(&release_census_header(sequence, payload.len()), &payload, at);
+        assert!(tracker.violation.is_none(), "{:?}", tracker.violation);
+        assert_eq!(tracker.eof_check(0), Ok(()));
+        assert_eq!(tracker.open_hour, None);
+        assert_eq!(
+            tracker.last_closed_hour, closed_before,
+            "the epilogue must not close, open, or move a game hour"
+        );
+    }
+
+    /// NEGATIVE FIXTURES for the fold. Each is a distinct way the ruled shape
+    /// can be broken, and each must be a NAMED refusal.
+    ///
+    /// kills: dropping the duplicate guard, the "EOF immediately after"
+    /// rule, the boundary-predecessor rule, the zero-hour envelope rule, or the
+    /// fixed size ceiling from the fold.
+    #[test]
+    fn the_fold_refuses_every_other_shape_after_the_final_boundary() {
+        let payload = release_census_payload();
+
+        // Two records after the end: a second epilogue.
+        let (mut two, sequence, at) = tracker_at_a_closed_hour();
+        two.observe(&release_census_header(sequence, payload.len()), &payload, at);
+        two.observe(
+            &release_census_header(sequence + 1, payload.len()),
+            &payload,
+            at + 32,
+        );
+        assert!(two.violation.is_some(), "a second epilogue was accepted");
+
+        // Two records after the end: the epilogue then an ordinary record.
+        let (mut then_data, sequence, at) = tracker_at_a_closed_hour();
+        then_data.observe(&release_census_header(sequence, payload.len()), &payload, at);
+        observe_zero_payload(
+            &mut then_data,
+            boundary_header(
+                sequence + 1,
+                raw_for(2),
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                0,
+                0,
+            ),
+            at + 32,
+        );
+        assert!(
+            then_data.violation.is_some(),
+            "a record after the epilogue was accepted"
+        );
+
+        // The epilogue with no closed hour before it at all.
+        let mut no_boundary = BoundaryTracker::default();
+        no_boundary.observe(&release_census_header(1, payload.len()), &payload, 0);
+        assert!(
+            no_boundary.violation.is_some(),
+            "an epilogue with no preceding closed hour was accepted"
+        );
+
+        // The epilogue behind a record that closes no hour.
+        let mut after_data = BoundaryTracker::default();
+        observe_zero_payload(
+            &mut after_data,
+            boundary_header(1, raw_for(1), 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, 0, 0),
+            0,
+        );
+        after_data.observe(&release_census_header(2, payload.len()), &payload, 32);
+        assert!(
+            after_data.violation.is_some(),
+            "an epilogue behind a DOMAIN_DATA record was accepted"
+        );
+
+        // It opens an hour: the envelope must keep the zero sentinel.
+        let (mut hour_bearing, sequence, at) = tracker_at_a_closed_hour();
+        let mut header = release_census_header(sequence, payload.len());
+        header.game_hour_raw = raw_for(1);
+        hour_bearing.observe(&header, &payload, at);
+        assert!(
+            hour_bearing.violation.is_some(),
+            "an epilogue carrying a game hour was accepted"
+        );
+
+        // Oversize: past the fixed H4FC payload ceiling.
+        let (mut oversize, sequence, at) = tracker_at_a_closed_hour();
+        let mut big = payload.clone();
+        big.resize(
+            compact_contract::freeze_census_record::FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1,
+            0,
+        );
+        oversize.observe(&release_census_header(sequence, big.len()), &big, at);
+        assert!(
+            oversize.violation.is_some(),
+            "an oversize epilogue was accepted"
+        );
+    }
+
+    /// THE OLD-READER COST, pinned rather than assumed. A reader that has not
+    /// learned the ruling applies only the pre-ruling terminal rule -- "the last
+    /// physical record is a canonical boundary" -- which is exactly
+    /// `boundary_eof_policy` with `release_freeze_census_seen` never set,
+    /// because nothing but this lane's acceptance path sets it. It REFUSES an
+    /// epilogue-carrying recording. That is the owner-accepted cost of option
+    /// (a): fails safe, but refuses.
+    ///
+    /// kills: making the epilogue acceptable to a reader that never validated
+    /// its placement -- i.e. accepting "the last record is type 11" on its own,
+    /// which is how the loophole this ruling was written to avoid would open.
+    #[test]
+    fn an_unchanged_reader_refuses_an_epilogue_carrying_recording() {
+        let (mut tracker, sequence, at) = tracker_at_a_closed_hour();
+        let payload = release_census_payload();
+        tracker.observe(&release_census_header(sequence, payload.len()), &payload, at);
+        // The shipped reader, which validated the placement, certifies it.
+        assert_eq!(tracker.eof_check(0), Ok(()));
+        assert_eq!(
+            tracker.last_record_kind,
+            Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS)
+        );
+        // The same last record, judged without that acceptance, is refused.
+        assert!(!boundary_eof_policy(tracker.last_record_kind, false));
+    }
+
+    /// kills: letting a FREEZE_CENSUS close a stream without the placement
+    /// authority having ACCEPTED it as the release epilogue -- i.e. treating
+    /// "the last record is type 11" as sufficient. It also kills widening the
+    /// terminal set to any other record type.
+    #[test]
+    fn only_an_accepted_release_epilogue_may_close_a_stream_after_the_boundary() {
         assert!(boundary_eof_policy(
-            true,
             Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
             true,
         ));
         assert!(!boundary_eof_policy(
-            true,
             Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
             false,
         ));
+        assert!(boundary_eof_policy(Some(COMPACT_RECORD_TYPE_FRAME_END), false));
+        assert!(boundary_eof_policy(
+            Some(COMPACT_RECORD_TYPE_FRAME_REFUSED),
+            false
+        ));
+        for kind in [
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+            COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
+        ] {
+            assert!(
+                !boundary_eof_policy(Some(kind), true),
+                "record type {kind} was allowed to close a stream"
+            );
+        }
+        assert!(!boundary_eof_policy(None, true));
     }
 }

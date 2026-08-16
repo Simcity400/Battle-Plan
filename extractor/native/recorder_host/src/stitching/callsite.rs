@@ -1668,11 +1668,12 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
         ],
         "rollover package set",
     )?;
-    let (carried_census, absent_census) = validate_rollover_freeze_census_presence(
-        package_set
-            .get("freeze_census")
-            .ok_or("rollover package set has no freeze_census presence section")?,
-    )?;
+    let (carried_census, absent_census, release_census) =
+        validate_rollover_freeze_census_presence(
+            package_set
+                .get("freeze_census")
+                .ok_or("rollover package set has no freeze_census presence section")?,
+        )?;
     let members = package_set
         .get("ordered_streams")
         .and_then(Value::as_array)
@@ -1719,10 +1720,96 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
                 .to_string(),
         );
     }
+
+    // WHAT "LAST ADMITTED" MEANS, before anything is allowed to depend on it.
+    //
+    // The teardown check below rests entirely on `admitted.last()` being the
+    // member the recording actually ended on. That is only true if admission is
+    // a SUFFIX of the ordered set: a recording admits its first world member and
+    // every member after it, and the earlier CID1-only pre-world members are the
+    // ones that stay unadmitted. A non-admitted member sitting AFTER an admitted
+    // one is a set the builder cannot produce, and it would make `admitted.last()`
+    // name a member that is not last in the stream at all -- which is exactly how
+    // a set could claim a teardown and then carry on recording past it.
+    //
+    // A set with NO admitted member is refused for the same reason: it mints no
+    // packages, and it leaves "last admitted" undefined while the presence
+    // section is free to assert whatever it likes about it.
+    let admission_flags = members
+        .iter()
+        .map(|member| {
+            member
+                .get("recording_admitted")
+                .and_then(Value::as_bool)
+                .ok_or("rollover package member has no bool recording_admitted")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let first_admitted_position = admission_flags.iter().position(|admitted| *admitted);
+    let Some(first_admitted_position) = first_admitted_position else {
+        return Err(
+            "rollover package set admits no recording member; it can mint no packages and has no last admitted member"
+                .to_string(),
+        );
+    };
+    if admission_flags[first_admitted_position..]
+        .iter()
+        .any(|admitted| !*admitted)
+    {
+        return Err(
+            "rollover package set has a non-admitted member after an admitted one; admission must be a suffix of the ordered streams"
+                .to_string(),
+        );
+    }
+    let declared_first_recording = package_set
+        .get("first_recording_logical_stream_id")
+        .and_then(Value::as_u64)
+        .ok_or("rollover package set has no u64 first_recording_logical_stream_id")?;
+    let observed_first_recording = members[first_admitted_position]
+        .get("logical_stream_id")
+        .and_then(Value::as_u64)
+        .ok_or("rollover package member has no u64 logical_stream_id")?;
+    if declared_first_recording != observed_first_recording {
+        return Err(format!(
+            "rollover package set declares first recording logical stream {declared_first_recording}, but the first admitted member is {observed_first_recording}"
+        ));
+    }
+
+    // THE TEARDOWN CARRIER, cross-checked against the members this set actually
+    // has. The section's own `last_admitted_logical_stream` is a claim, not
+    // evidence: validating the carrier only against that claim lets a set name
+    // a teardown member that does not exist, or is not last, and still pass --
+    // while the builder treats exactly those shapes as fatal. `ordered_streams`
+    // is the authority for which member came last, so it decides here too.
+    let last_admitted = admitted.last().copied();
+    if release_census.last_admitted != last_admitted {
+        return Err(format!(
+            "rollover freeze census release presence names last admitted member {:?}, but the ordered streams end at {:?}",
+            release_census.last_admitted, last_admitted
+        ));
+    }
+    match release_census.carried.as_slice() {
+        [] => {}
+        [only] if Some(*only) == last_admitted => {}
+        _ => {
+            return Err(
+                "rollover freeze census release presence names a teardown census that is not the single last admitted member"
+                    .to_string(),
+            )
+        }
+    }
     Ok(())
 }
 
-fn validate_rollover_freeze_census_presence(value: &Value) -> Result<(Vec<u64>, Vec<u64>), String> {
+/// What the release half of a presence section CLAIMS. Every field is checked
+/// against the package's own `ordered_streams` by the caller.
+struct RolloverReleaseCensusPresence {
+    carried: Vec<u64>,
+    last_admitted: Option<u64>,
+}
+
+fn validate_rollover_freeze_census_presence(
+    value: &Value,
+) -> Result<(Vec<u64>, Vec<u64>, RolloverReleaseCensusPresence), String> {
     require_exact_object_keys(
         value,
         &[
@@ -1730,12 +1817,13 @@ fn validate_rollover_freeze_census_presence(value: &Value) -> Result<(Vec<u64>, 
             "status",
             "carried_by_logical_streams",
             "absent_from_logical_streams",
+            "release",
             "problems",
         ],
         "rollover freeze census presence",
     )?;
     if value.get("schema").and_then(Value::as_str)
-        != Some("hoi4.rollover-freeze-census-presence.v1")
+        != Some("hoi4.rollover-freeze-census-presence.v2")
     {
         return Err("rollover freeze census presence has the wrong schema".to_string());
     }
@@ -1784,13 +1872,64 @@ fn validate_rollover_freeze_census_presence(value: &Value) -> Result<(Vec<u64>, 
     if value.get("status").and_then(Value::as_str) != Some(expected_status) {
         return Err("rollover freeze census presence status contradicts its member lists".into());
     }
-    let expected_problems = if mixed {
+    // THE TEARDOWN HALF, re-derived here rather than trusted. The recorder
+    // detaches once, so the only shapes that may reach a published set are "no
+    // member carries it" and "exactly the last admitted member carries it".
+    // The builder makes the other two shapes fatal before publication, so this
+    // validator refuses them outright rather than restating them as a status.
+    let release = value
+        .get("release")
+        .ok_or("rollover freeze census presence has no release section")?;
+    require_exact_object_keys(
+        release,
+        &[
+            "status",
+            "carried_by_logical_streams",
+            "last_admitted_logical_stream",
+        ],
+        "rollover freeze census release presence",
+    )?;
+    let release_carried = release
+        .get("carried_by_logical_streams")
+        .and_then(Value::as_array)
+        .ok_or("rollover freeze census release carried_by_logical_streams is not an array")?
+        .iter()
+        .map(|item| {
+            item.as_u64()
+                .ok_or("rollover freeze census release carried_by_logical_streams has a non-u64 id")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let last_admitted = release.get("last_admitted_logical_stream");
+    // Self-consistency only. Whether the named member EXISTS, and whether it is
+    // genuinely the last one, is decided by the caller against `ordered_streams`.
+    let expected_release_status = match release_carried.as_slice() {
+        [] => "absent",
+        [only] if last_admitted.and_then(Value::as_u64) == Some(*only) => "complete",
+        _ => {
+            return Err(
+                "rollover freeze census release presence names a teardown census that is not the single last admitted member"
+                    .to_string(),
+            )
+        }
+    };
+    if release.get("status").and_then(Value::as_str) != Some(expected_release_status) {
+        return Err(
+            "rollover freeze census release status contradicts its member list".to_string(),
+        );
+    }
+
+    let mut expected_problems = if mixed {
         vec![format!(
             "rollover install freeze census presence is partial: carried by logical streams {carried:?}; absent from logical streams {absent:?}"
         )]
     } else {
         Vec::new()
     };
+    if expected_release_status == "absent" {
+        expected_problems.push(
+            "no logical stream in this recording carries a teardown freeze census; detach freeze durations were not recorded".to_string(),
+        );
+    }
     if problems
         != &expected_problems
             .into_iter()
@@ -1799,7 +1938,14 @@ fn validate_rollover_freeze_census_presence(value: &Value) -> Result<(Vec<u64>, 
     {
         return Err("rollover freeze census presence problems contradict its member lists".into());
     }
-    Ok((carried, absent))
+    Ok((
+        carried,
+        absent,
+        RolloverReleaseCensusPresence {
+            carried: release_carried,
+            last_admitted: last_admitted.and_then(Value::as_u64),
+        },
+    ))
 }
 
 fn require_exact_object_keys(
@@ -2478,10 +2624,15 @@ mod tests {
                 "source_descriptor_sha256": "77".repeat(32),
                 "first_recording_logical_stream_id": 0,
                 "freeze_census": {
-                    "schema": "hoi4.rollover-freeze-census-presence.v1",
+                    "schema": "hoi4.rollover-freeze-census-presence.v2",
                     "status": "complete",
                     "carried_by_logical_streams": [0],
                     "absent_from_logical_streams": [],
+                    "release": {
+                        "status": "complete",
+                        "carried_by_logical_streams": [0],
+                        "last_admitted_logical_stream": 0,
+                    },
                     "problems": [],
                 },
                 "ordered_streams": members,
@@ -2504,21 +2655,117 @@ mod tests {
 
         let mut contradictory_presence = package_set(serde_json::json!([member()]));
         contradictory_presence["freeze_census"] = serde_json::json!({
-            "schema": "hoi4.rollover-freeze-census-presence.v1",
+            "schema": "hoi4.rollover-freeze-census-presence.v2",
             "status": "complete",
             "carried_by_logical_streams": [0],
             "absent_from_logical_streams": [1],
+            "release": {
+                "status": "complete",
+                "carried_by_logical_streams": [0],
+                "last_admitted_logical_stream": 0,
+            },
             "problems": [],
         });
         assert!(validate_rollover_package_set_shape(&contradictory_presence).is_err());
 
-        let mut omitted_member = package_set(serde_json::json!([member()]));
-        omitted_member["freeze_census"] = serde_json::json!({
-            "schema": "hoi4.rollover-freeze-census-presence.v1",
+        // kills: validating the teardown carrier only against the section's own
+        // `last_admitted_logical_stream`. Both of these declare a self-consistent
+        // release half naming a member that the package does not have, or that is
+        // not the last one, and both must be refused against `ordered_streams`.
+        let mut phantom_release_carrier = package_set(serde_json::json!([member()]));
+        phantom_release_carrier["freeze_census"]["release"] = serde_json::json!({
+            "status": "complete",
+            "carried_by_logical_streams": [99],
+            "last_admitted_logical_stream": 99,
+        });
+        assert!(
+            validate_rollover_package_set_shape(&phantom_release_carrier).is_err(),
+            "a teardown carrier that is not an admitted member was accepted"
+        );
+
+        let mut phantom_last_admitted = package_set(serde_json::json!([member()]));
+        phantom_last_admitted["freeze_census"]["release"] = serde_json::json!({
+            "status": "absent",
+            "carried_by_logical_streams": [],
+            "last_admitted_logical_stream": 99,
+        });
+        assert!(
+            validate_rollover_package_set_shape(&phantom_last_admitted).is_err(),
+            "a release section naming a last member the set does not have was accepted"
+        );
+
+        // kills: deriving "the last admitted member" from a flag the set is free
+        // to scatter. A non-admitted member after an admitted one would make
+        // `admitted.last()` name a member that is not last in the stream, which
+        // is precisely a set claiming a teardown and then recording past it.
+        let mut trailing_non_admitted = member();
+        trailing_non_admitted["logical_stream_id"] = serde_json::json!(1);
+        trailing_non_admitted["recording_admitted"] = serde_json::json!(false);
+        let mut post_admitted = package_set(serde_json::json!([member(), trailing_non_admitted]));
+        post_admitted["freeze_census"] = serde_json::json!({
+            "schema": "hoi4.rollover-freeze-census-presence.v2",
+            "status": "complete",
+            "carried_by_logical_streams": [0],
+            "absent_from_logical_streams": [],
+            "release": {
+                "status": "complete",
+                "carried_by_logical_streams": [0],
+                "last_admitted_logical_stream": 0,
+            },
+            "problems": [],
+        });
+        assert!(
+            validate_rollover_package_set_shape(&post_admitted).is_err(),
+            "a non-admitted member after an admitted one was accepted"
+        );
+
+        // kills: leaving "last admitted" undefined. A set that admits nothing
+        // mints no packages, so it must not validate at all.
+        let mut none_admitted_member = member();
+        none_admitted_member["recording_admitted"] = serde_json::json!(false);
+        let mut zero_admitted = package_set(serde_json::json!([none_admitted_member]));
+        zero_admitted["freeze_census"] = serde_json::json!({
+            "schema": "hoi4.rollover-freeze-census-presence.v2",
             "status": "absent",
             "carried_by_logical_streams": [],
             "absent_from_logical_streams": [],
-            "problems": [],
+            "release": {
+                "status": "absent",
+                "carried_by_logical_streams": [],
+                "last_admitted_logical_stream": null,
+            },
+            "problems": [
+                "no logical stream in this recording carries a teardown freeze census; detach freeze durations were not recorded"
+            ],
+        });
+        assert!(
+            validate_rollover_package_set_shape(&zero_admitted).is_err(),
+            "a set admitting no recording member was accepted"
+        );
+
+        // kills: trusting the declared first-recording id. It must be the first
+        // member that is actually admitted.
+        let mut wrong_first = package_set(serde_json::json!([member()]));
+        wrong_first["first_recording_logical_stream_id"] = serde_json::json!(7);
+        assert!(
+            validate_rollover_package_set_shape(&wrong_first).is_err(),
+            "a declared first-recording id that no admitted member has was accepted"
+        );
+
+        let mut omitted_member = package_set(serde_json::json!([member()]));
+        omitted_member["freeze_census"] = serde_json::json!({
+            "schema": "hoi4.rollover-freeze-census-presence.v2",
+            "status": "absent",
+            "carried_by_logical_streams": [],
+            "absent_from_logical_streams": [],
+            "release": {
+                "status": "absent",
+                "carried_by_logical_streams": [],
+                "last_admitted_logical_stream": 0,
+            },
+            "problems": [
+                "no logical stream in this recording carries a teardown freeze census; detach freeze durations were not recorded"
+            ],
         });
         assert!(validate_rollover_package_set_shape(&omitted_member).is_err());
 

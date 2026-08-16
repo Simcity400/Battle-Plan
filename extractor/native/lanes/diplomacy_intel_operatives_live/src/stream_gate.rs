@@ -55,7 +55,7 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
     let mut open_hour = None;
     let mut last_closed_hour = None;
     let mut final_record_is_clean_frame_end = false;
-    let mut last_record_is_enabled_release_epilogue = false;
+    let mut release_epilogue_seen = false;
     let mut owned = OwnedFrameAuthority::default();
     let mut frame_records = FrameRecordCounts::default();
 
@@ -75,6 +75,7 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
             offset,
         );
         previous_sequence = Some(header.sequence);
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         let Some(end) = cursor.checked_add(header.record_len()) else {
             out.parse_errors
@@ -102,11 +103,23 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
                 false
             }
         };
-        last_record_is_enabled_release_epilogue = semantics_ok
-            && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
-            && compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED
-            && compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
-                .is_ok_and(|record| record.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release);
+        // The single release epilogue the owner ruling admits after a closed-hour
+        // boundary. It uses the SHARED policy so this gate cannot drift into a
+        // laxer rule than the stateful validator run above.
+        if semantics_ok && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS {
+            if let Ok(census) =
+                compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+            {
+                final_record_is_clean_frame_end =
+                    compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(
+                        previous_record_closed_world,
+                        census.phase(),
+                        release_epilogue_seen,
+                    );
+                release_epilogue_seen |= census.phase()
+                    == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+            }
+        }
 
         match header.record_type {
             COMPACT_RECORD_TYPE_DOMAIN_PERF if semantics_ok => {
@@ -218,7 +231,7 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
         out.parse_errors
             .push(format!("stream ended with open DATA frame hour {hour}"));
     }
-    if !final_record_is_clean_frame_end && !last_record_is_enabled_release_epilogue {
+    if !final_record_is_clean_frame_end {
         out.parse_errors
             .push("stream is not closed by a final canonical FRAME_END record".to_string());
     }
