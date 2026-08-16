@@ -812,25 +812,25 @@ fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
                 "active_region_count": 0,
                 "regions": Value::Object(regions),
                 "observed_province_rows": 3,
+                // THE PRODUCER'S SHAPE, which no longer repeats the key as a
+                // `province_id` member or spells `snow` beside `snow_raw` --
+                // both are derived by the reader (`snow_raw / scale_raw`). A
+                // fixture that kept emitting them would have gone on passing
+                // while every real recording lost its snow and mud, which is
+                // exactly what it did until Codex review round 7 caught it.
                 "provinces": {
                     "0": {
-                        "province_id": 0,
                         "snow_raw": snow_raw,
-                        "snow": (snow_raw as f64) / 100000.0,
                         "mud_present": true,
                         "mud_active": muddy
                     },
                     "1": {
-                        "province_id": 1,
                         "snow_raw": (snow_raw + 1_800_000).min(9_000_000),
-                        "snow": ((snow_raw + 1_800_000).min(9_000_000) as f64) / 100000.0,
                         "mud_present": true,
                         "mud_active": false
                     },
                     "2": {
-                        "province_id": 2,
                         "snow_raw": 0,
-                        "snow": 0.0,
                         "mud_present": true,
                         "mud_active": !muddy
                     }

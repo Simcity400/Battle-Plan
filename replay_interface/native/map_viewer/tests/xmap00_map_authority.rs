@@ -238,8 +238,8 @@ fn province_snow_fixture() -> Value {
                 "scale_raw": WEATHER_PROVINCE_SNOW_SCALE_RAW,
                 "observed_province_rows": 2,
                 "provinces": {
-                    "0": {"province_id": 0, "snow_raw": 12_345},
-                    "1": {"province_id": 1, "snow_raw": 6_789}
+                    "0": {"snow_raw": 12_345},
+                    "1": {"snow_raw": 6_789}
                 }
             }
         }
@@ -548,7 +548,7 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             provinces.remove("1");
             provinces.insert(
                 "not-a-province".into(),
-                json!({"province_id": 1, "snow_raw": 6_789}),
+                json!({"snow_raw": 6_789}),
             );
             true
         }
@@ -1282,19 +1282,32 @@ fn a_terminal_census_that_dropped_rows_is_not_a_measured_one() {
     );
 }
 
-/// kills: admitting `weather.province_snow_accumulator` when a row's `province_id` does not authenticate its object key.
+/// A row with NO MEASUREMENT is still a hole, and still costs the owner.
+///
+/// This used to mutate a row's `province_id` so it contradicted its object key.
+/// That shape no longer exists: the producer stopped repeating the key inside
+/// the row, because it authenticated nothing -- both were written from the same
+/// field -- and cost a copy of every province number 13,414 times per game
+/// hour. Left as it was, this test would have gone on asserting a refusal
+/// production deliberately removed (Codex review round 8).
+///
+/// kills: admitting `weather.province_snow_accumulator` when a declared row
+/// carries no readable `snow_raw`.
 #[test]
-fn an_unauthenticated_province_snow_leaf_is_not_admitted() {
+fn a_province_snow_row_without_a_measurement_is_not_admitted() {
     let mut rest = province_snow_fixture();
-    rest["map"]["_r2_weather_live"]["provinces"]["1"]["province_id"] = json!(0);
+    rest["map"]["_r2_weather_live"]["provinces"]["1"] = json!({"mud_present": true});
     let frame = world_frame_with(rest);
     assert_eq!(
         frame.weather_province_snow_status(),
         replay_core::ViewStatus::Present
     );
+    // ABSENT, not Unobtained: the member is not there at all, which is a
+    // different fact from "there and unreadable" -- and both are holes, which
+    // is what the owner below is proven unavailable by.
     assert_eq!(
         frame.weather_province_snow().by_province.get(&1),
-        Some(&replay_core::Leaf::Unobtained)
+        Some(&replay_core::Leaf::Absent)
     );
     assert_owner_proven_unavailable(&frame, "weather.province_snow_accumulator");
 }
@@ -1312,7 +1325,7 @@ fn a_province_snow_member_outside_the_declared_range_is_not_admitted() {
         .as_object_mut()
         .unwrap();
     provinces.remove("1");
-    provinces.insert("2".into(), json!({"province_id": 2, "snow_raw": 6_789}));
+    provinces.insert("2".into(), json!({"snow_raw": 6_789}));
     let frame = world_frame_with(rest);
     assert_eq!(
         frame.weather_province_snow_status(),
@@ -1812,7 +1825,7 @@ fn a_province_snow_member_the_decoder_discarded_is_not_admitted() {
     provinces.remove("1");
     provinces.insert(
         "not-a-province".into(),
-        json!({"province_id": 1, "snow_raw": 6_789}),
+        json!({"snow_raw": 6_789}),
     );
     let frame = world_frame_with(rest);
     assert_eq!(

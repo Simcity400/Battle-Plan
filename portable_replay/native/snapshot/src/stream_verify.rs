@@ -2815,10 +2815,10 @@ mod tests {
     /// exact production packing entry point at an EXPLICIT {19, 27} profile,
     /// then read every byte back and assert identity.
     #[test]
-    fn level19_window27_roundtrip_is_byte_lossless() {
+    fn max_level_window27_roundtrip_is_byte_lossless() {
         // The production default prioritizes prompt finalization. Pin it so a
         // future silent change trips this test while retaining the explicit
-        // level-19 roundtrip below.
+        // max-level roundtrip below.
         assert_eq!(
             DEFAULT_ZSTD_COMPRESSION_LEVEL, 3,
             "production default zstd level must remain level 3"
@@ -2879,13 +2879,21 @@ mod tests {
             sha256: Some(stream_sha.clone()),
         }];
 
-        // Explicit opt-in profile: level 19, window 27. validate() rejects an
-        // out-of-bound window, so this also guards the window cap.
+        // THE CEILING PROFILE: the hardest setting this project may pack at,
+        // and the widest window a reader must handle. It was level 19 until the
+        // owner capped compression at 3 (2026-08-16) so that size wins have to
+        // come from the encoding; `CompressionProfile::validate` now refuses 19
+        // outright, and a test that packs at a level production cannot use
+        // proves nothing about production. The PROPERTY is unchanged -- a
+        // container packed at the hardest admissible setting round-trips byte
+        // for byte under the production window cap -- and it is now asserted at
+        // the setting production actually reaches.
         let profile = CompressionProfile {
-            zstd_level: 19,
+            zstd_level: crate::pack::MAX_ZSTD_COMPRESSION_LEVEL,
             zstd_window_log: crate::zip::ZSTD_WINDOW_LOG,
         };
         assert_eq!(profile.zstd_window_log, 27);
+        assert_eq!(profile.zstd_level, 3);
         {
             let mut out = fs::File::create(&replay_path).unwrap();
             pack_streaming_zstd_to_writer_with_profile(
@@ -2904,7 +2912,7 @@ mod tests {
         // capture-time sha256 matches the decoded stream.
         let report =
             verify_replay_container_streaming(&replay_path, "g", "collector_compact_stream")
-                .expect("level-19/window-27 container verifies under the production window cap");
+                .expect("max-level/window-27 container verifies under the production window cap");
         assert_eq!(
             report.stream_entry_sha256.as_deref(),
             Some(stream_sha.as_str())
@@ -2931,7 +2939,7 @@ mod tests {
             .read_entry_bytes("payload/g/collector_raw/collector_stream.bin")
             .unwrap();
         assert_eq!(got.len(), raw.len());
-        assert!(got == raw, "level-19 round-trip must be byte-identical");
+        assert!(got == raw, "max-level round-trip must be byte-identical");
     }
 
     /// The decompressor-error discriminator itself. A codec failure is

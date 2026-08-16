@@ -59,7 +59,11 @@ use portable_replay_format::sha256::Sha256;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-const FORMAT_VERSION: u16 = 4;
+// The H4CP generation these hand-built hostile inputs must claim. It has to
+// track the real one -- a stale number is refused by the header check before a
+// single allocation bound is ever exercised, which is how the revive's 4 -> 5
+// bump silently disarmed all four of these tests.
+const FORMAT_VERSION: u16 = 5;
 const CACHE_HEADER_LEN: u64 = 40;
 
 fn hex32(byte: u8) -> String {

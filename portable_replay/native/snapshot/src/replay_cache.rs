@@ -95,7 +95,7 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// The H4CP header carries this same number, and deliberately so: an index and
 /// a cache from different format generations must never pair, and the per-hour
 /// digests only mean anything over records whose framing the index agrees with.
-const FORMAT_VERSION: u16 = 4;
+const FORMAT_VERSION: u16 = 5;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -169,6 +169,22 @@ const PATCH_KEEP: u8 = 0;
 const PATCH_REPLACE: u8 = 1;
 const PATCH_OBJECT: u8 = 2;
 const PATCH_ARRAY: u8 = 3;
+/// "This member is exactly what it last was." One byte.
+///
+/// THE CADENCE, NOT THE WORLD, IS WHAT MOST DELTA BYTES PAY FOR. A domain that
+/// folds out for an hour leaves `null` behind, and when it returns the next
+/// hour the old encoder had nothing to diff against -- `null` is structurally
+/// incompatible with an object, so the whole subtree was re-emitted in full,
+/// however little of it had actually changed. Measured over 32 consecutive
+/// t53 hours that re-emission was 44% of every delta byte written.
+///
+/// A revive re-bases such a member on ITS OWN last non-null value instead of on
+/// the null. Both sides derive that base from records they have already walked
+/// -- see [`Shadow`] -- so the delta chain stays linear and seek still costs one
+/// checkpoint plus its deltas.
+const PATCH_REVIVE_SAME: u8 = 4;
+/// A revive that still needs a patch on top of the remembered value.
+const PATCH_REVIVE_PATCH: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheIdentityMode {
@@ -1222,6 +1238,31 @@ pub struct ReplayCacheEncoder<W: Write> {
     source_sha256: String,
     checkpoint_interval_hours: u32,
     previous: Option<CanonValue>,
+    /// Whether this encoder may EMIT revives. On.
+    ///
+    /// THE DECODER ALWAYS UNDERSTANDS THEM; only the writer is gated, so an
+    /// encoder with this off writes byte-for-byte what format 4 wrote.
+    ///
+    /// It was off for one round, because pricing the revive over t53's 219
+    /// hours failed with "revive patch has no remembered value to revive" --
+    /// the encoder emitting a revive against a memory the reader did not hold.
+    /// The cause was `ShadowBudget` charging `heap_bytes`, which counts vector
+    /// CAPACITY: the JSON parser grows its vectors by doubling while the binary
+    /// decoder reserves the element count exactly, so equal documents carried
+    /// different capacities on the two sides, their monotonic spend diverged,
+    /// and near the cap one side admitted a memory the other refused (Codex
+    /// review round 7, Q1). Admission now charges `content_bytes`, which is a
+    /// function of the document alone.
+    ///
+    /// With that closed the revive round-trips byte-identically over ALL FOUR
+    /// sealed runs -- t51 (602 h), t53 (219 h), t54 (357 h) and t55 (1,416 h)
+    /// -- each hour reconstructed by the production reader and required to hash
+    /// to the digest the original recording published.
+    revive_enabled: bool,
+    /// What each currently-null path last held, since the open checkpoint.
+    shadow: Shadow,
+    /// What that has cost, against the ceiling one window may spend.
+    shadow_budget: ShadowBudget,
     entries: Vec<ReplayHourEntry>,
     /// The hours the caller told this encoder to SKIP, each with the reason its
     /// recording gave. They write no cache record — an excluded hour is never
@@ -1264,6 +1305,9 @@ impl<W: Write> ReplayCacheEncoder<W> {
             )));
         }
         let mut encoder = Self {
+            revive_enabled: true,
+            shadow: Shadow::default(),
+            shadow_budget: ShadowBudget::default(),
             writer,
             hasher: Sha256::new(),
             offset: 0,
@@ -1410,14 +1454,29 @@ impl<W: Write> ReplayCacheEncoder<W> {
         let is_checkpoint = position % self.checkpoint_interval_hours as usize == 0;
         let (record_kind, payload, delta_steps) = if is_checkpoint {
             self.checkpoint_position = position;
+            // A SEEK STARTS AT A CHECKPOINT AND KNOWS NOTHING BEFORE IT, so the
+            // encoder must forget everything before it too, or it would emit
+            // revives no reader could resolve.
+            self.shadow = Shadow::default();
+            self.shadow_budget = ShadowBudget::default();
             (RECORD_CHECKPOINT, encode_value(&value)?, 0)
         } else {
             let previous = self
                 .previous
-                .as_ref()
+                .as_mut()
                 .expect("a non-checkpoint cache record has a previous hour");
-            let patch = diff_value(previous, &value, 0)?;
+            let patch = diff_value(
+                previous,
+                &value,
+                self.revive_enabled.then_some(&self.shadow),
+                0,
+            )?;
             let payload = encode_patch(&patch)?;
+            // CARRY THE SHADOW over the step the reader is about to take, using
+            // the reader's own function, over the previous hour this encoder is
+            // about to drop anyway. It costs a walk of what CHANGED -- not a
+            // clone of the world, which is what the note below refuses.
+            apply_patch(previous, &patch, &mut self.shadow, &mut self.shadow_budget, 0)?;
             // No in-memory replay of the patch here. The delta a reader will
             // actually follow is the one DECODED from `payload`, applied to a
             // value decoded from the cache -- and that is exactly what
@@ -1503,6 +1562,33 @@ impl<W: Write> ReplayCacheEncoder<W> {
         } else {
             0
         }
+    }
+
+    /// Stop this encoder emitting revives, leaving a format-4-shaped cache.
+    ///
+    /// Kept because the gate is what made the divergence in
+    /// [`Self::revive_enabled`] safe to hold while it was open, and because the
+    /// tests that prove the revive earns its bytes need a control that does not
+    /// emit one. Nothing in production calls it.
+    pub fn forbid_revive(&mut self) {
+        self.revive_enabled = false;
+    }
+
+    /// An upper bound on what the folded-out world costs this encoder.
+    ///
+    /// PUBLISHED SEPARATELY because it is a different shape of cost from the
+    /// delta base: that one is a world, this one grows with how much of the
+    /// world is currently folded out and is released at every checkpoint. It
+    /// was invisible to the component memory table when the shadow was first
+    /// added, which meant a real allocation with no row (Codex review round 6,
+    /// finding S4).
+    ///
+    /// An UPPER bound, not a measurement: the budget is charged when a memory
+    /// is taken and never refunded when one is dropped, so this reads at or
+    /// above what is actually resident, and it is bounded by
+    /// [`MAX_SHADOW_BYTES`] by construction.
+    pub fn shadow_heap_bytes_upper_bound(&self) -> u64 {
+        self.shadow_budget.spent
     }
 
     /// Bytes the per-hour index rows own: the `Vec`'s reservation plus every
@@ -2077,6 +2163,8 @@ fn verify_every_hour_from(
     cache: &dyn CacheRecords,
 ) -> Result<u32, ReplayCacheError> {
     let mut value: Option<CanonValue> = None;
+    let mut shadow = Shadow::default();
+    let mut budget = ShadowBudget::default();
     let mut max_seek_deltas = 0u32;
     for (position, entry) in index.hours.iter().enumerate() {
         let (kind, record_hour, payload) = cache_record(cache, entry)?;
@@ -2087,12 +2175,22 @@ fn verify_every_hour_from(
             )));
         }
         match (kind, entry.delta_steps) {
-            (RECORD_CHECKPOINT, 0) => value = Some(decode_value_exact(payload.as_ref())?),
+            (RECORD_CHECKPOINT, 0) => {
+                value = Some(decode_value_exact(payload.as_ref())?);
+                shadow = Shadow::default();
+                budget = ShadowBudget::default();
+            }
             (RECORD_DELTA, steps) if steps != 0 => {
                 let running = value.as_mut().ok_or_else(|| {
                     ReplayCacheError::new("a delta record precedes its checkpoint")
                 })?;
-                apply_patch(running, &decode_patch_exact(payload.as_ref())?, 0)?;
+                apply_patch(
+                    running,
+                    &decode_patch_exact(payload.as_ref())?,
+                    &mut shadow,
+                    &mut budget,
+                    0,
+                )?;
             }
             _ => {
                 return Err(ReplayCacheError::new(format!(
@@ -2139,6 +2237,10 @@ fn reconstruct_json_from(
     }
     let mut value = decode_value_exact(payload.as_ref())?;
     drop(payload);
+    // Rebuilt from the checkpoint forward, which is the whole reason a revive
+    // may only ever name a value recorded since one.
+    let mut shadow = Shadow::default();
+    let mut budget = ShadowBudget::default();
     for entry in &index.hours[checkpoint_position + 1..=target_position] {
         let (kind, record_hour, payload) = cache_record(cache, entry)?;
         if kind != RECORD_DELTA || record_hour != entry.hour_index {
@@ -2148,7 +2250,7 @@ fn reconstruct_json_from(
         }
         let patch = decode_patch_exact(payload.as_ref())?;
         drop(payload);
-        apply_patch(&mut value, &patch, 0)?;
+        apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
     let json = value.to_json_bytes();
@@ -2231,12 +2333,186 @@ enum Patch {
         changes: Vec<(String, Patch)>,
     },
     Array(Vec<(u32, Patch)>),
+    /// The target is `null` and becomes exactly its own remembered value.
+    ReviveSame,
+    /// The target is `null` and becomes its remembered value with a patch on
+    /// top. The inner patch is always an object or array patch: if the
+    /// remembered value were not structurally compatible with the new one there
+    /// would be nothing to diff and the encoder emits a plain `Replace`.
+    Revive(Box<Patch>),
 }
 
-fn diff_value(old: &CanonValue, new: &CanonValue, depth: usize) -> Result<Patch, ReplayCacheError> {
+/// What each currently-`null` path last held, for as long as it stays null.
+///
+/// SPARSE, AND ONLY THE DISAPPEARED. A path enters the shadow at the moment it
+/// goes null and leaves the moment it is non-null again, so this holds the
+/// folded-out part of the world and nothing else -- not a second copy of it.
+/// Children under a remembered value are dropped with it, because the
+/// remembered subtree already contains them.
+///
+/// Encoder and decoder both maintain it from `(value before the patch, patch)`
+/// through the SAME function, [`apply_patch`], walked over the same records in
+/// the same order, and it is rebuilt from empty at every checkpoint so a seek
+/// that starts there derives exactly what the encoder had. Any disagreement
+/// would decode some hour to different bytes, which is what
+/// `verify_every_hour` already checks against `replay_decoder`'s own hash for
+/// every hour of every sealed cache.
+#[derive(Debug, Default)]
+struct Shadow {
+    remembered: Option<CanonValue>,
+    members: std::collections::HashMap<String, Shadow>,
+    elements: std::collections::HashMap<u32, Shadow>,
+}
+
+/// The ceiling on what one checkpoint window may remember, and what it has
+/// spent so far.
+///
+/// WITHOUT THIS THE SHADOW IS UNBOUNDED. A window is up to 744 hours; a
+/// recording that nulls a different large member every hour and leaves it null
+/// would accumulate a remembered subtree per hour, so the memory would grow
+/// with the WINDOW rather than with the world -- hundreds of times the size of
+/// the document it describes (Codex review round 6, finding S4).
+///
+/// Spending is MONOTONIC within a window and never refunded when a memory is
+/// dropped. That over-counts, deliberately: an exact running total would have
+/// to be maintained through every clear and every re-insert, and the number
+/// that matters here is an upper bound on what the process can hold, not an
+/// accountant's balance. Over-counting also keeps the rule cheap enough that
+/// both sides can apply it identically.
+///
+/// It is a SIZE lever with no correctness edge: once the cap is reached the
+/// encoder simply stops offering revives for the rest of the window and spends
+/// full replaces instead. Encoder and reader run this same rule over the same
+/// records in the same order, so they stop at the same hour and never disagree
+/// about whether a memory exists.
+#[derive(Debug)]
+struct ShadowBudget {
+    spent: u64,
+    cap: u64,
+}
+
+/// 256 MiB. The encoder already holds a whole world (34.5 MB on capture t30)
+/// plus the hour it is encoding, and the ship floor is a 4-core/16 GB machine,
+/// so this leaves room for many simultaneous folded-out domains while keeping
+/// the worst case a fixed number rather than a multiple of the window length.
+const MAX_SHADOW_BYTES: u64 = 256 * 1024 * 1024;
+
+impl Default for ShadowBudget {
+    fn default() -> Self {
+        ShadowBudget {
+            spent: 0,
+            cap: MAX_SHADOW_BYTES,
+        }
+    }
+}
+
+impl ShadowBudget {
+    /// Charge for a memory, or decline it. Declining costs bytes, never truth.
+    fn admits(&mut self, value: &CanonValue) -> bool {
+        // CONTENT, NEVER CAPACITY. Both sides must reach the same verdict from
+        // the same document, and `heap_bytes` cannot deliver that: the JSON
+        // parser doubles its vectors while the binary decoder reserves exactly,
+        // so equal values carry different capacities on the two sides. Charging
+        // that made admission depend on allocation history, and near the cap one
+        // side kept a memory the other had refused -- which is a revive the
+        // reader cannot resolve (Codex review round 7, Q1).
+        let cost = value.content_bytes();
+        match self.spent.checked_add(cost) {
+            Some(spent) if spent <= self.cap => {
+                self.spent = spent;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Shadow {
+    fn member(&self, key: &str) -> Option<&Shadow> {
+        self.members.get(key)
+    }
+
+    fn element(&self, index: u32) -> Option<&Shadow> {
+        self.elements.get(&index)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.remembered.is_none() && self.members.is_empty() && self.elements.is_empty()
+    }
+
+    /// Record that this path has just gone null, holding `was`, if the window's
+    /// budget still admits it.
+    ///
+    /// The children go with it EITHER WAY: they describe paths inside `was`,
+    /// which the remembered subtree now carries itself, and if the budget
+    /// declines the memory then those paths are gone from the world with
+    /// nothing standing in for them.
+    fn remember(&mut self, was: CanonValue, budget: &mut ShadowBudget) {
+        self.members.clear();
+        self.elements.clear();
+        self.remembered = if budget.admits(&was) { Some(was) } else { None };
+    }
+
+    /// Record that this path is non-null again. The memory is spent.
+    fn forget(&mut self) {
+        self.remembered = None;
+    }
+}
+
+/// Whether a remembered value can serve as a PATCH base for `new`.
+///
+/// Exactly the shapes [`diff_value`] can express structurally. If they do not
+/// match there is no patched revive to emit, because the inner patch would be a
+/// `Replace` -- one byte MORE than the plain replace it would wrap.
+///
+/// This does NOT decide whether a revive is available at all: a memory equal to
+/// `new` is revivable whatever its type, including a scalar, and that case is
+/// [`revive_is_mandatory`]'s first arm.
+fn revive_base_fits(base: &CanonValue, new: &CanonValue) -> bool {
+    match (base, new) {
+        (CanonValue::Object(_), CanonValue::Object(_)) => true,
+        (CanonValue::Array(base), CanonValue::Array(new)) => base.len() == new.len(),
+        _ => false,
+    }
+}
+
+/// Whether a null target with this memory MUST be spelled as a revive.
+///
+/// One delta, one encoding. A remembered value that is simply back unchanged is
+/// one byte as `PATCH_REVIVE_SAME` however large it is -- including a scalar,
+/// which the first cut of this excluded and thereby left `Replace(7)` and
+/// `ReviveSame` both legal for the same delta (Codex review round 6, finding
+/// S2). Both the encoder and `apply_patch`'s refusal read THIS function, so the
+/// rule cannot drift between the side that writes and the side that checks.
+fn revive_is_mandatory(base: &CanonValue, new: &CanonValue) -> bool {
+    base == new || revive_base_fits(base, new)
+}
+
+fn diff_value(
+    old: &CanonValue,
+    new: &CanonValue,
+    shadow: Option<&Shadow>,
+    depth: usize,
+) -> Result<Patch, ReplayCacheError> {
     require_depth(depth)?;
     if old == new {
         return Ok(Patch::Keep);
+    }
+    // THE REVIVE IS TRIED FIRST, and it is MANDATORY where it applies -- the
+    // decoder refuses a plain replace over a null whose remembered value fits
+    // (see `apply_patch`), because two spellings of one delta would mean two
+    // cache SHAs for one recording.
+    if matches!(old, CanonValue::Null) {
+        if let Some(base) = shadow.and_then(|shadow| shadow.remembered.as_ref()) {
+            if revive_is_mandatory(base, new) {
+                // No nested shadow: `Shadow::remember` dropped the children when
+                // it took this subtree, precisely so the base is self-contained.
+                return Ok(match diff_value(base, new, None, depth + 1)? {
+                    Patch::Keep => Patch::ReviveSame,
+                    inner => Patch::Revive(Box::new(inner)),
+                });
+            }
+        }
     }
     match (old, new) {
         (CanonValue::Object(old), CanonValue::Object(new)) => {
@@ -2262,7 +2538,12 @@ fn diff_value(old: &CanonValue, new: &CanonValue, depth: usize) -> Result<Patch,
                         right += 1;
                     }
                     Ordering::Equal => {
-                        let patch = diff_value(&old[left].1, &new[right].1, depth + 1)?;
+                        let patch = diff_value(
+                            &old[left].1,
+                            &new[right].1,
+                            shadow.and_then(|shadow| shadow.member(&new[right].0)),
+                            depth + 1,
+                        )?;
                         if !matches!(patch, Patch::Keep) {
                             changes.push((new[right].0.clone(), patch));
                         }
@@ -2276,13 +2557,16 @@ fn diff_value(old: &CanonValue, new: &CanonValue, depth: usize) -> Result<Patch,
         (CanonValue::Array(old), CanonValue::Array(new)) if old.len() == new.len() => {
             let mut changes = Vec::new();
             for (index, (old_value, new_value)) in old.iter().zip(new).enumerate() {
-                let patch = diff_value(old_value, new_value, depth + 1)?;
+                let element = u32::try_from(index)
+                    .map_err(|_| ReplayCacheError::new("array index does not fit u32"))?;
+                let patch = diff_value(
+                    old_value,
+                    new_value,
+                    shadow.and_then(|shadow| shadow.element(element)),
+                    depth + 1,
+                )?;
                 if !matches!(patch, Patch::Keep) {
-                    changes.push((
-                        u32::try_from(index)
-                            .map_err(|_| ReplayCacheError::new("array index does not fit u32"))?,
-                        patch,
-                    ));
+                    changes.push((element, patch));
                 }
             }
             Ok(Patch::Array(changes))
@@ -2291,14 +2575,68 @@ fn diff_value(old: &CanonValue, new: &CanonValue, depth: usize) -> Result<Patch,
     }
 }
 
+/// Apply `patch` to `target`, AND carry the [`Shadow`] forward across the same
+/// step.
+///
+/// The two are one function on purpose. The shadow update needs the value
+/// BEFORE the patch and the patch together, which is exactly this moment and
+/// nowhere else; splitting them would mean either keeping a second copy of the
+/// world or writing the rule twice and hoping the copies agree. The encoder
+/// drives this over the previous hour it is about to discard, so both sides run
+/// this code and no second implementation exists to drift.
 fn apply_patch(
     target: &mut CanonValue,
     patch: &Patch,
+    shadow: &mut Shadow,
+    budget: &mut ShadowBudget,
     depth: usize,
 ) -> Result<(), ReplayCacheError> {
     require_depth(depth)?;
     match patch {
         Patch::Keep => Ok(()),
+        Patch::ReviveSame | Patch::Revive(_) => {
+            if !matches!(target, CanonValue::Null) {
+                return Err(ReplayCacheError::new(
+                    "revive patch targets a value that is not null",
+                ));
+            }
+            // TAKEN, not read: the path is about to be non-null again, so the
+            // memory is spent in the same step it is used. That is also what
+            // frees the borrow the inner patch would otherwise contend for.
+            let Some(base) = shadow.remembered.take() else {
+                return Err(ReplayCacheError::new(
+                    "revive patch has no remembered value to revive",
+                ));
+            };
+            let mut value = base;
+            if let Patch::Revive(inner) = patch {
+                // A revive whose inner patch is a keep is spelled
+                // `PATCH_REVIVE_SAME`, and one whose base does not fit is
+                // spelled as a plain replace; both would be second encodings.
+                if matches!(**inner, Patch::Keep | Patch::Replace(_)) {
+                    return Err(ReplayCacheError::new(
+                        "revive patch restates a delta with a shorter spelling",
+                    ));
+                }
+                // THE REVIVED SUBTREE KEEPS WHATEVER ITS OWN PATCH REMEMBERS.
+                // `shadow` is the right node for that and it is free to use:
+                // the memory was TAKEN above, and its children were dropped
+                // when it was remembered, so this starts empty and ends holding
+                // exactly the paths the inner patch nulled. Handing the inner
+                // application a throwaway `Shadow::default()` instead -- which
+                // is what the first cut did -- silently discarded those, so a
+                // member nulled by the same patch that revived its parent could
+                // never be revived afterwards (Codex review round 6, S1).
+                apply_patch(&mut value, inner, shadow, budget, depth + 1)?;
+            }
+            if matches!(value, CanonValue::Null) {
+                return Err(ReplayCacheError::new(
+                    "revive patch reconstructed a null value",
+                ));
+            }
+            *target = value;
+            Ok(())
+        }
         Patch::Replace(value) => {
             // A replacement over an EXISTING value is only how `diff_value`
             // spells a change it cannot express structurally. Rejecting the
@@ -2319,7 +2657,43 @@ fn apply_patch(
                     "replacement patch restates a value the encoder would have diffed",
                 ));
             }
-            *target = value.clone();
+            // A REPLACE OVER A NULL WHOSE MEMORY FITS IS A MISSED SAVING, NOT
+            // AN ERROR, and this is the one place the canonicality law is
+            // deliberately not enforced by refusal.
+            //
+            // Refusing it was tried and is wrong. `divisions` is an array and a
+            // memory under it is keyed by INDEX, so when the array is replaced
+            // wholesale -- which is how a length change is spelled -- the two
+            // sides can legitimately reach a member with different memories
+            // beneath it, and the encoder then spells as a replace what the
+            // decoder could have revived. Measured: `.divisions[2969].equipment`
+            // on t54. The refusal turned that into a hard round-trip failure.
+            //
+            // Nothing unsound gets through. A replace CARRIES ITS OWN VALUE, so
+            // it reconstructs the same document whatever the shadow holds; only
+            // a REVIVE depends on the memory, and a revive resolved against a
+            // base the encoder did not intend produces different bytes, which
+            // `verify_every_hour` already catches against replay_decoder's own
+            // per-hour hash on every seal. So the invariant that matters -- one
+            // recording, one reconstruction -- is enforced where it can be
+            // enforced, and the one this cannot is a byte, not a fact.
+            //
+            // The residual, named for whoever prices the next lever: a
+            // hand-built cache could spell such a member either way and both
+            // decode to the same document. Only this encoder writes caches, and
+            // its choice is deterministic, so one recording still has one SHA.
+            let was = std::mem::replace(target, value.clone());
+            if matches!(target, CanonValue::Null) {
+                // The path has just gone null. Remember what it held, which is
+                // the whole point of the structure.
+                shadow.remember(was, budget);
+            } else {
+                // Non-null again, and the subtree it replaces is gone, so every
+                // memory underneath it is stale.
+                shadow.remembered = None;
+                shadow.members.clear();
+                shadow.elements.clear();
+            }
             Ok(())
         }
         Patch::Object { removals, changes } => {
@@ -2328,6 +2702,7 @@ fn apply_patch(
                     "object patch targets a non-object value",
                 ));
             };
+            let child_shadow = &mut shadow.members;
             // Removals first, then changes, both by merge walk over the
             // strictly increasing member list — the result stays sorted, so a
             // later delta in the same run still sees a canonical object.
@@ -2346,6 +2721,9 @@ fn apply_patch(
                             "object patch removal spells its member name differently from the target",
                         ));
                     }
+                    // The member is gone, not nulled. Nothing may revive from
+                    // a path the world no longer has.
+                    child_shadow.remove(&member.0);
                     removed += 1;
                     continue;
                 }
@@ -2375,11 +2753,22 @@ fn apply_patch(
                             "object patch change spells its member name differently from the target",
                         ));
                     }
-                    apply_patch(&mut existing, change, depth + 1)?;
+                    let mut child = child_shadow.remove(&existing_key).unwrap_or_default();
+                    let applied = apply_patch(&mut existing, change, &mut child, budget, depth + 1);
+                    if !child.is_empty() {
+                        child_shadow.insert(existing_key.clone(), child);
+                    }
+                    applied?;
                     out.push((existing_key, existing));
                 } else {
                     match change {
-                        Patch::Replace(value) => out.push((key.clone(), value.clone())),
+                        Patch::Replace(value) => {
+                            // An ADDED member has no history at this path: any
+                            // memory here belonged to something removed earlier
+                            // and must not become a revive base.
+                            child_shadow.remove(key);
+                            out.push((key.clone(), value.clone()));
+                        }
                         _ => {
                             return Err(ReplayCacheError::new(
                                 "object patch changes an absent non-replacement member",
@@ -2399,14 +2788,19 @@ fn apply_patch(
                 ));
             };
             let mut previous = None;
-            for (index, change) in changes {
-                let index = *index as usize;
+            for (slot, change) in changes {
+                let index = *slot as usize;
                 if previous.is_some_and(|value| index <= value) || index >= array.len() {
                     return Err(ReplayCacheError::new(
                         "array patch indices are not strictly increasing and in bounds",
                     ));
                 }
-                apply_patch(&mut array[index], change, depth + 1)?;
+                let mut child = shadow.elements.remove(slot).unwrap_or_default();
+                let applied = apply_patch(&mut array[index], change, &mut child, budget, depth + 1);
+                if !child.is_empty() {
+                    shadow.elements.insert(*slot, child);
+                }
+                applied?;
                 previous = Some(index);
             }
             Ok(())
@@ -2428,6 +2822,11 @@ fn encode_patch_into(
     require_depth(depth)?;
     match patch {
         Patch::Keep => out.push(PATCH_KEEP),
+        Patch::ReviveSame => out.push(PATCH_REVIVE_SAME),
+        Patch::Revive(inner) => {
+            out.push(PATCH_REVIVE_PATCH);
+            encode_patch_into(inner, out, depth + 1)?;
+        }
         Patch::Replace(value) => {
             out.push(PATCH_REPLACE);
             encode_value_into(value, out, depth + 1)?;
@@ -2491,6 +2890,24 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             "nested keep patch must be omitted, not encoded",
         )),
         PATCH_REPLACE => Ok(Patch::Replace(decode_value(reader, depth + 1)?)),
+        // THE WORLD ROOT IS NEVER NULL, so a revive can only ever be nested;
+        // one at depth 0 is a shape the encoder cannot produce.
+        PATCH_REVIVE_SAME | PATCH_REVIVE_PATCH if depth == 0 => Err(ReplayCacheError::new(
+            "revive patch at the world root, which is never null",
+        )),
+        PATCH_REVIVE_SAME => Ok(Patch::ReviveSame),
+        PATCH_REVIVE_PATCH => {
+            let inner = decode_patch(reader, depth + 1)?;
+            // Spelled out here as well as in `apply_patch` so a patch that
+            // never reaches a target is still rejected: a keep is
+            // `PATCH_REVIVE_SAME` and an unfitting base is a plain replace.
+            if matches!(inner, Patch::Keep | Patch::Replace(_)) {
+                return Err(ReplayCacheError::new(
+                    "revive patch restates a delta with a shorter spelling",
+                ));
+            }
+            Ok(Patch::Revive(Box::new(inner)))
+        }
         PATCH_OBJECT => {
             let removal_count = reader.count(MIN_TEXT_BYTES)?;
             let mut removals = Vec::new();
@@ -3096,7 +3513,7 @@ pub fn measure_section_patch_bytes(
     old: &CanonValue,
     new: &CanonValue,
 ) -> Result<usize, ReplayCacheError> {
-    let patch = diff_value(old, new, 0)?;
+    let patch = diff_value(old, new, None, 0)?;
     Ok(encode_patch(&patch)?.len())
 }
 
@@ -3213,8 +3630,28 @@ mod tests {
     }
 
     fn build(interval: u32, hours: &[(i64, &str)]) -> (Vec<u8>, ReplayHourIndex, String) {
+        build_inner(interval, hours, false)
+    }
+
+    /// `build`, spelled for the tests that mean to exercise the revive.
+    ///
+    /// `build` itself FORBIDS it, so it stays a control: the pairs below assert
+    /// that the same hours cost less with revives than without, which needs one
+    /// of each.
+    fn build_revive(interval: u32, hours: &[(i64, &str)]) -> (Vec<u8>, ReplayHourIndex, String) {
+        build_inner(interval, hours, true)
+    }
+
+    fn build_inner(
+        interval: u32,
+        hours: &[(i64, &str)],
+        revive: bool,
+    ) -> (Vec<u8>, ReplayHourIndex, String) {
         let source_sha = "ab".repeat(32);
         let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, interval).unwrap();
+        if !revive {
+            encoder.forbid_revive();
+        }
         for (hour, body) in hours {
             encoder.push(world(*hour, body)).unwrap();
         }
@@ -3223,6 +3660,423 @@ mod tests {
             .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
             .unwrap();
         (cache, index, source_sha)
+    }
+
+    /// THE REVIVE IS WHAT THE SHIPPED ENCODER WRITES, and the gate that held it
+    /// back for one round still works as a control.
+    ///
+    /// kills: flipping the default back off; making `forbid_revive` a no-op
+    /// (the control then costs the same as the default and the first assertion
+    /// fails).
+    #[test]
+    fn the_shipped_encoder_writes_the_revive_and_the_control_does_not() {
+        let big = r#"{"a":[1,2,3,4,5,6,7,8],"b":"a long enough value to notice"}"#;
+        let hours = [
+            (0, format!(r#"{{"dom":{big}}}"#)),
+            (1, r#"{"dom":null}"#.to_string()),
+            (2, format!(r#"{{"dom":{big}}}"#)),
+        ];
+        let hours: Vec<(i64, &str)> = hours.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (plain, plain_index, sha) = build(168, &hours);
+        let (revived, revived_index, _) = build_revive(168, &hours);
+
+        // The gate is real: the same hours cost strictly less with it open.
+        let payload = |index: &ReplayHourIndex, position: usize| {
+            index.hours()[position].cache_record_len() - RECORD_HEADER_LEN
+        };
+        assert!(
+            payload(&revived_index, 2) < payload(&plain_index, 2),
+            "with revives allowed hour 2 must be cheaper: {} against {}",
+            payload(&revived_index, 2),
+            payload(&plain_index, 2)
+        );
+
+        // And the default really re-emits, which is the behaviour a revive
+        // replaces: its cost TRACKS THE BODY, while the opt-in encoder's does
+        // not. Scanning the bytes for a tag value would prove nothing -- 4 and
+        // 5 occur all over a payload as varints and value tags.
+        let wide = format!(
+            r#"{{"a":[{}],"b":"a long enough value to notice"}}"#,
+            (0..400).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        let wide_hours = [
+            (0, format!(r#"{{"dom":{wide}}}"#)),
+            (1, r#"{"dom":null}"#.to_string()),
+            (2, format!(r#"{{"dom":{wide}}}"#)),
+        ];
+        let wide_hours: Vec<(i64, &str)> =
+            wide_hours.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (_, wide_plain, _) = build(168, &wide_hours);
+        let (_, wide_revived, _) = build_revive(168, &wide_hours);
+        assert!(
+            payload(&wide_plain, 2) > payload(&plain_index, 2) * 4,
+            "the default encoder re-emits, so a wider body costs more"
+        );
+        assert_eq!(
+            payload(&wide_revived, 2),
+            payload(&revived_index, 2),
+            "the opt-in encoder revives, so a wider body costs the same"
+        );
+        let _ = (&plain, &revived);
+
+        let reader =
+            ReplayCacheReader::open(&plain_index.to_bytes().unwrap(), &plain, 300, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
+    }
+
+    /// THE CADENCE FIX, END TO END: a domain that folds out and comes back
+    /// costs ONE BYTE, not a re-emission of itself.
+    ///
+    /// This is the shape that dominates the runs which bust the owner's 5 GB
+    /// bar. Hour 1 nulls a domain -- the ordinary cadence, not damage -- and
+    /// hour 2 brings back exactly what was there. The old encoder had only
+    /// `null` to diff against, and `null` is structurally incompatible with an
+    /// object, so it re-emitted the whole subtree; measured over 32 consecutive
+    /// t53 hours that re-emission was 44% of every delta byte written.
+    ///
+    /// kills: dropping `Patch::ReviveSame` (hour 2 re-emits and the assertion
+    /// on its size fails); basing the revive on the checkpoint instead of on
+    /// the member's own last non-null value (hour 4 here revives to the WRONG
+    /// body and `verify_every_hour` fails); forgetting to carry the shadow on
+    /// the encoder side (no revive is emitted at all); carrying it on the
+    /// encoder but not the reader (the reader cannot resolve the revive).
+    #[test]
+    fn a_domain_that_folds_out_and_returns_costs_one_byte() {
+        let big = r#"{"a":[1,2,3,4,5,6,7,8],"b":"a long enough value to notice","c":{"d":true}}"#;
+        let (cache, index, sha) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"dom":{big}}}"#)),
+                (1, r#"{"dom":null}"#),
+                (2, &format!(r#"{{"dom":{big}}}"#)),
+                (3, r#"{"dom":null}"#),
+                (4, &format!(r#"{{"dom":{big},"e":1}}"#)),
+            ],
+        );
+
+        // THE PROPERTY IS THAT THE COST DOES NOT TRACK THE BODY. A byte count
+        // would only pin this fixture; running the SAME sequence with a body an
+        // order of magnitude larger and requiring the revived hour not to grow
+        // by one byte pins the thing that matters, and it is exactly what a
+        // re-emission could never satisfy.
+        let payload = |index: &ReplayHourIndex, position: usize| {
+            index.hours()[position].cache_record_len() - RECORD_HEADER_LEN
+        };
+        let wide = format!(
+            r#"{{"a":[{}],"b":"a long enough value to notice","c":{{"d":true}}}}"#,
+            (0..400).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        let (_, wider, _) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"dom":{wide}}}"#)),
+                (1, r#"{"dom":null}"#),
+                (2, &format!(r#"{{"dom":{wide}}}"#)),
+                (3, r#"{"dom":null}"#),
+                (4, &format!(r#"{{"dom":{wide},"e":1}}"#)),
+            ],
+        );
+        assert!(
+            payload(&wider, 0) > payload(&index, 0) * 4,
+            "the wider fixture must really carry a much larger body"
+        );
+        assert_eq!(
+            payload(&wider, 2),
+            payload(&index, 2),
+            "a bare revive must cost the same however large the body it brings back"
+        );
+        assert!(
+            payload(&index, 2) * 2 < payload(&index, 0),
+            "a bare revive must not re-emit the body: {} against the body's {}",
+            payload(&index, 2),
+            payload(&index, 0)
+        );
+        assert_eq!(
+            payload(&wider, 4),
+            payload(&index, 4),
+            "a revive with a patch on top must also not track the body it revives"
+        );
+
+        // And every hour still reconstructs to exactly what it was.
+        let reader = ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 500, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
+    }
+
+    /// A REVIVE MAY NOT REACH ACROSS A CHECKPOINT, because a seek that starts
+    /// at one has never seen what came before it.
+    ///
+    /// Interval 2 puts a checkpoint at hour 2, so the body nulled at hour 1 is
+    /// out of reach by hour 3 and that hour must pay for it in full.
+    ///
+    /// kills: keeping the shadow across `self.shadow = Shadow::default()` at a
+    /// checkpoint -- the encoder would emit a revive that `reconstruct_json`,
+    /// which starts from the checkpoint, could not resolve.
+    #[test]
+    fn a_revive_never_reaches_across_a_checkpoint() {
+        let big = r#"{"a":[1,2,3,4,5,6,7,8],"b":"a long enough value to notice"}"#;
+        let (cache, index, sha) = build_revive(
+            2,
+            &[
+                (0, &format!(r#"{{"dom":{big}}}"#)),
+                (1, r#"{"dom":null}"#),
+                (2, r#"{"dom":null}"#),
+                (3, &format!(r#"{{"dom":{big}}}"#)),
+            ],
+        );
+        let payload = |position: usize| index.hours()[position].cache_record_len() - RECORD_HEADER_LEN;
+        assert!(
+            payload(3) > 40,
+            "hour 3 is in a new window and must re-emit the body, spent only {}",
+            payload(3)
+        );
+
+        // Every single-hour seek must resolve, which is the property a
+        // cross-checkpoint revive would break.
+        let reader = ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 400, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
+        for hour in 0..4 {
+            reader.reconstruct_json(hour).unwrap();
+        }
+    }
+
+    /// A REVIVE THAT CANNOT BE RESOLVED IS REFUSED, never guessed at.
+    ///
+    /// A revive is the one patch whose meaning depends on state the record does
+    /// not carry, so every shape where that state is missing or where the
+    /// spelling is not the one the encoder produces has to fail closed --
+    /// otherwise a damaged or hand-built record could decode to a document the
+    /// recording never held.
+    ///
+    /// kills: accepting `PATCH_REVIVE_PATCH` wrapping a keep or a replace, both
+    /// of which have shorter spellings the encoder would have used; accepting a
+    /// revive at the world root, which is never null; accepting a revive with
+    /// nothing remembered; accepting one over a live value.
+    #[test]
+    fn every_unresolvable_revive_is_refused() {
+        // A revive wrapping a keep is `PATCH_REVIVE_SAME`; one wrapping a
+        // replace is a plain replace. Both are refused at decode.
+        for inner in [vec![PATCH_KEEP], vec![PATCH_REPLACE, TAG_NULL]] {
+            let mut bytes = vec![PATCH_OBJECT, 0, 1, 1, b'x', PATCH_REVIVE_PATCH];
+            bytes.extend_from_slice(&inner);
+            let error = decode_patch_exact(&bytes)
+                .expect_err("a revive with a shorter spelling must be refused");
+            // A wrapped keep trips the nested-keep rule one level down before
+            // it reaches the revive check; both refusals are the same law.
+            let message = error.to_string();
+            assert!(
+                message.contains("shorter spelling") || message.contains("nested keep"),
+                "{message}"
+            );
+        }
+
+        // The world root is never null.
+        for tag in [PATCH_REVIVE_SAME, PATCH_REVIVE_PATCH] {
+            let error = decode_patch_exact(&[tag])
+                .expect_err("a revive at the root must be refused");
+            assert!(error.to_string().contains("world root"), "{error}");
+        }
+
+        // And a revive with nothing remembered has no base to name.
+        let mut target = CanonValue::Null;
+        let error = apply_patch(&mut target, &Patch::ReviveSame, &mut Shadow::default(), &mut ShadowBudget::default(), 1)
+            .expect_err("a revive without a memory must be refused");
+        assert!(error.to_string().contains("no remembered value"), "{error}");
+
+        // A revive over a value that is not null is not a revive at all.
+        let mut shadow = Shadow::default();
+        shadow.remember(CanonValue::parse(br#"{"a":1}"#).unwrap(), &mut ShadowBudget::default());
+        let mut target = CanonValue::parse(br#"{"b":1}"#).unwrap();
+        let error = apply_patch(&mut target, &Patch::ReviveSame, &mut shadow, &mut ShadowBudget::default(), 1)
+            .expect_err("a revive over a live value must be refused");
+        assert!(error.to_string().contains("not null"), "{error}");
+    }
+
+    /// A REVIVED SUBTREE STILL REMEMBERS ITS OWN FOLDED-OUT PARTS.
+    ///
+    /// The parent comes back at hour 2 with a member already nulled inside it,
+    /// and that member returns at hour 3. The inner null is a memory like any
+    /// other, so hour 3 must be a bare revive -- but the first cut of this
+    /// handed the inner patch a throwaway shadow and dropped everything it
+    /// recorded, so hour 3 re-emitted instead (Codex review round 6, S1).
+    ///
+    /// kills: passing `&mut Shadow::default()` to the inner application instead
+    /// of the node whose memory was just taken.
+    #[test]
+    fn a_revived_subtree_keeps_the_memories_its_own_patch_makes() {
+        let big = r#"{"a":[1,2,3,4,5,6,7,8],"b":"a long enough value to notice"}"#;
+        let (cache, index, sha) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"p":{{"x":{big}}}}}"#)),
+                (1, r#"{"p":null}"#),
+                (2, r#"{"p":{"x":null}}"#),
+                (3, &format!(r#"{{"p":{{"x":{big}}}}}"#)),
+            ],
+        );
+        let payload = |index: &ReplayHourIndex, position: usize| {
+            index.hours()[position].cache_record_len() - RECORD_HEADER_LEN
+        };
+        // Same test with a much wider body: if hour 3 re-emitted, its cost
+        // would track the body.
+        let wide = format!(
+            r#"{{"a":[{}],"b":"a long enough value to notice"}}"#,
+            (0..400).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        let (_, wider, _) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"p":{{"x":{wide}}}}}"#)),
+                (1, r#"{"p":null}"#),
+                (2, r#"{"p":{"x":null}}"#),
+                (3, &format!(r#"{{"p":{{"x":{wide}}}}}"#)),
+            ],
+        );
+        assert_eq!(
+            payload(&wider, 3),
+            payload(&index, 3),
+            "the member nulled INSIDE a revive must itself be revivable"
+        );
+        let reader = ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 400, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
+    }
+
+    /// A SCALAR THAT COMES BACK UNCHANGED IS ONE BYTE.
+    ///
+    /// The first cut let `revive_base_fits` decide whether a revive was
+    /// available at all, and it admits only objects and equal-length arrays. So
+    /// for `7 -> null -> 7` the encoder emitted `Replace(7)` while the decoder
+    /// would ALSO have accepted `ReviveSame` -- one delta with two encodings,
+    /// therefore two possible cache SHAs for one recording (Codex review round
+    /// 6, S2).
+    ///
+    /// kills: restoring `revive_base_fits` as the availability test in either
+    /// `diff_value` or the replace refusal; making the two disagree.
+    #[test]
+    fn a_returning_scalar_is_spelled_as_a_revive() {
+        let (cache, index, sha) = build_revive(
+            168,
+            &[
+                (0, r#"{"n":123456789,"s":"a string worth several bytes"}"#),
+                (1, r#"{"n":null,"s":null}"#),
+                (2, r#"{"n":123456789,"s":"a string worth several bytes"}"#),
+            ],
+        );
+        // Two revives cost two bytes WHATEVER the scalars are worth, which a
+        // re-emission could not manage.
+        let payload = |index: &ReplayHourIndex, position: usize| {
+            index.hours()[position].cache_record_len() - RECORD_HEADER_LEN
+        };
+        let long = "a string worth a great many more bytes than the other one,                     padded until it could not hide inside a rounding error";
+        let (_, wider, _) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"n":123456789123456789,"s":"{long}"}}"#)),
+                (1, r#"{"n":null,"s":null}"#),
+                (2, &format!(r#"{{"n":123456789123456789,"s":"{long}"}}"#)),
+            ],
+        );
+        assert!(
+            payload(&wider, 0) > payload(&index, 0) + 60,
+            "the wider fixture must really carry larger scalars"
+        );
+        assert_eq!(
+            payload(&wider, 2),
+            payload(&index, 2),
+            "returning scalars must revive, not re-emit"
+        );
+
+        // The long spelling still DECODES -- deliberately, see the note in
+        // `apply_patch` -- and it decodes to the same value, which is why
+        // tolerating it costs a byte rather than a fact.
+        let mut shadow = Shadow::default();
+        shadow.remember(
+            CanonValue::parse(b"123456789").unwrap(),
+            &mut ShadowBudget::default(),
+        );
+        let mut target = CanonValue::Null;
+        apply_patch(
+            &mut target,
+            &Patch::Replace(CanonValue::parse(b"123456789").unwrap()),
+            &mut shadow,
+            &mut ShadowBudget::default(),
+            1,
+        )
+        .expect("a replace carries its own value and always applies");
+        assert_eq!(target, CanonValue::parse(b"123456789").unwrap());
+
+        let reader = ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 300, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
+    }
+
+    /// THE SHADOW HAS A CEILING, and reaching it costs bytes rather than truth.
+    ///
+    /// A window is up to 744 hours, so a recording that nulls a different large
+    /// member every hour would otherwise accumulate a remembered subtree per
+    /// hour -- memory that grows with the WINDOW, not with the world (Codex
+    /// review round 6, S4). Past the cap the encoder simply stops offering
+    /// revives; both sides apply the same rule over the same records, so they
+    /// stop together and no delta becomes unresolvable.
+    ///
+    /// kills: removing the budget check from `Shadow::remember`; refunding on
+    /// drop (which would make the two sides' spend depend on collection order);
+    /// charging the encoder but not the reader.
+    #[test]
+    fn the_shadow_stops_remembering_at_its_ceiling() {
+        let mut budget = ShadowBudget {
+            spent: 0,
+            cap: 64,
+        };
+        let small = CanonValue::parse(br#"{"a":1}"#).unwrap();
+        let large = CanonValue::parse(br#"{"a":"a value far past a sixty-four byte ceiling for sure"}"#).unwrap();
+
+        let mut shadow = Shadow::default();
+        shadow.remember(small.clone(), &mut budget);
+        assert!(
+            shadow.remembered.is_some(),
+            "a memory inside the ceiling is kept"
+        );
+
+        let mut shadow = Shadow::default();
+        shadow.remember(large, &mut budget);
+        assert!(
+            shadow.remembered.is_none(),
+            "a memory past the ceiling is declined, not truncated"
+        );
+        // Declining must not charge for what it did not keep.
+        assert!(budget.spent <= 64, "a declined memory is not charged");
+
+        // The ceiling is a real number, not a placeholder.
+        assert_eq!(MAX_SHADOW_BYTES, 256 * 1024 * 1024);
+    }
+
+    /// A MEMORY BELONGS TO A PATH, NOT TO A NAME. Removing a member and adding
+    /// one back with the same name must not revive the removed body.
+    ///
+    /// The difference matters because a removed member and a nulled one look
+    /// alike from the outside and mean opposite things: the world no longer has
+    /// that path at all, versus it has it and it is currently empty.
+    ///
+    /// kills: leaving the child shadow in place across an object removal, or
+    /// across an insertion of a member that was not there.
+    #[test]
+    fn a_removed_member_leaves_no_memory_to_revive() {
+        let big = r#"{"a":[1,2,3,4,5,6,7,8],"b":"a long enough value to notice"}"#;
+        let (cache, index, sha) = build_revive(
+            168,
+            &[
+                (0, &format!(r#"{{"dom":{big}}}"#)),
+                (1, r#"{"other":1}"#),
+                (2, &format!(r#"{{"dom":{big},"other":1}}"#)),
+            ],
+        );
+        let payload = |position: usize| index.hours()[position].cache_record_len() - RECORD_HEADER_LEN;
+        assert!(
+            payload(2) > 40,
+            "a member that was REMOVED, not nulled, has no memory: spent only {}",
+            payload(2)
+        );
+        let reader = ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 300, &sha).unwrap();
+        reader.verify_every_hour().unwrap();
     }
 
     /// THE CONFINEMENT LAW, at the resolution it is stated in: one damaged
@@ -4021,11 +4875,11 @@ mod tests {
         let replace = |body: &str| Patch::Replace(object(body));
 
         let mut target = object(r#"{"a":1}"#);
-        assert!(apply_patch(&mut target, &replace(r#"{"a":2}"#), 0)
+        assert!(apply_patch(&mut target, &replace(r#"{"a":2}"#), &mut Shadow::default(), &mut ShadowBudget::default(), 0)
             .unwrap_err()
             .message()
             .contains("would have diffed"));
-        assert!(apply_patch(&mut target, &replace(r#"{"a":1}"#), 0)
+        assert!(apply_patch(&mut target, &replace(r#"{"a":1}"#), &mut Shadow::default(), &mut ShadowBudget::default(), 0)
             .unwrap_err()
             .message()
             .contains("does not change its target"));
@@ -4035,7 +4889,7 @@ mod tests {
             removals: Vec::new(),
             changes: vec![("a".to_string(), replace("[3,4]"))],
         };
-        assert!(apply_patch(&mut array, &same_length, 0)
+        assert!(apply_patch(&mut array, &same_length, &mut Shadow::default(), &mut ShadowBudget::default(), 0)
             .unwrap_err()
             .message()
             .contains("would have diffed"));
@@ -4045,7 +4899,7 @@ mod tests {
             removals: Vec::new(),
             changes: vec![("a".to_string(), replace("[3]"))],
         };
-        apply_patch(&mut array, &different_length, 0).unwrap();
+        apply_patch(&mut array, &different_length, &mut Shadow::default(), &mut ShadowBudget::default(), 0).unwrap();
         assert_eq!(array.to_json_bytes(), br#"{"a":[3]}"#);
 
         // `a` decodes to `a`, so it names the same member — and is not how
@@ -4056,7 +4910,7 @@ mod tests {
             removals: vec![alias.clone()],
             changes: vec![("b".to_string(), Patch::Replace(CanonValue::Null))],
         };
-        assert!(apply_patch(&mut removal_target, &aliased_removal, 0)
+        assert!(apply_patch(&mut removal_target, &aliased_removal, &mut Shadow::default(), &mut ShadowBudget::default(), 0)
             .unwrap_err()
             .message()
             .contains("removal spells its member name differently"));
@@ -4067,7 +4921,7 @@ mod tests {
             removals: Vec::new(),
             changes: vec![(alias, Patch::Replace(CanonValue::Null))],
         };
-        assert!(apply_patch(&mut removal_target, &aliased_change, 0)
+        assert!(apply_patch(&mut removal_target, &aliased_change, &mut Shadow::default(), &mut ShadowBudget::default(), 0)
             .unwrap_err()
             .message()
             .contains("change spells its member name differently"));

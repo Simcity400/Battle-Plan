@@ -141,6 +141,62 @@ impl CanonValue {
     /// Iterative rather than recursive: a deeply nested document must not be
     /// able to turn a size query into a stack overflow. Cost is one visit per
     /// node.
+    /// What one array slot weighs against the budget. A round number, not a
+    /// measurement: see [`Self::content_bytes`].
+    pub const ARRAY_ELEMENT_WEIGHT: u64 = 16;
+    /// What one object member weighs, over and above its name's own bytes.
+    pub const OBJECT_MEMBER_WEIGHT: u64 = 32;
+
+    /// Bytes this value's CONTENT comes to, counting `len` and never `capacity`.
+    ///
+    /// THE DIFFERENCE FROM [`Self::heap_bytes`] IS THE WHOLE POINT. That one
+    /// reports what the allocator is holding, which is the right number for a
+    /// memory table and the wrong number for any decision two processes must
+    /// reach independently: the JSON parser grows its vectors by doubling while
+    /// the binary decoder reserves the element count exactly, so the SAME
+    /// document has different capacities on the writing side and the reading
+    /// side. A budget charged on capacity therefore admits a value on one side
+    /// and refuses it on the other, which is exactly how lane LL's shadow
+    /// budget desynchronised the encoder from the reader (Codex review round 7,
+    /// Q1).
+    ///
+    /// This is a function of the DOCUMENT alone. Two equal `CanonValue`s always
+    /// come to the same number however they were built.
+    ///
+    /// FIXED WEIGHTS, never `size_of::<some Rust type>()`. A first cut priced a
+    /// slot at `size_of::<CanonValue>()`, which is an ABI number: it can differ
+    /// between a 32- and 64-bit target and between compiler versions. A replay
+    /// is a PORTABLE artifact -- written on one machine, read on another -- so
+    /// an ABI-dependent budget could cross its ceiling at a different node on
+    /// the reading side and reproduce the very missing-shadow failure this
+    /// function exists to prevent (Codex review round 8, Q1a).
+    ///
+    /// Iterative for the same reason as its neighbour: depth must not become a
+    /// stack overflow.
+    pub fn content_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            total = total.saturating_add(match value {
+                Self::Null | Self::Bool(_) => 0,
+                Self::Number(token) | Self::String(token) => token.len() as u64,
+                Self::Array(items) => {
+                    stack.extend(items.iter());
+                    items.len() as u64 * Self::ARRAY_ELEMENT_WEIGHT
+                }
+                Self::Object(members) => {
+                    stack.extend(members.iter().map(|(_, value)| value));
+                    members
+                        .iter()
+                        .map(|(name, _)| name.len() as u64)
+                        .fold(0u64, |sum, n| sum.saturating_add(n))
+                        .saturating_add(members.len() as u64 * Self::OBJECT_MEMBER_WEIGHT)
+                }
+            });
+        }
+        total
+    }
+
     pub fn heap_bytes(&self) -> u64 {
         let mut total = 0u64;
         let mut stack = vec![self];

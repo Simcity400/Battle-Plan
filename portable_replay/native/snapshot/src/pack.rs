@@ -237,6 +237,24 @@ pub struct PackOptions {
 pub const DEFAULT_ZSTD_COMPRESSION_LEVEL: i32 = 3;
 /// Backward-compatible alias for callers/tests that referenced the old constant.
 pub const ZSTD_COMPRESSION_LEVEL: i32 = DEFAULT_ZSTD_COMPRESSION_LEVEL;
+/// THE CEILING, not a default. No packer in this project may compress harder
+/// than level 3 (owner ruling 2026-08-16: "the compression must be no more than
+/// level 3 so all of the wins must come pre compression").
+///
+/// The rule exists to stop the compressor being used to hide an oversized
+/// format. Every byte saved by turning this up is a byte the ENCODING should
+/// not have emitted, and the saving is taken at finalize's expense on every
+/// future recording -- the level-19 corpus result above bought 28.2% for a
+/// single-core finalize time this project has already refused once.
+///
+/// Until now it was a default with nothing behind it: `--replay-zstd-level N`
+/// bound straight through to the encoder and `validate` checked only the window
+/// log, so any level up to 22 packed silently.
+pub const MAX_ZSTD_COMPRESSION_LEVEL: i32 = 3;
+/// The floor this path accepts. Negative levels are libzstd's FAST modes, not
+/// harder ones, so they sit under the ceiling by definition; the bound is here
+/// so a wild value is refused by name rather than deep inside libzstd.
+pub const MIN_ZSTD_COMPRESSION_LEVEL: i32 = -7;
 /// The smallest zstd window log accepted by libzstd.
 pub const MIN_ZSTD_WINDOW_LOG: u32 = 10;
 /// Entries smaller than this stay STORE even under the zstd policy.
@@ -277,6 +295,27 @@ impl Default for CompressionProfile {
 
 impl CompressionProfile {
     pub fn validate(self) -> std::io::Result<()> {
+        // THE LEVEL CEILING IS CHECKED FIRST, because it is the one a caller
+        // can raise from the command line. See `MAX_ZSTD_COMPRESSION_LEVEL`.
+        if self.zstd_level > MAX_ZSTD_COMPRESSION_LEVEL {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "zstd level {} exceeds the maximum this project packs at ({}). Size wins must \
+                     come from the encoding, before compression.",
+                    self.zstd_level, MAX_ZSTD_COMPRESSION_LEVEL
+                ),
+            ));
+        }
+        if self.zstd_level < MIN_ZSTD_COMPRESSION_LEVEL {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "zstd level {} is below the minimum this project packs at ({})",
+                    self.zstd_level, MIN_ZSTD_COMPRESSION_LEVEL
+                ),
+            ));
+        }
         if self.zstd_window_log < MIN_ZSTD_WINDOW_LOG {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -2289,6 +2328,51 @@ mod tests {
             .validate()
             .expect_err("writer must not create unreadable windows");
         assert!(err.to_string().contains("reader compatibility max"));
+    }
+
+    /// LEVEL 3 IS A CEILING, NOT A DEFAULT (owner ruling 2026-08-16).
+    ///
+    /// The default was already 3, but nothing enforced it: `--replay-zstd-level`
+    /// binds a caller's number straight into `CompressionProfile`, and `validate`
+    /// only ever looked at the window log -- so any level up to libzstd's 22
+    /// packed silently. Turning it up trades finalize time on every future
+    /// recording for a saving the ENCODING should have made instead, which is
+    /// exactly the trade this project refused when it left level 19.
+    ///
+    /// kills: dropping the level check from `validate`; raising
+    /// MAX_ZSTD_COMPRESSION_LEVEL above 3; checking `!=` instead of `>` (which
+    /// would also refuse the admissible fast/negative levels); leaving the
+    /// default anywhere other than at or below the ceiling.
+    #[test]
+    fn the_pack_level_may_never_exceed_three() {
+        assert!(
+            DEFAULT_ZSTD_COMPRESSION_LEVEL <= MAX_ZSTD_COMPRESSION_LEVEL,
+            "the shipped default must itself satisfy the ceiling"
+        );
+        assert_eq!(MAX_ZSTD_COMPRESSION_LEVEL, 3);
+
+        for level in [MAX_ZSTD_COMPRESSION_LEVEL, 0, MIN_ZSTD_COMPRESSION_LEVEL] {
+            CompressionProfile {
+                zstd_level: level,
+                zstd_window_log: ZSTD_WINDOW_LOG,
+            }
+            .validate()
+            .unwrap_or_else(|error| panic!("level {level} must remain packable: {error}"));
+        }
+
+        for level in [4, 9, 19, 22] {
+            let profile = CompressionProfile {
+                zstd_level: level,
+                zstd_window_log: ZSTD_WINDOW_LOG,
+            };
+            let err = profile
+                .validate()
+                .expect_err(&format!("level {level} must be refused"));
+            assert!(
+                err.to_string().contains("exceeds the maximum this project packs at"),
+                "level {level} was refused for the wrong reason: {err}"
+            );
+        }
     }
 
     /// The zstd policy is a pure size floor over EVERY entry.

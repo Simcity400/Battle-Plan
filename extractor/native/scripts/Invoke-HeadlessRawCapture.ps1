@@ -123,8 +123,10 @@ param(
 
     # Ceiling on GRANTED finalize extensions, measured from the recorder's READY
     # anchor. Backstop only: a recorder reporting progress forever (a fold
-    # looping over work it never finishes) is still bounded, and the harness
-    # still never terminates it after injection.
+    # looping over work it never finishes) is still bounded. Past this ceiling
+    # the harness stops the recorder ONLY when it can prove the recorder holds
+    # no hooks in a live game -- its target gone, or teardown authenticated --
+    # and it records a named refusal when it does; see the cleanup wait.
     #
     # It caps what the progress receipt can BUY; it is deliberately not a cap on
     # the recorder's whole lifetime. `-DurationSeconds + -RecorderOverheadSeconds`
@@ -2140,6 +2142,135 @@ function Update-RecorderFinalizeDeadline {
     }
 }
 
+# WHY THE RUN STOPPED WAITING, read at the moment it stopped.
+#
+# `Update-RecorderFinalizeDeadline` publishes its reason as a side effect of
+# GRANTING time, and the grant and the timeout are one tick apart: the last call
+# before the loop falls out sees `work_unchanged_ms` just under the threshold,
+# writes `work_advancing_unchanged_<n>ms`, and extends the deadline to an instant
+# that then passes. `no_progress_for_<n>s` is only ever written on a call that is
+# ALREADY past the threshold -- which the loop does not make, because it has
+# walked past its deadline and exited. So the last `finalize_bound=` a timed-out
+# run printed was structurally the opposite of the truth: it named the last
+# extension on a run that then died of not being extended.
+#
+# This states the cause from the receipt AT THE EXIT, not from the last grant.
+# It is deliberately separate from the grant function: a reason is an
+# observation, and the function that hands out time must not be asked to also be
+# the one that explains why it stopped. Non-throwing for the same reason
+# everything else here is -- it runs inside the cleanup `finally`.
+function Get-RecorderFinalizeTerminalReason {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$CaptureId,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$Deadline,
+        [Parameter(Mandatory = $true)][AllowNull()][object]$Ceiling,
+        [Parameter(Mandatory = $true)][int]$NoProgressSeconds,
+        [int]$MaxReceiptAgeSeconds = 30
+    )
+    try {
+        $path = Join-Path $RunDir 'RECORDER_FINALIZE_PROGRESS_V1.json'
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return 'no_progress_receipt'
+        }
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        $writtenUtc = $item.LastWriteTimeUtc
+        $receipt = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop) | ConvertFrom-Json
+        if ($null -eq $receipt) { return 'progress_receipt_unreadable' }
+        $fields = @{}
+        foreach ($property in $receipt.PSObject.Properties) {
+            $fields[$property.Name] = $property.Value
+        }
+        if ($fields['schema'] -ne 'battle-plan-recorder-finalize-progress-v1') {
+            return 'progress_receipt_foreign_schema'
+        }
+        if ($fields['session_id'] -ne $SessionId -or $fields['capture_id'] -ne $CaptureId) {
+            return 'foreign_progress_receipt'
+        }
+        $ageSeconds = ([DateTime]::UtcNow - $writtenUtc).TotalSeconds
+        if ($ageSeconds -gt $MaxReceiptAgeSeconds -or $ageSeconds -lt -60) {
+            return "progress_receipt_stale_$([Math]::Floor([Math]::Abs($ageSeconds)))s"
+        }
+        if ($null -eq $fields['work_unchanged_ms']) { return 'progress_receipt_without_staleness' }
+        $unchangedMs = [int64]$fields['work_unchanged_ms']
+        # THE FIELD IS A READING TAKEN AT `sample_unix_ms`, NOT AT NOW.
+        #
+        # Comparing the sampled number against the threshold reproduces the very
+        # off-by-one-tick this function exists to fix, one layer down: a receipt
+        # sampled at 178 s of stall and read two seconds later is a 180 s stall,
+        # and reporting `deadline_passed_unchanged_178000ms` for it is the same
+        # kind of near-miss as reporting the last extension. The stall is
+        # reconstructed from when progress last happened, exactly as the grant
+        # function anchors its deadline. (Codex review round 3, finding D3.)
+        $effectiveUnchangedMs = $unchangedMs
+        if ($null -ne $fields['sample_unix_ms']) {
+            $sampleUnixMs = [int64]$fields['sample_unix_ms']
+            if ($sampleUnixMs -gt 0) {
+                $sampleUtc = [DateTimeOffset]::FromUnixTimeMilliseconds($sampleUnixMs).UtcDateTime
+                $lastProgressUtc = $sampleUtc.AddMilliseconds(-$unchangedMs)
+                $sinceProgressMs = [int64](([DateTime]::UtcNow - $lastProgressUtc).TotalMilliseconds)
+                # Only ever forward. A clock that stepped backwards must not
+                # shorten a stall that has already been observed.
+                if ($sinceProgressMs -gt $effectiveUnchangedMs) {
+                    $effectiveUnchangedMs = $sinceProgressMs
+                }
+            }
+        }
+        if ($effectiveUnchangedMs -ge ([int64]$NoProgressSeconds * 1000)) {
+            return "no_progress_for_$([Math]::Floor($effectiveUnchangedMs / 1000))s"
+        }
+        $unchangedMs = $effectiveUnchangedMs
+        # Still advancing by its own account, and yet out of time: the only way
+        # that happens is the absolute ceiling, which no amount of progress
+        # extends past.
+        if ($null -ne $Ceiling -and $null -ne $Deadline -and
+            [DateTime]$Deadline -ge ([DateTime]$Ceiling).AddSeconds(-1)) {
+            return "finalize_ceiling_reached_unchanged_${unchangedMs}ms"
+        }
+        return "deadline_passed_unchanged_${unchangedMs}ms"
+    } catch {
+        return 'progress_receipt_unreadable'
+    }
+}
+
+# Is the process the collector attached to GONE?
+#
+# Identity is the pid AND its creation time, never the pid alone: Windows reuses
+# pids, and a recycled pid answering `Get-Process` is a DIFFERENT process that
+# this capture never touched. Both answers below mean the same thing for our
+# purposes -- the process that held our hooks does not exist any more -- so both
+# return $true, and the caller is told which.
+#
+# Anything it cannot determine returns $false. This predicate only ever unlocks a
+# more forceful action, so "I could not tell" must read as "do nothing".
+function Test-TargetProcessGone {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][int]$TargetProcessId,
+        [Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc,
+        [Parameter(Mandatory = $true)][ref]$Detail
+    )
+    try {
+        $process = Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            $Detail.Value = 'pid_absent'
+            return $true
+        }
+        $creation = [uint64]($process.StartTime.ToUniversalTime().ToFileTimeUtc())
+        if ($creation -ne $ExpectedCreationFiletimeUtc) {
+            $Detail.Value = 'pid_recycled'
+            return $true
+        }
+        $Detail.Value = 'target_alive'
+        return $false
+    } catch {
+        $Detail.Value = 'target_liveness_undetermined'
+        return $false
+    }
+}
+
 try {
     if ($DryRun) {
         if ($reuseRunningGame) {
@@ -3654,16 +3785,18 @@ while (-not $recorderProcess.HasExited) {
         -Reason ([ref]$recorderFinalizeExtensionReason))
     if ([DateTime]::UtcNow -ge $recorderDeadline) {
         Write-Host "phase=capture_timeout finalize_bound=$recorderFinalizeExtensionReason"
-        throw "collector_record exceeded its $recorderBudgetSeconds s natural duration/teardown budget (finalize progress bound: $(if ($recorderFinalizeExtensionReason) { $recorderFinalizeExtensionReason } else { 'no progress receipt published' })). Post-injection termination is forbidden; the attempt remains unresolved until the recorder publishes authenticated teardown."
+        throw "collector_record exceeded its $recorderBudgetSeconds s natural duration/teardown budget (finalize progress bound: $(if ($recorderFinalizeExtensionReason) { $recorderFinalizeExtensionReason } else { 'no progress receipt published' })). Post-injection termination is forbidden while the target may still hold its hooks; the attempt remains unresolved until the recorder publishes authenticated teardown."
     }
     if (-not (Get-Process -Id $gamePid -ErrorAction SilentlyContinue)) {
         $gameDied = $true
         Write-Host "phase=game_died pid=$gamePid"
         Write-Warning "the game PID $gamePid exited during capture (collector injection can crash the game); ending this attempt."
         # Give the recorder a short opportunity to finalize naturally. Killing
-        # it after injection could strand its hook/DLL state in the client.
+        # it while the client may still hold its hooks could strand its hook/DLL
+        # state there. The cleanup wait may stop it later, but only once that
+        # hazard is provably gone.
         if (-not $recorderProcess.WaitForExit(30000)) {
-            throw "the game exited and collector_record did not naturally finalize within 30 seconds. Post-injection termination is forbidden."
+            throw "the game exited and collector_record did not naturally finalize within 30 seconds. Termination is not taken here; the cleanup wait stops it only after proving no hooks can be live."
         }
         break
     }
@@ -3730,7 +3863,7 @@ while (-not $recorderProcess.HasExited) {
     Start-Sleep -Seconds 2
 }
 if (-not $recorderProcess.HasExited) {
-    throw 'collector_record remained live after its bounded natural capture window; post-injection termination is forbidden.'
+    throw 'collector_record remained live after its bounded natural capture window; termination is not taken here. The cleanup wait stops it only once it can prove the recorder holds no hooks in a live game.'
 }
 $recorderExit = $recorderProcess.ExitCode
 Write-Host "phase=capture_done exit=$recorderExit"
@@ -3947,9 +4080,12 @@ $scriptExitCode = [int]$recorderExit
     # outer `finally` -- including the arbitration -- leaving exit 1. The inner
     # `finally` is the only construct that still runs in that case.
     try {
-    # Never terminate collector_record after injection. Its configured duration
-    # is the cooperative stop authority; hard termination can orphan hooks or
-    # the injected DLL before authenticated teardown is published.
+    # Never terminate collector_record while its hooks may still be live in the
+    # client. Its configured duration is the cooperative stop authority, and
+    # hard termination can orphan hooks or the injected DLL before authenticated
+    # teardown is published. The ONE exception, taken at the end of this wait
+    # and nowhere else, is a recorder that has outlived its budget after that
+    # hazard is provably gone -- see the branch that reasons about it.
     if ($null -ne $recorderProcess) {
         try {
             $recorderProcess.Refresh()
@@ -3999,8 +4135,89 @@ $scriptExitCode = [int]$recorderExit
                 $recorderProcess.Refresh()
             }
             if (-not $recorderProcess.HasExited) {
-                Write-Host "phase=passive_recorder_finalize_wait_end reason=budget_exhausted recorder_pid=$($recorderProcess.Id) budget_s=$recorderBudgetSeconds finalize_bound=$recorderFinalizeExtensionReason"
-                Write-SettingsGuardNonThrowingWarning -Message "collector_record PID $($recorderProcess.Id) remains live after its bounded natural-stop budget. The harness will not terminate it after injection; this attempt is unresolved until CAPTURE_TEARDOWN_V1.json authenticates cleanup."
+                # THE TRUTHFUL CAUSE, read now rather than inherited from the
+                # last successful extension. See Get-RecorderFinalizeTerminalReason.
+                $recorderFinalizeTerminalReason = Get-RecorderFinalizeTerminalReason `
+                    -RunDir $OutDir `
+                    -SessionId $sessionId `
+                    -CaptureId $captureId `
+                    -Deadline $recorderDeadline `
+                    -Ceiling $recorderFinalizeCeiling `
+                    -NoProgressSeconds $FinalizeNoProgressSeconds
+                Write-Host "phase=passive_recorder_finalize_wait_end reason=budget_exhausted recorder_pid=$($recorderProcess.Id) budget_s=$recorderBudgetSeconds finalize_bound=$recorderFinalizeExtensionReason terminal_reason=$recorderFinalizeTerminalReason"
+                # "NEVER TERMINATE AFTER INJECTION" PROTECTS A LIVE TARGET, AND
+                # ONLY A LIVE TARGET.
+                #
+                # The rule above this loop states its own reason: hard
+                # termination "can orphan hooks or the injected DLL before
+                # authenticated teardown is published". Both hazards live inside
+                # hoi4.exe. When the process the collector attached to no longer
+                # exists, there is nothing left to orphan -- its hooks, its
+                # patched bytes and the injected DLL went with its address
+                # space -- and the rule is protecting nobody. What is left is a
+                # recorder that has outlived its supervision, which is exactly
+                # what t60 was: the harness warned, returned, and left a
+                # recorder folding unwatched for fifty more minutes until it
+                # filled the system disk.
+                #
+                # So: only when the target is INDEPENDENTLY verifiable as gone
+                # (its pid absent, or answering with a different creation time
+                # and therefore a different process) is the recorder stopped,
+                # and the stop is recorded as a named supervision failure rather
+                # than performed quietly. A live or undetermined target keeps
+                # exactly the behaviour it had.
+                #
+                # There are TWO ways to know nothing is left to orphan, and
+                # either is enough (Codex review round 3, finding D2): the target
+                # epoch is gone, or teardown was already AUTHENTICATED for this
+                # run -- CAPTURE_TEARDOWN_V1.json asserts the data pipe reached
+                # EOF, the hook lease was released, and the pinned hook sites and
+                # target code were restored. This never re-authenticates the
+                # receipt here; it reads only the flag an earlier, throwing
+                # verification already set, so a run that never proved teardown
+                # keeps exactly the behaviour it had.
+                $targetGoneDetail = ''
+                $targetGone = Test-TargetProcessGone `
+                    -TargetProcessId $gamePid `
+                    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+                    -Detail ([ref]$targetGoneDetail)
+                $hooksProvenReleased = $targetGone -or $collectorTeardownAuthenticated
+                if ($hooksProvenReleased) {
+                    $releaseProof = if ($targetGone) {
+                        "its target the game PID $gamePid was already gone ($targetGoneDetail)"
+                    } else {
+                        "teardown was authenticated for this run, so its hook sites and the target's own code were already restored"
+                    }
+                    $terminationFailure =
+                        "collector_record PID $($recorderProcess.Id) outlived its finalize budget " +
+                        "($recorderFinalizeTerminalReason) and $releaseProof. The harness stopped it: a " +
+                        "recorder holding no hooks and no injected DLL in a live game leaves the " +
+                        "post-injection termination rule nothing to protect, and leaving it unsupervised " +
+                        "is how a run fills the system disk. This attempt is REFUSED."
+                    Write-Host "phase=passive_recorder_terminated recorder_pid=$($recorderProcess.Id) target_pid=$gamePid target_state=$targetGoneDetail teardown_authenticated=$collectorTeardownAuthenticated terminal_reason=$recorderFinalizeTerminalReason"
+                    try {
+                        # THE EXISTING EXACT-PROCESS STOP, not a bare Kill().
+                        # It re-checks HasExited first (the recorder can exit in
+                        # the window between the decision and the stop, and a
+                        # Kill on an exited handle throws), and it THROWS when
+                        # the process does not actually go away -- which a
+                        # discarded WaitForExit would report as a clean stop on
+                        # a recorder that is still running and still writing.
+                        # (Codex review round 3, finding D1.)
+                        Stop-ExactProcess `
+                            -Process $recorderProcess `
+                            -Purpose 'collector_record whose target is gone' `
+                            -WaitMilliseconds 30000
+                        $recorderProcess.Refresh()
+                    } catch {
+                        $terminationFailure +=
+                            " The stop itself failed: $(($_.Exception.Message -replace '\s+', ' ').Trim())"
+                    }
+                    [void]$supervisionFailures.Add($terminationFailure)
+                    Write-SettingsGuardNonThrowingWarning -Message $terminationFailure
+                } else {
+                    Write-SettingsGuardNonThrowingWarning -Message "collector_record PID $($recorderProcess.Id) remains live after its bounded natural-stop budget ($recorderFinalizeTerminalReason), its target the game PID $gamePid is $targetGoneDetail, and teardown is not authenticated. The harness will not terminate it after injection; this attempt is unresolved until CAPTURE_TEARDOWN_V1.json authenticates cleanup."
+                }
             } else {
                 Write-Host "phase=passive_recorder_finalize_wait_end reason=recorder_exited recorder_pid=$($recorderProcess.Id)"
                 # The teardown record is published before the fold, so by the

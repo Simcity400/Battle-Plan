@@ -25,6 +25,10 @@ pub mod finalize_progress;
 /// why the hourly, attach and suspended-launch paths may never use it.
 pub mod fs_sharing_retry;
 pub mod gap_ledger;
+/// What the supervising harness REFUSED, read by the process it supervised, so
+/// a capture whose READY custody was never established does not spend an hour
+/// folding frames nobody can vouch for. See the module header.
+pub mod harness_refusal;
 /// What a sealed recording asserts, per game hour. See the module header for
 /// the whole-stream verdict it replaced (owner ruling 2026-08-11, task #188).
 pub mod hour_coverage;

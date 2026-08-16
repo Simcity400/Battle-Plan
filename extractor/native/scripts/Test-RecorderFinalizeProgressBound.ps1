@@ -49,6 +49,41 @@ if ($null -eq $functionAst) {
     throw 'Update-RecorderFinalizeDeadline is not defined in the harness.'
 }
 
+# THE TWO FUNCTIONS THAT DECIDE WHAT HAPPENS WHEN THE BOUND ABOVE RUNS OUT, and
+# they belong here for the reason the bound does: both carry defects that
+# reading cannot see, and neither can be exercised without running it.
+#
+# `Get-RecorderFinalizeTerminalReason` exists because the reason a timed-out run
+# printed was structurally the opposite of the truth. The grant function writes
+# its reason as a side effect of GRANTING, so the last thing it wrote before a
+# stall ended the wait was `work_advancing_unchanged_<n>ms` -- the extension it
+# had just handed out. `no_progress_for_<n>s` is only ever written by a call
+# made AFTER the counter crosses the threshold, and the loop never makes one,
+# because by then it has walked past its deadline and left. Run t60 timed out on
+# a receipt frozen for 342 s and reported work advancing.
+#
+# `Test-TargetProcessGone` is what makes stopping a recorder admissible at all.
+# "Never terminate collector_record after injection" protects hooks and the
+# injected DLL inside a LIVE the game; when the attached process is gone there is
+# nothing left to orphan. So the predicate must be exact about identity -- a pid
+# alone is not one, because Windows reuses pids -- and must answer "not gone" to
+# everything it cannot determine, since it only ever unlocks the more forceful
+# action.
+$watchdogFunctionAsts = @(
+    $ast.FindAll(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            @('Get-RecorderFinalizeTerminalReason', 'Test-TargetProcessGone') -contains $node.Name
+        }, $true))
+if ($watchdogFunctionAsts.Count -ne 2) {
+    throw ('The harness must define both Get-RecorderFinalizeTerminalReason and ' +
+        'Test-TargetProcessGone; found ' + $watchdogFunctionAsts.Count + '.')
+}
+foreach ($lifted in $watchdogFunctionAsts) {
+    . ([scriptblock]::Create([string]$lifted.Extent.Text))
+}
+
 # The harness must define it BEFORE the main try block. The cleanup `finally`
 # calls it, and PowerShell only defines a function once execution reaches it, so
 # a definition placed after the recorder is launched would turn any upstream
@@ -461,11 +496,105 @@ $reason = $null
 $extended = Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason)
 Assert-True $extended 'ordinary publication latency was refused'
 
+# ---------------------------------------------------------------------------
+# WHY THE WAIT ENDED, and whether the recorder may then be stopped.
+# ---------------------------------------------------------------------------
+
+function Invoke-TerminalReason {
+    param([string]$Dir, [object]$Deadline = $null, [object]$Ceiling = $null, [int]$NoProgressSeconds = 180)
+    if ($null -eq $Deadline) { $Deadline = [DateTime]::UtcNow.AddSeconds(-1) }
+    if ($null -eq $Ceiling) { $Ceiling = [DateTime]::UtcNow.AddHours(1) }
+    return (Get-RecorderFinalizeTerminalReason -RunDir $Dir -SessionId $sessionId `
+        -CaptureId $captureId -Deadline $Deadline -Ceiling $Ceiling `
+        -NoProgressSeconds $NoProgressSeconds)
+}
+
+# THE t60 CASE. A receipt frozen far past the threshold must name the stall.
+$dir = New-Case 'terminal_stalled'
+Write-Receipt -Dir $dir -UnchangedMs 342775
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -eq 'no_progress_for_342s') "a 342 s stall reported '$reason'"
+
+# THE OFF-BY-ONE-TICK THE SAMPLED FIELD ALONE CANNOT SEE. `work_unchanged_ms` is
+# a reading taken at `sample_unix_ms`, not at now. A receipt sampled at 178 s of
+# stall and read three seconds later IS a 181 s stall, and naming the sampled
+# number reproduces the same near-miss one layer down.
+$dir = New-Case 'terminal_stalled_by_elapsed'
+Write-Receipt -Dir $dir -UnchangedMs 178000 -SampleUtc ([DateTime]::UtcNow.AddSeconds(-3))
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -like 'no_progress_for_18*s') `
+    "a 178 s sample read three seconds later reported '$reason', not the stall it had become"
+
+# Still advancing by its own account and out of time anyway: that is the
+# absolute ceiling, and calling it a stall sends the next reader hunting a spin
+# that is not there.
+$dir = New-Case 'terminal_ceiling'
+Write-Receipt -Dir $dir -UnchangedMs 4012
+$at = [DateTime]::UtcNow.AddMinutes(5)
+$reason = Invoke-TerminalReason -Dir $dir -Deadline $at -Ceiling $at
+# The number is the EFFECTIVE stall (the sampled 4012 ms plus however long the
+# read took), so the assertion is on the verdict, not on the arithmetic that
+# would make it flaky.
+Assert-True ($reason -like 'finalize_ceiling_reached_unchanged_*ms') "a ceiling stop reported '$reason'"
+
+# A receipt from another session is not evidence about this run.
+$dir = New-Case 'terminal_foreign'
+Write-Receipt -Dir $dir -UnchangedMs 342775 -Session 'someone-else'
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -eq 'foreign_progress_receipt') "a foreign receipt reported '$reason'"
+
+# A publisher that stopped republishing is dead, and its content is a
+# photograph. Naming the frozen field would grant that photograph authority.
+$dir = New-Case 'terminal_stale'
+Write-Receipt -Dir $dir -UnchangedMs 1000
+(Get-Item -LiteralPath (Join-Path $dir 'RECORDER_FINALIZE_PROGRESS_V1.json')).LastWriteTimeUtc =
+    [DateTime]::UtcNow.AddMinutes(-10)
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -like 'progress_receipt_stale_*') "a dead publisher reported '$reason'"
+
+# No receipt at all.
+$dir = New-Case 'terminal_absent'
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -eq 'no_progress_receipt') "an absent receipt reported '$reason'"
+
+# Unparseable is its own answer, and must never throw: this runs inside the
+# cleanup `finally`, where a terminating error abandons the status arbitration.
+$dir = New-Case 'terminal_garbage'
+Set-Content -LiteralPath (Join-Path $dir 'RECORDER_FINALIZE_PROGRESS_V1.json') `
+    -Value '{ not json' -Encoding UTF8
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -eq 'progress_receipt_unreadable') "an unparseable receipt reported '$reason'"
+
+# THE PREDICATE THAT UNLOCKS TERMINATION.
+# A pid that cannot be a live client id.
+$detail = ''
+$gone = Test-TargetProcessGone -TargetProcessId 2147483647 -ExpectedCreationFiletimeUtc 1 `
+    -Detail ([ref]$detail)
+Assert-True ($gone -and $detail -eq 'pid_absent') "an absent pid read gone=$gone detail='$detail'"
+
+# A LIVE pid whose creation time disagrees is a RECYCLED pid: a different
+# process entirely. Matching on the pid alone would keep an unsupervised
+# recorder alive on the strength of a stranger.
+$self = Get-Process -Id $PID
+$selfCreation = [uint64]($self.StartTime.ToUniversalTime().ToFileTimeUtc())
+$detail = ''
+$gone = Test-TargetProcessGone -TargetProcessId $PID `
+    -ExpectedCreationFiletimeUtc ($selfCreation - 1) -Detail ([ref]$detail)
+Assert-True ($gone -and $detail -eq 'pid_recycled') "a recycled pid read gone=$gone detail='$detail'"
+
+# The live, identity-matching target. This is the case the post-injection
+# termination rule exists for, and it must never unlock a stop.
+$detail = ''
+$gone = Test-TargetProcessGone -TargetProcessId $PID `
+    -ExpectedCreationFiletimeUtc $selfCreation -Detail ([ref]$detail)
+Assert-True ((-not $gone) -and $detail -eq 'target_alive') `
+    "a live matching target read gone=$gone detail='$detail'"
+
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($failures.Count -gt 0) {
     foreach ($failure in $failures) { Write-Host "FAIL: $failure" }
     throw "$($failures.Count) finalize progress bound assertion(s) failed."
 }
-Write-Host 'phase=finalize_progress_bound_selftest result=pass cases=31'
+Write-Host 'phase=finalize_progress_bound_selftest result=pass cases=41'
 exit 0

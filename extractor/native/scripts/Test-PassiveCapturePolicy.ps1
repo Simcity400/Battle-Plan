@@ -1736,6 +1736,112 @@ try {
     Remove-Item -LiteralPath $arbitrationProbeDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# THE WATCHDOG'S TWO NEW HELPERS ARE POLICED HERE ONLY FOR THEIR EXISTENCE AND
+# THEIR FENCE. Their DECISION TABLES are driven, over temporary receipts and a
+# dead pid, by Test-RecorderFinalizeProgressBound.ps1 -- the executable self-test
+# that already lifts this harness's finalize bound by AST and exists for exactly
+# that machinery. This file is a policy and AST census and is not the right home
+# for behaviour (Codex review round 3, finding D4).
+$watchdogHelperAsts = @(
+    $harnessAst.FindAll(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            @('Get-RecorderFinalizeTerminalReason', 'Test-TargetProcessGone') -contains $node.Name
+        },
+        $true
+    )
+)
+Assert-Policy `
+    -Condition ($watchdogHelperAsts.Count -eq 2) `
+    -Message ('The passive harness must define both Get-RecorderFinalizeTerminalReason and ' +
+        'Test-TargetProcessGone. Without the first, a run that timed out on a stalled ' +
+        'finalize reports the last extension it was granted as its cause; without the ' +
+        'second, a recorder whose target is already gone is left running unsupervised ' +
+        '(run t60 ran fifty more minutes that way and filled the system disk).')
+
+# EVERY STOP OF THE RECORDER MUST BE A DESCENDANT OF THE BRANCH THAT PROVED NO
+# HOOKS CAN BE LIVE -- established by AST ANCESTRY, not by string order.
+#
+# Textual ordering was the first spelling of this fence and it is not a fence at
+# all: a second, unguarded stop placed further down the file passes it, and so
+# does moving the stop out of the `if` while leaving the tokens in the same
+# order. Ancestry is the property actually claimed -- the invocation is INSIDE
+# the guarded branch -- so it is the property checked (Codex review round 4,
+# finding R5.4).
+$stopInvocations = @(
+    $harnessAst.FindAll(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+            ([string]$node.GetCommandName()) -in @('Stop-ExactProcess', 'Stop-Process')
+        },
+        $true
+    )
+)
+# The recorder handle is the only process this fence governs. Stop-ExactProcess
+# is also used on the game itself elsewhere in the harness, under rules of its own.
+$recorderStops = @(
+    $stopInvocations | Where-Object {
+        ([string]$_.Extent.Text).IndexOf('$recorderProcess', [StringComparison]::Ordinal) -ge 0
+    }
+)
+Assert-Policy `
+    -Condition ($recorderStops.Count -eq 1) `
+    -Message ("The passive harness must contain exactly ONE stop of the recorder handle; " +
+        "found $($recorderStops.Count). Each one is a place the post-injection termination " +
+        'prohibition has to be reasoned past, and a second is how an unguarded one arrives ' +
+        'looking like the guarded one.')
+foreach ($stop in $recorderStops) {
+    $ancestor = $stop.Parent
+    $guarded = $false
+    while ($null -ne $ancestor) {
+        if ($ancestor -is [System.Management.Automation.Language.IfStatementAst]) {
+            foreach ($clause in $ancestor.Clauses) {
+                # THE STOP MUST BE IN THAT CLAUSE'S BODY, not merely somewhere
+                # under an `if` that happens to mention the predicate. Checking
+                # the condition alone would pass a stop sitting in the ELSE
+                # branch -- the branch that runs when the hooks were NOT proven
+                # released, which is precisely the case the rule forbids.
+                # (Codex review round 5, finding S4.)
+                if (([string]$clause.Item1.Extent.Text).IndexOf(
+                        '$hooksProvenReleased', [StringComparison]::Ordinal) -ge 0 -and
+                    $stop.Extent.StartOffset -ge $clause.Item2.Extent.StartOffset -and
+                    $stop.Extent.EndOffset -le $clause.Item2.Extent.EndOffset) {
+                    $guarded = $true
+                }
+            }
+        }
+        $ancestor = $ancestor.Parent
+    }
+    Assert-Policy `
+        -Condition $guarded `
+        -Message ('The passive harness may stop collector_record only INSIDE the branch whose ' +
+            'condition is $hooksProvenReleased -- the one that has already established either ' +
+            'that the target process is gone or that teardown was authenticated. A stop ' +
+            'reachable without that proof is the post-injection termination prohibition ' +
+            'broken: it can orphan hooks and the injected DLL inside a live game.')
+}
+# And the predicate itself must still be computed from the identity check rather
+# than assigned a constant, which ancestry alone would not catch.
+Assert-Policy `
+    -Condition ($harness.IndexOf(
+        '$hooksProvenReleased = $targetGone -or $collectorTeardownAuthenticated',
+        [StringComparison]::Ordinal) -ge 0) `
+    -Message ('$hooksProvenReleased must be derived from Test-TargetProcessGone and the ' +
+        'authenticated-teardown flag. Assigning it any other way makes the branch above a ' +
+        'formality.')
+Assert-Policy `
+    -Condition ($harness.IndexOf(
+        '$targetGone = Test-TargetProcessGone',
+        [StringComparison]::Ordinal) -ge 0) `
+    -Message 'The harness must establish $targetGone through Test-TargetProcessGone.'
+Assert-Policy `
+    -Condition ($harness.IndexOf('Stop-Process', [StringComparison]::OrdinalIgnoreCase) -lt 0) `
+    -Message ('The passive harness must not reach for Stop-Process. The only admissible stop ' +
+        'is the identity-checked one on the recorder handle this run launched; Stop-Process ' +
+        'takes a pid, and a pid is not an identity.')
+
 # EMITTED AS JSON, NOT AS AN OBJECT, AND THAT IS LOAD-BEARING. Every consumer
 # runs this file in a CHILD `powershell.exe -File` and pipes the child's stdout
 # through `ConvertFrom-Json` (Invoke-CentralRustValidation.ps1, both the

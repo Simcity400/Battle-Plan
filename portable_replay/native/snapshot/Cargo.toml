@@ -29,6 +29,12 @@ ce-cache-anatomy = []
 # reimplementation of them. Measurement only: it writes nothing and no
 # production path enables it.
 dq-v3-prototype = []
+# Lane LL revive pricing instrument (`src/bin/ll_revive_pricing.rs`). Drives THE
+# production cache encoder over the real hours of an already-sealed recording,
+# then makes the production reader reconstruct every one of them, so the size a
+# format change buys is measured on the encoder that ships rather than on a
+# model of it. Measurement only: no production path enables it.
+ll-revive-pricing = []
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }
@@ -65,3 +71,8 @@ overflow-checks = true
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
+
+[[bin]]
+name = "ll_revive_pricing"
+path = "src/bin/ll_revive_pricing.rs"
+required-features = ["ll-revive-pricing", "ce-cache-anatomy"]
