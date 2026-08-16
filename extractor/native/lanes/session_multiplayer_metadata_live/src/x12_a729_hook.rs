@@ -451,7 +451,7 @@ pub fn install() -> Result<InstalledAddresses, String> {
     // One batch freezes the process once instead of once per target. The input
     // order is unchanged, and no game thread can run between the three patches.
     let enabled = unsafe { inline_detour::enable_batch(&hook_batch(&addresses)) };
-    if let Some((name, status)) = enabled.first_failure() {
+    if let Some((name, status)) = enabled.refusal() {
         let reason = format!("X12 {name} hook enable failed: {status}");
         return Err(with_rollback_result(reason, rollback_enabled(&addresses)));
     }
@@ -616,9 +616,15 @@ fn seal_after_final_drain_and_uninstall_locked(
             .collect();
         // Restore every successfully disabled site with one freeze rather than
         // one per site, preserving the original speed/toggle/forced ordering.
-        for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
+        // GATED ON THE WHOLE-BATCH VERDICT, not on whether any string came
+        // back. A restore batch that refuses rolls itself back, so no site is
+        // re-enabled and every one of them is named.
+        let restored = unsafe { inline_detour::enable_batch(&restore) };
+        if !restored.all_succeeded() {
             fully_reenabled = false;
-            errors.push(format!("restore {name} after partial disable: {status}"));
+            for (name, status) in restored.failures() {
+                errors.push(format!("restore {name} after partial disable: {status}"));
+            }
         }
         if fully_reenabled {
             match installed_receipts {
@@ -957,19 +963,58 @@ pub fn seal_and_reserve_terminal_batch() -> Result<SpeedPauseDrainReservation, S
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
+        // AND THE BATCH'S OWN REFUSAL, which no per-target outcome carries.
+        //
+        // `disable_batch` reports MinHook's already-disabled as SUCCESS --
+        // nothing is patched, which is the postcondition a release asks for --
+        // and that is right everywhere except here. When the batch's own
+        // `MH_ApplyQueued` refuses, one target's bytes may have been restored
+        // with the protection restore or the instruction-cache flush left
+        // unpublished -- MinHook names neither the target it stopped at nor
+        // whether it got that far -- and the completion loop then sees
+        // `MH_ERROR_DISABLED` for that target and folds it into `Ok`. THIS
+        // path goes on to wait for callback quiescence and seal, which is the
+        // claim that no callback can enter a detour any more; an unpublished
+        // restore is precisely the state in which a thread still executing the
+        // stale instruction stream can.
+        //
+        // Fail closed and name the cause. The restore below then re-enables
+        // every target this attempt took down, and for an unpublished one that
+        // is a completed `EnableHookLL` -- which clears the latch, so the
+        // recovery is real and not just a report.
+        if let Some(refusal) = sealed.apply_refusal() {
+            failures.push(format!("X12 seal batch apply refused: {refusal}"));
+        }
         if !failures.is_empty() {
-            let mut restored = true;
             let restore: Vec<_> = targets
                 .into_iter()
                 .enumerate()
                 .filter(|(index, _)| disabled[*index])
                 .map(|(_, target)| target)
                 .collect();
-            // The partial-failure restore is also one freeze rather than one
-            // per successfully disabled target, in the same target order.
-            for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
+            // ADMISSION REOPENS ONLY OVER A ROSTER THAT IS WHOLLY BACK, and
+            // the coverage half is load-bearing on its own. The restore set is
+            // the sites this attempt took DOWN; a seal that refused before it
+            // took any of them down leaves that set EMPTY, and an empty batch
+            // trivially all-succeeds. Reading only the verdict therefore
+            // reopened callbacks over a roster with a site still disabled --
+            // which is the recording this lane exists to refuse: producers
+            // admitted while one of them is dark writes an incomplete hour as
+            // a complete one.
+            let restore_report = unsafe { inline_detour::enable_batch(&restore) };
+            let mut restored = restore.len() == targets.len() && restore_report.all_succeeded();
+            if !restore_report.all_succeeded() {
                 restored = false;
-                failures.push(format!("restore {name}: {status}"));
+                for (name, status) in restore_report.failures() {
+                    failures.push(format!("restore {name}: {status}"));
+                }
+            }
+            if restore.len() != targets.len() {
+                failures.push(format!(
+                    "X12 restore covered {} of {} sites, so callbacks stay closed",
+                    restore.len(),
+                    targets.len()
+                ));
             }
             if restored {
                 ACCEPTING_CALLBACKS.store(true, Ordering::Release);

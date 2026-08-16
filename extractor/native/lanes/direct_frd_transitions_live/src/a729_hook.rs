@@ -625,7 +625,7 @@ pub fn install() -> Result<InstalledRoots, String> {
     // and each still names its own target.
     let batch = enable_batch_targets(&targets);
     let report = unsafe { inline_detour::enable_batch(&batch) };
-    if let Some((name, status)) = report.first_failure() {
+    if let Some((name, status)) = report.refusal() {
         let cleanup = rollback(&targets)
             .err()
             .map(|cleanup| format!("; rollback failed: {cleanup}"))
@@ -1086,6 +1086,29 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
+        // AND THE BATCH'S OWN REFUSAL, which no per-target outcome carries.
+        //
+        // `disable_batch` reports MinHook's already-disabled as SUCCESS --
+        // nothing is patched, which is the postcondition a release asks for --
+        // and that is right everywhere except here. When the batch's own
+        // `MH_ApplyQueued` refuses, one target's bytes may have been restored
+        // with the protection restore or the instruction-cache flush left
+        // unpublished -- MinHook names neither the target it stopped at nor
+        // whether it got that far -- and the completion loop then sees
+        // `MH_ERROR_DISABLED` for that target and folds it into `Ok`. THIS
+        // path goes on to declare QUIESCENCE, which is the claim that no
+        // callback can enter a detour any more; an unpublished restore is
+        // precisely the state in which a thread still executing the stale
+        // instruction stream can.
+        //
+        // Fail closed and name the cause. `QUIESCED` stays false, so a later
+        // seal drives the whole roster again; the restore below puts back
+        // every target this attempt took down, and for an unpublished one that
+        // is a completed `EnableHookLL` -- which clears the latch, so the
+        // recovery is real and not just a report.
+        if let Some(refusal) = sealed.apply_refusal() {
+            failures.push(format!("D45 seal batch apply refused: {refusal}"));
+        }
         if !failures.is_empty() {
             let base = MODULE_BASE.load(Ordering::Acquire);
             if let Ok(hook_targets) = targets(base) {
@@ -1099,8 +1122,14 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
                     .filter(|(index, _)| disabled[*index])
                     .map(|(_, entry)| entry)
                     .collect();
-                for (name, status) in unsafe { inline_detour::enable_batch(&restore) }.failures() {
-                    failures.push(format!("restore {name}: {status}"));
+                // GATED ON THE WHOLE-BATCH VERDICT, not on whether any string
+                // came back. A restore batch that refuses rolls itself back,
+                // so no site is re-enabled and every one of them is named.
+                let restored = unsafe { inline_detour::enable_batch(&restore) };
+                if !restored.all_succeeded() {
+                    for (name, status) in restored.failures() {
+                        failures.push(format!("restore {name}: {status}"));
+                    }
                 }
             }
             return Err(failures.join("; "));

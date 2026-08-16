@@ -133,6 +133,11 @@ impl Drop for HookCustody {
 
 type Victim = extern "system" fn(u64) -> u64;
 
+/// An address no hook was ever created for, so `MH_QueueEnableHook` answers
+/// `MH_ERROR_NOT_CREATED` for it. Distinct from `batch_tests`'s own constant so
+/// the two modules cannot come to depend on one another's fixtures.
+const ABSENT_FAULT_TARGET: *mut c_void = 0x5100 as *mut c_void;
+
 static DETOURED: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 
 #[inline(never)]
@@ -216,39 +221,69 @@ fn patch_bytes(target: *mut c_void) -> Vec<u8> {
 // (a) An enable refused AFTER the bytes were written.
 // ---------------------------------------------------------------------------
 
-/// LI'S FACT, DRIVEN: a batch whose apply was refused can report every target
-/// `Ok`, and the targets are LIVE.
+/// THE FIX, DRIVEN: a batch whose apply was refused ROLLS ITSELF BACK, names
+/// the refusal on every target, and leaves nothing live.
 ///
 /// The fault makes one target's `EnableHookLL` complete its write, set
 /// `isEnabled`, and then report `MH_ERROR_MEMORY_PROTECT` as a failed
 /// instruction-cache flush would. That is the fork's documented behaviour and
 /// until this seam existed nothing could reach it.
 ///
-/// What the batch then reports is the finding, not just the fixture:
+/// WHAT THIS TEST USED TO ASSERT, and why it changed. Lane LN wrote it to pin a
+/// live defect: `apply_refusal()` carried the refusal and was the ONLY carrier,
+/// `first_failure()` was `None` and `failures()` empty -- because the completion
+/// pass re-enables each queued target and MinHook answers `MH_ERROR_ENABLED` for
+/// the one already patched, which maps to `Ok` -- `rolled_back()` was false, and
+/// all three victims answered with their DETOUR, the refused one incoherent.
+/// Every production `enable_batch` caller gates on the named failure, so every
+/// one of them accepted that roster (`runs/ln_fault_inject/FINDINGS.txt`).
+/// Lane LT closed it, and this is the same fault asked the same questions.
 ///
-/// * `apply_refusal()` carries the refusal -- and is the ONLY thing that does;
-/// * `failures()` is EMPTY and `first_failure()` is `None`, because the
-///   completion pass re-enables each queued target and MinHook answers
-///   `MH_ERROR_ENABLED` for the one already patched, which maps to `Ok`;
-/// * `rolled_back()` is false, so nothing was taken back down;
-/// * all three victims answer with their DETOUR, including the refused one.
+/// Four things are asserted and each is a separate half of the fix:
 ///
-/// Every production `enable_batch` caller in this workspace gates on
-/// `first_failure()`, `failures()` or the per-target `outcomes()`. None reads
-/// `apply_refusal()`. This test pins that reachable shape so the claim is a
-/// measured one rather than an argument.
+/// 1. THE REFUSAL IS NAMED. `refusal()` is `Some` and `failures()` covers every
+///    target, so the gate every caller uses sees it. `all_succeeded()` is
+///    defined as `refusal().is_none()`, so there is no longer any state in
+///    which a batch reports no failure while not having succeeded.
+/// 2. NOTHING IS LIVE. Checked by CALLING the victims, not by reading the
+///    report that is itself under test, and by the enabled-detour census not
+///    moving.
+/// 3. THE INCOHERENT LATCH IS CLEARED. `MH_RemoveHook` refuses an incoherent
+///    entry by name for ever; the rollback's disable rewrites the bytes and
+///    re-derives the latch, so the removal that used to be impossible succeeds.
+///    Asked of MinHook directly, because `remove`'s own wrapper refuses every
+///    ENABLED target before it reaches MinHook and would answer nothing about
+///    the latch.
+/// 4. IT REACHES THE WIRE WITH A NAME. The lanes render exactly
+///    `format!("... enable failed for {name}: {status}")`, so the assertion is
+///    on that string: it must say the BATCH's apply refused and that this
+///    target is not live, rather than charging a bare `MH_ERROR_MEMORY_PROTECT`
+///    to one hook -- which reads as that hook's own enable refusing, a
+///    different event with a different recovery.
 ///
-/// And the consequence is asserted too, because it is what a teardown meets: an
-/// incoherent hook cannot be REMOVED (`MH_RemoveHook` refuses it by name), so
-/// the trampoline is retained -- until a disable completes and clears the latch,
-/// which is the recovery the product requires of every refusal.
+/// kills: reverting the rollback selection to `statuses.iter().any(is_err)`
+/// (assertion 2 fails -- all three stay live -- and 3 fails, the latch is never
+/// cleared); deleting the batch-level charge in `BatchEnableReport::sealed`
+/// (assertion 1's `failures().len() == 3` fails); collapsing
+/// `BatchApplyRefused` back into `MinHook` (assertion 4 fails); and a
+/// `minhook_h4` that reported `MH_OK` when the restore or the flush failed --
+/// which is what upstream does -- would leave nothing for the batch to refuse,
+/// so assertion 1 fails on `refusal()` being `None`. Note it would NOT fail
+/// the witness assertions: the injected branch still runs, still disarms and
+/// still writes the witness, which is exactly why those two are a
+/// NON-VACUITY check on the fixture and not a check on the product.
 ///
-/// kills: the reading that an enable-failure arm is an untouched-target arm.
-/// A `minhook_h4` that reported `MH_OK` when the restore or the flush failed --
-/// which is what upstream does -- would make `apply_refusal()` `None` here and
-/// this test would fail on its first assertion.
+/// WHAT IT DOES NOT KILL, stated because a `kills:` list that overreaches is
+/// worse than a short one: the `still_live()` assertion below does NOT
+/// discriminate how liveness is derived. This batch's rollback SUCCEEDS, so
+/// every target is down and every candidate derivation -- from `live_now`,
+/// from the outcomes, from `rolled_back()` -- answers false. The derivation
+/// only matters when an undo is REFUSED, and no seam can refuse one: the
+/// completion fault is one-shot and `MH_ApplyQueued` consumes it. Failed
+/// rollback liveness is UNTESTED in this suite and is named as such in
+/// `runs/lt_apply_refusal_rollback/FINDINGS.txt`, section 7.
 #[test]
-fn an_apply_refused_after_the_bytes_were_written_reports_every_target_ok() {
+fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
     serialised!();
     let originals: Vec<u64> = (0..3).map(undetoured_answer).collect();
     let targets = create_trio();
@@ -275,95 +310,360 @@ fn an_apply_refused_after_the_bytes_were_written_reports_every_target_ok() {
     );
     drop(armed);
 
-    // The batch-level refusal is carried, and it is the only carrier.
+    // 1. THE REFUSAL IS NAMED, on the gate every production caller uses.
+    let (name, status) = report
+        .refusal()
+        .expect("a batch whose apply refused must name a refusal");
     assert_eq!(
-        report.apply_refusal().and_then(|e| e.minhook_status()),
+        status.minhook_status(),
         Some(MH_STATUS::MH_ERROR_MEMORY_PROTECT),
-        "the apply's own refusal must survive into the report: {report:?}"
+        "the apply's own refusal must survive into the named failure: {report:?}"
     );
     assert!(
         !report.all_succeeded(),
         "a batch whose apply was refused has not all succeeded"
     );
-    assert!(
-        report.first_failure().is_none() && report.failures().is_empty(),
-        "THE FINDING: the completion pass heals every per-target outcome, so \
-         the gate every production caller uses sees nothing wrong: {:?}",
+    assert_eq!(
+        report.failures().len(),
+        3,
+        "the apply names no target, so every target is refused with it: {:?}",
         report.outcomes()
     );
+    for (target_name, error) in report.failures() {
+        assert_eq!(
+            error,
+            InlineDetourEnableError::BatchApplyRefused {
+                status: MH_STATUS::MH_ERROR_MEMORY_PROTECT,
+                still_live: false,
+                rolled_back: true,
+            },
+            "{target_name} must carry the BATCH's refusal, not a per-hook one"
+        );
+    }
     assert!(
-        !report.rolled_back(),
-        "nothing was rolled back, so the Ok outcomes describe LIVE detours"
+        report.rolled_back(),
+        "a refused apply undoes the batch: {report:?}"
+    );
+    // The batch-level carrier agrees with the per-target ones.
+    assert_eq!(
+        report.apply_refusal(),
+        Some(InlineDetourEnableError::BatchApplyRefused {
+            status: MH_STATUS::MH_ERROR_MEMORY_PROTECT,
+            still_live: false,
+            rolled_back: true,
+        })
     );
 
-    // PHYSICAL, and this is what makes the paragraph above a fact about memory
-    // rather than about a struct: every victim, including the refused one,
-    // answers with its detour.
-    for (index, (name, _)) in targets.iter().enumerate() {
-        let answered = trio()[index].1(1);
-        assert_ne!(
-            answered, originals[index],
-            "{name} must be detoured after this batch"
+    // 2. NOTHING IS LIVE, and this is what makes the paragraph above a fact
+    // about memory rather than about a struct: every victim, including the
+    // refused one, answers with its own body again.
+    for (index, (victim_name, _)) in targets.iter().enumerate() {
+        assert_eq!(
+            trio()[index].1(1),
+            originals[index],
+            "{victim_name} must not be left detoured by a rolled-back batch"
         );
-        assert_eq!(answered, [0xFA0, 0xFA1, 0xFA2][index], "{name}");
     }
     assert_eq!(
-        enabled_detour_count() - enabled_before,
-        3,
-        "all three were counted as enabled, which is correct -- they are"
+        enabled_detour_count(),
+        enabled_before,
+        "a batch that rolled itself back left no detour to count"
+    );
+    // And the report says the same thing to a caller that keeps its own custody
+    // mask -- which is what `sunk_ship_history_live`'s `ENABLED_HOOKS` is, and
+    // reading the OUTCOMES for it is what claimed custody of detours the
+    // rollback had removed.
+    assert_eq!(
+        report.still_live(),
+        [false, false, false],
+        "no target of a rolled-back batch is live: {report:?}"
     );
 
-    // THE LATCH, ASKED OF MINHOOK DIRECTLY, and it has to be: `remove` refuses
-    // EVERY enabled target before it reaches MinHook at all
-    // (`InlineDetourReleaseError::StillEnabled`), so driving the latch through
-    // the wrapper would assert nothing about `incoherent` and would stay green
-    // with the whole latch deleted.
-    //
-    // `MH_RemoveHook` refuses an incoherent entry by name rather than freeing a
-    // trampoline whose last write could not be completed. Asked inside a
+    // AND NO QUEUE RESIDUE. MinHook's queue is process-global, so a target left
+    // queued is a patch some later, unrelated `MH_ApplyQueued` performs inside a
+    // freeze nobody accounted for. Driving one here must change nothing.
+    let _ = unsafe { apply_queued() };
+    for (index, (victim_name, _)) in targets.iter().enumerate() {
+        assert_eq!(
+            trio()[index].1(1),
+            originals[index],
+            "an unrelated apply must not patch what this batch rolled back \
+             ({victim_name})"
+        );
+    }
+
+    // 3. THE INCOHERENT LATCH WAS CLEARED BY THE ROLLBACK. `MH_RemoveHook`
+    // refuses an incoherent entry by name rather than freeing a trampoline
+    // whose last write could not be completed, so this removal is exactly the
+    // one that was impossible before the rollback existed. Asked inside a
     // freeze, which is what the call requires.
     let frozen = crate::freeze_process().expect("the process freezes");
     let asked = unsafe { MinHook::remove_hook(frozen.minhook_lock(), faulted) };
     drop(frozen);
     assert_eq!(
         asked,
-        Err(MH_STATUS::MH_ERROR_MEMORY_PROTECT),
-        "an incoherent entry must refuse removal by name: deleting the latch          makes this an Ok and frees a trampoline whose write never completed"
+        Ok(()),
+        "the rollback's disable must re-complete the write and clear the \
+         incoherent latch; without it MH_RemoveHook refuses this target for ever"
     );
 
-    // And the wrapper's own, separate refusal: an ENABLED target is retained
-    // whatever MinHook would have said.
-    let retained_before = retained_detour_count();
-    let refused = unsafe { remove(faulted) }.expect_err("an enabled target refuses removal");
+    // 4. THE REFUSAL RENDERS WITH A CAUSE. Scoped exactly: this asserts the
+    // DISPLAY, which is the half this lane changed and the half a caller
+    // cannot repair. It does NOT assert that any lane still interpolates it --
+    // the string below is built here, so a lane that stopped rendering
+    // `{status}` would leave this green. What stands behind that half is that
+    // all fifteen sites pass the report's own `(name, status)` straight into
+    // their message, which is a property of those files and is reviewed there.
+    let rendered = format!("{status}");
     assert!(
-        matches!(refused, InlineDetourReleaseError::StillEnabled),
-        "{refused:?}"
+        rendered.contains("batch refused"),
+        "the cause must say the BATCH refused, not name a per-hook status: \
+         {rendered}"
     );
-    assert_eq!(
-        retained_detour_count() - retained_before,
-        1,
-        "a refused removal is counted as a retained detour"
+    assert!(
+        rendered.contains("rolled back") && rendered.contains("not live"),
+        "the cause must say the game is not left patched: {rendered}"
     );
-
-    // THE RECOVERY PROPERTY: a completed disable RE-ATTEMPTS the completion and
-    // clears the latch, and only then is the trampoline freed. A product whose
-    // refusals were terminal would fail here, and so would one whose disable
-    // did not re-derive `incoherent`.
-    unsafe { disable(faulted) }.expect("the disable completes and clears the incoherent latch");
-    let frozen = crate::freeze_process().expect("the process freezes");
-    let asked = unsafe { MinHook::remove_hook(frozen.minhook_lock(), faulted) };
-    drop(frozen);
-    assert_eq!(asked, Ok(()), "a cleared latch removes");
-    assert_eq!(
-        trio()[1].1(1),
-        originals[1],
-        "the victim is itself again once its detour is removed"
+    // And the verdict names a hook FROM THIS ROSTER, which is what makes the
+    // lanes' `format!("... for {name}: {status}")` say something an operator
+    // can act on rather than a bare batch verdict.
+    assert!(
+        targets.iter().any(|(target_name, _)| *target_name == name),
+        "the refusal must name one of the batch's own targets, not a \
+         synthesised label: {name}"
     );
 
     drop(custody);
     for (index, original) in originals.iter().enumerate() {
         assert_eq!(trio()[index].1(1), *original, "cleanup left a detour live");
     }
+}
+
+/// THE INVARIANT ITSELF, over every batch shape this crate can reach: a report
+/// that names no refusal is a report that all succeeded.
+///
+/// The defect lane LN found was not "the rollback was not selected"; it was that
+/// the report could SAY two contradictory things and the callers all read the
+/// half that was wrong. Selecting the rollback correctly fixes today's instance.
+/// This is the property that stops the next one, and it is checked against the
+/// reachable shapes rather than argued: nothing to enable, a roster listing one
+/// target twice, a clean batch, and a faulted batch.
+///
+/// BE EXACT ABOUT WHICH ASSERTION DOES THE WORK, because most of them are
+/// nearly free and saying otherwise would overstate this test.
+///
+///   * `all_succeeded() == refusal().is_none()` is a TAUTOLOGY today, because
+///     that is `all_succeeded()`'s definition. It is here to stop being one:
+///     it fails the day somebody gives the verdict a second, parallel
+///     definition, which is the shape the defect had.
+///   * `all_succeeded() == failures().is_empty()` IS THE DISCRIMINATING ONE.
+///     Delete the charge in `BatchEnableReport::sealed` and the faulted shape
+///     keeps `apply_refusal` set, so `refusal()` -- which reads that field
+///     directly -- still answers `Some` and the verdict is still false, while
+///     the outcome vector is entirely `Ok` and `failures()` is EMPTY. This is
+///     the assertion that catches it.
+///   * `apply_refusal().is_some() -> !all_succeeded()` is NOT discriminating
+///     any more and is kept as a guard. It was, before `refusal()` began
+///     reading `apply_refusal` directly; now a charge-less report satisfies it.
+///   * `still_live().len() == outcomes().len()` is what a caller indexing one
+///     by the other depends on.
+///   * `rolled_back() -> nothing live` and `all_succeeded() -> everything
+///     live` are the two directions liveness may not lie in. Neither
+///     discriminates how liveness is DERIVED across these four shapes: every
+///     rollback here SUCCEEDS, so `live_now`, the outcomes and `rolled_back()`
+///     all answer the same. See the note below.
+///
+/// kills: removing the batch-level charge from `BatchEnableReport::sealed`,
+/// caught by the failure-list assertion as set out above.
+///
+/// WHAT IT DOES NOT KILL, and neither does any test in this file:
+///   * restoring the old `apply_refusal.is_none() && outcomes.all(is_ok)`
+///     formula for `all_succeeded()` while the charge stays -- with the charge
+///     in place the two formulas agree on every shape;
+///   * deriving `still_live()` from the OUTCOMES rather than from `live_now`.
+///     The two disagree only over a target whose undo was ATTEMPTED and
+///     REFUSED, and no seam can refuse an undo: the completion fault is
+///     one-shot and `MH_ApplyQueued` consumes it. Failed-rollback liveness is
+///     UNTESTED in this suite and is named as such in
+///     `runs/lt_apply_refusal_rollback/FINDINGS.txt`, section 7.
+#[test]
+fn a_batch_that_names_no_refusal_is_a_batch_that_all_succeeded() {
+    serialised!();
+
+    fn agree(what: &str, report: &crate::BatchEnableReport) {
+        assert_eq!(
+            report.all_succeeded(),
+            report.refusal().is_none(),
+            "{what}: the verdict and the named refusal disagree: {report:?}"
+        );
+        assert_eq!(
+            report.all_succeeded(),
+            report.failures().is_empty(),
+            "{what}: the verdict and the failure list disagree: {report:?}"
+        );
+        assert!(
+            report.apply_refusal().is_none() || !report.all_succeeded(),
+            "{what}: a batch-level refusal that reports success: {report:?}"
+        );
+        // AND THE LIVENESS VECTOR IS USABLE BESIDE THE OUTCOMES. A caller that
+        // keeps a per-site custody mask indexes one by the other, so a shape
+        // whose lengths disagree is an out-of-bounds panic or a silently
+        // mis-attributed hook at a lane's install site.
+        assert_eq!(
+            report.still_live().len(),
+            report.outcomes().len(),
+            "{what}: still_live() must answer for every target: {report:?}"
+        );
+        // `rolled_back()` is the CLAIM that nothing is live, so it may not be
+        // set over a target that is.
+        assert!(
+            !report.rolled_back() || !report.still_live().contains(&true),
+            "{what}: rolled_back() over a live target: {report:?}"
+        );
+        // And the other direction: a batch that all succeeded installed every
+        // target it was given, so every one of them is live. This pins
+        // successful-batch liveness; it does NOT discriminate how liveness is
+        // derived, because over these four shapes every rollback succeeds and
+        // every candidate derivation agrees. See this test's doc comment.
+        assert!(
+            !report.all_succeeded() || report.still_live().iter().all(|live| *live),
+            "{what}: a successful batch with a target that is not live: {report:?}"
+        );
+    }
+
+    agree("an empty batch", &unsafe { enable_batch(&[]) });
+
+    let targets = create_trio();
+    let custody = HookCustody::of(&targets);
+
+    agree("a roster listing one target twice", &unsafe {
+        enable_batch(&[targets[0], targets[1], targets[0]])
+    });
+
+    let clean = unsafe { enable_batch(&targets) };
+    agree("a clean batch", &clean);
+    assert!(clean.all_succeeded(), "{:?}", clean.outcomes());
+    let released = unsafe { disable_batch(&targets) };
+    assert!(released.all_succeeded(), "{:?}", released.outcomes());
+
+    let armed = minhook::EnableIncoherentFault::arm(targets[2].1);
+    let faulted = unsafe { enable_batch(&targets) };
+    assert_eq!(
+        minhook::EnableIncoherentFault::witness(),
+        Some("MH_H4_FAULT_INJECTION_PRESENT"),
+        "the faulted shape must actually have been reached"
+    );
+    drop(armed);
+    agree("a batch whose apply refused", &faulted);
+    assert!(!faulted.all_succeeded(), "{:?}", faulted.outcomes());
+
+    drop(custody);
+}
+
+
+/// A ROSTER THAT REFUSES TWICE: one target of its own, and the batch as a
+/// whole. The whole-batch cause is what the verdict names.
+///
+/// The batch is `[absent, victim.0, victim.1]` with the completion fault armed
+/// on `victim.1`. The absent target's queue call answers
+/// `MH_ERROR_NOT_CREATED` -- its own, specific refusal -- while the two real
+/// targets are queued, applied, and the apply then refuses. So the report
+/// carries BOTH kinds of cause at once, which is the state `refusal()` has to
+/// arbitrate.
+///
+/// WHY THE BATCH CAUSE WINS, and why taking the first refusal in slice order
+/// was wrong: the lanes render `format!("... enable failed for {name}: {status}")`
+/// and nothing else. Slice order puts `absent.hook: MH_ERROR_NOT_CREATED` on
+/// the wire for a refusal that undid a whole roster -- which reads as "that one
+/// hook is missing", a different event with a different recovery, and it hides
+/// that the apply itself did not complete. Both causes are still in
+/// `failures()` and `outcomes()`, in slice order, so the specific one is not
+/// lost -- it is just not the headline.
+///
+/// kills: reverting `refusal()` to "the first `Err` in slice order" (the
+/// verdict names `absent.hook` and its bare MinHook status); deleting the
+/// batch-level charge in `BatchEnableReport::sealed` (`failures()` drops to
+/// one and the two real targets read `Ok` while the batch was refused).
+///
+/// WHAT IT DOES NOT KILL, and both omissions matter. Reverting the rollback
+/// SELECTION to `statuses.iter().any(is_err)`: this roster refuses twice, so
+/// the absent target leaves `statuses[0] = MH_ERROR_NOT_CREATED` and the old
+/// selection rolls it back too, leaving every physical check green. That one
+/// is killed by
+/// `an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back`,
+/// whose roster refuses ONLY through the apply. And deriving `still_live()`
+/// from the outcomes: this rollback succeeds, so every derivation answers
+/// false. Failed-rollback liveness is untested in this suite.
+#[test]
+fn a_batch_refusal_outranks_one_target_s_own_refusal_in_the_verdict() {
+    serialised!();
+    let originals: Vec<u64> = (0..2).map(undetoured_answer).collect();
+    let targets = create_trio();
+    let custody = HookCustody::of(&targets);
+    let batch = [("absent.hook", ABSENT_FAULT_TARGET), targets[0], targets[1]];
+
+    let enabled_before = enabled_detour_count();
+    let armed = minhook::EnableIncoherentFault::arm(targets[1].1);
+    let report = unsafe { enable_batch(&batch) };
+
+    assert_eq!(
+        minhook::EnableIncoherentFault::witness(),
+        Some("MH_H4_FAULT_INJECTION_PRESENT"),
+        "the injected branch inside EnableHookLL must have executed"
+    );
+    drop(armed);
+
+    let (name, status) = report
+        .refusal()
+        .expect("a batch that refused twice still names a refusal");
+    assert_ne!(
+        name, "absent.hook",
+        "the whole-batch cause outranks one target's own: {:?}",
+        report.outcomes()
+    );
+    assert_eq!(
+        status,
+        InlineDetourEnableError::BatchApplyRefused {
+            status: MH_STATUS::MH_ERROR_MEMORY_PROTECT,
+            still_live: false,
+            rolled_back: true,
+        },
+        "the verdict must carry the BATCH's cause: {:?}",
+        report.outcomes()
+    );
+
+    // AND THE SPECIFIC ONE IS STILL THERE. Promoting the batch cause may not
+    // erase the target that MinHook actually named.
+    assert_eq!(report.failures().len(), 3, "{:?}", report.outcomes());
+    assert_eq!(
+        report.outcomes()[0].1,
+        Err(InlineDetourEnableError::MinHook(
+            MH_STATUS::MH_ERROR_NOT_CREATED
+        )),
+        "the absent target keeps its own refusal: {:?}",
+        report.outcomes()
+    );
+
+    assert!(report.rolled_back(), "{report:?}");
+    assert_eq!(
+        report.still_live(),
+        [false, false, false],
+        "nothing survives a rolled-back batch: {report:?}"
+    );
+    for index in 0..2 {
+        assert_eq!(
+            trio()[index].1(1),
+            originals[index],
+            "a rolled-back batch left a victim detoured"
+        );
+    }
+    assert_eq!(
+        enabled_detour_count(),
+        enabled_before,
+        "a batch that rolled itself back left no detour to count"
+    );
+
+    drop(custody);
 }
 
 // ---------------------------------------------------------------------------

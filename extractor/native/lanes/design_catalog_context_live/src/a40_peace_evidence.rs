@@ -387,7 +387,7 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
     // Enable the four canonical sites with one freeze instead of four. The
     // order is unchanged and no game thread can observe a partial roster.
     let enabled = unsafe { inline_detour::enable_batch(&hook_batch(&created)) };
-    if let Some((name, status)) = enabled.first_failure() {
+    if let Some((name, status)) = enabled.refusal() {
         let mut cleanup_failures = Vec::new();
         let mut rollback = hook_batch(&created);
         rollback.reverse();

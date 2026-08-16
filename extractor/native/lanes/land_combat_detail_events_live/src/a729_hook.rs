@@ -655,7 +655,7 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
     ]);
     batch.reverse();
     let enabled = unsafe { inline_detour::enable_batch(&batch) };
-    if let Some((name, status)) = enabled.first_failure() {
+    if let Some((name, status)) = enabled.refusal() {
         return Err(fail_open_install(
             sites,
             format!("terminal hook enable failed for {name}: {status}"),

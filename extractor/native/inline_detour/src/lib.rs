@@ -117,6 +117,44 @@ mod windows_impl {
         FreezeRefused(FreezeRefusal),
         /// The pin and the freeze both succeeded and MinHook refused the patch.
         MinHook(MH_STATUS),
+        /// THE BATCH'S OWN APPLY REFUSED, so this target is refused with it.
+        ///
+        /// `MH_ApplyQueued` stops at the first target it cannot patch, and it
+        /// does not say which target that was or how far it got. In this fork
+        /// `EnableHookLL` can refuse in EITHER of two phases and the status is
+        /// the same `MH_ERROR_MEMORY_PROTECT` for both: before it writes
+        /// anything, when the first `VirtualProtect` cannot make the page
+        /// writable; or after the bytes are written, when the protection
+        /// restore or the instruction-cache flush did not complete -- and only
+        /// the second latches `incoherent`. So a refused apply means "one of
+        /// these targets may be patched with its last write unpublished, and
+        /// MinHook names neither the target nor the phase".
+        ///
+        /// The whole batch is therefore refused and undone -- which is safe in
+        /// both phases, because a disable of a target that was never patched
+        /// answers `MH_ERROR_DISABLED` without touching a byte -- and every
+        /// target carries this rather than the `Ok` its own completion-pass
+        /// enable answered.
+        ///
+        /// TWO FACTS AN OPERATOR NEEDS NEXT, and they are NOT the same fact.
+        /// `still_live` says whether this target is patched into the running
+        /// game. `rolled_back` says whether the undo COMPLETED. A rollback's
+        /// own disable can restore the bytes and then fail to publish, which
+        /// leaves the target not live AND not cleanly undone: `incoherent` is
+        /// latched, so its removal will refuse by name until a completed
+        /// enable-then-disable re-derives the latch. Reporting that as "rolled
+        /// back and not live" would be a false all-clear, so the two are
+        /// carried separately (review round 4, MED).
+        ///
+        /// It is a variant of its own rather than [`Self::MinHook`] so the
+        /// wire says WHICH failure this was. `MH_ERROR_MEMORY_PROTECT` charged
+        /// to a named hook reads as "that hook's own enable refused", which is
+        /// a different event with a different recovery.
+        BatchApplyRefused {
+            status: MH_STATUS,
+            still_live: bool,
+            rolled_back: bool,
+        },
     }
 
     impl fmt::Display for InlineDetourEnableError {
@@ -129,6 +167,42 @@ mod windows_impl {
                 ),
                 Self::FreezeRefused(refusal) => write!(f, "inline detour {refusal}"),
                 Self::MinHook(status) => write!(f, "{status}"),
+                Self::BatchApplyRefused {
+                    status,
+                    still_live: false,
+                    rolled_back: true,
+                } => write!(
+                    f,
+                    "inline detour batch refused: the batch apply did not complete \
+                     ({status}), and it names neither the target it stopped at nor \
+                     whether that target's bytes were written before it did; the \
+                     batch was rolled back and this target is not live"
+                ),
+                Self::BatchApplyRefused {
+                    status,
+                    still_live: false,
+                    rolled_back: false,
+                } => write!(
+                    f,
+                    "inline detour batch refused: the batch apply did not complete \
+                     ({status}), and it names neither the target it stopped at nor \
+                     whether that target's bytes were written before it did; this \
+                     target is not live, but the rollback did not complete -- a \
+                     target whose restore was written and not published stays \
+                     unremovable until an enable and a disable complete over it"
+                ),
+                Self::BatchApplyRefused {
+                    status,
+                    still_live: true,
+                    ..
+                } => write!(
+                    f,
+                    "inline detour batch refused: the batch apply did not complete \
+                     ({status}), and it names neither the target it stopped at nor \
+                     whether that target's bytes were written before it did; the \
+                     rollback did not take this target back down and it is STILL \
+                     LIVE"
+                ),
             }
         }
     }
@@ -154,7 +228,7 @@ mod windows_impl {
         /// use `Display`.
         pub fn minhook_status(self) -> Option<MH_STATUS> {
             match self {
-                Self::MinHook(status) => Some(status),
+                Self::MinHook(status) | Self::BatchApplyRefused { status, .. } => Some(status),
                 Self::ModulePinRefused(_) | Self::FreezeRefused(_) => None,
             }
         }
@@ -163,7 +237,29 @@ mod windows_impl {
         pub fn freeze_refusal(self) -> Option<FreezeRefusal> {
             match self {
                 Self::FreezeRefused(refusal) => Some(refusal),
-                Self::ModulePinRefused(_) | Self::MinHook(_) => None,
+                Self::ModulePinRefused(_) | Self::MinHook(_) | Self::BatchApplyRefused { .. } => {
+                    None
+                }
+            }
+        }
+
+        /// The same refusal, told whether the target it is charged to is still
+        /// patched into the running process and whether the undo completed.
+        ///
+        /// Only a batch-apply refusal carries those facts, and only the batch
+        /// that performed the rollback knows them, so they are stamped when the
+        /// report is sealed rather than where the refusal is raised. Every
+        /// other refusal answers itself unchanged: a refused pin and a refused
+        /// freeze patched nothing, and a target's own MinHook refusal is
+        /// already about that target.
+        fn with_rollback_facts(self, live: bool, undone: bool) -> Self {
+            match self {
+                Self::BatchApplyRefused { status, .. } => Self::BatchApplyRefused {
+                    status,
+                    still_live: live,
+                    rolled_back: undone,
+                },
+                other => other,
             }
         }
     }
@@ -454,13 +550,14 @@ mod windows_impl {
     pub struct BatchEnableReport {
         outcomes: Vec<BatchOutcome<InlineDetourEnableError>>,
         apply_refusal: Option<InlineDetourEnableError>,
+        live: Vec<bool>,
         rolled_back: bool,
         freezes: u64,
     }
 
     impl BatchEnableReport {
-        /// True when this batch undid itself: some target refused, so every
-        /// target the batch had enabled was disabled again before the freeze
+        /// True when this batch undid itself: something refused, so every
+        /// target the batch had queued was disabled again before the freeze
         /// was dropped, and NOTHING it was given is live.
         ///
         /// The per-target outcomes still say what each target's own enable
@@ -468,6 +565,164 @@ mod windows_impl {
         /// that says an `Ok` outcome does not mean "currently patched".
         pub fn rolled_back(&self) -> bool {
             self.rolled_back
+        }
+
+        /// THE BATCH'S ONE VERDICT, and the only gate an enable consumer needs:
+        /// `None` when every target this batch was given is patched and live,
+        /// and otherwise the first refusal, named.
+        ///
+        /// It replaced `first_failure()` on this side because that name invited
+        /// the reading the defect below lived in -- "the first target that
+        /// refused, and the rest are fine" -- when what a caller must act on is
+        /// "this batch did not install".
+        ///
+        /// # The state this cannot be in, and used to be
+        ///
+        /// `MH_ApplyQueued` can refuse AFTER writing a target's bytes, and the
+        /// completion pass then re-enables every queued target: MinHook answers
+        /// `MH_ERROR_ENABLED` for the one already patched, which is mapped to
+        /// `Ok` because that target IS patched. A batch could therefore report
+        /// `apply_refusal() = Some(..)`, `all_succeeded() = false`, and yet no
+        /// named failure at all -- so every one of the fifteen production
+        /// installs, all of which gate on the named failure, accepted a roster
+        /// with one detour live and its last write incomplete
+        /// (`runs/ln_fault_inject/FINDINGS.txt`).
+        ///
+        /// That state is now unrepresentable rather than merely not produced:
+        /// [`Self::sealed`] charges a batch-level refusal to every target that
+        /// has no refusal of its own, and [`Self::all_succeeded`] is DEFINED as
+        /// this returning `None`. There is one source of truth, so "no failures
+        /// but not all succeeded" has nowhere left to live.
+        /// THE BATCH'S OWN CAUSE COMES FIRST when there is one, and that is not
+        /// a tie-break. `MH_ApplyQueued` refusing is the reason NOTHING is
+        /// installed; a target's own `MH_ERROR_MEMORY_PROTECT` alongside it is
+        /// a detail of one hook inside a roster that was going to be undone
+        /// anyway. Taking whichever came first in slice order would put a bare
+        /// per-hook status on the wire for a whole-roster refusal, which reads
+        /// as "that hook refused" -- a different event with a different
+        /// recovery. Both are still in [`Self::failures`] and
+        /// [`Self::outcomes`], in slice order, so nothing is lost.
+        ///
+        /// THE CAUSE COMES FROM THE BATCH-LEVEL FIELD, not from whichever
+        /// target happens to carry a copy of it, and the difference is
+        /// load-bearing on the `still_live` half. The per-target copies each
+        /// answer for THEIR target; the batch-level one answers for the batch
+        /// -- true when ANY target the rollback could not take down is still
+        /// patched. Reading a copy would let a roster with one live target
+        /// report "rolled back, not live" because some OTHER target's copy
+        /// said so, which is a false reassurance about the running game. It
+        /// also survives the case where every target ended up with a refusal
+        /// of its own, so no copy exists to find (review round 3, MED).
+        ///
+        /// The NAME points at something an operator can act on: the first
+        /// target still patched when any is, else the first target carrying
+        /// the batch cause, else the first of the roster.
+        pub fn refusal(&self) -> Option<(&'static str, InlineDetourEnableError)> {
+            if let Some(cause @ InlineDetourEnableError::BatchApplyRefused { still_live, .. }) =
+                self.apply_refusal
+            {
+                let named = still_live
+                    .then(|| {
+                        self.outcomes
+                            .iter()
+                            .zip(self.live.iter())
+                            .find(|(_, live)| **live)
+                            .map(|((name, _), _)| *name)
+                    })
+                    .flatten()
+                    .or_else(|| {
+                        self.outcomes.iter().find_map(|(name, result)| {
+                            matches!(
+                                result,
+                                Err(InlineDetourEnableError::BatchApplyRefused { .. })
+                            )
+                            .then_some(*name)
+                        })
+                    })
+                    .or_else(|| self.outcomes.first().map(|(name, _)| *name));
+                // `None` only for an EMPTY roster, which cannot carry a batch
+                // refusal: the empty batch returns before anything is queued.
+                if let Some(name) = named {
+                    return Some((name, cause));
+                }
+            }
+            // A refused pin and a refused freeze are already EVERY target's own
+            // outcome, so slice order returns the batch cause for those too.
+            self.outcomes
+                .iter()
+                .find_map(|(name, result)| result.err().map(|error| (*name, error)))
+        }
+
+        /// True when every target in the batch is patched and live.
+        ///
+        /// Definitionally [`Self::refusal`] answering `None` -- not a second,
+        /// parallel computation that could disagree with it. See `refusal`.
+        pub fn all_succeeded(&self) -> bool {
+            self.refusal().is_none()
+        }
+
+        /// Which targets are PATCHED INTO THE PROCESS, by the position they
+        /// were listed in. Same length as [`Self::outcomes`].
+        ///
+        /// An outcome is not this and cannot be made into it. A target the
+        /// batch rolled back reports a refusal and is not live; a target whose
+        /// undo was itself refused reports one and IS. A caller that keeps its
+        /// own per-site custody mask -- "which of my hooks does my teardown
+        /// have to take down" -- must read THIS, because both of the other
+        /// readings are wrong in one of those two directions: from the
+        /// outcomes it claims custody of detours the rollback removed, and
+        /// from `rolled_back()` alone it disclaims custody of the one detour a
+        /// refused rollback left in the game.
+        pub fn still_live(&self) -> &[bool] {
+            &self.live
+        }
+
+        /// Build the report, charging a batch-level refusal to every target
+        /// that has no refusal of its own.
+        ///
+        /// EVERY construction of this type goes through here, which is what
+        /// makes the invariant structural rather than a rule each return path
+        /// has to remember. Four of the five paths are already consistent --
+        /// a refused duplicate roster, a refused pin and a refused freeze all
+        /// give every target its own `Err`, and an empty batch has no refusal
+        /// -- and the fifth is the one the defect lived in.
+        ///
+        /// `live_now[i]` says whether target `i` is patched into the process at
+        /// the moment the freeze is dropped, which is what stamps `still_live`
+        /// on the refusal that reaches the wire. A shorter slice than
+        /// `outcomes` means "nothing is live", which is exactly true of every
+        /// path that returns before the freeze is taken.
+        fn sealed(
+            mut outcomes: Vec<BatchOutcome<InlineDetourEnableError>>,
+            apply_refusal: Option<InlineDetourEnableError>,
+            live_now: &[bool],
+            rolled_back: bool,
+            freezes: u64,
+        ) -> Self {
+            // Materialised to the roster's own length so `still_live()` can be
+            // indexed beside `outcomes()` on EVERY path, including the ones
+            // that return before the freeze is taken and are all-false.
+            let live: Vec<bool> = (0..outcomes.len())
+                .map(|index| live_now.get(index).copied().unwrap_or(false))
+                .collect();
+            if let Some(refusal) = apply_refusal {
+                for (index, (_, result)) in outcomes.iter_mut().enumerate() {
+                    if result.is_ok() {
+                        *result = Err(refusal.with_rollback_facts(live[index], rolled_back));
+                    }
+                }
+            }
+            // The batch-level copy answers for the batch: it is still live if
+            // ANY target the rollback could not take down is.
+            let apply_refusal = apply_refusal
+                .map(|refusal| refusal.with_rollback_facts(live.contains(&true), rolled_back));
+            Self {
+                outcomes,
+                apply_refusal,
+                live,
+                rolled_back,
+                freezes,
+            }
         }
     }
 
@@ -505,6 +760,42 @@ mod windows_impl {
         pub fn was_already_released(&self, name: &str) -> bool {
             self.already_released.iter().any(|entry| *entry == name)
         }
+
+        /// The first refused target, named.
+        ///
+        /// A release batch keeps this spelling where [`BatchEnableReport`] has
+        /// a single `refusal()`, and the difference is behavioural rather than
+        /// cosmetic: a release does NOT undo itself, so a partial teardown is a
+        /// real, reportable state and each target's own outcome is the account
+        /// of what happened to IT. The lanes restore explicitly from those
+        /// outcomes. An enable that refuses has nothing partial to report,
+        /// because it rolled the whole batch back.
+        pub fn first_failure(&self) -> Option<(&'static str, InlineDetourReleaseError)> {
+            self.outcomes
+                .iter()
+                .find_map(|(name, result)| result.err().map(|error| (*name, error)))
+        }
+
+        /// True when every target in the batch was released AND the batch
+        /// itself was not refused.
+        ///
+        /// THE SECOND HALF IS LOAD-BEARING and was missing. A target's own
+        /// outcome is `Ok` when MinHook answered that it was already disabled
+        /// -- which is the postcondition a release asks for -- while
+        /// `apply_refusal` carries a failure that belongs to the whole batch,
+        /// such as a protection restore or an instruction-cache flush that did
+        /// not complete. Reporting "all succeeded" over that is how a teardown
+        /// claims a roster is gone whose bytes were restored but not coherently
+        /// published (review round 2, HIGH).
+        ///
+        /// See `runs/lt_apply_refusal_rollback/FINDINGS.txt`, "the release
+        /// twin": on this side the gap between this and `first_failure()` is
+        /// still reachable, and closing it is a change to the retained census
+        /// rather than to the report.
+        pub fn all_succeeded(&self) -> bool {
+            self.apply_refusal.is_none()
+                && self.outcomes.iter().all(|(_, result)| result.is_ok())
+        }
     }
 
     macro_rules! batch_report_accessors {
@@ -513,13 +804,14 @@ mod windows_impl {
                 /// The refusal `MH_ApplyQueued` returned for the batch as a
                 /// whole, when it returned one.
                 ///
-                /// Kept even when every target ends up `Ok`, because that
-                /// combination is a REAL event and not a non-event: the one
-                /// freeze was refused and the targets were then driven
-                /// individually. Dropping it would turn "the batch failed and
-                /// the retry healed it" into a silent success, which is the
-                /// same class of erasure a partial teardown commits when it
-                /// says nothing.
+                /// It is INFORMATIONAL on the enable side and no longer the
+                /// only carrier of anything: a batch-level refusal is charged
+                /// to every target when the report is sealed, so
+                /// `BatchEnableReport::refusal()` already names it and no
+                /// caller has to know this accessor exists to fail closed. It
+                /// stays because it tells a refusal that belongs to the BATCH
+                /// from one that belongs to a target, which is what says
+                /// whether the roster or one hook is the thing that is wrong.
                 pub fn apply_refusal(&self) -> Option<$error> {
                     self.apply_refusal
                 }
@@ -537,36 +829,12 @@ mod windows_impl {
                     self.freezes
                 }
 
-                /// The first refused target, named.
-                pub fn first_failure(&self) -> Option<(&'static str, $error)> {
-                    self.outcomes
-                        .iter()
-                        .find_map(|(name, result)| result.err().map(|error| (*name, error)))
-                }
-
                 /// Every refused target, named.
                 pub fn failures(&self) -> Vec<(&'static str, $error)> {
                     self.outcomes
                         .iter()
                         .filter_map(|(name, result)| result.err().map(|error| (*name, error)))
                         .collect()
-                }
-
-                /// True when every target in the batch succeeded AND the batch
-                /// itself was not refused.
-                ///
-                /// THE SECOND HALF IS LOAD-BEARING and was missing. A target's
-                /// own outcome is `Ok` when the completion pass mapped
-                /// `MH_ERROR_ENABLED` to success -- which is correct, that
-                /// target IS patched -- while `apply_refusal` carries a failure
-                /// that belongs to the whole batch, such as a protection
-                /// restore or an instruction-cache flush that did not complete.
-                /// Reporting "all succeeded" over that is how an installer
-                /// accepts a roster whose bytes are written but not coherently
-                /// published (review round 2, HIGH).
-                pub fn all_succeeded(&self) -> bool {
-                    self.apply_refusal.is_none()
-                        && self.outcomes.iter().all(|(_, result)| result.is_ok())
                 }
 
                 /// How many targets the batch covered.
@@ -702,20 +970,51 @@ mod windows_impl {
     ///
     /// # Atomic in EFFECT, per-target in REPORTING
     ///
-    /// If ANY target ends refused -- at queue time or at patch time -- every
-    /// target this batch enabled is disabled again before the freeze is
-    /// dropped, and `rolled_back` says so. The per-target loops this replaced
-    /// returned on the first refusal, so a later target was never enabled and
-    /// the nested-before-outer orders could not be observed inverted; the
-    /// completion pass CAN produce that inversion, so it is undone rather than
-    /// published.
+    /// If ANYTHING ends refused -- a queue call, a target's patch, or
+    /// `MH_ApplyQueued` itself -- every target this batch QUEUED is disabled
+    /// again before the freeze is dropped, and `rolled_back` says so. The
+    /// per-target loops this replaced returned on the first refusal, so a later
+    /// target was never enabled and the nested-before-outer orders could not be
+    /// observed inverted; the completion pass CAN produce that inversion, so it
+    /// is undone rather than published.
     ///
-    /// A rollback that itself fails is not hidden: `rolled_back` stays false,
-    /// the target keeps an `Ok` outcome because its own enable succeeded, and
-    /// it is still counted and still queued as enabled -- because it IS.
+    /// THE ROLLBACK SET IS WHAT WAS QUEUED, not what is known to be patched,
+    /// and the difference is the whole of lane LT's fix. A refused apply names
+    /// no target and does not say whether it reached that target's bytes; a
+    /// refused completion-pass enable may have written its target's bytes too,
+    /// since `MH_ERROR_MEMORY_PROTECT` is the answer both when the first
+    /// `VirtualProtect` refuses (nothing written) and when the protection
+    /// restore or the cache flush does not complete (written, unpublished).
+    /// Undoing only the targets whose status reads `Ok` therefore skips
+    /// exactly the ones most likely to be live. A disable of a target that is
+    /// not in fact enabled answers
+    /// `MH_ERROR_DISABLED` without touching a byte, so the wider set costs one
+    /// refused call and heals the incoherent latch that would otherwise refuse
+    /// every later removal of that target by name.
+    ///
+    /// A rollback that itself fails is not hidden -- `rolled_back` stays false
+    /// -- and it is not assumed to have left the target patched either, which
+    /// is the same two-phase trap one step further on. `MH_DisableHook`
+    /// answers `MH_ERROR_MEMORY_PROTECT` both when its first `VirtualProtect`
+    /// refuses, leaving the detour in the game, and when it HAS restored the
+    /// original bytes and only the publication failed, leaving the target down
+    /// and `incoherent`. So the target's liveness is ASKED of MinHook rather
+    /// than inferred: `isEnabled` is set after the write and not at all when
+    /// the write never happened, which makes it exactly the question. It is
+    /// counted in the enabled census, queued as enabled, and told to say
+    /// `STILL LIVE` on the wire only when the answer is yes.
+    ///
+    /// The other answer is the one this cannot heal: a target left down and
+    /// incoherent stays unremovable, because nothing short of re-enabling it
+    /// and disabling it again re-derives the latch. That is reported -- a
+    /// named refusal, `rolled_back` false -- and is a residual, not a claim
+    /// (`runs/lt_apply_refusal_rollback/FINDINGS.txt`, section 5).
     ///
     /// The REPORT stays per target -- which hook failed, with which status --
-    /// because that is the fidelity a whole-roster census needs.
+    /// because that is the fidelity a whole-roster census needs. What is NOT
+    /// per target is the VERDICT: `refusal()` is the one gate, and a batch
+    /// that did not install every target names a refusal for every target it
+    /// cannot vouch for.
     ///
     /// # Safety
     ///
@@ -801,12 +1100,7 @@ mod windows_impl {
         let mut outcomes: Vec<BatchOutcome<InlineDetourEnableError>> =
             Vec::with_capacity(targets.len());
         if targets.is_empty() {
-            return BatchEnableReport {
-                outcomes,
-                apply_refusal: None,
-                rolled_back: false,
-                freezes: 0,
-            };
+            return BatchEnableReport::sealed(outcomes, None, &[], false, 0);
         }
         if first_duplicate_target(targets).is_some() {
             // A target listed twice would be counted twice in the enabled
@@ -822,12 +1116,7 @@ mod windows_impl {
                     )),
                 ));
             }
-            return BatchEnableReport {
-                outcomes,
-                apply_refusal: None,
-                rolled_back: false,
-                freezes: 0,
-            };
+            return BatchEnableReport::sealed(outcomes, None, &[], false, 0);
         }
         // The module is pinned BEFORE anything is patched, exactly as
         // [`enable`] does it, and a refused pin means nothing is attempted.
@@ -835,18 +1124,32 @@ mod windows_impl {
             for &(name, _) in targets {
                 outcomes.push((name, Err(pin)));
             }
-            return BatchEnableReport {
-                outcomes,
-                apply_refusal: Some(pin),
-                rolled_back: false,
-                freezes: 0,
-            };
+            return BatchEnableReport::sealed(outcomes, Some(pin), &[], false, 0);
         }
         // Both buffers are reserved here, before the freeze exists. Filling
         // them inside the window must not call the allocator: a suspended
         // thread holding the allocator's lock makes that a permanent deadlock.
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
         let mut rollback_failed: Vec<bool> = Vec::with_capacity(targets.len());
+        // WHETHER THE QUEUE CALL TOOK IT, snapshotted before the completion
+        // pass overwrites `statuses`.
+        //
+        // THIS IS WHAT THE ROLLBACK IS SELECTED FROM, and it must not be
+        // `statuses`. A completion-pass `MH_EnableHook` that refuses has, in
+        // this fork, quite possibly WRITTEN the target's bytes already -- the
+        // status reports the restore/flush, not the write -- so selecting the
+        // undo from the post-pass status skips exactly the target most likely
+        // to be patched. "This batch queued it" is the widest true statement
+        // about what this batch may have patched, and a disable of a target
+        // that is not in fact enabled answers `MH_ERROR_DISABLED` without
+        // touching a byte, so the wider set costs nothing and heals more.
+        let mut queued_ok: Vec<bool> = Vec::with_capacity(targets.len());
+        // Whether each target is patched into the process at the moment the
+        // freeze is dropped. The census and the wire's `still_live` both read
+        // it, and neither may be derived from an OUTCOME any more: a rolled
+        // back target reports a refusal and is not live, and a target whose
+        // undo was refused reports one and IS.
+        let mut live_now: Vec<bool> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
         // Set when a held thread was stopped inside bytes the apply would have
         // rewritten. It is carried out of the window so every target's outcome
@@ -871,7 +1174,10 @@ mod windows_impl {
                         MinHook::queue_enable_hook(frozen.minhook_lock(), target)
                     });
                 }
-                let mut queued_any = statuses.iter().any(|status| status.is_ok());
+                for status in statuses.iter() {
+                    queued_ok.push(status.is_ok());
+                }
+                let mut queued_any = queued_ok.iter().any(|queued| *queued);
                 // NOTHING IS PATCHED UNTIL THIS PASSES. A held thread stopped
                 // inside any byte the apply would rewrite refuses the whole
                 // batch: `queued_any` goes false, so the normalisation loop
@@ -890,8 +1196,36 @@ mod windows_impl {
                     if let Err(apply) = frozen.time_minhook(|lock| unsafe {
                         MinHook::apply_queued(lock)
                     }) {
-                        apply_refusal =
-                            Some(InlineDetourEnableError::MinHook(apply));
+                        // Charged to the BATCH, not to a target: the apply
+                        // stopped at a target it does not name, and it does
+                        // not say whether it reached that target's bytes
+                        // before it stopped. `still_live` is stamped when the
+                        // report is sealed, once the rollback below has
+                        // answered.
+                        apply_refusal = Some(InlineDetourEnableError::BatchApplyRefused {
+                            status: apply,
+                            // Both stamped when the report is sealed, once the
+                            // rollback below has answered.
+                            still_live: false,
+                            rolled_back: false,
+                        });
+                        // FINISH THE PATCHING ANYWAY, THEN UNDO ALL OF IT.
+                        //
+                        // This looks like wasted work and is not: MinHook does
+                        // not say where the apply stopped, so after a refusal
+                        // nobody knows which targets are patched. The pass
+                        // ATTEMPTS completion over every queued target -- it
+                        // cannot guarantee it, because a completion enable
+                        // whose own first `VirtualProtect` refuses writes
+                        // nothing and leaves that target down -- which is
+                        // precisely why the rollback below covers the whole
+                        // QUEUED set rather than the ones this pass says it
+                        // patched. Undoing a target that was never patched
+                        // writes nothing; undoing one that was is what
+                        // RE-COMPLETES the incoherent one (`MH_DisableHook`
+                        // rewrites its bytes and re-derives the latch, and
+                        // until that happens `MH_RemoveHook` refuses it by
+                        // name forever).
                         for (index, &(_, target)) in targets.iter().enumerate() {
                             if statuses[index].is_ok() {
                                 statuses[index] = match unsafe {
@@ -908,19 +1242,46 @@ mod windows_impl {
                         }
                     }
                 }
-                // Anything refused -- at queue time or at patch time -- undoes
-                // the whole batch, so no game thread sees a partial set in an
-                // order MinHook's creation table chose.
-                let any_refusal = statuses.iter().any(|status| status.is_err());
+                // Anything refused -- at queue time, at patch time, OR BY THE
+                // APPLY ITSELF -- undoes the whole batch, so no game thread
+                // sees a partial set in an order MinHook's creation table
+                // chose.
+                //
+                // THE `apply_refusal` HALF IS THE FIX. It used to be absent,
+                // and the state that produced was the one lane LN drove: the
+                // apply refuses after writing a target's bytes, the completion
+                // pass re-enables every queued target, MinHook answers
+                // `MH_ERROR_ENABLED` for the one already patched, that maps to
+                // `Ok`, so `any_refusal` was FALSE and the whole roster went
+                // live with one detour's last write unpublished
+                // (`runs/ln_fault_inject/FINDINGS.txt`). A refused apply means
+                // one target MAY be patched with its write unpublished, and
+                // MinHook names neither the target nor whether it got that far
+                // -- so all of them come back down. Undoing one that was never
+                // patched costs a refused `MH_ERROR_DISABLED` and writes
+                // nothing, which is why the conservative set is the safe one.
+                let batch_refused =
+                    statuses.iter().any(|status| status.is_err()) || apply_refusal.is_some();
                 for (index, &(_, target)) in targets.iter().enumerate() {
-                    let live = statuses[index].is_ok() && queued_any;
-                    let undo = live && any_refusal;
+                    let undo = queued_ok[index] && queued_any && batch_refused;
                     let mut failed_undo = false;
                     if undo {
                         attempted_rollback = true;
-                        failed_undo =
-                            unsafe { MinHook::disable_hook(frozen.minhook_lock(), target) }
-                                .is_err();
+                        // ALREADY DISABLED IS A SUCCESSFUL UNDO. The rollback
+                        // set is every target this batch QUEUED, which is
+                        // wider than the set it is known to have patched, so a
+                        // target the apply never reached answers
+                        // `MH_ERROR_DISABLED` here -- nothing was patched and
+                        // nothing is left patched, which is precisely what the
+                        // undo asked for. Counting it as a failed undo would
+                        // make `rolled_back` false over a batch that IS fully
+                        // rolled back.
+                        failed_undo = !matches!(
+                            unsafe { MinHook::disable_hook(frozen.minhook_lock(), target) },
+                            Ok(())
+                                | Err(MH_STATUS::MH_ERROR_DISABLED)
+                                | Err(MH_STATUS::MH_ERROR_NOT_CREATED)
+                        );
                     }
                     rollback_failed.push(failed_undo);
                     // Leave `queueEnable` equal to `isEnabled` for every
@@ -935,15 +1296,52 @@ mod windows_impl {
                     // target the rollback then unpatched -- is already
                     // equalised, and that is the whole of what an offline test
                     // can reach. What is NOT reachable offline is a target
-                    // that was queued and never patched, which is exactly what
-                    // a refused `MH_ApplyQueued` leaves behind: `queueEnable`
-                    // true, `isEnabled` false, divergent, waiting for somebody
+                    // that was QUEUED AND NEVER PATCHED: `queueEnable` true,
+                    // `isEnabled` false, divergent, waiting for somebody
                     // else's apply to patch it inside a freeze nobody
-                    // accounted for. Nothing available here can make MinHook
-                    // refuse an apply it would otherwise accept, so this line
-                    // stands on MinHook's own source and on review rather than
-                    // on a test.
-                    let enabled_now = live && (!undo || failed_undo);
+                    // accounted for.
+                    //
+                    // Two things leave that shape, and neither can be driven
+                    // here. A queue call that succeeded for a target the apply
+                    // never reached -- which the completion pass now closes,
+                    // because it patches every queued target before the
+                    // rollback takes them down. And an `EnableHookLL` whose
+                    // FIRST `VirtualProtect` fails: it returns before touching
+                    // either flag, so the target keeps this batch's
+                    // `queueEnable` over an `isEnabled` of false, and the
+                    // rollback's `MH_DisableHook` answers `MH_ERROR_DISABLED`
+                    // without writing anything, leaving it divergent. THIS
+                    // line is what equalises it. Nothing available here can
+                    // make `VirtualProtect` fail on a page this process just
+                    // wrote, so it stands on MinHook's own source and on
+                    // review rather than on a test.
+                    // A REFUSED UNDO IS NOT THE SAME AS A LIVE TARGET, and the
+                    // status cannot tell them apart. `MH_DisableHook` answers
+                    // `MH_ERROR_MEMORY_PROTECT` both when its first
+                    // `VirtualProtect` refuses -- nothing restored, the detour
+                    // is still in the game -- and when it HAS restored the
+                    // original bytes and the protection restore or the cache
+                    // flush did not publish. Inferring "still live" from the
+                    // refusal is right in the first case and wrong in the
+                    // second, and it is the wrong one that a custody mask acts
+                    // on: it would send a teardown to disable a target that is
+                    // already down.
+                    //
+                    // So ask. `isEnabled` is set by `EnableHookLL` AFTER the
+                    // write and not at all when the write never happened, which
+                    // makes it exactly "are this target's bytes the patch right
+                    // now" in all four of those corners. Asked only on the one
+                    // path where the inference is uncertain, so the clean
+                    // install pays nothing for it.
+                    let enabled_now = if undo && failed_undo {
+                        matches!(
+                            MinHook::hook_is_enabled(frozen.minhook_lock(), target),
+                            Ok(true)
+                        )
+                    } else {
+                        queued_ok[index] && queued_any && !undo
+                    };
+                    live_now.push(enabled_now);
                     if !enabled_now {
                         let _ =
                             unsafe { MinHook::queue_disable_hook(frozen.minhook_lock(), target) };
@@ -965,13 +1363,14 @@ mod windows_impl {
                 for &(name, _) in targets {
                     outcomes.push((name, Err(refused)));
                 }
-                return BatchEnableReport {
+                return BatchEnableReport::sealed(
                     outcomes,
                     apply_refusal,
-                    rolled_back: false,
-                    freezes: super::freeze::freeze_attempts_on_this_thread()
+                    &[],
+                    false,
+                    super::freeze::freeze_attempts_on_this_thread()
                         .saturating_sub(freezes_before),
-                };
+                );
             }
         }
         let mut enabled = 0u64;
@@ -982,28 +1381,33 @@ mod windows_impl {
                 Some(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
                 None => statuses[index].map_err(InlineDetourEnableError::MinHook),
             };
-            // Counted when the target is LIVE now, which after a rollback is
-            // only the ones the rollback could not take back down. The
-            // completion pass calls MinHook directly and does not bump the
-            // census itself, so this is the only place any of them is counted
-            // and none is counted twice.
-            // Counted only when the target is LIVE now: its own enable
-            // succeeded AND no rollback took it back down. Decided per
-            // POSITION, because a mixed rollback -- some undos accepted, one
-            // refused -- leaves only the refused one live, and a batch-wide
-            // flag would count the ones that came back down with it.
-            if outcome.is_ok() && (!attempted_rollback || rollback_failed[index]) {
+            // FROM THE LIVE STATE, NOT FROM THE OUTCOME. The completion pass
+            // calls MinHook directly and does not bump the census itself, so
+            // this is the only place any of them is counted and none is
+            // counted twice -- but what it counts has to be "patched into the
+            // process right now", and an outcome is no longer that. A batch
+            // rolled back after a refused apply reports a refusal for every
+            // target and none of them is live; a target whose undo was refused
+            // reports one too and IS live, and it is the one the census may
+            // not miss.
+            //
+            // Decided per POSITION, because a mixed rollback -- some undos
+            // accepted, one refused -- leaves only the refused one live, and a
+            // batch-wide flag would count the ones that came back down with
+            // it.
+            if live_now[index] {
                 enabled += 1;
             }
             outcomes.push((name, outcome));
         }
         ENABLED_DETOURS.fetch_add(enabled, Ordering::AcqRel);
-        BatchEnableReport {
+        BatchEnableReport::sealed(
             outcomes,
             apply_refusal,
+            &live_now,
             rolled_back,
-            freezes: super::freeze::freeze_attempts_on_this_thread().saturating_sub(freezes_before),
-        }
+            super::freeze::freeze_attempts_on_this_thread().saturating_sub(freezes_before),
+        )
     }
 
     /// The first target that appears more than once in `targets`.
@@ -1066,6 +1470,17 @@ mod windows_impl {
             crate::release_ledger::name_release_target(target as usize, name);
         }
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
+        // WHICH TARGETS THIS BATCH FOUND PATCHED, read before anything is
+        // queued and reserved before the freeze exists.
+        //
+        // A teardown is routinely handed its WHOLE roster when part of it is
+        // already down -- every failed-install cleanup in this workspace does
+        // exactly that. The restore-behind-a-refusal arm below then re-enables
+        // targets to undo an apply that had taken them down, and for a target
+        // that was ALREADY down it does not undo anything: it INSTALLS a
+        // detour, from inside a teardown, and the caller's custody mask does
+        // not name it. This is what stops that.
+        let mut live_at_entry: Vec<bool> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
         // Set when a held thread was stopped inside bytes this release would
         // have restored. Nothing is unpatched then, so no target's own MinHook
@@ -1102,6 +1517,12 @@ mod windows_impl {
             targets.len() as u32,
         );
         for &(_, target) in targets {
+            live_at_entry.push(matches!(
+                MinHook::hook_is_enabled(frozen.minhook_lock(), target),
+                Ok(true)
+            ));
+        }
+        for &(_, target) in targets {
             statuses.push(unsafe {
                 MinHook::queue_disable_hook(frozen.minhook_lock(), target)
             });
@@ -1117,29 +1538,17 @@ mod windows_impl {
                 parked_refusal = Some(refusal);
                 apply_refusal = Some(InlineDetourReleaseError::FreezeRefused(refusal));
                 queued_any = false;
-                // PUT THE QUEUE BACK, HERE, and not through the normalisation
-                // loop below -- which reads a queue status of `Ok` as "this
-                // target was disabled" and would leave `queueEnable` FALSE
-                // against an `isEnabled` that is still TRUE. Nothing was
-                // applied, so every target this batch queued is still live and
-                // must be queued as such; a divergent entry is a patch some
-                // later, unrelated `apply_queued` performs inside a freeze
-                // nobody accounted for (review round 1, MED).
-                for &(_, target) in targets.iter() {
-                    // FROM THE LIVE STATE, not from the queue call's status: a
-                    // queue call answers OK for a target that was ALREADY
-                    // disabled, and re-queuing that one for enabling hands a
-                    // later, unrelated apply a patch nobody asked for (review
-                    // round 2, MED). A target whose state cannot be read is left
-                    // queued-disabled, which is the direction that patches
-                    // nothing.
-                    let live = MinHook::hook_is_enabled(frozen.minhook_lock(), target);
-                    if matches!(live, Ok(true)) {
-                        let _ = unsafe {
-                            MinHook::queue_enable_hook(frozen.minhook_lock(), target)
-                        };
-                    }
-                }
+                // THE QUEUE IS PUT BACK BY THE NORMALISATION LOOP BELOW, which
+                // this used to duplicate. Nothing was applied, so every target
+                // this batch queued is still in whatever state it was found in,
+                // and a `queueEnable` of FALSE against an `isEnabled` of TRUE
+                // is a divergent entry that some later, unrelated
+                // `apply_queued` performs inside a freeze nobody accounted for
+                // (review round 1, MED). The loop below asks MinHook for
+                // `isEnabled` and equalises against it for EVERY target in
+                // BOTH directions, which is strictly what the copy that stood
+                // here did and also covers the case it did not (review round
+                // 4). One mechanism, not two.
             }
         }
         if queued_any {
@@ -1165,6 +1574,18 @@ mod windows_impl {
                         continue;
                     }
                     if refused_at.is_some() {
+                        // AND ONLY IF THIS BATCH FOUND IT PATCHED. Re-enabling
+                        // is how a target the apply took down is put back; for
+                        // one that was already down when the batch started it
+                        // is not a restore at all, it is a teardown installing
+                        // a detour the caller never asked for and does not
+                        // know about. Its release postcondition already holds
+                        // -- nothing is patched -- so it is reported as the
+                        // already-released it is.
+                        if !live_at_entry[index] {
+                            statuses[index] = Err(MH_STATUS::MH_ERROR_DISABLED);
+                            continue;
+                        }
                         // Behind the refusal: restore it if the apply took it
                         // down. `MH_ERROR_ENABLED` means it never did.
                         let restored =
@@ -1185,18 +1606,33 @@ mod windows_impl {
                 }
             }
         }
-        // Leave `queueEnable` equal to `isEnabled` for every target this batch
-        // could not release, so no divergent entry is left for an unrelated
-        // `MH_ApplyQueued`. A target whose disable was refused is still
-        // enabled; `MH_ERROR_DISABLED`/`MH_ERROR_NOT_CREATED` are not
-        // refusals, and `EnableHookLL` already equalised the ones it disabled.
-        for (index, &(_, target)) in targets.iter().enumerate() {
-            let still_enabled = match statuses[index] {
-                Ok(()) => false,
-                Err(status) => !InlineDetourReleaseError::MinHook(status).already_released(),
-            };
-            if still_enabled {
-                let _ = unsafe { MinHook::queue_enable_hook(frozen.minhook_lock(), target) };
+        // Leave `queueEnable` equal to `isEnabled` for EVERY target, so no
+        // divergent entry is left for an unrelated `MH_ApplyQueued` to act on.
+        //
+        // ASKED, NOT INFERRED, and that is the whole of it. This used to read
+        // "still enabled" off the target's status: `Ok` or an already-released
+        // status meant down, anything else meant up. `MH_ERROR_MEMORY_PROTECT`
+        // breaks that in both directions, because `EnableHookLL` answers it
+        // before it writes anything AND after it has written and failed only
+        // to publish. The reachable one is a restore-behind-a-refusal whose
+        // own first `VirtualProtect` fails: nothing is written, the target
+        // stays DOWN, the status says refused, and the inference queued it
+        // ENABLED -- a divergent entry that the next unrelated apply installs,
+        // inside a freeze nobody accounted for, during a teardown (review
+        // round 4, HIGH).
+        //
+        // `isEnabled` is what `MH_ApplyQueued` compares `queueEnable` against,
+        // so asking for it is asking the exact question this loop exists to
+        // answer. A target MinHook cannot find has no entry to leave divergent.
+        for &(_, target) in targets.iter() {
+            match MinHook::hook_is_enabled(frozen.minhook_lock(), target) {
+                Ok(true) => {
+                    let _ = unsafe { MinHook::queue_enable_hook(frozen.minhook_lock(), target) };
+                }
+                Ok(false) => {
+                    let _ = unsafe { MinHook::queue_disable_hook(frozen.minhook_lock(), target) };
+                }
+                Err(_) => {}
             }
         }
         drop(frozen);
@@ -2642,7 +3078,7 @@ mod batch_tests {
         assert!(report.outcomes()[0].1.is_ok(), "{:?}", report.outcomes()[0]);
         assert!(report.outcomes()[2].1.is_ok(), "{:?}", report.outcomes()[2]);
         let (name, error) = report
-            .first_failure()
+            .refusal()
             .expect("the absent target must be reported as a failure");
         assert_eq!(name, "absent.hook");
         assert_eq!(
@@ -2827,7 +3263,7 @@ mod batch_tests {
         let all_absent = unsafe { enable_batch(&[("absent.a", ABSENT_TARGET)]) };
         assert_eq!(all_absent.freezes(), 1);
         assert_eq!(all_absent.failures().len(), 1);
-        assert_eq!(all_absent.first_failure().map(|(name, _)| name), Some("absent.a"));
+        assert_eq!(all_absent.refusal().map(|(name, _)| name), Some("absent.a"));
 
         let released = unsafe { disable_batch(&[("absent.b", ABSENT_TARGET)]) };
         assert_eq!(released.freezes(), 1);

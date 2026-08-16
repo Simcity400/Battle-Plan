@@ -670,7 +670,7 @@ fn install_hooks() -> Result<InstalledHookAddresses, String> {
     // Cancellation remains first in the readable roster, while both hooks are
     // patched inside one freeze instead of two with no intervening game thread.
     let enabled = unsafe { inline_detour::enable_batch(&hook_batch(sites)) };
-    if let Some((name, status)) = enabled.first_failure() {
+    if let Some((name, status)) = enabled.refusal() {
         if let Err(cleanup) = cleanup_hooks(sites) {
             INSTALLED.store(true, Ordering::Release);
             return Err(format!(
