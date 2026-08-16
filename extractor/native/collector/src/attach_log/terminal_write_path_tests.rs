@@ -106,8 +106,12 @@ fn code_only(source: &str) -> String {
 /// each expected total.
 #[test]
 fn every_production_rollover_exit_routes_through_successor_census_recovery() {
+    // Split on the module line alone: the `#[cfg(test)]` line above it is
+    // separated by whatever line ending the checkout carries (this file is
+    // CRLF on an autocrlf=true checkout and LF in git), and a marker that
+    // spells the newline fails on one of the two.
     let production = COLLECTOR_SOURCE
-        .split_once("#[cfg(test)]\nmod freeze_census_publication_tests")
+        .split_once("mod freeze_census_publication_tests {")
         .expect("freeze census publication test module")
         .0;
     assert_eq!(
