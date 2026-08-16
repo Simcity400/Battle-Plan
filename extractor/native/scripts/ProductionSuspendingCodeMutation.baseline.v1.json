@@ -37,14 +37,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -61,14 +61,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -85,14 +85,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -109,14 +109,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -133,14 +133,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -157,14 +157,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -181,14 +181,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -205,14 +205,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -229,14 +229,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -253,14 +253,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -288,7 +288,7 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  }
                                              ]
                   },
@@ -316,14 +316,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -340,14 +340,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -364,14 +364,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -388,14 +388,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -423,7 +423,7 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  }
                                              ]
                   },
@@ -440,14 +440,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -464,14 +464,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -488,14 +488,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -512,14 +512,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -536,14 +536,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -560,14 +560,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -584,14 +584,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   },
@@ -619,14 +619,14 @@
                                                      "package":  "inline_detour",
                                                      "reaches_suspension":  true,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "7baac2d528eb911d96dc39bb611f513bfc4adf05fe6e1ce9b80bb9f1e18249f9"
+                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
                                                  },
                                                  {
                                                      "dependency":  "minhook",
-                                                     "package":  "minhook",
-                                                     "reaches_suspension":  true,
+                                                     "package":  "minhook_h4",
+                                                     "reaches_suspension":  false,
                                                      "reaches_code_mutation":  true,
-                                                     "capability_digest":  "d83f11225fe0e64d96bf0103a8cb56ede620f6070f9b97663de42b22929aa9a3"
+                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
                                                  }
                                              ]
                   }
