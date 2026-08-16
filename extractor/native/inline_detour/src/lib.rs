@@ -62,6 +62,11 @@
 #[cfg(windows)]
 mod freeze;
 
+/// Read-only census of the process's other threads (cycles + ideal processor);
+/// lives here because thread enumeration is this crate's choke point.
+#[cfg(windows)]
+pub mod thread_census;
+
 /// What every stopped window cost, recorded in production rather than in a test
 /// program. See the module for the gap it closes.
 #[cfg(windows)]

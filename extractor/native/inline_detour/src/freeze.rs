@@ -3460,8 +3460,9 @@ mod tests {
     }
 
     /// Fill `out` with every thread id `CreateToolhelp32Snapshot` attributes to
-    /// this process -- the independent authority the walk is checked against,
-    /// and the ONLY use of the system-wide snapshot left in this crate.
+    /// this process -- the independent authority the walk is checked against.
+    /// (The crate's other snapshot use is `thread_census`, a read-only census
+    /// that suspends nothing.)
     ///
     /// Also called with the process frozen, and under the same no-growth rule.
     fn fill_with_snapshotted_thread_ids(out: &mut Vec<u32>) -> bool {
