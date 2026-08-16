@@ -1,15 +1,10 @@
 name: Rust production validation
 
 on:
-  pull_request:
-  push:
-    branches:
-      - master
-      - ExtractorV2
-      # Lane branches. A lane's battery is the expensive local gate that keeps
-      # this machine busy for ~22 minutes; running the same gate here on every
-      # lane push is the point of the cloud port.
-      - 'lane-*'
+  # OWNER DIRECTIVE 2026-08-16: cloud CI is MANUAL ONLY - no credits for
+  # automatic runs. push/pull_request triggers removed; every master run in
+  # the automatic era failed anyway (see gh run list). Re-enable by restoring
+  # the push/pull_request blocks from git history when credits allow.
   workflow_dispatch:
 
 permissions:
