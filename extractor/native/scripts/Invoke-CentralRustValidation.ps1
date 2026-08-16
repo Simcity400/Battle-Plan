@@ -311,6 +311,12 @@ $clockBaselineSummaryTests = Join-Path $PSScriptRoot "test_clock_baseline_summar
 # Python, PowerShell). Rust is held to `gap_ledger_conformance.json` by its own
 # suite; these two hold the other two to the same vector, so a shape change that
 # reaches only one of them fails here rather than on a promoted capture.
+# The CaptureReadyV2 authenticated payload is laid out by THREE implementations
+# (Rust producer, PowerShell harness mirror, this Python re-derivation). The
+# first two pin each other; the third had no test at all and had silently
+# drifted at two wire revisions, so it disagreed with every receipt the recorder
+# wrote. These are the same golden vectors the other two are held to.
+$sinkReconciliationTests = Join-Path $PSScriptRoot "test_verify_sink_reconciliation.py"
 $gapLedgerTests = Join-Path $PSScriptRoot "test_gap_ledger.py"
 $gapLedgerExpansionTests = Join-Path $PSScriptRoot "Test-GapLedgerExpansion.ps1"
 # The domain axis (`coverage_audit/reference_ledger/domain_file_map.csv`) is a
@@ -2663,6 +2669,7 @@ try {
         Invoke-Checked -Program "python" -Arguments @($citationIntegrityTests)
         Invoke-Checked -Program "python" -Arguments @($captureScorecardTests)
         Invoke-Checked -Program "python" -Arguments @($clockBaselineSummaryTests)
+        Invoke-Checked -Program "python" -Arguments @($sinkReconciliationTests)
         Invoke-Checked -Program "python" -Arguments @($gapLedgerTests)
         Invoke-Checked -Program "python" -Arguments @($domainFileMapTests)
         Invoke-Checked -Program "powershell.exe" -Arguments @(

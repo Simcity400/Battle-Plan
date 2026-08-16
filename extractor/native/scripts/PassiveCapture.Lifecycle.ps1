@@ -1080,6 +1080,82 @@ function Get-PassiveCaptureReadyFeatureBits {
         $Ready.collector_feature_bits u32 'collector_feature_bits')
 }
 
+# The collector's install-freeze count as it rides the wire at CaptureReadyV2
+# offset 50.
+#
+# ABSENT IS A REFUSAL, NOT A ZERO -- deliberately unlike
+# Get-PassiveCaptureReadyFeatureBits at offset 20. That function reads a missing
+# property as zero because a pre-declaration receipt really did authenticate a
+# zero there, and the same could be said here; it is still the wrong trade. A
+# silent zero at offset 50 is exactly what refused six captures with nothing but
+# two hashes to look at, and this project keeps no backwards compatibility --
+# old captures are disposable. So a receipt without the property is named as the
+# producer skew it is, and the historical fixture receipts carry an explicit
+# `install_freeze_count: 0` instead of leaning on a default.
+#
+# THIS IS WHERE EVERY CAPTURE DIED. The offset stopped being reserved and this
+# rebuild kept appending a literal zero, so the digest it computed could not
+# equal the collector's on any attach that installed an inline detour --
+# installing one freezes the process, and `validate_ready` in
+# control_transport/payloads.rs refuses a payload claiming zero freezes beside
+# live detours. Runs t57, t58, t59 and t60 (on C:) and t62 and t63 (on L:) were
+# all refused on `ready_payload_sha256` alone and all reported 13, which is why
+# the volume looked like the variable and was not; the evidence is in
+# `runs/lp_refusal_volume/EVIDENCE.md`.
+function Get-PassiveCaptureReadyInstallFreezeCount {
+    param([Parameter(Mandatory = $true)][object]$Ready)
+
+    if ($null -eq $Ready.PSObject.Properties['install_freeze_count']) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'producer_skew' `
+            -Field 'install_freeze_count' `
+            -Expected 'present on the CaptureReadyV2 receipt (offset 50 of the authenticated payload)' `
+            -Observed 'absent' `
+            -Message ('CaptureReadyV2 receipt carries no install_freeze_count, so the ' +
+                'authenticated payload cannot be rebuilt: this recorder_host predates ' +
+                'CaptureReadyV2 offset 50 while the contract in this checkout has it. ' +
+                'Rebuild recorder_host and collector from the same tree.'))
+    }
+    # u32 then a NAMED range refusal, not a bare [uint16] cast: the cast's own
+    # error says "Value was either too large or too small for a UInt16" and
+    # names no field, and this one has to survive being read off a receipt the
+    # harness did not write.
+    $value = ConvertTo-PassiveReceiptInteger `
+        $Ready.install_freeze_count u32 'install_freeze_count'
+    if ($value -gt [uint32]65535) {
+        throw (
+            "Passive lifecycle field 'install_freeze_count' is $value, " +
+            'which does not fit the u16 it occupies on the wire.'
+        )
+    }
+    return [uint16]$value
+}
+
+# The receipt's shape, admitted in the ONE order that produces a usable
+# refusal.
+#
+# This is a function rather than two lines inside the admission because the
+# ORDER is the behaviour worth having, and two lines inline cannot be tested.
+# `Assert-PassiveExactPropertySet` compares sizes first, so a receipt missing
+# `install_freeze_count` came back as "has 34 properties; expected exactly 35" --
+# true, and useless to the operator holding a refused capture. Reading the field
+# first turns that into a sentence naming the field and the repair. Moving these
+# two calls back into the caller, or swapping them, is exactly the regression
+# `Test-PassiveCapturePolicy.ps1` section 4 c2 catches.
+function Assert-PassiveCaptureReadyReceiptShape {
+    param(
+        [Parameter(Mandatory = $true)][object]$Ready,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedProperties,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    [void](Get-PassiveCaptureReadyInstallFreezeCount -Ready $Ready)
+    Assert-PassiveExactPropertySet `
+        -Value $Ready `
+        -Expected $ExpectedProperties `
+        -Label $Label
+}
+
 function Add-PassiveSha256Bytes {
     param(
         [Parameter(Mandatory = $true)]
@@ -1175,7 +1251,12 @@ function Get-PassiveCaptureReadyPayloadSha256 {
             $Ready.active_hook_count u32 `
             'active_hook_count'
     ))
-    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]0)
+    # Offset 50: the collector's install-freeze count since lane KG, zero on
+    # every receipt written before it. NOT a reserved zero -- see
+    # Get-PassiveCaptureReadyInstallFreezeCount.
+    Add-PassiveLittleEndianBytes $bytes u16 (
+        Get-PassiveCaptureReadyInstallFreezeCount -Ready $Ready
+    )
     Add-PassiveLittleEndianBytes $bytes i32 (
         ConvertTo-PassiveReceiptInteger `
             $Ready.clock_hour_raw i32 `
@@ -1469,6 +1550,18 @@ function Assert-PassiveReadySourceContractParity {
         -Fragment '"clock_observation_ordinal": ready.clock_observation_ordinal' `
         -Class 'host_receipt_field' `
         -Message 'Passive READY receipt producer no longer emits clock_observation_ordinal.'
+    # THE RECEIPT HAS TO PUBLISH EVERY FIELD THIS FILE REBUILDS THE PAYLOAD
+    # FROM. The pins above prove the WIRE carries the freeze count at offset 50;
+    # they say nothing about the receipt, and that gap is the whole defect: the
+    # count went onto the wire without going onto the receipt, so the rebuild
+    # had nothing to read, kept a zero there, and refused every capture that
+    # installed an inline detour. A wire pin cannot catch that. This one can,
+    # and it fires before a graded window opens rather than after one closes.
+    Assert-PassiveProducerFragment `
+        -Source $hostSource `
+        -Fragment '"install_freeze_count": ready.install_freeze_count' `
+        -Class 'host_receipt_field' `
+        -Message 'Passive READY receipt producer no longer emits install_freeze_count, which the payload rebuild reads from CaptureReadyV2 offset 50.'
     return $hookAuthority
 }
 
@@ -1807,7 +1900,12 @@ function Test-PassiveCaptureReadyReceipt {
         'process_creation_filetime_utc', 'session_id', 'capture_id',
         'requested_duration_ms', 'readiness_flags', 'validated_domain_count',
         'scheduler_queue_capacity', 'scheduler_worker_count',
-        'allowed_hook_count', 'active_hook_count', 'clock_hour_raw',
+        'allowed_hook_count', 'active_hook_count',
+        # CaptureReadyV2 offset 50. NOT an optional dialect: every recorder that
+        # can be built today writes it, and a receipt without it cannot have its
+        # payload rebuilt at all, so it is required here and named separately
+        # below rather than being read as a zero.
+        'install_freeze_count', 'clock_hour_raw',
         'clock_observation_ordinal', 'target_executable_sha256',
         'collector_dll_sha256',
         'hook_allowlist_sha256', 'hook_outcomes_sha256',
@@ -1818,12 +1916,11 @@ function Test-PassiveCaptureReadyReceipt {
         'ready_payload_sha256', 'host_binding_sha256', 'host_validated',
         'public_receipt_core_sha256', 'ready_ack_sha256'
     )
-    # Two dialects, one closed set each. See
-    # Get-PassiveCaptureReadyDeclaredProperties.
+    # One optional axis. See Get-PassiveCaptureReadyDeclaredProperties.
     $readyProperties += (Get-PassiveCaptureReadyDeclaredProperties -Ready $ready)
-    Assert-PassiveExactPropertySet `
-        -Value $ready `
-        -Expected $readyProperties `
+    Assert-PassiveCaptureReadyReceiptShape `
+        -Ready $ready `
+        -ExpectedProperties $readyProperties `
         -Label 'CaptureReadyV2 receipt'
     $featureAuthority = Get-PassiveCollectorFeatureAuthority
 

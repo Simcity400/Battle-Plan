@@ -4384,6 +4384,11 @@ pub fn observer_only() {}
         scheduler_worker_count = $schedulerWorkerCount
         allowed_hook_count = [int]$hookAuthority.Count
         active_hook_count = [int]$hookAuthority.Count
+        # CaptureReadyV2 offset 50. This roster is the full pinned hook set, so
+        # inline detours are live and `validate_ready` refuses a zero here; a
+        # synthetic receipt that left the field out would be a shape no real
+        # recorder writes, which is exactly the shape that hid the refusal.
+        install_freeze_count = 13
         clock_hour_raw = $clockHourRaw
         clock_observation_ordinal = $clockObservationOrdinal
         target_executable_sha256 = $targetExecutableSha256

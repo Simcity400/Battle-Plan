@@ -183,7 +183,23 @@ def capture_ready_payload_sha256(ready: dict[str, Any], pipe_token: str) -> str 
                 "<IIIQIIIHHHHiQ",
                 ready["readiness_flags"],
                 ready["pid"],
-                0,
+                # Offsets 20 and 50 were both reserved-must-be-zero once and both
+                # became real fields (the collector's compile-time feature word,
+                # then its install-freeze count). This re-derivation kept the
+                # constants, so it disagreed with every receipt written after
+                # either change.
+                #
+                # Offset 20 keeps a zero default because a pre-declaration
+                # receipt legitimately carries no such property and really did
+                # authenticate a zero there -- the PowerShell mirror's
+                # Get-PassiveCaptureReadyFeatureBits says the same. Offset 50 has
+                # NO default: `ready["install_freeze_count"]` raises KeyError,
+                # this function returns None, and the caller reports
+                # `capture_ready_authenticated_payload_or_ack_digest_invalid`
+                # instead of quietly rebuilding the wrong bytes. That silent zero
+                # is what refused six captures with nothing but two hashes to
+                # look at.
+                ready.get("collector_feature_bits", 0),
                 ready["process_creation_filetime_utc"],
                 ready["requested_duration_ms"],
                 ready["validated_domain_count"],
@@ -191,7 +207,7 @@ def capture_ready_payload_sha256(ready: dict[str, Any], pipe_token: str) -> str 
                 ready["scheduler_worker_count"],
                 ready["allowed_hook_count"],
                 ready["active_hook_count"],
-                0,
+                ready["install_freeze_count"],
                 ready["clock_hour_raw"],
                 ready["clock_observation_ordinal"],
             )
@@ -574,7 +590,8 @@ def grade_passive_lifecycle(
         "process_creation_filetime_utc", "session_id", "capture_id",
         "requested_duration_ms", "readiness_flags", "validated_domain_count",
         "scheduler_queue_capacity", "scheduler_worker_count",
-        "allowed_hook_count", "active_hook_count", "clock_hour_raw",
+        "allowed_hook_count", "active_hook_count", "install_freeze_count",
+        "clock_hour_raw",
         "clock_observation_ordinal", "target_executable_sha256", "collector_dll_sha256",
         "hook_allowlist_sha256", "hook_outcomes_sha256",
         "validated_domain_roster_sha256", "clock_witness_sha256",
@@ -584,6 +601,33 @@ def grade_passive_lifecycle(
         "ready_payload_sha256", "host_binding_sha256", "host_validated",
         "public_receipt_core_sha256", "ready_ack_sha256",
     }
+    # `install_freeze_count` is REQUIRED above, in step with the PowerShell
+    # mirror's roster; only the build declaration is an optional axis, kept in
+    # step with Get-PassiveCaptureReadyDeclaredProperties in
+    # PassiveCapture.Lifecycle.ps1. This set was left on the pre-declaration
+    # roster, so it rejected every receipt the recorder actually writes as
+    # `capture_ready_property_set_invalid` before it ever reached the digest
+    # check below -- the same failure lane AS is recorded as having caused on
+    # the teardown set.
+    declaration_pair = {"collector_feature_bits", "collector_build"}
+    declaration_present = declaration_pair & set(ready)
+    require(
+        len(declaration_present) in (0, len(declaration_pair)),
+        "capture_ready_partial_build_declaration",
+        problems,
+    )
+    ready_keys |= declaration_present
+    # NAMED SEPARATELY, ahead of the generic set and digest checks below, for the
+    # same reason the PowerShell mirror reads it before comparing property sets:
+    # `capture_ready_property_set_invalid` and
+    # `capture_ready_authenticated_payload_or_ack_digest_invalid` are both true
+    # when this field is missing and neither says which field, which is exactly
+    # how a producer skew read as an unexplained hash mismatch for a week.
+    require(
+        "install_freeze_count" in ready,
+        "capture_ready_install_freeze_count_missing",
+        problems,
+    )
     teardown_keys = {
         "schema", "status", "capture_policy", "pid",
         "process_creation_filetime_utc", "session_id", "capture_id",

@@ -1366,6 +1366,128 @@ mod tests {
         );
     }
 
+    fn to_hex32(bytes: &[u8; 32]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn hex32(text: &str) -> [u8; 32] {
+        let bytes: Vec<u8> = (0..32)
+            .map(|index| u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).unwrap())
+            .collect();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        out
+    }
+
+    /// The exact receipt the harness-side rebuild is pinned against.
+    ///
+    /// These are run t63's own fields (`runs/lp_refusal_volume/evidence/
+    /// t63_CAPTURE_READY_V2.json`), with one substitution: `pipe_token_sha256`
+    /// is rebound to the receipt-dialect fixture's token, because that token is
+    /// the only one still known and `validate_ready_token_binding` requires the
+    /// two to agree. Nothing else is touched.
+    fn t63_ready_fields(install_freeze_count: u16) -> CaptureReadyV2 {
+        CaptureReadyV2 {
+            flags: CaptureReadyFlags::from_bits(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)
+                .unwrap(),
+            pid: 34_900,
+            collector_features: CollectorFeatureBits::from_bits(CollectorFeatureBits::DECLARED)
+                .unwrap(),
+            process_creation_filetime_utc: 134_313_300_665_890_026,
+            requested_duration_ms: 120_000,
+            validated_domain_count: 67,
+            scheduler_queue_capacity: 1,
+            scheduler_worker_count: 12,
+            allowed_hook_count: 45,
+            active_hook_count: 45,
+            install_freeze_count,
+            clock_hour_raw: 60_831_264,
+            clock_observation_ordinal: 12,
+            target_executable_sha256: hex32(
+                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+            ),
+            collector_dll_sha256: hex32(
+                "18883f3ad61d796d13e406b28869e764efca61863928150fbe08cdcb23bb07b8",
+            ),
+            hook_allowlist_sha256: hex32(
+                "54348f3d32277a114474c0a2b667ddf32cab6388adfd2a42500cac79ea8eaa79",
+            ),
+            hook_outcomes_sha256: hex32(
+                "416db3019bcd56f982a9e11978bcc47a0b9dc06d23147935d56dbbf30907951b",
+            ),
+            validated_domain_roster_sha256: hex32(
+                "3e74b2f4cdad7b9a4f6f5326cba28dd14bf0eb2f8475be8f87b39ef65bd4b1ca",
+            ),
+            clock_witness_sha256: hex32(
+                "b9783a3e914bc1cb498e69ab9d6d2c5c7979854e6b5d4d981cad6b0539922b39",
+            ),
+            scheduler_config_sha256: hex32(
+                "bccf0cf2af1a2d002316ce163e5c41504b1507dca3ebd901e5082866c56a9bc4",
+            ),
+            output_pipe_identity_sha256: hex32(
+                "8d85b8126cb3811b7f49b002c865d543cf66cd8f0c3c3c854f520bb975499218",
+            ),
+            pipe_token_sha256: hex32(
+                "468803408b348616f75c0e5fad146849d75c4b03af945baf14a1412e205afd3b",
+            ),
+            zero_mutation_policy_sha256: hex32(
+                "bfd0f328539c2dc07982553870d218d8c6dd5b2ab2683ec082b3392cf465dcae",
+            ),
+            session_id_sha256: hex32(
+                "33c6ece20b57f5ebaaa0fbef6f384c0bce421f511082c56a3581657e19d6b602",
+            ),
+            capture_id_sha256: hex32(
+                "b751d03e68c6f9edc58e5a6924031a584a04d827e1cf44b198e185acaf22648d",
+            ),
+            control_sha256: hex32(
+                "758746092eb8b83c15916bce1842ab8d1d50d99dd0c14cafe0d3403206bded36",
+            ),
+        }
+    }
+
+    /// THE PRODUCER SIDE OF THE FIXTURE THE HARNESS REBUILD IS PINNED AGAINST.
+    ///
+    /// `PassiveCaptureReady.ReceiptDialects.fixture.v1.json` carries two cases
+    /// derived from run t63 (`t63_install_freeze_13`, `t63_install_freeze_1000`)
+    /// and `Test-PassiveCapturePolicy.ps1` requires the PowerShell rebuild to
+    /// reproduce their digests. Those digests are only worth pinning if they are
+    /// what THIS encoder emits, so the same two vectors are asserted here, off
+    /// `encode_authenticated` itself.
+    ///
+    /// WHY IT EXISTS. `install_freeze_count` took CaptureReadyV2 offset 50 from
+    /// a reserved zero; the harness rebuild kept writing that zero, and because
+    /// installing an inline detour freezes the process, every capture that
+    /// installs one was refused on `ready_payload_sha256` for days (runs t57,
+    /// t58, t59 and t60 on C:, t62 and t63 on L:, all reporting 13).
+    /// The whole test suite stayed green because every pinned fixture receipt
+    /// predated offset 50 and genuinely had a zero there. Changing offset 50's
+    /// encoding, or dropping the field back to a constant on either side, now
+    /// fails here and in the PowerShell policy suite together.
+    #[test]
+    fn passive_capture_ready_pins_the_harness_rebuild_vectors_at_offset_50() {
+        let token = b"f743c8f124d2572ad18b99db033554ba";
+        let thirteen = t63_ready_fields(13)
+            .encode_authenticated(token)
+            .expect("t63 fields are a valid CaptureReadyV2");
+        assert_eq!(read_u16(&thirteen, 50), 13);
+        assert_eq!(
+            to_hex32(&capture_ready_payload_sha256(&thirteen)),
+            "e8b08ebca73f6b9d4821931b3c53f74dc55e7c48bc203b0f6a69f4b596ad16b8"
+        );
+        // A SECOND, DIFFERENT COUNT. One vector is satisfied by an encoder that
+        // hardcodes 13 exactly as the old one hardcoded 0, and 1000 does not fit
+        // in a byte either.
+        let thousand = t63_ready_fields(1000)
+            .encode_authenticated(token)
+            .expect("t63 fields are a valid CaptureReadyV2");
+        assert_eq!(read_u16(&thousand, 50), 1000);
+        assert_eq!(
+            to_hex32(&capture_ready_payload_sha256(&thousand)),
+            "5089b85d8f0fa835790baa90d45984c8c1b64036e88da2f7070ac616aff27bfe"
+        );
+        assert_ne!(thirteen, thousand);
+    }
+
     fn ready_fields() -> CaptureReadyV2 {
         CaptureReadyV2 {
             flags: CaptureReadyFlags::from_bits(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)

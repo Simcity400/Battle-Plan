@@ -251,6 +251,13 @@ foreach ($requiredFunction in @(
     'Get-PassivePinnedHookAllowlistAuthorityFromSource',
     'Get-PassiveCaptureReadyPayloadSha256',
     'Get-PassiveCaptureReadyAckSha256',
+    # Offset 50's reader, which is also where a receipt that omits the field is
+    # refused by name. Deleting it and inlining a constant is exactly how the
+    # defect it closes was introduced.
+    'Get-PassiveCaptureReadyInstallFreezeCount',
+    # The ordered shape admission. It exists so the ORDER of the two checks is
+    # testable at all; inlining it back into the caller is the regression.
+    'Assert-PassiveCaptureReadyReceiptShape',
     'Assert-PassiveReadySourceContractParity',
     'Assert-PassiveExactPropertySet'
 )) {
@@ -370,6 +377,7 @@ Assert-Policy `
 $dialectDeclaredSeen = $false
 $dialectUndeclaredSeen = $false
 $dialectWords = [Collections.Generic.List[uint32]]::new()
+$dialectFreezeCounts = [Collections.Generic.List[uint16]]::new()
 $dialectPinnedDigests = [Collections.Generic.List[string]]::new()
 foreach ($case in $dialectCases) {
     $caseName = [string]$case.name
@@ -396,7 +404,8 @@ foreach ($case in $dialectCases) {
         'process_creation_filetime_utc', 'session_id', 'capture_id',
         'requested_duration_ms', 'readiness_flags', 'validated_domain_count',
         'scheduler_queue_capacity', 'scheduler_worker_count',
-        'allowed_hook_count', 'active_hook_count', 'clock_hour_raw',
+        'allowed_hook_count', 'active_hook_count', 'install_freeze_count',
+        'clock_hour_raw',
         'clock_observation_ordinal', 'target_executable_sha256',
         'collector_dll_sha256',
         'hook_allowlist_sha256', 'hook_outcomes_sha256',
@@ -429,7 +438,16 @@ foreach ($case in $dialectCases) {
                 [string]$case.expected_ready_payload_sha256) `
             -Message "Passive READY dialect '$caseName' payload rebuild is $observedPayloadSha, not $($case.expected_ready_payload_sha256)."
         $dialectWords.Add((Get-PassiveCaptureReadyFeatureBits -Ready $receipt))
-        $dialectPinnedDigests.Add([string]$case.expected_ready_payload_sha256)
+        $dialectFreezeCounts.Add(
+            (Get-PassiveCaptureReadyInstallFreezeCount -Ready $receipt)
+        )
+        # THE REBUILT DIGEST, not the fixture constant. The assertion above
+        # makes the two equal, so recording the constant looked equivalent --
+        # but the cardinality checks below are statements about what the REBUILD
+        # produced, and a rebuild that collapsed two inputs onto one digest
+        # would have gone on failing that assertion while the cardinality check
+        # counted fixture text and stayed green about a different question.
+        $dialectPinnedDigests.Add($observedPayloadSha)
     }
     if ($null -ne $case.expected_ready_ack_sha256) {
         $observedAckSha = Get-PassiveCaptureReadyAckSha256 `
@@ -463,17 +481,58 @@ Assert-Policy `
 Assert-Policy `
     -Condition ($distinctWords -contains 0) `
     -Message 'Passive READY payload rebuild is not pinned at the undeclared (zero) feature word.'
+
+#    THE SAME ARGUMENT, FOR THE FREEZE COUNT AT OFFSET 50, and it is not a
+#    symmetry exercise: offset 50 stopped being reserved-must-be-zero, this
+#    rebuild kept appending that zero, and because installing an inline detour
+#    freezes the process, every capture that installs one was refused on
+#    `ready_payload_sha256` alone until the count was published on the receipt
+#    and read here (runs t57-t60 on C:, t62 and t63 on L:, all reporting 13 --
+#    `runs/lp_refusal_volume/EVIDENCE.md`). Nothing caught
+#    it because every pinned case at the time predated the field and genuinely
+#    authenticated a zero there. Two DISTINCT nonzero counts are required for the
+#    reason a constant 1 was not enough above, and 1000 additionally does not fit
+#    in a byte.
+$distinctFreezeCounts = @($dialectFreezeCounts | Sort-Object -Unique)
+$nonzeroFreezeCounts = @($distinctFreezeCounts | Where-Object { [uint16]$_ -ne 0 })
 Assert-Policy `
-    -Condition ($distinctDigests.Count -eq $distinctWords.Count) `
-    -Message "Passive READY payload rebuild produced $($distinctDigests.Count) distinct digests for $($distinctWords.Count) distinct feature words; the word is not reaching the payload."
+    -Condition ($distinctFreezeCounts -contains 0) `
+    -Message 'Passive READY payload rebuild is not pinned at a zero install-freeze count, which is what every pre-offset-50 receipt authenticated.'
+Assert-Policy `
+    -Condition ($nonzeroFreezeCounts.Count -ge 2) `
+    -Message "Passive READY payload rebuild is pinned at only $($nonzeroFreezeCounts.Count) distinct nonzero install-freeze count(s); a rebuild that hardcoded one value -- exactly as the broken one hardcoded zero -- would still pass."
+Assert-Policy `
+    -Condition (@($nonzeroFreezeCounts | Where-Object { [uint16]$_ -gt 255 }).Count -ge 1) `
+    -Message 'Passive READY payload rebuild is not pinned at an install-freeze count above 255; a rebuild appending one byte and a pad would still pass.'
+
+#    The digest has to move with BOTH words. Counting distinct digests against
+#    distinct feature words alone stopped being the right test the moment a
+#    second field could vary: the pair is what the payload distinguishes, so the
+#    pair is what is counted. A rebuild that dropped either field back to a
+#    constant collapses two pairs onto one digest and fails here.
+$dialectPairs = @(
+    for ($index = 0; $index -lt $dialectWords.Count; $index++) {
+        '{0}/{1}' -f [uint32]$dialectWords[$index], [uint16]$dialectFreezeCounts[$index]
+    }
+)
+$distinctPairs = @($dialectPairs | Sort-Object -Unique)
+Assert-Policy `
+    -Condition ($distinctDigests.Count -eq $distinctPairs.Count) `
+    -Message "Passive READY payload rebuild produced $($distinctDigests.Count) distinct digests for $($distinctPairs.Count) distinct (feature word, install-freeze count) pairs; one of the two fields is not reaching the payload."
 
 #    And the two dialects must not be told apart by the digest: a receipt
 #    carrying the declaration pair with a ZERO word has to encode exactly what
 #    a pre-declaration receipt encodes, because that is what an undeclaring
 #    collector signs today.
+#    The freeze count has to be held equal here too, or this stops being a
+#    statement about the feature word: two receipts with a zero word and
+#    different counts encode differently and should.
 $zeroDigests = @(
     for ($index = 0; $index -lt $dialectWords.Count; $index++) {
-        if ([uint32]$dialectWords[$index] -eq 0) { $dialectPinnedDigests[$index] }
+        if ([uint32]$dialectWords[$index] -eq 0 -and
+            [uint16]$dialectFreezeCounts[$index] -eq 0) {
+            $dialectPinnedDigests[$index]
+        }
     }
 )
 Assert-Policy `
@@ -617,6 +676,94 @@ Assert-Policy `
     -Condition (@($driftRefusal.clauses).Count -eq 1 -and
         [string]@($driftRefusal.clauses)[0].field -ceq 'KNOWN_MASK') `
     -Message "A drifted collector feature dialect did not name KNOWN_MASK as the field: $(@($driftRefusal.clauses) | ForEach-Object { $_.field })"
+
+#    c2) A RECEIPT WITHOUT `install_freeze_count` IS REFUSED BY NAME.
+#
+#        This is the shape a recorder_host built before CaptureReadyV2 offset 50
+#        writes while a collector built after it puts a real count on the wire,
+#        and it is the shape the rebuild used to swallow: it read the missing
+#        property as zero, produced a digest the collector could not have
+#        produced, and refused six captures with nothing to look at but two
+#        64-character hashes. What is tested here is that the refusal happens,
+#        that it names the field and says what to do, AND that it is what the
+#        admission reaches FIRST. That last part is why the two calls live
+#        together in Assert-PassiveCaptureReadyReceiptShape: the closed-property
+#        -set comparison would otherwise get there first and answer "has 34
+#        properties; expected exactly 35", which is true and useless. Probing
+#        only the rebuild would leave that ordering free to be swapped back, so
+#        both entry points are probed. (Codex review
+#        01a0092c-a860-76a3-a266-e34c5a6cff02, round 2 finding 2.)
+$freezelessReceipt = $dialectCases[0].receipt |
+    ConvertTo-Json -Depth 8 -Compress |
+    ConvertFrom-Json
+$freezelessReceipt.PSObject.Properties.Remove('install_freeze_count')
+Assert-Policy `
+    -Condition ($null -eq $freezelessReceipt.PSObject.Properties['install_freeze_count']) `
+    -Message 'The freeze-count probe did not actually remove the property, so it tests nothing.'
+# The roster the live admission builds for this receipt's dialect, so the
+# helper below is handed what production hands it.
+$freezelessExpected = @($expectedProperties)
+Assert-Policy `
+    -Condition ($freezelessExpected -ccontains 'install_freeze_count') `
+    -Message 'The CaptureReadyV2 roster no longer requires install_freeze_count, so the ordering probe below proves nothing.'
+$freezeProbes = @(
+    @{ Name = 'the payload rebuild'; Action = {
+            [void](Get-PassiveCaptureReadyPayloadSha256 `
+                -Ready $freezelessReceipt `
+                -PipeToken ([string]$dialectFixture.pipe_token))
+        } },
+    @{ Name = 'the receipt-shape admission'; Action = {
+            Assert-PassiveCaptureReadyReceiptShape `
+                -Ready $freezelessReceipt `
+                -ExpectedProperties $freezelessExpected `
+                -Label 'CaptureReadyV2 receipt'
+        } }
+)
+foreach ($freezeProbe in $freezeProbes) {
+$freezeProbeName = [string]$freezeProbe.Name
+$freezeRefusal = $null
+try {
+    & $freezeProbe.Action
+} catch {
+    $freezeRefusal = New-PassiveReadyRefusalRecord `
+        -ErrorRecord $_ `
+        -CustodyEstablished $false `
+        -Stage 'ready_validation'
+}
+Assert-Policy `
+    -Condition ($null -ne $freezeRefusal) `
+    -Message "A CaptureReadyV2 receipt with no install_freeze_count was admitted by $freezeProbeName; offset 50 is being assumed rather than read."
+Assert-Policy `
+    -Condition ([string]$freezeRefusal.class -ceq 'producer_skew') `
+    -Message "A receipt missing install_freeze_count was classified '$($freezeRefusal.class)' by $freezeProbeName, not 'producer_skew'."
+Assert-Policy `
+    -Condition (@($freezeRefusal.clauses).Count -eq 1 -and
+        [string]@($freezeRefusal.clauses)[0].field -ceq 'install_freeze_count') `
+    -Message "A receipt missing install_freeze_count was not named by $freezeProbeName : $(@($freezeRefusal.clauses) | ForEach-Object { $_.field })"
+Assert-Policy `
+    -Condition ([string]$freezeRefusal.message -clike '*Rebuild recorder_host and collector from the same tree.*') `
+    -Message "A receipt missing install_freeze_count was refused by $freezeProbeName without telling the operator what to do: $($freezeRefusal.message)"
+}
+
+#        And the shape admission still refuses a property set that is wrong for
+#        a reason that is NOT the freeze count, so putting the named read first
+#        did not demote the closed set to a formality.
+$widenedReceipt = $dialectCases[0].receipt |
+    ConvertTo-Json -Depth 8 -Compress |
+    ConvertFrom-Json
+$widenedReceipt | Add-Member -NotePropertyName 'unheard_of_field' -NotePropertyValue 1
+$widenedRefused = $false
+try {
+    Assert-PassiveCaptureReadyReceiptShape `
+        -Ready $widenedReceipt `
+        -ExpectedProperties $freezelessExpected `
+        -Label 'CaptureReadyV2 receipt'
+} catch {
+    $widenedRefused = $true
+}
+Assert-Policy `
+    -Condition $widenedRefused `
+    -Message 'A CaptureReadyV2 receipt carrying an unknown property was admitted by the receipt-shape admission.'
 
 #    d) The clause-accumulator refusal keeps its per-clause structure, and the
 #       CUSTODY/GRADING split survives into the refusal record. That split is
