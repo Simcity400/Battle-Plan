@@ -430,3 +430,314 @@ fn read_exact(address: usize, out: &mut [u8]) -> Result<(), String> {
     };
     if ok == 0 || read != out.len() { Err(format!("read failed at {address:#x}")) } else { Ok(()) }
 }
+
+/// THE DRAIN, DRIVEN, with a real callback really inside the real detour.
+///
+/// # What was missing
+///
+/// `take_down_freeing_only_when_quiet` is the worked example `inline_detour`'s
+/// own `remove` contract points at: close admission, read the disable's answer,
+/// compare the in-flight count against zero, and free ONLY then. Every part of
+/// it is a response to a defect lane LI found -- a rollback that removed
+/// immediately, a drain that measured a set still refilling, a zero observed
+/// while the detour was still live. None of it had ever been executed: an
+/// install refuses unless the running process is the exact-a729 `hoi4.exe`, so
+/// the whole teardown was reachable only in a real game, and only on its
+/// success path at that.
+///
+/// This drives it directly, on a synthetic target in this test binary, with
+/// [`hook_formatter`] -- the PRODUCTION detour body -- as the detour and a
+/// blocking stand-in as the original it calls through. A thread parked in there
+/// is exactly the residency the drain exists to refuse to free underneath.
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+    use minhook::MinHookLock;
+    use std::sync::atomic::AtomicBool as TestFlag;
+
+    static GATE_OPEN: TestFlag = TestFlag::new(false);
+    static ENTERED: TestFlag = TestFlag::new(false);
+
+    /// The synthetic target. Its body never runs: the detour replaces it.
+    #[inline(never)]
+    extern "system" fn formatter_victim(_dst: usize, raw: i64, _decimals: u32) -> usize {
+        raw as usize
+    }
+
+    /// The "original" [`hook_formatter`] calls through, which BLOCKS -- so the
+    /// production body is genuinely resident when the drain runs.
+    #[inline(never)]
+    unsafe extern "system" fn blocking_original(_dst: usize, raw: i64, _decimals: u32) -> usize {
+        ENTERED.store(true, Ordering::Release);
+        while !GATE_OPEN.load(Ordering::Acquire) {
+            // A bare spin: this thread is about to be suspended by the freeze
+            // the disable takes.
+            std::hint::spin_loop();
+        }
+        raw as usize
+    }
+
+    /// Spin until `ready`, or FAIL rather than spin for ever.
+    ///
+    /// The condition is one a REGRESSION can make unreachable: if the detour
+    /// stops being physically installed while `enable` still reports success,
+    /// the callback never enters and a bare loop hangs the test binary. A
+    /// deadline turns that into a named failure instead of a wedged battery.
+    fn wait_until(what: &str, ready: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Puts everything back however this test leaves, including during an
+    /// unwind: the gate is opened so the parked thread can finish, the module's
+    /// globals are restored, and -- ONCE THE DETOUR IS PROVABLY EMPTY -- the
+    /// synthetic target is physically restored and its hook removed. If it
+    /// cannot be proven empty the hook is retained and the fact is printed;
+    /// removing it anyway would be the use-after-free under test.
+    ///
+    /// The first spelling restored only the two globals. A panic between the
+    /// enable and the cleanup would then have left this test binary with one of
+    /// its own functions permanently detoured to the production formatter, and
+    /// a live entry in the process-global MinHook table for every later test to
+    /// trip over.
+    struct Restore {
+        original_formatter: usize,
+        admission: bool,
+        target: *mut c_void,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            GATE_OPEN.store(true, Ordering::Release);
+            // The parked thread must have LEFT the detour before the hook is
+            // removed, or this cleanup is itself the use-after-free the test is
+            // about. Bounded, and it gives up rather than blocking for ever.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::yield_now();
+            }
+            if ACTIVE_CALLBACKS.load(Ordering::Acquire) == 0 {
+                let _ = unsafe { inline_detour::disable(self.target) };
+                let _ = unsafe { inline_detour::remove(self.target) };
+            } else {
+                // THE DETOUR STILL COMES OFF. Restoring the target's bytes
+                // frees nothing and strands nobody -- a thread inside the body
+                // returns through the trampoline, which a disable leaves alone
+                // -- so nothing new can enter even on this path.
+                let _ = unsafe { inline_detour::disable(self.target) };
+                // NOTHING IS FREED, and it is SAID. A leaked hook on a
+                // synthetic test target is recoverable; a trampoline freed
+                // under a thread still inside the detour is not, and it is the
+                // exact fault this test is about. Reported rather than
+                // panicked: a panic during an unwind aborts the process and
+                // destroys the report of whatever failed first. The process is
+                // this test's own child, so what it leaks dies with it.
+                eprintln!(
+                    "supply drain test: a callback never left the detour; the hook \
+                     on {:p} is deliberately RETAINED rather than freed under it",
+                    self.target
+                );
+            }
+            ORIGINAL_FORMATTER.store(self.original_formatter, Ordering::Release);
+            ADMISSION_OPEN.store(self.admission, Ordering::Release);
+        }
+    }
+
+    /// The env var that marks the child process, so the parent half returns
+    /// instead of recursing.
+    const CHILD_MARKER: &str = "SUPPLY_DRAIN_TEST_CHILD";
+
+    /// Run the `#[ignore]`d child of this pair in a FRESH PROCESS, and fail if
+    /// it does not pass.
+    ///
+    /// # Why this test is contained
+    ///
+    /// Its failure mode IS the regression it reports: a callback that never
+    /// leaves the detour. When that happens the parked thread cannot be joined
+    /// and the hook cannot be freed without performing the very use-after-free
+    /// under test, so the honest cleanup is to retain -- and a retained hook
+    /// plus a looping thread in a SHARED test binary make every test that runs
+    /// afterwards untrustworthy. In a process of its own, what the failure
+    /// leaks dies with it.
+    ///
+    /// The parent bounds the wait, kills the child rather than hanging, and
+    /// requires the child to have actually RUN: `libtest` exits 0 when a filter
+    /// matches nothing, so a renamed child would otherwise leave this proof
+    /// green while proving nothing.
+    fn run_in_child(test_name: &str) {
+        assert!(
+            std::env::var(CHILD_MARKER).is_err(),
+            "a child must never spawn a grandchild"
+        );
+        let exe = std::env::current_exe().expect("the test binary's own path");
+        let mut child = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                test_name,
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_MARKER, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the child test process starts");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let status = loop {
+            match child.try_wait().expect("the child is waitable") {
+                Some(status) => break status,
+                None if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{test_name} hung in its child process; the child was killed");
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        };
+        let output = child.wait_with_output().unwrap_or_else(|_| std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            status.success(),
+            "{test_name} failed in its child process:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed") && stdout.contains("0 failed"),
+            "{test_name} was filtered away rather than run:\n{stdout}"
+        );
+    }
+
+    /// CONTAINED. See [`run_in_child`]: this test's own failure mode leaves a
+    /// callback looping inside a detour that cannot then be safely freed, so it
+    /// runs in a process of its own and the claims live on the child below.
+    #[test]
+    fn a_callback_in_flight_retains_the_trampoline_and_a_quiet_one_frees_it() {
+        run_in_child(
+            "a729_tooltip_hook::drain_tests::child_a_callback_in_flight_retains_the_trampoline_and_a_quiet_one_frees_it",
+        );
+    }
+
+    /// A CALLBACK IN FLIGHT MAKES THE TEARDOWN RETAIN, and the trampoline is
+    /// not freed; the same teardown frees once it has left.
+    ///
+    /// Three claims, and the first is the one LI's review round 2 was about:
+    ///
+    /// 1. THE LEASE IS TAKEN BEFORE ADMISSION IS TESTED. The callback enters
+    ///    with admission ALREADY CLOSED and the drain still sees a non-zero
+    ///    count -- so a teardown that closed admission and then assumed the
+    ///    detour was empty would be wrong. Moving `CallbackLease::enter()`
+    ///    below the admission check makes this count zero and the drain frees
+    ///    under a live callback.
+    /// 2. THE DRAIN REFUSES RATHER THAN FREEING. It returns false, having
+    ///    disabled the target and left the hook and its trampoline in place,
+    ///    and it did NOT call `remove` -- proven by the target still being
+    ///    removable afterwards, which a freed hook would not be.
+    /// 3. IT IS NOT SIMPLY ALWAYS REFUSING. With the callback gone, the same
+    ///    call frees. A drain hard-wired to return false would pass 1 and 2.
+    ///
+    /// kills: deleting the in-flight comparison, or moving it above the
+    /// disable, or taking the lease after the admission test.
+    #[test]
+    #[ignore = "contained: driven by a_callback_in_flight_retains_the_trampoline_and_a_quiet_one_frees_it"]
+    fn child_a_callback_in_flight_retains_the_trampoline_and_a_quiet_one_frees_it() {
+        assert!(
+            std::env::var(CHILD_MARKER).is_ok(),
+            "this test is only sound in the child process its parent spawns"
+        );
+        let target = formatter_victim as *mut c_void;
+        let _ = unsafe { inline_detour::disable(target) };
+        let _ = unsafe { inline_detour::remove(target) };
+        GATE_OPEN.store(false, Ordering::Release);
+        ENTERED.store(false, Ordering::Release);
+        let _restore = Restore {
+            original_formatter: ORIGINAL_FORMATTER.load(Ordering::Acquire),
+            admission: ADMISSION_OPEN.load(Ordering::Acquire),
+            target,
+        };
+        ORIGINAL_FORMATTER.store(blocking_original as usize, Ordering::Release);
+        // CLOSED BEFORE THE CALLBACK ENTERS. Claim 1 rests on this: whatever
+        // the count is when the drain reads it, it was not admission that put
+        // it there.
+        ADMISSION_OPEN.store(false, Ordering::Release);
+
+        unsafe { MinHook::create_hook(target, hook_formatter as *mut c_void) }
+            .expect("the synthetic formatter is hookable");
+        unsafe { inline_detour::enable(target) }.expect("the production detour goes live");
+
+        let parked = std::thread::spawn(move || {
+            let victim: FormatterFn = unsafe { mem::transmute(formatter_victim as *mut c_void) };
+            unsafe { victim(0, 42, DISPLAY_DECIMALS) }
+        });
+        wait_until("the production formatter body to enter the original", || {
+            ENTERED.load(Ordering::Acquire)
+        });
+        assert_ne!(
+            ACTIVE_CALLBACKS.load(Ordering::Acquire),
+            0,
+            "the production body must hold its lease with admission ALREADY \
+             closed: a lease taken after the admission test would read zero here"
+        );
+
+        let retained = unsafe { take_down_freeing_only_when_quiet(target as usize) };
+        assert!(
+            !retained,
+            "a teardown that can still have a callback inside the detour must \
+             RETAIN rather than free"
+        );
+        assert!(
+            !ADMISSION_OPEN.load(Ordering::Acquire),
+            "the drain leaves admission closed"
+        );
+        // The detour is OFF -- so nothing new can enter -- and the hook is
+        // still there, which is what "retained" means and what a `remove`
+        // would have destroyed.
+        let lock = MinHookLock::acquire().expect("the lock is free");
+        assert_eq!(
+            MinHook::hook_is_enabled(&lock, target),
+            Ok(false),
+            "the retained target must be disabled, not still live"
+        );
+        assert!(
+            MinHook::patch_footprint(&lock, target).is_ok(),
+            "the hook and its trampoline must still exist: a freed one answers \
+             MH_ERROR_NOT_CREATED"
+        );
+        drop(lock);
+
+        GATE_OPEN.store(true, Ordering::Release);
+        // BOUNDED BEFORE THE JOIN, so a detour that stops returning fails this
+        // test instead of hanging the binary it runs in.
+        wait_until("the callback to leave the detour", || {
+            ACTIVE_CALLBACKS.load(Ordering::Acquire) == 0
+        });
+        let answered = parked.join().expect("the parked callback returns");
+        assert_eq!(answered, 42, "it returned through the original it was given");
+
+        let freed = unsafe { take_down_freeing_only_when_quiet(target as usize) };
+        assert!(
+            freed,
+            "with nothing in flight the same teardown frees; a drain that \
+             always refused would have passed everything above"
+        );
+        let lock = MinHookLock::acquire().expect("the lock is free");
+        assert_eq!(
+            MinHook::patch_footprint(&lock, target),
+            Err(MH_STATUS::MH_ERROR_NOT_CREATED),
+            "the hook is gone, so its trampoline was freed"
+        );
+        drop(lock);
+    }
+}

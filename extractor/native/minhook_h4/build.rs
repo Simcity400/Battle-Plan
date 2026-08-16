@@ -21,12 +21,24 @@ fn main() {
 
     let src_dir = Path::new(&root_dir).join("vendor/src");
 
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    build
         .file(src_dir.join("buffer.c"))
         .file(src_dir.join("hook.c"))
         .file(src_dir.join("trampoline.c"))
-        .file(src_dir.join(hde))
-        .compile("libminhook_h4.a");
+        .file(src_dir.join(hde));
+
+    // THE ONE PLACE THE TEST-SUPPORT BLOCK CAN BE COMPILED IN, and it is
+    // reached only when cargo says the `test_support` feature is on. Nothing
+    // else in this file or in `vendor/` defines `MINHOOK_H4_TEST_SUPPORT`, so
+    // an ordinary build of this crate -- which is every build the collector
+    // ships -- compiles the `#ifdef` block out entirely. See the feature's own
+    // comment in `Cargo.toml`.
+    if env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some() {
+        build.define("MINHOOK_H4_TEST_SUPPORT", None);
+    }
+
+    build.compile("libminhook_h4.a");
 
     println!("cargo:rerun-if-changed=vendor");
     println!(

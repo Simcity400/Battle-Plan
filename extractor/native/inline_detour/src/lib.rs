@@ -70,6 +70,26 @@ pub mod freeze_census;
 #[cfg(windows)]
 pub mod release_ledger;
 
+/// THE FAILURE PATHS, DRIVEN. Test-only, and the seams it uses are absent from
+/// every build that is not this crate's own test harness. See the module.
+#[cfg(all(test, windows))]
+mod fault_tests;
+
+/// The allocation probe, installed as THIS CRATE'S TEST BINARY's allocator and
+/// nowhere else.
+///
+/// It is a counting pass-through to `std::alloc::System`, so it changes no
+/// behaviour; what it buys is that
+/// [`fault_tests::the_probe_sees_an_allocation_inside_a_held_window`] can prove
+/// the instrument the freeze-window audit rests on is still counting. Without
+/// the attribute, `freeze_window_audit::observed` returns zero for every
+/// window whatever it does, and every `assert_eq!(allocations, 0)` in the
+/// workspace becomes vacuous on the same day.
+#[cfg(all(test, windows))]
+#[global_allocator]
+static ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
+    freeze_window_audit::AllocationProbe;
+
 #[cfg(windows)]
 mod windows_impl {
     use super::freeze::{freeze_other_threads, FreezeRefusal};

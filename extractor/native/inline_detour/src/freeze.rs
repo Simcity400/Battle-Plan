@@ -644,6 +644,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0};
+// TEST-ONLY. The suspension seam sets the error it reports rather than leaving
+// whatever the previous call happened to store, so the refusal is the same
+// every run. Imported under `cfg(test)` so that no shipped build of this crate
+// so much as names it.
+#[cfg(test)]
+use windows_sys::Win32::Foundation::SetLastError;
 use windows_sys::Win32::System::Diagnostics::Debug::{
     GetThreadContext, CONTEXT, CONTEXT_CONTROL_AMD64,
 };
@@ -1294,7 +1300,11 @@ static RESUME_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// zero-timeout probe separates from a real failure.
 unsafe fn resume_or_count(handle: HANDLE) {
     let mut attempts = RESUME_ATTEMPTS;
-    while unsafe { ResumeThread(handle) } == u32::MAX {
+    // THE SEAM IS THE `||`, and the short circuit is what makes it safe: a
+    // refused attempt never reaches the syscall, so the seam cannot itself
+    // leave a thread suspended. Outside this crate's tests the left arm is a
+    // compile-time `false` and this is the bare call it has always been.
+    while resume_attempt_is_refused() || unsafe { ResumeThread(handle) } == u32::MAX {
         attempts -= 1;
         if attempts == 0 {
             if unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0 {
@@ -1685,6 +1695,13 @@ impl ProcessFreeze {
             // first, and an empty set must not be the one that does not.
             return self.settle_suspensions();
         }
+        // TEST-ONLY PHASE MARKER, atomics only. It is what lets a context-read
+        // fault be armed for THE PRE-PATCH QUESTION specifically rather than
+        // for the freeze's own settle -- so that deleting this check makes the
+        // enable succeed and the byte comparison fail, instead of the fault
+        // landing during acquisition and hiding the deletion.
+        #[cfg(test)]
+        let _range_check = faults::RangeCheckPhase::enter();
         if self.any_instruction_pointer_in(ranges)? {
             // WHICH range is not reported, and that is deliberate rather than
             // lazy: `any_instruction_pointer_in` reads every held thread and
@@ -1813,10 +1830,19 @@ impl ProcessFreeze {
         for entry in self.accounted.iter().filter(|entry| entry.suspended) {
             let mut context: AlignedContext = unsafe { std::mem::zeroed() };
             context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
-            if unsafe { GetThreadContext(entry.handle, &mut context.0) } == 0 {
+            // THE SEAM IS THE `||`, and the order is what makes it one: a
+            // refused read never reaches the syscall, so the fault is the
+            // kernel's answer rather than something laid over it. Outside this
+            // crate's tests the left arm is a compile-time `false`.
+            let refused = context_read_is_refused_for(entry.id);
+            if refused || unsafe { GetThreadContext(entry.handle, &mut context.0) } == 0 {
                 return Err(FreezeRefusal::ThreadContext {
                     thread: entry.id,
-                    os_error: unsafe { GetLastError() },
+                    os_error: if refused {
+                        FAULT_OS_ERROR
+                    } else {
+                        unsafe { GetLastError() }
+                    },
                 });
             }
             visit(context.0.Rip as usize);
@@ -2374,6 +2400,200 @@ fn thread_has_terminated(handle: HANDLE) -> bool {
     unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 }
 }
 
+/// THE TWO OS FAULTS THIS MODULE CAN BE TOLD TO PRODUCE, and nothing else.
+///
+/// # Why they exist
+///
+/// Every defect lane KQ closed is on a path the OS takes only when it is
+/// failing: a `SuspendThread` that refuses a live thread, a `GetThreadContext`
+/// that cannot answer. MinHook's deleted `Freeze` returned SILENTLY from both
+/// and patched the bytes anyway. What replaced it refuses -- and until now
+/// nothing could drive either arm, because neither call fails on a healthy
+/// process on demand. These two seams are that drive, and they are the whole
+/// of it: no other OS answer in this module can be faulted.
+///
+/// # Why they are `cfg(test)` and not a flag
+///
+/// `cfg(test)` is set only while THIS crate's own test harness is compiled. A
+/// collector that depends on `inline_detour` compiles the `cfg(not(test))`
+/// arms, which are constant `false`, so there is no seam in a shipped build to
+/// disable, misconfigure or reach. That is the product's rule -- test-only
+/// machinery is ABSENT from what ships, not defaulted off.
+///
+/// # Why every byte of their state is an atomic
+///
+/// They are read AFTER the first suspension, so anything that can allocate or
+/// take a lock here is the deadlock this whole module is shaped to avoid; and
+/// [`production_code`](tests::production_code) is the file's text before its
+/// test module, so these items are read by the source pins whether or not they
+/// are compiled. Fixed atomics satisfy both: nothing to allocate, nothing to
+/// lock, nothing for a scan to find.
+#[cfg(test)]
+pub(crate) mod faults {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// The thread whose suspension is refused, or 0.
+    pub(crate) static SUSPEND_FAULT_THREAD: AtomicU32 = AtomicU32::new(0);
+    /// How many times that refusal has been produced.
+    pub(crate) static SUSPEND_FAULT_HITS: AtomicU32 = AtomicU32::new(0);
+    /// The thread whose context read is refused, or 0.
+    pub(crate) static CONTEXT_FAULT_THREAD: AtomicU32 = AtomicU32::new(0);
+    /// 1: refuse every read. 2: refuse only a read taken while a non-empty
+    /// patch-footprint range is being checked -- the pre-patch question, which
+    /// is the one MinHook's relocation used to answer wrongly.
+    pub(crate) static CONTEXT_FAULT_MODE: AtomicU32 = AtomicU32::new(0);
+    /// How many context reads have been refused.
+    pub(crate) static CONTEXT_FAULT_HITS: AtomicU32 = AtomicU32::new(0);
+    /// Non-zero while [`super::ProcessFreeze::refuse_if_a_thread_is_in_any_of`]
+    /// is inside a non-empty range check.
+    pub(crate) static IN_RANGE_CHECK: AtomicU32 = AtomicU32::new(0);
+    /// Non-zero when the NEXT resume attempt is to be refused. Cleared by the
+    /// refusal, so it can only ever cost one attempt.
+    pub(crate) static RESUME_FAULT_ARMED: AtomicU32 = AtomicU32::new(0);
+    /// How many resume attempts have been refused.
+    pub(crate) static RESUME_FAULT_HITS: AtomicU32 = AtomicU32::new(0);
+
+    /// Raises [`IN_RANGE_CHECK`] for as long as it lives.
+    pub(crate) struct RangeCheckPhase;
+
+    impl RangeCheckPhase {
+        pub(crate) fn enter() -> Self {
+            IN_RANGE_CHECK.fetch_add(1, Ordering::AcqRel);
+            Self
+        }
+    }
+
+    impl Drop for RangeCheckPhase {
+        fn drop(&mut self) {
+            IN_RANGE_CHECK.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Disarms both faults on drop, so a panicking test cannot leave a fault
+    /// armed for whatever runs next on this process-global state.
+    pub(crate) struct Armed;
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            SUSPEND_FAULT_THREAD.store(0, Ordering::Release);
+            CONTEXT_FAULT_THREAD.store(0, Ordering::Release);
+            CONTEXT_FAULT_MODE.store(0, Ordering::Release);
+            RESUME_FAULT_ARMED.store(0, Ordering::Release);
+        }
+    }
+
+    /// Refuse exactly ONE resume attempt, without performing it.
+    ///
+    /// ONE, and it takes no count, deliberately. Refusing the attempt rather
+    /// than undoing a real resume is what makes the seam safe -- the syscall it
+    /// stands in for is never made, so it cannot itself leave a thread
+    /// suspended. That safety holds only while at least one real attempt
+    /// remains: a seam that could refuse all [`RESUME_ATTEMPTS`] of them would
+    /// leave a thread of this process suspended for the life of the process,
+    /// which is the very outcome this module exists to prevent. Not offering
+    /// the count is how that is made unreachable rather than merely unused.
+    pub(crate) fn refuse_one_resume_attempt() -> Armed {
+        RESUME_FAULT_HITS.store(0, Ordering::Release);
+        RESUME_FAULT_ARMED.store(1, Ordering::Release);
+        Armed
+    }
+
+    /// Refuse `thread`'s suspension for as long as the guard lives.
+    ///
+    /// PERSISTENT, not one-shot, and that is load-bearing: the freeze retries
+    /// an unsettled thread on the next pass, so a fault that disarmed itself
+    /// after one hit would let the second pass suspend the thread and the
+    /// freeze would succeed -- proving nothing about the refusal.
+    pub(crate) fn refuse_suspension_of(thread: u32) -> Armed {
+        SUSPEND_FAULT_HITS.store(0, Ordering::Release);
+        SUSPEND_FAULT_THREAD.store(thread, Ordering::Release);
+        Armed
+    }
+
+    /// Refuse `thread`'s context reads for as long as the guard lives.
+    pub(crate) fn refuse_context_of(thread: u32, mode: u32) -> Armed {
+        CONTEXT_FAULT_HITS.store(0, Ordering::Release);
+        CONTEXT_FAULT_MODE.store(mode, Ordering::Release);
+        CONTEXT_FAULT_THREAD.store(thread, Ordering::Release);
+        Armed
+    }
+}
+
+/// The OS error a REFUSED-BY-SEAM answer reports, so that what a test asserts
+/// on is the same every run.
+///
+/// Declared unconditionally because the refusal expression that reads it is
+/// production text; it is only ever selected when a fault fired, which outside
+/// this crate's own tests cannot happen. `ERROR_ACCESS_DENIED`, which is what
+/// the real refusal on a thread this process may not touch reports.
+const FAULT_OS_ERROR: u32 = 5;
+
+/// Is this thread's suspension faulted? Never, outside this crate's own tests.
+#[cfg(not(test))]
+#[inline(always)]
+fn suspension_is_refused_for(_thread_id: u32) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn suspension_is_refused_for(thread_id: u32) -> bool {
+    if thread_id == 0 || faults::SUSPEND_FAULT_THREAD.load(Ordering::Acquire) != thread_id {
+        return false;
+    }
+    // THE ERROR IS SET HERE rather than at the call site, so that the
+    // production expression names nothing a shipped build would have to
+    // import. Deterministic, because the production arm reads `GetLastError`
+    // and a stale value would make both the refusal and the diagnostic differ
+    // run to run.
+    unsafe { SetLastError(FAULT_OS_ERROR) };
+    faults::SUSPEND_FAULT_HITS.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+/// Is this thread's context read faulted? Never, outside this crate's own tests.
+#[cfg(not(test))]
+#[inline(always)]
+fn context_read_is_refused_for(_thread_id: u32) -> bool {
+    false
+}
+
+/// Is this resume attempt faulted? Never, outside this crate's own tests.
+#[cfg(not(test))]
+#[inline(always)]
+fn resume_attempt_is_refused() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn resume_attempt_is_refused() -> bool {
+    // ONE ATOMIC OPERATION, and no loop. A compare-exchange loop here would be
+    // a spin inside the resume path -- unbounded by the language's own
+    // contract, because `compare_exchange_weak` may fail spuriously -- and this
+    // runs while every other thread of the process is still suspended. A `swap`
+    // both reads and clears, so the arming can be spent exactly once.
+    if faults::RESUME_FAULT_ARMED.swap(0, Ordering::AcqRel) == 0 {
+        return false;
+    }
+    faults::RESUME_FAULT_HITS.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
+#[cfg(test)]
+fn context_read_is_refused_for(thread_id: u32) -> bool {
+    if thread_id == 0 || faults::CONTEXT_FAULT_THREAD.load(Ordering::Acquire) != thread_id {
+        return false;
+    }
+    let mode = faults::CONTEXT_FAULT_MODE.load(Ordering::Acquire);
+    if mode == 2 && faults::IN_RANGE_CHECK.load(Ordering::Acquire) == 0 {
+        // Armed for the PRE-PATCH question only, and this read is the freeze's
+        // own settle. Letting it through is what makes the refusal a test of
+        // the check that stands between a held thread and the bytes.
+        return false;
+    }
+    faults::CONTEXT_FAULT_HITS.fetch_add(1, Ordering::AcqRel);
+    true
+}
+
 /// THE freeze, for a caller that rewrites bytes without MinHook.
 ///
 /// [`enable`](super::enable), [`disable`](super::disable) and
@@ -2703,7 +2923,17 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
             }
             // Not yet accounted for by this freeze: either it is new, or it is
             // on its way out. Both are decided from scratch, right now.
-            let previous_count = unsafe { SuspendThread(handle) };
+            // THE SEAM IS THE `if`, and the syscall stays exactly where it was:
+            // this module's own source pins locate `SuspendThread(handle)` in
+            // this loop, after the granted-access classification, and hoisting
+            // it into a helper would move it out from under them. Outside this
+            // crate's tests the condition is a compile-time `false` and this is
+            // the bare call it has always been.
+            let previous_count = if suspension_is_refused_for(thread_id) {
+                u32::MAX
+            } else {
+                unsafe { SuspendThread(handle) }
+            };
             if previous_count != u32::MAX {
                 // THE GAME IS NOW STOPPED, and this is the only place that can
                 // say so. A refused freeze that never got this far stopped
@@ -6421,13 +6651,15 @@ mod tests {
     /// this counter fire on every capture that ends a thread while frozen).
     /// EVERY RESUME GOES THROUGH THE COUNTED HELPER.
     ///
-    /// The behavioural test below drives only successful resumes, and no test
-    /// can make `ResumeThread` fail on a live thread this process holds a
-    /// handle to without corrupting the freeze it is testing. What CAN be
-    /// asserted is that there is exactly one place a resume happens, so a
+    /// This is the SOURCE half: exactly one place a resume happens, so a
     /// failure cannot be swallowed on one path while being counted on another
     /// -- which is the defect review round 2 found in the two construction
-    /// rollbacks.
+    /// rollbacks. The BEHAVIOURAL half is
+    /// `fault_tests::a_resume_refused_once_is_retried_and_the_thread_runs_again`,
+    /// which refuses one resume ATTEMPT through the `cfg(test)` seam and shows
+    /// the retry recovering; before that seam existed this paragraph said no
+    /// test could make a resume fail without corrupting the freeze it was
+    /// testing, and it was right about the syscall but wrong about the attempt.
     ///
     /// What production change would make this fail? A bare `ResumeThread` added
     /// anywhere in this module.

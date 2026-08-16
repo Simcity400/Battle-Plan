@@ -152,6 +152,90 @@ static VOID DeleteHookEntry(UINT pos)
     }
 }
 
+#ifdef MINHOOK_H4_TEST_SUPPORT
+//-------------------------------------------------------------------------
+// FORK ADDITION, TEST SUPPORT ONLY, AND COMPILED OUT OF EVERY SHIPPED BUILD.
+//
+// This block exists only when the `minhook_h4/test_support` cargo feature is
+// on, which only `inline_detour`'s DEV-dependency turns on. `build.rs` is the
+// one place that defines `MINHOOK_H4_TEST_SUPPORT`, and it does so only when
+// cargo hands it `CARGO_FEATURE_TEST_SUPPORT`.
+//
+// WHAT IT IS FOR. `EnableHookLL` writes the patch and THEN reports whether the
+// protection restore and the instruction-cache flush completed -- so a refused
+// enable in this library is a LIVE DETOUR, not an untouched target. Every
+// enable-failure arm in this workspace is written on that fact and none of them
+// could be driven, because the only way to reach it is for the protection
+// restore or the instruction-cache flush to fail on a page this process just
+// wrote. Arming this makes exactly that outcome happen for ONE named target,
+// ONCE, with the bytes written and `isEnabled` set, which is the shape of the
+// real failure.
+//
+// IT TOUCHES NO LIBRARY STATE, does not allocate, does not wait and does not
+// take the lock, so it is not one of the locked operations that
+// `every_exported_operation_checks_lock_ownership` derives from the exported
+// signatures -- which is exactly why none of these three is spelled with that
+// signature. It is armed before the caller freezes anything and read inside the
+// frozen window, so it is a plain pointer and nothing more.
+static volatile LPVOID g_testIncoherentTarget = NULL;
+
+// THE INERTNESS MARKER, and it is written from INSIDE the injected branch --
+// see `EnableHookLL` -- rather than only returned by the accessor below.
+//
+// The accessor alone was not enough, and the reason is the whole point of the
+// proof: nothing exports it, and a collector build never calls it, so a linker
+// is free to discard the function and its string while KEEPING the injected
+// branch inside `EnableHookLL`, which is reachable code in a live function. A
+// scan of the built DLL would then find no marker while the seam was present,
+// and the scan's negative would mean nothing. Storing the marker from within
+// the branch ties the two together.
+//
+// THE `volatile` BINDS TO THE POINTER, not to the characters, and the
+// distinction is the whole of the guarantee. `volatile const char *` would make
+// the pointed-to characters volatile and leave the STORE an ordinary one, which
+// a whole-program optimiser may discard along with the object and the string.
+// `const char * volatile` makes the pointer object itself volatile, so the
+// store must be performed. (This is a stronger statement about the compiler
+// than about the linker; the empirical both-directions artifact scan in
+// `runs/ln_fault_inject/inertness_artifact.txt` is what settles the built
+// binary, and it is the load-bearing proof.)
+static const char MH_H4_FAULT_MARKER[] = "MH_H4_FAULT_INJECTION_PRESENT";
+static const char * volatile g_testFaultWitness = NULL;
+
+// Arm: the next completed enable/disable of `pTarget` reports the failure the
+// fork exists to report. Passing NULL disarms.
+VOID WINAPI MH_H4_TestArmEnableIncoherent(LPVOID pTarget)
+{
+    // THE WITNESS IS CLEARED BY EVERY ARMING. A sticky one would let a later
+    // test read a previous test's evidence and conclude that its own fault had
+    // fired when it had not.
+    g_testFaultWitness = NULL;
+    g_testIncoherentTarget = pTarget;
+}
+
+// What is armed right now, so a test can prove its own fault was CONSUMED
+// rather than silently never reached.
+LPVOID WINAPI MH_H4_TestArmedEnableIncoherent(VOID)
+{
+    return (LPVOID)g_testIncoherentTarget;
+}
+
+// The inertness marker, for the test that asserts it is reachable HERE so that
+// its absence from a shipped DLL is a statement rather than a tautology. The
+// same array the injected branch stores, so the two cannot drift apart.
+const char * WINAPI MH_H4_TestFaultSentinel(VOID)
+{
+    return MH_H4_FAULT_MARKER;
+}
+
+// What the last consumed fault wrote, so a test can prove the branch itself ran
+// rather than only that the arming was cleared.
+const char * WINAPI MH_H4_TestFaultWitness(VOID)
+{
+    return (const char *)g_testFaultWitness;
+}
+#endif
+
 //-------------------------------------------------------------------------
 static MH_STATUS EnableHookLL(UINT pos, BOOL enable)
 {
@@ -210,6 +294,19 @@ static MH_STATUS EnableHookLL(UINT pos, BOOL enable)
     // worse of the two.
     restored = VirtualProtect(pPatchTarget, patchSize, oldProtect, &oldProtect);
     flushed  = FlushInstructionCache(GetCurrentProcess(), pPatchTarget, patchSize);
+
+#ifdef MINHOOK_H4_TEST_SUPPORT
+    // TEST SUPPORT ONLY -- see the block above `EnableHookLL`. Placed AFTER
+    // both completions have really been attempted, so the injected outcome is
+    // reached by the same route the real one is: the bytes are already
+    // written, and only the report changes.
+    if (g_testIncoherentTarget != NULL && g_testIncoherentTarget == pHook->pTarget)
+    {
+        g_testIncoherentTarget = NULL;
+        g_testFaultWitness = MH_H4_FAULT_MARKER;
+        flushed = FALSE;
+    }
+#endif
 
     // The bytes are written, so the state describes memory as it is. What the
     // caller is told is whether the write was COMPLETED.

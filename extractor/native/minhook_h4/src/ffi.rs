@@ -74,3 +74,21 @@ extern "system" {
     /// Apply every queued change. FORK: does not suspend and does not relocate.
     pub fn MH_ApplyQueued() -> MH_STATUS;
 }
+
+// The test-support entry points, which exist only when the `test_support`
+// feature compiled them into the C. See `crate::EnableIncoherentFault`.
+#[cfg(feature = "test_support")]
+extern "system" {
+    /// Arm: the next completed enable/disable of `pTarget` reports the
+    /// completion failure. `NULL` disarms.
+    pub fn MH_H4_TestArmEnableIncoherent(pTarget: *mut c_void);
+
+    /// What is armed right now -- `NULL` once the fault has been consumed.
+    pub fn MH_H4_TestArmedEnableIncoherent() -> *mut c_void;
+
+    /// The inertness marker.
+    pub fn MH_H4_TestFaultSentinel() -> *const std::os::raw::c_char;
+
+    /// The marker the injected branch itself stored, or NULL if it never ran.
+    pub fn MH_H4_TestFaultWitness() -> *const std::os::raw::c_char;
+}

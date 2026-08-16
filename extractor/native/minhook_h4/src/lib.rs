@@ -389,6 +389,100 @@ impl MinHook {
     }
 }
 
+/// The one fault this library can be told to produce, for the one failure a
+/// test cannot otherwise reach.
+///
+/// COMPILED OUT UNLESS THE `test_support` FEATURE IS ON, which in this
+/// workspace is only `inline_detour`'s dev-dependency. See the feature's
+/// comment in `Cargo.toml` for why it is a feature rather than `cfg(test)`, and
+/// `inline_detour/src/fault_tests.rs` for how its absence from the shipped
+/// collector is proved rather than asserted.
+///
+/// # What it makes happen
+///
+/// [`EnableIncoherentFault::arm`] names one target. The next `EnableHookLL`
+/// that completes on that target -- an enable or a disable, whichever comes
+/// first -- writes its bytes, sets `isEnabled`, and then reports
+/// [`MH_STATUS::MH_ERROR_MEMORY_PROTECT`] as though `FlushInstructionCache` had
+/// failed. That is the fork's documented behaviour, driven: "the bytes ARE
+/// written by the time these run, so the state is reported as it is".
+///
+/// It is ONE-SHOT. The arming clears itself when it fires, so a fault armed for
+/// a test cannot leak into the cleanup that follows it, and
+/// [`EnableIncoherentFault::armed`] answering `None` is how a test proves its
+/// fault was consumed rather than never reached.
+#[cfg(feature = "test_support")]
+pub struct EnableIncoherentFault;
+
+/// Disarms whatever is armed when it drops.
+///
+/// The arming is process-global, so a test that panicked between arming and
+/// firing would hand its fault to whatever ran next -- which would consume it
+/// on some unrelated enable and leave BOTH tests proving something other than
+/// what they say. `Drop` runs during an unwind; a trailing `disarm()` call does
+/// not.
+#[cfg(feature = "test_support")]
+#[must_use = "the fault disarms when this guard drops, so it must be bound"]
+pub struct ArmedFault;
+
+#[cfg(feature = "test_support")]
+impl Drop for ArmedFault {
+    fn drop(&mut self) {
+        EnableIncoherentFault::disarm();
+    }
+}
+
+#[cfg(feature = "test_support")]
+impl EnableIncoherentFault {
+    /// Arm the fault for `target` until the returned guard drops.
+    pub fn arm(target: *mut c_void) -> ArmedFault {
+        unsafe { ffi::MH_H4_TestArmEnableIncoherent(target) };
+        ArmedFault
+    }
+
+    /// Disarm. Safe to call when nothing is armed.
+    pub fn disarm() {
+        unsafe { ffi::MH_H4_TestArmEnableIncoherent(std::ptr::null_mut()) };
+    }
+
+    /// The marker the injected branch stored the last time it RAN.
+    ///
+    /// Distinct from [`EnableIncoherentFault::armed`] being `None`, which only
+    /// says the arming was cleared. This says the branch inside `EnableHookLL`
+    /// executed.
+    pub fn witness() -> Option<&'static str> {
+        let witness = unsafe { ffi::MH_H4_TestFaultWitness() };
+        if witness.is_null() {
+            return None;
+        }
+        // SAFETY: the C stores a pointer to a static array of ASCII bytes.
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(witness) }
+                .to_str()
+                .expect("the marker is ASCII"),
+        )
+    }
+
+    /// The armed target, or `None` once it has fired.
+    pub fn armed() -> Option<*mut c_void> {
+        let armed = unsafe { ffi::MH_H4_TestArmedEnableIncoherent() };
+        (!armed.is_null()).then_some(armed)
+    }
+
+    /// The marker string a shipped build must not contain.
+    ///
+    /// This is the value the artifact check greps a built DLL for. Reading it
+    /// through the C is deliberate: a copy of the literal on the Rust side
+    /// would still be here after the C block was deleted, and the check would
+    /// go on passing while proving nothing.
+    pub fn sentinel() -> &'static str {
+        // SAFETY: the C returns a pointer to a static string literal.
+        unsafe { std::ffi::CStr::from_ptr(ffi::MH_H4_TestFaultSentinel()) }
+            .to_str()
+            .expect("the sentinel is ASCII")
+    }
+}
+
 fn status_to_result(status: MH_STATUS) -> Result<(), MH_STATUS> {
     match status {
         MH_STATUS::MH_OK => Ok(()),
@@ -582,6 +676,81 @@ mod tests {
         assert!(
             acquire.contains(concat!("EnterSpin", "Lock(spin")),
             "the only acquisition must be the one in MH_LockAcquire"
+        );
+    }
+
+    /// THE TEST-SUPPORT BLOCK IS FENCED, and this is what stops it growing
+    /// into a second, unlocked API.
+    ///
+    /// Everything the `test_support` feature adds to the C lives inside ONE
+    /// `#ifdef MINHOOK_H4_TEST_SUPPORT` region plus one guarded statement
+    /// inside `EnableHookLL`, and this test reads the raw source -- so it sees
+    /// the block whether or not the feature is on, which is the only way a
+    /// feature-off run can police it at all.
+    ///
+    /// Three properties, and each is a way the block could become a defect:
+    ///
+    /// * It declares no `MH_STATUS WINAPI MH_` entry point. Such a name joins
+    ///   the roster [`every_exported_operation_checks_lock_ownership`] derives
+    ///   and would have to carry the ownership check; more to the point, it
+    ///   would be an operation, and this block is not allowed to be one.
+    /// * It touches no library state. `g_hooks`, `g_hHeap` and the lock are
+    ///   what the freeze walks; a test seam that wrote any of them would be
+    ///   changing the thing under test.
+    /// * It contains nothing that can wait, suspend or allocate, because it is
+    ///   READ inside the caller's frozen window.
+    ///
+    /// What production change would make this fail? Widening the test-support
+    /// block into anything that can be mistaken for an operation.
+    #[test]
+    fn the_test_support_block_adds_no_operation_and_touches_no_library_state() {
+        let source = include_str!("../vendor/src/hook.c").replace("\r\n", "\n");
+        let opens: Vec<_> = source.match_indices("#ifdef MINHOOK_H4_TEST_SUPPORT").collect();
+        assert_eq!(
+            opens.len(),
+            2,
+            "exactly two guarded regions: the arming block and the one \
+             statement inside `EnableHookLL`"
+        );
+        for (at, _) in opens {
+            let rest = &source[at..];
+            let region = &rest[..rest.find("\n#endif").expect("every region closes")];
+            assert!(
+                !region.contains("MH_STATUS WINAPI MH_"),
+                "the test-support block must not declare an operation"
+            );
+            for banned in [
+                "g_hooks", "g_hHeap", "LockedByCallingThread", "EnterSpinLock",
+                concat!("Sle", "ep("), concat!("Suspend", "Thread"),
+                concat!("Resume", "Thread"), "HeapAlloc", "VirtualProtect",
+            ] {
+                // `pHook` is the one library pointer the guarded statement
+                // inside `EnableHookLL` may read, and it reads exactly one
+                // field of it -- the target it is being asked about.
+                assert!(
+                    !region.contains(banned),
+                    "the test-support block contains `{banned}`, which is \
+                     either library state or something that can wait inside a \
+                     frozen window"
+                );
+            }
+        }
+        // AND THE FEATURE IS THE ONLY WAY IN. `build.rs` is the one definer,
+        // and it defines it only from cargo's own feature environment.
+        let build = include_str!("../build.rs").replace("\r\n", "\n");
+        assert_eq!(
+            build.matches("define(\"MINHOOK_H4_TEST_SUPPORT\"").count(),
+            1,
+            "exactly one definition site"
+        );
+        assert!(
+            build.contains("CARGO_FEATURE_TEST_SUPPORT"),
+            "the definition must come from cargo's feature environment, so an \
+             ordinary build cannot reach it"
+        );
+        assert!(
+            !source.contains("#define MINHOOK_H4_TEST_SUPPORT"),
+            "the C must not define the guard for itself"
         );
     }
 
