@@ -161,3 +161,7 @@ lane_*_analysis/
 # Regenerable decoder checkpoints from captures - never evidence, exceed GitHub 100 MB (lane KS incident 2026-08-16)
 extractor/native/runs/**/.replay_decoder_artifacts-*/
 **/*.h4cp
+
+# Sealed replays are capture output, not evidence text (LQ pushed a 94 MB one; keep future ones out)
+extractor/native/runs/**/*.battleplan
+*.hoi4replay
