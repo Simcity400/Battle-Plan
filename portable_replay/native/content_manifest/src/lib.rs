@@ -32,6 +32,27 @@ pub const AUTHORED_LOCALISATION_NAMESPACES_CONSUMER: &str =
 pub const MAX_REQUIRED_CONTENT_ROWS: usize = 1 << 20;
 
 /// Stable case-insensitive key used by the authored-content closure census.
+///
+/// **This is not a model of any filesystem and must never decide which FILE a
+/// path names.** It is full-Unicode `to_uppercase` then `to_lowercase`, so it
+/// collapses pairs NTFS keeps apart — U+00B5 MICRO SIGN onto U+03BC GREEK SMALL
+/// MU is the measured one — and, being a table compiled into this binary, it
+/// could not be right on every playback volume even if it were corrected (see
+/// [`windows_collision_key`]: the `$UpCase` table is written when the volume is
+/// FORMATTED and has gained and lost mappings across Windows versions).
+///
+/// Selection is done by asking the volume, in
+/// [`effective_vfs::resolve_literal_layer_path`]. Fail-closed collision
+/// detection, which is allowed to over-fold, uses [`windows_collision_key`].
+/// Grouping over paths that are already the recorded canonical identity uses
+/// that identity ([`normalize_game_relative_path`]).
+///
+/// What is left for this function is one job with no filesystem to ask: the
+/// recorder's cross-layer winner selection over the SOURCE INVENTORY
+/// (`recorder_host::portable_content_manifest::source_inventory_winners`),
+/// which groups recorded path strings from a JSON document. That it inherits
+/// the over-fold is real and is recorded as a residual, not resolved by
+/// narrowing this doc comment.
 pub fn filesystem_case_key(value: &str) -> String {
     value
         .chars()
@@ -1405,13 +1426,74 @@ pub fn normalize_game_relative_path(path: &str) -> Result<String, String> {
     if normalized.is_empty()
         || normalized.starts_with('/')
         || normalized.contains(':')
-        || normalized
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+        || normalized.split('/').any(|part| part == "." || part == "..")
     {
         return Err(format!("unsafe/non-canonical game-relative path {path:?}"));
     }
-    Ok(normalized)
+    // Empty components are COLLAPSED, not refused, because that is what
+    // `sanitizePlatformIndependentPath` does with a `//` run -- see
+    // [`sanitize_engine_path`]. Refusing them here while the replay side dropped
+    // them was a live disagreement between the two implementations over a path
+    // the engine resolves perfectly well.
+    let collapsed = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    if collapsed.is_empty() {
+        return Err(format!("unsafe/non-canonical game-relative path {path:?}"));
+    }
+    Ok(collapsed)
+}
+
+/// The engine's own path grammar, applied to a game-relative path before it is
+/// used to name a file.
+///
+/// From `sanitizePlatformIndependentPath` (`0x1424e3ff0`) in `hoi4.exe
+/// 1.19.2.0.a729` / `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
+/// (full working:
+/// `extractor/native/runs/lf_vfs_consolidate/engine_path_namespace_from_a729.md`):
+///
+/// * leading `/` runs are stripped;
+/// * `:` or `\` ANYWHERE fails with `PHYSFS_ERR_BAD_FILENAME` (error `0x17`) --
+///   the engine does not translate a backslash into a separator;
+/// * a component that is exactly `.` or `..` fails with the same error;
+/// * consecutive `/` collapse -- empty components disappear, they do not fail;
+/// * a trailing `/` ends the path successfully;
+/// * every other byte is copied VERBATIM. The engine folds nothing here.
+///
+/// This is the grammar the LOOKUP must apply, and it is applied inside
+/// [`effective_vfs::resolve_literal_layer_path`] so that both layered-VFS
+/// implementations get it whatever their own entry validation did first.
+///
+/// ONE DELIBERATE DEPARTURE, identical on both sides so it cannot make them
+/// disagree: the two callers translate `\` to `/` in their own entry validation
+/// before this ever runs, because a game-relative path reaching this repository
+/// can come from a host API that spells separators the Windows way, which is not
+/// the situation the engine's sanitizer is in. Recorded as a departure rather
+/// than silently called parity.
+pub fn sanitize_engine_path(path: &str) -> Result<String, String> {
+    if path.contains(':') || path.contains('\\') {
+        return Err(format!(
+            "engine path grammar rejects {path:?}: ':' and '\\' are PHYSFS_ERR_BAD_FILENAME"
+        ));
+    }
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        if part.is_empty() {
+            continue;
+        }
+        if part == "." || part == ".." {
+            return Err(format!(
+                "engine path grammar rejects {path:?}: {part:?} is a component the engine refuses"
+            ));
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return Err(format!("engine path grammar rejects {path:?}: it names nothing"));
+    }
+    Ok(parts.join("/"))
 }
 
 /// Every DOS device name Win32 still resolves ahead of a same-named file.
@@ -1962,11 +2044,6 @@ fn host_upcase(ch: char) -> char {
         Ok(index) => char::from_u32(HOST_UPCASE[index].1 as u32).unwrap_or(ch),
         Err(_) => ch,
     }
-}
-
-/// What [`HOST_UPCASE`] folds, folded, and nothing else.
-fn host_upper(value: &str) -> String {
-    value.chars().map(host_upcase).collect()
 }
 
 /// The host relation UNIONED with Unicode's simple uppercase over the BMP.

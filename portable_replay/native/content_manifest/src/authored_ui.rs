@@ -255,6 +255,20 @@ pub fn engine_recursive_path_cmp(left: &str, right: &str) -> Ordering {
 pub fn engine_path_spelling_consumer(path: &str) -> Result<String, String> {
     let preserved = path.trim().replace('\\', "/");
     let normalized = normalize_game_relative_path(&preserved)?;
+    // The byte-positional zip below is only meaningful if normalization changed
+    // nothing but CASE. That used to be guaranteed indirectly, because
+    // `normalize_game_relative_path` refused every input it would otherwise have
+    // shortened; it now COLLAPSES empty components (the engine's `//` rule), so
+    // the guarantee has to be stated here instead of assumed. Without this the
+    // shift shows up as a misleading "not an ASCII-case variant" complaint about
+    // whichever bytes happen to land opposite each other.
+    if preserved.len() != normalized.len() {
+        return Err(format!(
+            "authored engine path spelling is not a case-only variant of its canonical form \
+             ({preserved:?} normalizes to {normalized:?}, changing its length): the spelling mask \
+             can only describe a path whose canonical form differs from it by ASCII case"
+        ));
+    }
     let mut mask = vec![0u8; preserved.len().div_ceil(8)];
     for (index, (actual, folded)) in preserved.bytes().zip(normalized.bytes()).enumerate() {
         if actual == folded {
