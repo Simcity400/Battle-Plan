@@ -37,10 +37,6 @@ pub const TRAILER_ROW_COUNT_OFFSET: usize = 12;
 // Version tables
 // =============================================================================
 
-macro_rules! _no_macros_here {
-    () => {};
-}
-
 /// `MTRF` resource-flow trailer versions.
 ///
 /// The version decides the ROW WIDTH: v1 and v2 carry a fixed seven-resource
@@ -455,12 +451,16 @@ const _: () = {
 /// Every variant carries the offsets the caller needs to walk that family's rows
 /// and the `end` the cursor advances to; none of them carries a semantic
 /// judgement.
+///
+/// CRATE-PRIVATE, and the public `TrailerBody` in [`crate::walk`] is what a site
+/// sees. The difference is ownership: this is a plain parsed header a caller can
+/// drop on the floor, and `TrailerBody` is that header WITH the parent cursor
+/// inside it, so dropping it on the floor ends the walk instead of skipping a
+/// block. There is no `NotDelimited` arm any more -- calling `read_body`
+/// without a delimited magic is a `CallerDefect` and comes back as an `Err`, so
+/// no site has an unreachable arm to write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TrailerBody {
-    /// `read_body` was called without a delimited magic. No payload can produce
-    /// this; it is a caller defect, reported rather than panicked, because a
-    /// leaf under a recorder that must fail closed does not get to panic.
-    NotDelimited,
+pub(crate) enum TrailerHeaders {
     Detail(DetailHeader),
     ResourceFlow(FlowTrailer),
     FactoryHeader(FactoryHeader),
@@ -472,39 +472,6 @@ pub enum TrailerBody {
     LendLease(LendLeaseHeader),
 }
 
-impl TrailerBody {
-    /// Where this trailer ends, which is where the next one begins.
-    pub fn end(&self) -> usize {
-        match self {
-            TrailerBody::NotDelimited => 0,
-            TrailerBody::Detail(t) => t.sized.end,
-            TrailerBody::FactoryHeader(t) => t.sized.end,
-            TrailerBody::Residual(t) => t.sized.end,
-            TrailerBody::LendLease(t) => t.sized.end,
-            TrailerBody::ResourceFlow(t) => t.end,
-            TrailerBody::ResourceRow(t) => t.end,
-            TrailerBody::ClassicDeal(t) => t.end,
-            TrailerBody::Activation(t) => t.end,
-            TrailerBody::Stockpile(t) => t.end,
-        }
-    }
-
-    /// Which family this is.
-    pub fn trailer(&self) -> Option<Trailer> {
-        match self {
-            TrailerBody::NotDelimited => None,
-            TrailerBody::Detail(_) => Some(Trailer::Detail),
-            TrailerBody::ResourceFlow(_) => Some(Trailer::ResourceFlow),
-            TrailerBody::FactoryHeader(_) => Some(Trailer::FactoryHeader),
-            TrailerBody::ResourceRow(_) => Some(Trailer::ResourceRow),
-            TrailerBody::ClassicDeal(_) => Some(Trailer::ClassicDeal),
-            TrailerBody::Activation(_) => Some(Trailer::Activation),
-            TrailerBody::Stockpile(_) => Some(Trailer::Stockpile),
-            TrailerBody::Residual(_) => Some(Trailer::Residual),
-            TrailerBody::LendLease(_) => Some(Trailer::LendLease),
-        }
-    }
-}
 
 /// A family whose extent is `header_len + row_count * row_len`.
 ///
@@ -527,7 +494,7 @@ pub struct SizedTrailer {
 
 impl SizedTrailer {
     /// A pull cursor over this trailer's rows.
-    pub const fn rows(&self) -> RowCursor {
+    pub(crate) const fn rows(&self) -> RowCursor {
         RowCursor::new(self.rows_at, self.row_count, self.row_len)
     }
 }
@@ -595,7 +562,7 @@ pub struct FlowTrailer {
 
 impl FlowTrailer {
     /// A pull cursor over this trailer's rows.
-    pub const fn rows(&self) -> RowCursor {
+    pub(crate) const fn rows(&self) -> RowCursor {
         RowCursor::new(self.rows_at, self.row_count, self.row_len)
     }
 }
@@ -613,6 +580,16 @@ pub struct ResourceRowTrailer {
     pub display_scale: u32,
     /// `+28`: the identity stride in v3/v4, a reserved zero in v1/v2.
     pub identity_stride_or_reserved: u32,
+    /// The stride this trailer's identity block was SIZED WITH, carried here
+    /// rather than taken again from a caller's [`Limits`].
+    ///
+    /// It was `Limits::identity_stride()` at `read_body` time and the header's
+    /// `+28` word was checked to equal it. Taking it a second time from a
+    /// caller admitted a walk striding differently from the extent the grammar
+    /// computed: `identities()` would repeat or skip bytes and `discard_all`
+    /// would land somewhere other than `rows_at`. Zero for the versions that
+    /// carry no identity block, whose `+28` must be zero.
+    pub identity_stride: usize,
     /// Where the identity block starts, and how long it is. Zero-length for the
     /// versions that carry none.
     pub identity_at: usize,
@@ -625,17 +602,17 @@ impl ResourceRowTrailer {
     /// A pull cursor over the resource-identity block. Empty for the versions
     /// that carry none, which is why a site never asks "does this version have
     /// an identity block" a second time.
-    pub fn identities(&self, limits: Limits) -> RowCursor {
+    pub(crate) fn identities(&self) -> RowCursor {
         let count = if self.version.carries_identity() {
             self.resource_count as usize
         } else {
             0
         };
-        RowCursor::new(self.identity_at, count, limits.identity_stride())
+        RowCursor::new(self.identity_at, count, self.identity_stride)
     }
 
     /// A pull cursor over this trailer's rows.
-    pub const fn rows(&self) -> RowCursor {
+    pub(crate) const fn rows(&self) -> RowCursor {
         RowCursor::new(self.rows_at, self.row_count, self.row_len)
     }
 }
@@ -661,18 +638,18 @@ pub struct DealTrailer {
 
 impl DealTrailer {
     /// A pull cursor over the witness words.
-    pub const fn witnesses(&self) -> RowCursor {
+    pub(crate) const fn witnesses(&self) -> RowCursor {
         RowCursor::new(self.witnesses_at, self.witness_count, 4)
     }
 
     /// A pull cursor over the incomplete-owner words. Empty for the versions
     /// that carry no such block.
-    pub const fn incomplete_owners(&self) -> RowCursor {
+    pub(crate) const fn incomplete_owners(&self) -> RowCursor {
         RowCursor::new(self.incomplete_at, self.incomplete_count, 4)
     }
 
     /// A pull cursor over this trailer's rows.
-    pub const fn rows(&self) -> RowCursor {
+    pub(crate) const fn rows(&self) -> RowCursor {
         RowCursor::new(self.rows_at, self.row_count, self.row_len)
     }
 }
@@ -715,12 +692,12 @@ pub struct StockpileTrailer {
 
 impl StockpileTrailer {
     /// A pull cursor over the country segment.
-    pub const fn countries(&self) -> RowCursor {
+    pub(crate) const fn countries(&self) -> RowCursor {
         RowCursor::new(self.countries_at, self.country_count, self.country_row_len)
     }
 
     /// A pull cursor over the item segment.
-    pub const fn items(&self) -> RowCursor {
+    pub(crate) const fn items(&self) -> RowCursor {
         RowCursor::new(self.items_at, self.item_count, self.item_row_len)
     }
 
@@ -759,7 +736,7 @@ pub(crate) fn read_trailer_body(
     at: usize,
     trailer: Trailer,
     limits: Limits,
-) -> Result<TrailerBody, Violation> {
+) -> Result<TrailerHeaders, Violation> {
     let header_len = trailer.header_len();
     let header_end = add(Section::TrailerHeader(trailer), at, header_len)?;
     if header_end > payload.len() {
@@ -775,7 +752,7 @@ pub(crate) fn read_trailer_body(
     match trailer {
         Trailer::Detail => {
             let sized = read_sized_trailer(payload, at, trailer)?;
-            Ok(TrailerBody::Detail(DetailHeader {
+            Ok(TrailerHeaders::Detail(DetailHeader {
                 sized,
                 price_valid_rows: u32_at(payload, at + 16),
                 speed_valid_rows: u32_at(payload, at + 20),
@@ -785,7 +762,7 @@ pub(crate) fn read_trailer_body(
         }
         Trailer::FactoryHeader => {
             let sized = read_sized_trailer(payload, at, trailer)?;
-            Ok(TrailerBody::FactoryHeader(FactoryHeader {
+            Ok(TrailerHeaders::FactoryHeader(FactoryHeader {
                 sized,
                 country_count: u32_at(payload, at + 16) as usize,
                 reserved1: u32_at(payload, at + 20),
@@ -793,7 +770,7 @@ pub(crate) fn read_trailer_body(
         }
         Trailer::Residual => {
             let sized = read_sized_trailer(payload, at, trailer)?;
-            Ok(TrailerBody::Residual(ResidualHeader {
+            Ok(TrailerHeaders::Residual(ResidualHeader {
                 sized,
                 source_blocked_rows: u32_at(payload, at + 16),
                 schema_blocked_rows: u32_at(payload, at + 20),
@@ -803,7 +780,7 @@ pub(crate) fn read_trailer_body(
         }
         Trailer::LendLease => {
             let sized = read_sized_trailer(payload, at, trailer)?;
-            Ok(TrailerBody::LendLease(LendLeaseHeader {
+            Ok(TrailerHeaders::LendLease(LendLeaseHeader {
                 sized,
                 outgoing_rows: u32_at(payload, at + 16),
                 incoming_rows: u32_at(payload, at + 20),
@@ -811,17 +788,17 @@ pub(crate) fn read_trailer_body(
                 price_valid_rows: u32_at(payload, at + 28),
             }))
         }
-        Trailer::ResourceFlow => Ok(TrailerBody::ResourceFlow(read_flow_trailer(
+        Trailer::ResourceFlow => Ok(TrailerHeaders::ResourceFlow(read_flow_trailer(
             payload, at, limits,
         )?)),
-        Trailer::ResourceRow => Ok(TrailerBody::ResourceRow(read_resource_row_trailer(
+        Trailer::ResourceRow => Ok(TrailerHeaders::ResourceRow(read_resource_row_trailer(
             payload, at, limits,
         )?)),
-        Trailer::ClassicDeal => Ok(TrailerBody::ClassicDeal(read_deal_trailer(payload, at)?)),
-        Trailer::Activation => Ok(TrailerBody::Activation(read_activation_trailer(
+        Trailer::ClassicDeal => Ok(TrailerHeaders::ClassicDeal(read_deal_trailer(payload, at)?)),
+        Trailer::Activation => Ok(TrailerHeaders::Activation(read_activation_trailer(
             payload, at,
         )?)),
-        Trailer::Stockpile => Ok(TrailerBody::Stockpile(read_stockpile_trailer(payload, at)?)),
+        Trailer::Stockpile => Ok(TrailerHeaders::Stockpile(read_stockpile_trailer(payload, at)?)),
     }
 }
 
@@ -990,6 +967,17 @@ impl RowCursor {
         self.index += 1;
         step
     }
+
+    /// Jump to this block's end in O(1).
+    ///
+    /// Reachable only through [`crate::BlockCursor::discard_all`], which is a
+    /// site's EXPLICIT statement that it reads this block structurally only.
+    /// The arithmetic is the same the extent was computed from, so this lands
+    /// on the offset the header already declared and never past it.
+    pub(crate) fn skip_all(&mut self) {
+        self.at += (self.count - self.index) * self.stride;
+        self.index = self.count;
+    }
 }
 
 fn read_flow_trailer(payload: &[u8], at: usize, limits: Limits) -> Result<FlowTrailer, Violation> {
@@ -1106,6 +1094,26 @@ fn read_resource_row_trailer(
     // `+28` means the stride on the versions that have an identity block and
     // must be zero on the ones that do not. The VERSION selects the reading;
     // the value never does.
+    let identity_stride = if version.carries_identity() {
+        // An entry is a `u16` length plus its token, so a stride below two
+        // cannot even hold the length word. Refused HERE, where the block is
+        // sized, so no reader ever holds a trailer whose stride it would have
+        // to defend against. `Limits::new` takes the caller's word for both its
+        // budgets and deliberately has no `Default`, so this is the only place
+        // that number can be judged against what it is used for.
+        if limits.identity_stride() < 2 {
+            return Err(Violation::new(
+                at,
+                ViolationKind::IdentityStride {
+                    trailer,
+                    stride: limits.identity_stride(),
+                },
+            ));
+        }
+        limits.identity_stride()
+    } else {
+        0
+    };
     let identity_len = if version.carries_identity() {
         if identity_stride_or_reserved != limits.identity_stride() as u32 {
             return Err(Violation::new(
@@ -1152,6 +1160,7 @@ fn read_resource_row_trailer(
         resource_count,
         display_scale,
         identity_stride_or_reserved,
+        identity_stride,
         identity_at,
         identity_len,
         rows_at,
@@ -1923,29 +1932,66 @@ pub struct IdentityEntry<'a> {
     pub padding: Option<&'a [u8]>,
 }
 
-/// Read the identity entry at slot `slot` of a trailer whose extent this crate
-/// computed.
+/// Read one identity entry at `at`, which comes from the identity
+/// [`crate::BlockCursor`], with the `stride` the trailer was SIZED with
+/// ([`ResourceRowTrailer::identity_stride`]).
+///
+/// `None` rather than a panic when the stride cannot hold an entry, when the
+/// offset arithmetic overflows, or when the entry runs past the payload it was
+/// given. A version that carries no identity block has an EMPTY cursor, so it
+/// yields no `at` to pass here at all.
+///
+/// It used to take a `Limits` of its own, which let a caller read entries at a
+/// stride the extent was not computed from; then a `&ResourceRowTrailer` and a
+/// slot, which let a caller shift the block's base and read a neighbouring
+/// entry. Both are gone.
 pub fn identity_entry_at<'a>(
     payload: &'a [u8],
-    trailer: &ResourceRowTrailer,
-    slot: usize,
-    limits: Limits,
-) -> IdentityEntry<'a> {
-    let at = trailer.identity_at + slot * limits.identity_stride();
+    at: usize,
+    stride: usize,
+) -> Option<IdentityEntry<'a>> {
+    // IT TAKES THE CURSOR'S OFFSET, LIKE EVERY OTHER ROW READER IN THIS CRATE.
+    //
+    // It used to take a `&ResourceRowTrailer` and a SLOT, and do the stride
+    // multiplication itself. That gave it a redirection surface none of the
+    // other readers has: `ResourceRowTrailer` is `Copy` with public fields, so
+    // a caller could shift `identity_at` by one stride, ask for slot zero, pass
+    // every guard and get slot one's bytes (Codex round 5). Taking `at`
+    // straight from the identity `BlockCursor` removes the arithmetic, and with
+    // it that whole shape: this reader is now exactly as strong as
+    // `detail_row_at`, `deal_row_at` and the rest, and no stronger.
+    //
+    // The shared contract, stated once here because this is where it was
+    // questioned: an offset comes from a cursor. A caller that invents one gets
+    // another row's bytes -- from any of these readers -- and that is not
+    // something a leaf can check, because a valid offset and an invented one
+    // are the same `usize`.
+    //
+    // EVERY CHECK BELOW IS A RELEASE CHECK. `read_resource_row_trailer` refuses
+    // a stride below two, so a stride off a PARSED trailer always satisfies it;
+    // a `debug_assert` would be compiled out of the build that ships, which is
+    // the build that must fail closed.
+    if stride < 2 {
+        return None;
+    }
+    let entry_end = at.checked_add(stride)?;
+    if entry_end > payload.len() {
+        return None;
+    }
     let declared_len = u16_at(payload, at) as usize;
-    let max = limits.identity_stride() - 2;
+    let max = stride - 2;
     if declared_len > max {
-        return IdentityEntry {
+        return Some(IdentityEntry {
             declared_len,
             token: None,
             padding: None,
-        };
+        });
     }
-    IdentityEntry {
+    Some(IdentityEntry {
         declared_len,
         token: Some(&payload[at + 2..at + 2 + declared_len]),
-        padding: Some(&payload[at + 2 + declared_len..at + limits.identity_stride()]),
-    }
+        padding: Some(&payload[at + 2 + declared_len..entry_end]),
+    })
 }
 
 /// A field of one `MTRD` classic-deal row.
@@ -2672,10 +2718,6 @@ const fn known_lend_lease_flags() -> u32 {
 // width fails the BUILD; a hand-written fixture list that silently stopped
 // covering a new field cannot.
 
-macro_rules! _unused {
-    () => {};
-}
-
 const fn tiles(offsets: &[usize], widths: &[Width], row_len: usize) -> bool {
     let mut expected = 0;
     let mut i = 0;
@@ -2819,3 +2861,302 @@ const _: () = {
         panic!("d43_grammar: LendLeaseRowField::ALL does not tile the MTLL row");
     }
 };
+
+
+// =============================================================================
+// The non-advancing header preview
+// =============================================================================
+//
+// WHY THIS EXISTS, IN ONE SENTENCE: three sites check a semantic property of a
+// header WORD before they check the header's declared SHAPE, and `read_body`
+// refuses a bad shape before it returns anything, so without a look-first there
+// is no way to rewire those sites onto the leaf and keep the diagnostic a
+// doubly-malformed payload carries.
+//
+// The fold's `MTRF` order is the measured case:
+// `world_fold.rs::parse_market_trade_resource_flow_trailer` tests the v1/v2
+// resource mask before it tests the header shape, and the authority repeats it
+// in
+// `domain_data_authority.rs::decode_compact_market_trade_resource_flow_trailer`.
+//
+// NOTHING HERE IS VALIDATED. Every field is the word at its offset, cast and
+// named and no more. The names come from the same tables the bodies are built
+// from, so a site still never writes an offset -- which is the property, not
+// the validation.
+
+/// The two fields every family's header opens with, whatever it spends the rest
+/// on.
+///
+/// It stops at `+8` on purpose: seven families spend `+8`/`+10`/`+12` on a row
+/// width, a reserved word and a row count, `MTS1` spends them on TWO row widths
+/// and a segment length, and `MTRA` spends them on a flags word and a country
+/// id. A shared prefix that reached further would give three families a field
+/// whose name is a lie.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HeaderPrefix {
+    /// The payload offset this trailer starts at.
+    pub at: usize,
+    /// The family the magic named.
+    pub trailer: Trailer,
+    /// `+4`, raw. NOT looked up in the family's version table.
+    pub version: u16,
+    /// `+6`, raw. NOT compared with the family's declared header width.
+    pub header_len: u16,
+}
+
+/// `+8`/`+10`/`+12` for the seven families that spend them on a uniform row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SizedHeaderWords {
+    pub prefix: HeaderPrefix,
+    /// `+8`, raw.
+    pub row_len: u16,
+    /// `+10`, raw.
+    pub reserved0: u16,
+    /// `+12`, raw.
+    pub row_count: u32,
+}
+
+/// `MTD1`'s header words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DetailHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub price_valid_rows: u32,
+    pub speed_valid_rows: u32,
+    pub delivery_route_valid_rows: u32,
+    pub progress_valid_rows: u32,
+}
+
+/// `MTRF`'s header words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlowHeaderWords {
+    pub sized: SizedHeaderWords,
+    /// `+16`: the exported-row count in v1, the country count in v2/v3.
+    pub country_count_or_exported: u32,
+    pub scale_raw: u32,
+    /// `+24`: the seven-bit resource MASK in v1/v2, the resource COUNT in v3.
+    /// This is the word the fold tests before it tests the header's shape.
+    pub mask_or_count: u32,
+    /// `+28`: the six-kind mask in v2/v3, a reserved zero in v1.
+    pub kind_mask: u32,
+}
+
+/// `MTRH`'s header words. Its header is 24 bytes: there is no `+24`, no `+28`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FactoryHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub country_count: u32,
+    pub reserved1: u32,
+}
+
+/// `MTRR`'s header words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceRowHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub country_count: u32,
+    pub resource_count: u32,
+    pub display_scale: u32,
+    /// `+28`: the identity stride in v3/v4, a reserved zero in v1/v2.
+    pub identity_stride_or_reserved: u32,
+}
+
+/// `MTRD`'s header words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DealHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub country_count: u32,
+    pub scale_raw: u32,
+    pub witness_count: u32,
+    /// `+28`: the incomplete-owner count in v3/v4, and a word v1/v2 must hold
+    /// at zero.
+    pub incomplete_count: u32,
+}
+
+/// `MTRA`'s header words. It has no rows, so `+8` is a flags word.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActivationHeaderWords {
+    pub prefix: HeaderPrefix,
+    pub flags: u32,
+    pub country_tag_db_id: u32,
+    pub observation_sequence: u64,
+    pub root_kind: u32,
+    pub open_rva: u32,
+}
+
+/// `MTS1`'s header words. It has TWO row widths, so `+8` and `+10` are both
+/// widths and `+12` is the producer's own statement of the whole extent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StockpileHeaderWords {
+    pub prefix: HeaderPrefix,
+    pub country_row_len: u16,
+    pub item_row_len: u16,
+    pub declared_segment_len: u32,
+    pub country_count: u32,
+    pub item_count: u32,
+    pub expected_country_count: u32,
+    pub scale_raw: u32,
+    pub flags: u32,
+    pub reserved: u32,
+}
+
+/// `MTRB`'s header words (lane gate only).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResidualHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub source_blocked_rows: u32,
+    pub schema_blocked_rows: u32,
+    pub owned_elsewhere_rows: u32,
+    pub shared_patch_blocked_rows: u32,
+}
+
+/// `MTLL`'s header words (lane gate only).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LendLeaseHeaderWords {
+    pub sized: SizedHeaderWords,
+    pub outgoing_rows: u32,
+    pub incoming_rows: u32,
+    pub amount_valid_rows: u32,
+    pub price_valid_rows: u32,
+}
+
+/// A family's header words, read and named and judged by nothing.
+///
+/// Generated from [`Trailer::ALL`] by an exhaustive `match` with no wildcard
+/// arm, so a tenth family is a compile error here and at every site that
+/// matches on one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HeaderPreview {
+    Detail(DetailHeaderWords),
+    ResourceFlow(FlowHeaderWords),
+    FactoryHeader(FactoryHeaderWords),
+    ResourceRow(ResourceRowHeaderWords),
+    ClassicDeal(DealHeaderWords),
+    Activation(ActivationHeaderWords),
+    Stockpile(StockpileHeaderWords),
+    Residual(ResidualHeaderWords),
+    LendLease(LendLeaseHeaderWords),
+}
+
+impl HeaderPreview {
+    /// The shared prefix, whichever family this is.
+    pub const fn prefix(&self) -> HeaderPrefix {
+        match self {
+            HeaderPreview::Detail(w) => w.sized.prefix,
+            HeaderPreview::ResourceFlow(w) => w.sized.prefix,
+            HeaderPreview::FactoryHeader(w) => w.sized.prefix,
+            HeaderPreview::ResourceRow(w) => w.sized.prefix,
+            HeaderPreview::ClassicDeal(w) => w.sized.prefix,
+            HeaderPreview::Activation(w) => w.prefix,
+            HeaderPreview::Stockpile(w) => w.prefix,
+            HeaderPreview::Residual(w) => w.sized.prefix,
+            HeaderPreview::LendLease(w) => w.sized.prefix,
+        }
+    }
+}
+
+fn header_prefix(payload: &[u8], at: usize, trailer: Trailer) -> HeaderPrefix {
+    HeaderPrefix {
+        at,
+        trailer,
+        version: u16_at(payload, at + TRAILER_VERSION_OFFSET),
+        header_len: u16_at(payload, at + TRAILER_HEADER_LEN_OFFSET),
+    }
+}
+
+fn sized_header_words(payload: &[u8], at: usize, trailer: Trailer) -> SizedHeaderWords {
+    SizedHeaderWords {
+        prefix: header_prefix(payload, at, trailer),
+        row_len: u16_at(payload, at + TRAILER_ROW_LEN_OFFSET),
+        reserved0: u16_at(payload, at + TRAILER_RESERVED0_OFFSET),
+        row_count: u32_at(payload, at + TRAILER_ROW_COUNT_OFFSET),
+    }
+}
+
+pub(crate) fn read_header_preview(
+    payload: &[u8],
+    at: usize,
+    trailer: Trailer,
+) -> Result<HeaderPreview, Violation> {
+    // The SAME bounds check `read_trailer_body` opens with, and the same
+    // violation, so looking first cannot change the diagnostic a truncated
+    // header carries.
+    let header_end = add(Section::TrailerHeader(trailer), at, trailer.header_len())?;
+    if header_end > payload.len() {
+        return Err(Violation::new(
+            at,
+            ViolationKind::Need {
+                section: Section::TrailerHeader(trailer),
+                needed: header_end,
+                available: payload.len(),
+            },
+        ));
+    }
+    Ok(match trailer {
+        Trailer::Detail => HeaderPreview::Detail(DetailHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            price_valid_rows: u32_at(payload, at + 16),
+            speed_valid_rows: u32_at(payload, at + 20),
+            delivery_route_valid_rows: u32_at(payload, at + 24),
+            progress_valid_rows: u32_at(payload, at + 28),
+        }),
+        Trailer::ResourceFlow => HeaderPreview::ResourceFlow(FlowHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            country_count_or_exported: u32_at(payload, at + 16),
+            scale_raw: u32_at(payload, at + 20),
+            mask_or_count: u32_at(payload, at + 24),
+            kind_mask: u32_at(payload, at + 28),
+        }),
+        Trailer::FactoryHeader => HeaderPreview::FactoryHeader(FactoryHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            country_count: u32_at(payload, at + 16),
+            reserved1: u32_at(payload, at + 20),
+        }),
+        Trailer::ResourceRow => HeaderPreview::ResourceRow(ResourceRowHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            country_count: u32_at(payload, at + 16),
+            resource_count: u32_at(payload, at + 20),
+            display_scale: u32_at(payload, at + 24),
+            identity_stride_or_reserved: u32_at(payload, at + 28),
+        }),
+        Trailer::ClassicDeal => HeaderPreview::ClassicDeal(DealHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            country_count: u32_at(payload, at + 16),
+            scale_raw: u32_at(payload, at + 20),
+            witness_count: u32_at(payload, at + 24),
+            incomplete_count: u32_at(payload, at + 28),
+        }),
+        Trailer::Activation => HeaderPreview::Activation(ActivationHeaderWords {
+            prefix: header_prefix(payload, at, trailer),
+            flags: u32_at(payload, at + 8),
+            country_tag_db_id: u32_at(payload, at + 12),
+            observation_sequence: u64_at(payload, at + 16),
+            root_kind: u32_at(payload, at + 24),
+            open_rva: u32_at(payload, at + 28),
+        }),
+        Trailer::Stockpile => HeaderPreview::Stockpile(StockpileHeaderWords {
+            prefix: header_prefix(payload, at, trailer),
+            country_row_len: u16_at(payload, at + TRAILER_ROW_LEN_OFFSET),
+            item_row_len: u16_at(payload, at + TRAILER_RESERVED0_OFFSET),
+            declared_segment_len: u32_at(payload, at + 12),
+            country_count: u32_at(payload, at + 16),
+            item_count: u32_at(payload, at + 20),
+            expected_country_count: u32_at(payload, at + 24),
+            scale_raw: u32_at(payload, at + 28),
+            flags: u32_at(payload, at + 32),
+            reserved: u32_at(payload, at + 36),
+        }),
+        Trailer::Residual => HeaderPreview::Residual(ResidualHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            source_blocked_rows: u32_at(payload, at + 16),
+            schema_blocked_rows: u32_at(payload, at + 20),
+            owned_elsewhere_rows: u32_at(payload, at + 24),
+            shared_patch_blocked_rows: u32_at(payload, at + 28),
+        }),
+        Trailer::LendLease => HeaderPreview::LendLease(LendLeaseHeaderWords {
+            sized: sized_header_words(payload, at, trailer),
+            outgoing_rows: u32_at(payload, at + 16),
+            incoming_rows: u32_at(payload, at + 20),
+            amount_valid_rows: u32_at(payload, at + 24),
+            price_valid_rows: u32_at(payload, at + 28),
+        }),
+    })
+}

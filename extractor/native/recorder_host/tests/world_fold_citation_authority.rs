@@ -199,26 +199,38 @@ fn world_fold_citations_match_the_shipping_fold() {
         "extractor/native/recorder_host/src/world_fold.rs",
         "extractor/native/wire_format/src/d13.rs",
     ];
-    for consumer in D13_CONSUMERS {
-        let path = repo.join(consumer);
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        let attestations = source
-            .lines()
-            .filter(|line| {
-                line.trim_start()
-                    .starts_with("// @leaf-source-authority crate=d13_grammar ")
-            })
-            .count();
-        assert_eq!(
-            attestations,
-            1,
-            "{consumer} carries {attestations} `d13_grammar` leaf authority \
-             markers, expected exactly one. Every site that walks or writes \
-             that shared grammar attests to its source; a site that stops \
-             attesting is a site that can be left behind by a change to the \
-             leaf, which is how D13 lost 59 of 59 records of a live capture \
-             before the crate existed."
-        );
+    // d43's three sites, named for the same reason. The fourth d43 site is the
+    // lane gate (`extractor/native/lanes/market_trade_live`), which does not
+    // take the leaf yet and is therefore not listed: this array states what is
+    // attested, not what is planned.
+    const D43_CONSUMERS: [&str; 3] = [
+        "extractor/native/collector/src/attach_log.rs",
+        "extractor/native/recorder_host/src/domain_data_authority.rs",
+        "extractor/native/recorder_host/src/world_fold.rs",
+    ];
+    for (crate_name, consumers) in [
+        ("d13_grammar", &D13_CONSUMERS[..]),
+        ("d43_grammar", &D43_CONSUMERS[..]),
+    ] {
+        let prefix = format!("// @leaf-source-authority crate={crate_name} ");
+        for consumer in consumers {
+            let path = repo.join(consumer);
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let attestations = source
+                .lines()
+                .filter(|line| line.trim_start().starts_with(&prefix))
+                .count();
+            assert_eq!(
+                attestations,
+                1,
+                "{consumer} carries {attestations} `{crate_name}` leaf authority \
+                 markers, expected exactly one. Every site that walks or writes \
+                 that shared grammar attests to its source; a site that stops \
+                 attesting is a site that can be left behind by a change to the \
+                 leaf, which is how D13 lost 59 of 59 records of a live capture \
+                 before the crate existed."
+            );
+        }
     }
 }

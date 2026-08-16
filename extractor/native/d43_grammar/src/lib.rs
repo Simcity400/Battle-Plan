@@ -501,6 +501,17 @@ pub enum ViolationKind {
         declared: u32,
         max: u32,
     },
+    /// An identity-bearing `MTRR` was given a stride an entry cannot fit.
+    ///
+    /// An entry is a `u16` declared length followed by that many bytes, so a
+    /// stride below two cannot hold the length word and every slot in the block
+    /// is unreadable. The stride is a caller-stated budget
+    /// ([`Limits::identity_stride`]), so this refuses a CALLER's number rather
+    /// than the payload's -- but it is refused here, at the one place the block
+    /// is sized, because the alternative is a reader that computes `stride - 2`
+    /// and underflows. A leaf under a recorder that must fail closed does not
+    /// get to panic.
+    IdentityStride { trailer: Trailer, stride: usize },
     /// A version that defines no block behind the header declared one anyway:
     /// MTRR v1/v2 with a non-zero identity stride, MTRD v1/v2 with a non-zero
     /// incomplete-owner count. The word means something else in the version
@@ -519,6 +530,11 @@ pub enum ViolationKind {
     },
     /// The walk did not account for every byte of the payload.
     TrailingBytes { consumed: usize, available: usize },
+    /// The CALLER walked wrong. Not a statement about the payload at all — see
+    /// [`CallerDefect`]. It is an arm of this enum rather than a separate error
+    /// type because every site already owns one exhaustive formatter over this
+    /// enum, and a second channel would be a second thing to remember.
+    CallerDefect(CallerDefect),
 }
 
 /// A violation and where in the payload it was found.
@@ -940,7 +956,14 @@ pub enum TrailerStep {
 /// Two steps per trailer, deliberately: see the module docs. `End` carries the
 /// finishing offset rather than a separate `finish()`, which would need a misuse
 /// state.
-#[derive(Clone, Copy, Debug)]
+///
+/// **Neither `Clone` nor `Copy`, and that is the whole enforcement.**
+/// [`TrailerCursor::read_body`] takes it by value and the only route back is
+/// [`TrailerResume::resume`], reachable only from a family's final
+/// [`BlockEnd`] — so a walk that skipped a declared block has no cursor to
+/// carry on with. See [`crate::walk`].
+#[derive(Debug)]
+#[must_use]
 pub struct TrailerCursor {
     at: usize,
     pending: Option<(usize, Trailer)>,
@@ -1012,22 +1035,143 @@ impl TrailerCursor {
         })
     }
 
-    /// Read the named family's header, compute its extent, and advance past it.
+    /// Read the shared header prefix and this family's own header words, apply
+    /// NO family rule, and do not advance.
     ///
-    /// Call only after [`TrailerCursor::next`] returned
-    /// [`TrailerStep::Magic`]; calling it otherwise yields
-    /// [`TrailerBody::NotDelimited`], which no payload can produce and every
-    /// site's formatter treats as a caller defect. A panic is not available to a
-    /// leaf under a recorder that must fail closed.
-    pub fn read_body(&mut self, payload: &[u8], limits: Limits) -> Result<TrailerBody, Violation> {
+    /// This exists for one measured reason and it is diagnostic ORDER. Three
+    /// sites check a semantic property of a header word BEFORE they check the
+    /// header's declared shape:
+    /// `world_fold.rs::parse_market_trade_resource_flow_trailer` tests an
+    /// `MTRF` v1/v2 resource mask and only then the header shape, and
+    /// `domain_data_authority.rs::decode_compact_market_trade_resource_flow_trailer`
+    /// does the same. [`TrailerCursor::read_body`]
+    /// refuses a bad declared `header_len` before it returns anything, so a
+    /// payload with both fields wrong would change which diagnostic it carries
+    /// if a site had no way to look first. This is that way.
+    ///
+    /// It reads nothing outside the family's own declared header, and it is
+    /// callable only after [`TrailerCursor::next`] named a magic — so a site
+    /// that refuses an unaccepted magic still refuses it before any header word
+    /// is read.
+    pub fn peek_header(&self, payload: &[u8]) -> Result<HeaderPreview, Violation> {
         let Some((at, trailer)) = self.pending else {
-            return Ok(TrailerBody::NotDelimited);
+            return Err(Violation::caller(
+                self.at,
+                CallerDefect::BodyNotDelimited,
+            ));
         };
-        let body = read_trailer_body(payload, at, trailer, limits)?;
-        self.at = body.end();
+        read_header_preview(payload, at, trailer)
+    }
+
+    /// Read the named family's header, compute its extent, and hand back the
+    /// walk that has to follow it.
+    ///
+    /// **Consumes the cursor.** The parent does not exist again until this
+    /// family's final [`BlockEnd`] yields a [`TrailerResume`], which is what
+    /// makes forgetting a declared block unrepresentable rather than invisible.
+    ///
+    /// Call only after [`TrailerCursor::next`] returned [`TrailerStep::Magic`];
+    /// calling it otherwise is [`CallerDefect::BodyNotDelimited`], reported
+    /// rather than panicked, because a leaf under a recorder that must fail
+    /// closed does not get to panic.
+    ///
+    /// # The parent is GONE until the family's last block ends
+    ///
+    /// This route compiles, and it is the only one:
+    ///
+    /// ```
+    /// use d43_grammar::*;
+    /// fn walk(flow: ResourceFlowCursor) -> Result<TrailerCursor, Violation> {
+    ///     let mut rows = flow.rows();
+    ///     while let RowStep::Row { .. } = rows.next() {}
+    ///     Ok(rows.into_end()?.next.resume())
+    /// }
+    /// ```
+    ///
+    /// Using the cursor after `read_body` took it does not:
+    ///
+    /// ```compile_fail
+    /// use d43_grammar::*;
+    /// fn after_move(mut cursor: TrailerCursor, payload: &[u8], limits: Limits) {
+    ///     let _body = cursor.read_body(payload, limits);
+    ///     let _ = cursor.next(payload);
+    /// }
+    /// ```
+    ///
+    /// Neither does keeping a second copy of the parent to walk on with:
+    ///
+    /// ```compile_fail
+    /// use d43_grammar::*;
+    /// fn two_parents(cursor: TrailerCursor) -> (TrailerCursor, TrailerCursor) {
+    ///     let spare: TrailerCursor = cursor.clone();
+    ///     (cursor, spare)
+    /// }
+    /// ```
+    ///
+    /// And a family cursor has no route to the parent that does not go through
+    /// every one of its declared blocks -- neither by skipping one:
+    ///
+    /// ```compile_fail
+    /// use d43_grammar::*;
+    /// fn skip_the_identities(mtrr: ResourceRowCursor) -> BlockCursor<TrailerResume> {
+    ///     mtrr.rows()
+    /// }
+    /// ```
+    ///
+    /// nor by resuming straight out of the family:
+    ///
+    /// ```compile_fail
+    /// use d43_grammar::*;
+    /// fn escape_the_flow(flow: ResourceFlowCursor) -> TrailerCursor {
+    ///     flow.resume()
+    /// }
+    /// ```
+    ///
+    /// nor by taking the family's `End` without its block:
+    ///
+    /// ```compile_fail
+    /// use d43_grammar::*;
+    /// fn escape_the_stockpile(mts1: StockpileCursor) -> BlockEnd<TrailerResume> {
+    ///     mts1.end()
+    /// }
+    /// ```
+    pub fn read_body(self, payload: &[u8], limits: Limits) -> Result<TrailerBody, Violation> {
+        let Some((at, trailer)) = self.pending else {
+            return Err(Violation::caller(
+                self.at,
+                CallerDefect::BodyNotDelimited,
+            ));
+        };
+        let headers = read_trailer_body(payload, at, trailer, limits)?;
+        Ok(match headers {
+            TrailerHeaders::Detail(h) => TrailerBody::Detail(DetailCursor::new(h, self)),
+            TrailerHeaders::ResourceFlow(h) => {
+                TrailerBody::ResourceFlow(ResourceFlowCursor::new(h, self))
+            }
+            TrailerHeaders::FactoryHeader(h) => {
+                TrailerBody::FactoryHeader(FactoryHeaderCursor::new(h, self))
+            }
+            TrailerHeaders::ResourceRow(h) => {
+                TrailerBody::ResourceRow(ResourceRowCursor::new(h, self))
+            }
+            TrailerHeaders::ClassicDeal(h) => {
+                TrailerBody::ClassicDeal(ClassicDealCursor::new(h, self))
+            }
+            TrailerHeaders::Activation(h) => {
+                TrailerBody::Activation(ActivationCursor::new(h, self))
+            }
+            TrailerHeaders::Stockpile(h) => TrailerBody::Stockpile(StockpileCursor::new(h, self)),
+            TrailerHeaders::Residual(h) => TrailerBody::Residual(ResidualCursor::new(h, self)),
+            TrailerHeaders::LendLease(h) => TrailerBody::LendLease(LendLeaseCursor::new(h, self)),
+        })
+    }
+
+    /// Move past a consumed trailer. Reachable only from
+    /// [`TrailerResume::resume`].
+    pub(crate) fn advance_past(&mut self, trailer: Trailer, end: usize) {
+        self.at = end;
         self.pending = None;
         self.seen |= trailer.seen_bit();
-        Ok(body)
     }
 }
 
@@ -1047,3 +1191,6 @@ pub fn exact_consumption(consumed: usize, payload_len: usize) -> Result<(), Viol
 
 mod family;
 pub use family::*;
+
+mod walk;
+pub use walk::*;

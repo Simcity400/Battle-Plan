@@ -9,6 +9,17 @@
         "extractor/native/d13_grammar/src/lib.rs",
         "extractor/native/d13_grammar/src/tests.rs"
       ]
+    },
+    "d43_grammar": {
+      "root": "extractor/native/d43_grammar",
+      "files": [
+        "extractor/native/d43_grammar/Cargo.toml",
+        "extractor/native/d43_grammar/src/encode.rs",
+        "extractor/native/d43_grammar/src/family.rs",
+        "extractor/native/d43_grammar/src/lib.rs",
+        "extractor/native/d43_grammar/src/tests.rs",
+        "extractor/native/d43_grammar/src/walk.rs"
+      ]
     }
   }
 }

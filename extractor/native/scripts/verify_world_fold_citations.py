@@ -361,6 +361,25 @@ REQUIRED_LEAF_AUTHORITIES = {
             ),
         },
     ),
+    "d43_grammar": LeafAuthority(
+        root="extractor/native/d43_grammar",
+        consumers=(
+            "extractor/native/collector/src/attach_log.rs",
+            "extractor/native/recorder_host/src/domain_data_authority.rs",
+            "extractor/native/recorder_host/src/world_fold.rs",
+        ),
+        # No `const_only` entry. The three sites above each read DOZENS of the
+        # leaf's facts and read them through `fixed_row_len(Trailer::…)` and
+        # `Trailer::….header_len()` as well as through bare constants, which is
+        # not the `crate::CONST` shape a const_only entry may carry -- and they
+        # are the sites that hold d43's semantic layer, so they are consumers.
+        #
+        # The lane gate (`extractor/native/lanes/market_trade_live`) is d43's
+        # FOURTH site and is deliberately absent: as of lane KW it does not
+        # depend on this crate at all, so there is nothing to attest there yet.
+        # It is registered when it is converted, and until then this registry
+        # states what is true rather than what is intended.
+    ),
 }
 # The membership half of a leaf authority, as CLOSURE_INVENTORY is for the
 # fold: the marker's digest proves the attested SOURCE did not change, and this
@@ -1975,6 +1994,383 @@ def verify_leaf_is_sealed(repo_root: Path, crate: str, root: str, attested: Iter
                     f"the consumers are built, not on the digest. Only "
                     f"{sorted(LEAF_PERMITTED_CFG)} are permitted in a leaf."
                 )
+    verify_leaf_all_tables_are_complete(repo_root, crate, attested)
+
+
+# A leaf's drift boundary is an `enum` whose whole grammar -- offsets, widths,
+# masks, dispatch -- is generated from an `ALL` array by exhaustive `match`es
+# with no wildcard arm.  Adding a variant is then a compile error at every site
+# that matches on one, WHICH IS THE POINT, and it is why these crates are built
+# this way.
+#
+# The property has one hole and rustc cannot close it: an added variant is a
+# compile error in every `match`, and it is NOT an error to leave it out of
+# `ALL`.  A variant missing from `ALL` is a family, a flag or a block that every
+# table-driven loop, every drift-killer test and every coverage assertion walks
+# straight past -- silently, because they all iterate `ALL`.  Closing it inside
+# the crate needs `std::mem::variant_count` (unstable) or a derive macro, and a
+# sealed leaf may have neither: no dependencies, no `macro_rules!`.
+#
+# So it is closed HERE, where the leaf's source is already being read for the
+# seal.  Codex named this the right home (review thread
+# `01a007cf-1a5e-7910-b822-f1c595f5d00d`, round 3).
+#
+# THIS CHECK FAILS CLOSED, which is the whole of its second round (round 4).
+# The first version paired `pub enum` declarations with `impl` blocks at column
+# zero and read the source raw, so it SILENTLY SKIPPED an indented `impl`, a
+# `pub(crate)` or private enum, a generic or qualified impl, an attribute on the
+# same line, an `ALL` outside an impl or in another file, and it miscounted
+# braces and variants around comments.  A check that skips is worse than no
+# check, because the report says PASS.  So: the source is read through
+# `sanitize_rust` (comments and literals blanked, byte count preserved), the
+# declarations are found by TOKEN rather than by shape, and every `enum` and
+# every `const ALL` the scan finds must be PAIRED AND PARSED or the leaf is
+# refused with the thing it could not read.
+# `r#ALL` is the SAME identifier as `ALL` -- callers still write `E::ALL` -- so a
+# scan anchored on the literal token found no table at all and let an incomplete
+# one through as though the enum had none (Codex round 6). The optional `r#` is
+# accepted everywhere an identifier is matched.
+LEAF_ENUM_TOKEN_RE = re.compile(r"\b(?:r#)?enum\s+(?:r#)?([A-Za-z_][A-Za-z0-9_]*)")
+LEAF_ALL_TOKEN_RE = re.compile(r"\bconst\s+(?:r#)?ALL\b")
+LEAF_ALL_DECL_RE = re.compile(
+    r"\bconst\s+(?:r#)?ALL\s*:\s*\[\s*(?:r#)?(?P<of>[A-Za-z_][A-Za-z0-9_]*)\s*;\s*"
+    r"(?P<count>[0-9_]+)\s*\]\s*=\s*"
+)
+LEAF_IMPL_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(?:r#)?impl\s+(?P<head>[^{;]*)\{")
+
+
+def _balanced_block(text: str, open_at: int) -> str | None:
+    """The text inside the `{...}` whose `{` is at ``open_at``.
+
+    The caller passes SANITIZED source, so braces inside comments and string
+    literals are already blanked and cannot end a block early.
+    """
+    depth = 0
+    index = open_at
+    while index < len(text):
+        character = text[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1 : index]
+        index += 1
+    return None
+
+
+def _declaration_body_brace(text: str, start: int) -> int:
+    """The `{` that opens a declaration's BODY, from just after its name.
+
+    Not "the first `{`": a generic bound or a const-generic argument can carry
+    one first, and valid Rust such as `enum E where [(); { 1 }]: Sized { A, B }`
+    made the first version read `{ 1 }` as the enum's body and then find no
+    variants at all -- a silent skip, which is the failure mode this whole check
+    exists to avoid (Codex round 5). Braces inside `<>`, `[]` and `()` are
+    skipped; the first one at depth zero is the body.
+
+    Returns -1 when there is none, which the caller reports rather than passes
+    over.
+    """
+    angle = square = round_ = 0
+    index = start
+    while index < len(text):
+        character = text[index]
+        if character == "<":
+            angle += 1
+        elif character == ">":
+            if angle:
+                angle -= 1
+        elif character == "[":
+            square += 1
+        elif character == "]":
+            if square:
+                square -= 1
+        elif character == "(":
+            round_ += 1
+        elif character == ")":
+            if round_:
+                round_ -= 1
+        elif character == ";" and not (angle or square or round_):
+            # A declaration with no body at all (`enum E;` is not legal, but a
+            # `pub use`-style line reaching here would be). Nothing to read.
+            return -1
+        elif character == "{":
+            if not (angle or square or round_):
+                return index
+            depth = 0
+            while index < len(text):
+                if text[index] == "{":
+                    depth += 1
+                elif text[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+        index += 1
+    return -1
+
+
+def _top_level_items(block: str) -> str:
+    """A block with every NESTED brace body blanked, byte count preserved.
+
+    An inherent `impl` contains function bodies, and a function body can declare
+    its own `const ALL` and its own types. Searching the whole block attributed
+    a function-local table to the enclosing enum and checked it against the
+    wrong type (Codex round 5). Only depth-one associated items are the impl's
+    own.
+    """
+    out = []
+    depth = 0
+    for character in block:
+        if character == "{":
+            depth += 1
+            out.append("{" if depth == 1 else " ")
+            continue
+        if character == "}":
+            out.append("}" if depth == 1 else " ")
+            depth -= 1
+            continue
+        out.append(character if depth == 0 else " ")
+    return "".join(out)
+
+
+def _balanced_bracket(text: str, open_at: int) -> str | None:
+    """The text inside the `[...]` whose `[` is at ``open_at``.
+
+    Bracket-aware rather than "up to the first `]`", so an attribute or a nested
+    array inside an `ALL` table cannot truncate it -- which the first version
+    did, and truncation there made the whole table vanish from the check.
+    """
+    depth = 0
+    index = open_at
+    while index < len(text):
+        character = text[index]
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1 : index]
+        index += 1
+    return None
+
+
+def _enum_variants(body: str) -> list[str]:
+    """The variant names of a SANITIZED enum body.
+
+    Payload variants (`A(u32)`), struct variants (`A { x: u8 }`) and explicit
+    discriminants (`A = 3`) all reduce to their leading identifier.
+    """
+    without_attributes = re.sub(r"#\[[^\]]*\]", " ", body)
+    variants: list[str] = []
+    depth = 0
+    current = ""
+    for character in without_attributes:
+        if character in "({[":
+            depth += 1
+        elif character in ")}]":
+            depth -= 1
+        if character == "," and depth == 0:
+            variants.append(current)
+            current = ""
+        else:
+            current += character
+    variants.append(current)
+    names = []
+    for variant in variants:
+        stripped = variant.strip()
+        if not stripped:
+            continue
+        match = re.match(r"^(?:r#)?([A-Za-z_][A-Za-z0-9_]*)", stripped)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _impl_target(head: str) -> str | None:
+    """The type an `impl ... {` head is for, or None if this scan cannot tell.
+
+    Handles `impl X`, `impl<T> X<T>`, `impl X for Y` (returns None -- a trait
+    impl carries no inherent `ALL`), and a qualified `impl a::b::X`.
+    """
+    text = head.strip()
+    if text.startswith("<"):
+        depth = 0
+        for index, character in enumerate(text):
+            if character == "<":
+                depth += 1
+            elif character == ">":
+                depth -= 1
+                if depth == 0:
+                    text = text[index + 1 :].strip()
+                    break
+        else:
+            return None
+    if re.search(r"(?<![A-Za-z0-9_])for(?![A-Za-z0-9_])", text):
+        return None
+    text = re.sub(r"(?<![A-Za-z0-9_])where(?![A-Za-z0-9_]).*$", "", text).strip()
+    text = text.split("<")[0].strip()
+    text = text.split("::")[-1].strip()
+    if text.startswith("r#"):
+        text = text[2:]
+    return text or None
+
+
+def verify_leaf_all_tables_are_complete(
+    repo_root: Path, crate: str, attested: Iterable[str]
+) -> None:
+    """Every `enum` with an `ALL` table lists every one of its variants.
+
+    Refused: an `ALL` shorter than its enum, an `ALL` whose declared length
+    disagrees with what it contains, a duplicate, an entry that is not a variant
+    -- and, because a silent skip is the failure mode that matters here, any
+    `enum` or `const ALL` this scan finds and cannot pair and parse.
+
+    Not refused, and not refusable: an enum with no `ALL` at all. That is an
+    enum this idiom was never applied to, and there is nothing to be complete
+    against.
+    """
+    enums: dict[str, list[str]] = {}
+    enum_sources: dict[str, str] = {}
+    tables: list[tuple[str, str, str, int, list[str]]] = []
+    unreadable: list[str] = []
+    all_tokens = 0
+    paired_tables = 0
+
+    for relative in sorted(attested):
+        path = repo_root / relative
+        if path.suffix != ".rs":
+            continue
+        source = sanitize_rust(_read_utf8(path))
+
+        for match in LEAF_ENUM_TOKEN_RE.finditer(source):
+            name = match.group(1)
+            brace = _declaration_body_brace(source, match.end())
+            if brace < 0:
+                unreadable.append(f"{relative}: `enum {name}` has no body this scan can find")
+                continue
+            body = _balanced_block(source, brace)
+            if body is None:
+                unreadable.append(f"{relative}: `enum {name}`'s body is unbalanced")
+                continue
+            if name in enums:
+                unreadable.append(
+                    f"{relative}: a second `enum {name}` (first in "
+                    f"{enum_sources[name]}); this scan cannot tell which one an "
+                    f"`ALL` table belongs to"
+                )
+                continue
+            enums[name] = _enum_variants(body)
+            enum_sources[name] = relative
+
+        all_tokens += len(LEAF_ALL_TOKEN_RE.findall(source))
+
+        for match in LEAF_IMPL_TOKEN_RE.finditer(source):
+            target = _impl_target(match.group("head"))
+            whole = _balanced_block(source, match.end() - 1)
+            if whole is None:
+                unreadable.append(f"{relative}: an `impl` block is unbalanced")
+                continue
+            # Only the impl's OWN associated items. A `const ALL` inside one of
+            # its function bodies belongs to that function, not to this type.
+            block = _top_level_items(whole)
+            nested_tables = len(LEAF_ALL_TOKEN_RE.findall(whole)) - len(
+                LEAF_ALL_TOKEN_RE.findall(block)
+            )
+            if nested_tables:
+                unreadable.append(
+                    f"{relative}: an `impl` block carries {nested_tables} "
+                    f"`const ALL` inside a function body; this scan reads "
+                    f"associated items only and will not guess which type such "
+                    f"a table is for"
+                )
+                continue
+            if not LEAF_ALL_TOKEN_RE.search(block):
+                continue
+            if target is None:
+                unreadable.append(
+                    f"{relative}: an `impl {match.group('head').strip()}{{` carries "
+                    f"a `const ALL` and this scan cannot tell what type it is for"
+                )
+                continue
+            declaration = LEAF_ALL_DECL_RE.search(block)
+            if declaration is None:
+                unreadable.append(
+                    f"{relative}: `{target}` carries a `const ALL` this scan "
+                    f"cannot read as `[Type; N] = [...]`"
+                )
+                continue
+            bracket = block.find("[", declaration.end())
+            entries_text = (
+                _balanced_bracket(block, bracket) if bracket >= 0 else None
+            )
+            if entries_text is None:
+                unreadable.append(
+                    f"{relative}: `{target}::ALL`'s entry list is unbalanced"
+                )
+                continue
+            entries = [
+                entry.split("::")[-1].strip().removeprefix("r#")
+                for entry in entries_text.split(",")
+                if entry.strip()
+            ]
+            declared = int(declaration.group("count").replace("_", ""))
+            tables.append((relative, target, declaration.group("of"), declared, entries))
+            paired_tables += 1
+
+    if unreadable:
+        raise VerificationError(
+            f"{crate}: this gate could not read {len(unreadable)} declaration(s) "
+            f"in the attested source, and a shape it cannot read is a shape it "
+            f"would pass over: " + "; ".join(sorted(unreadable))
+        )
+    if paired_tables != all_tokens:
+        raise VerificationError(
+            f"{crate}: found {all_tokens} `const ALL` declaration(s) in the "
+            f"attested source and could pair {paired_tables} with an enum. An "
+            f"`ALL` this gate does not read is an `ALL` it does not check."
+        )
+
+    for relative, target, of, declared, entries in tables:
+        if target not in enums:
+            raise VerificationError(
+                f"{crate}: {relative}: `{target}::ALL` is on a type this scan "
+                f"found no `enum` for; it cannot be checked for completeness"
+            )
+        if of != target:
+            raise VerificationError(
+                f"{crate}: {relative}: `{target}::ALL` is declared as `[{of}; "
+                f"{declared}]`, an array of another type"
+            )
+        variants = enums[target]
+        if len(entries) != declared:
+            raise VerificationError(
+                f"{crate}: {relative}: {target}::ALL declares {declared} "
+                f"entries and lists {len(entries)}"
+            )
+        missing = [variant for variant in variants if variant not in entries]
+        if missing:
+            raise VerificationError(
+                f"{crate}: {relative}: {target}::ALL omits {missing}. Every "
+                f"table-driven loop, drift-killer and coverage assertion in "
+                f"this crate iterates ALL, so a variant missing from it is a "
+                f"variant nothing walks -- and rustc cannot catch that, "
+                f"because leaving a variant out of an array is not an error "
+                f"the way leaving one out of a `match` is."
+            )
+        extra = [entry for entry in entries if entry not in variants]
+        if extra:
+            raise VerificationError(
+                f"{crate}: {relative}: {target}::ALL lists {extra}, which are "
+                f"not variants of {target}"
+            )
+        duplicated = sorted({entry for entry in entries if entries.count(entry) > 1})
+        if duplicated:
+            raise VerificationError(
+                f"{crate}: {relative}: {target}::ALL lists {duplicated} more "
+                f"than once"
+            )
 
 
 def _nearest_manifest(repo_root: Path, relative: str) -> Path | None:

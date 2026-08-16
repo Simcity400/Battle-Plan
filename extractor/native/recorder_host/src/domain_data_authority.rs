@@ -11418,7 +11418,7 @@ fn decode_compact_project_reward_history_trailer(
         aborted_countries,
     );
 }
-
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=6 sha256=2cadf9cc915f24941b238df3ebad6254323da085a5a487c3973e7b743dc5fac0
 fn decode_compact_market_trade_data_payload(
     offset: usize,
     payload: &[u8],

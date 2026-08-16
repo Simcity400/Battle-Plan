@@ -117,24 +117,74 @@ fn core_bytes(rows: &[[u64; 3]]) -> Bytes {
     b
 }
 
-fn walk_all(payload: &[u8]) -> Result<Vec<(Trailer, usize, usize)>, Violation> {
+/// Every declared block of `body`, reached and explicitly discarded.
+///
+/// The only two routes past a trailer are walking every block and discarding
+/// every block, so a test that cares about one family has to say which it is
+/// doing for the rest. That is the property under test, exercised by the test
+/// harness itself.
+fn discard_body(body: TrailerBody) -> TrailerResume {
+    match body {
+        TrailerBody::Detail(c) => c.rows().discard_all().next,
+        TrailerBody::ResourceFlow(c) => c.rows().discard_all().next,
+        TrailerBody::FactoryHeader(c) => c.rows().discard_all().next,
+        TrailerBody::Residual(c) => c.rows().discard_all().next,
+        TrailerBody::LendLease(c) => c.rows().discard_all().next,
+        TrailerBody::ResourceRow(c) => {
+            c.identities()
+                .discard_all()
+                .next
+                .rows()
+                .discard_all()
+                .next
+        }
+        TrailerBody::ClassicDeal(c) => {
+            c.witnesses()
+                .discard_all()
+                .next
+                .incomplete_owners()
+                .discard_all()
+                .next
+                .rows()
+                .discard_all()
+                .next
+        }
+        TrailerBody::Stockpile(c) => c.countries().discard_all().next.items().discard_all().next,
+        TrailerBody::Activation(c) => c.end().next,
+    }
+}
+
+/// Walk every trailer of `payload`, handing each family's owned cursor to
+/// `visit`, which must hand back the [`TrailerResume`] it can obtain in no way
+/// other than consuming every declared block.
+fn visit_trailers<F>(payload: &[u8], mut visit: F) -> Result<usize, Violation>
+where
+    F: FnMut(&[u8], usize, TrailerBody) -> Result<TrailerResume, Violation>,
+{
     let header = read_core_header(payload)?;
     let core = core_end(payload, header.row_count())?;
     let mut cursor = TrailerCursor::new(core);
-    let mut seen = Vec::new();
     loop {
         match cursor.next(payload)? {
-            TrailerStep::End(at) => {
-                exact_consumption(at, payload.len())?;
-                return Ok(seen);
-            }
-            TrailerStep::Magic { at, trailer } => {
+            TrailerStep::End(at) => return Ok(at),
+            TrailerStep::Magic { at, .. } => {
                 let body = cursor.read_body(payload, TEST_LIMITS)?;
-                assert_eq!(body.trailer(), Some(trailer));
-                seen.push((trailer, at, body.end()));
+                cursor = visit(payload, at, body)?.resume();
             }
         }
     }
+}
+
+fn walk_all(payload: &[u8]) -> Result<Vec<(Trailer, usize, usize)>, Violation> {
+    let mut seen = Vec::new();
+    let end = visit_trailers(payload, |_, at, body| {
+        let trailer = body.trailer();
+        let resume = discard_body(body);
+        seen.push((trailer, at, resume.end()));
+        Ok(resume)
+    })?;
+    exact_consumption(end, payload.len())?;
+    Ok(seen)
 }
 
 // =============================================================================
@@ -171,17 +221,16 @@ fn every_declared_version_has_a_handwritten_fixture() {
     let mut resource = Vec::new();
     let mut deal = Vec::new();
     for (payload, _) in every_fixture() {
-        let header = read_core_header(&payload).expect("header");
-        let core = core_end(&payload, header.row_count()).expect("core");
-        let mut cursor = TrailerCursor::new(core);
-        while let Ok(TrailerStep::Magic { .. }) = cursor.next(&payload) {
-            match cursor.read_body(&payload, TEST_LIMITS).expect("body") {
-                TrailerBody::ResourceFlow(t) => flow.push(t.version),
-                TrailerBody::ResourceRow(t) => resource.push(t.version),
-                TrailerBody::ClassicDeal(t) => deal.push(t.version),
+        visit_trailers(&payload, |_, _, body| {
+            match &body {
+                TrailerBody::ResourceFlow(c) => flow.push(c.header().version),
+                TrailerBody::ResourceRow(c) => resource.push(c.header().version),
+                TrailerBody::ClassicDeal(c) => deal.push(c.header().version),
                 _ => {}
             }
-        }
+            Ok(discard_body(body))
+        })
+        .expect("walk");
     }
     for v in FlowVersion::ALL {
         assert!(flow.contains(&v), "no fixture carries MTRF {:?}", v);
@@ -219,17 +268,17 @@ fn core_flag_fixtures_cover_exactly_the_known_mask() {
 fn detail_flag_fixtures_cover_exactly_the_known_mask() {
     let mut union = 0u32;
     for (payload, _) in every_fixture() {
-        let header = read_core_header(&payload).expect("header");
-        let core = core_end(&payload, header.row_count()).expect("core");
-        let mut cursor = TrailerCursor::new(core);
-        while let Ok(TrailerStep::Magic { .. }) = cursor.next(&payload) {
-            if let TrailerBody::Detail(t) = cursor.read_body(&payload, TEST_LIMITS).expect("body") {
-                let mut rows = t.sized.rows();
-                while let RowStep::Row { at, .. } = rows.next() {
-                    union |= detail_row_at(&payload, at).flags;
-                }
+        visit_trailers(&payload, |payload, _, body| {
+            let TrailerBody::Detail(c) = body else {
+                return Ok(discard_body(body));
+            };
+            let mut rows = c.rows();
+            while let RowStep::Row { at, .. } = rows.next() {
+                union |= detail_row_at(payload, at).flags;
             }
-        }
+            Ok(rows.into_end()?.next)
+        })
+        .expect("walk");
     }
     assert_eq!(union, KNOWN_DETAIL_FLAGS);
 }
@@ -241,25 +290,23 @@ fn resource_row_fixtures_cover_every_flag_and_needed_type() {
     let mut union = 0u32;
     let mut kinds = Vec::new();
     for (payload, _) in every_fixture() {
-        let header = read_core_header(&payload).expect("header");
-        let core = core_end(&payload, header.row_count()).expect("core");
-        let mut cursor = TrailerCursor::new(core);
-        while let Ok(TrailerStep::Magic { .. }) = cursor.next(&payload) {
-            if let TrailerBody::ResourceRow(t) =
-                cursor.read_body(&payload, TEST_LIMITS).expect("body")
-            {
-                let mut rows = t.rows();
-                while let RowStep::Row { at, .. } = rows.next() {
-                    let row = resource_row_at(&payload, at);
-                    union |= row.flags;
-                    if let Some(kind) = NeededType::from_wire(row.needed_type) {
-                        if !kinds.contains(&kind) {
-                            kinds.push(kind);
-                        }
+        visit_trailers(&payload, |payload, _, body| {
+            let TrailerBody::ResourceRow(c) = body else {
+                return Ok(discard_body(body));
+            };
+            let mut rows = c.identities().discard_all().next.rows();
+            while let RowStep::Row { at, .. } = rows.next() {
+                let row = resource_row_at(payload, at);
+                union |= row.flags;
+                if let Some(kind) = NeededType::from_wire(row.needed_type) {
+                    if !kinds.contains(&kind) {
+                        kinds.push(kind);
                     }
                 }
             }
-        }
+            Ok(rows.into_end()?.next)
+        })
+        .expect("walk");
     }
     assert_eq!(union, KNOWN_RESOURCE_FLAGS);
     for kind in NeededType::ALL {
@@ -276,44 +323,49 @@ fn deal_and_flow_vocabularies_are_covered() {
     let mut routes = Vec::new();
     let mut status_union = 0u32;
     for (payload, _) in every_fixture() {
-        let header = read_core_header(&payload).expect("header");
-        let core = core_end(&payload, header.row_count()).expect("core");
-        let mut cursor = TrailerCursor::new(core);
-        while let Ok(TrailerStep::Magic { .. }) = cursor.next(&payload) {
-            match cursor.read_body(&payload, TEST_LIMITS).expect("body") {
-                TrailerBody::ResourceFlow(t) => {
-                    let mut rows = t.rows();
-                    while let RowStep::Row { at, .. } = rows.next() {
-                        if let Some(kind) = FlowKind::from_wire(flow_row_at(&payload, at).flow_kind)
-                        {
-                            if !flow_kinds.contains(&kind) {
-                                flow_kinds.push(kind);
-                            }
+        visit_trailers(&payload, |payload, _, body| match body {
+            TrailerBody::ResourceFlow(c) => {
+                let mut rows = c.rows();
+                while let RowStep::Row { at, .. } = rows.next() {
+                    if let Some(kind) = FlowKind::from_wire(flow_row_at(payload, at).flow_kind) {
+                        if !flow_kinds.contains(&kind) {
+                            flow_kinds.push(kind);
                         }
                     }
                 }
-                TrailerBody::ClassicDeal(t) => {
-                    let mut rows = t.rows();
-                    while let RowStep::Row { at, .. } = rows.next() {
-                        let row = deal_row_at(&payload, at, t.version);
-                        if let Some(d) = DealDirection::from_wire(row.direction) {
-                            if !directions.contains(&d) {
-                                directions.push(d);
-                            }
-                        }
-                        if let Some(r) = DealRoute::from_wire(row.route_kind) {
-                            if !routes.contains(&r) {
-                                routes.push(r);
-                            }
-                        }
-                        if t.version.carries_route_status() {
-                            status_union |= row.route_status_or_reserved;
-                        }
-                    }
-                }
-                _ => {}
+                Ok(rows.into_end()?.next)
             }
-        }
+            TrailerBody::ClassicDeal(c) => {
+                let version = c.header().version;
+                let mut rows = c
+                    .witnesses()
+                    .discard_all()
+                    .next
+                    .incomplete_owners()
+                    .discard_all()
+                    .next
+                    .rows();
+                while let RowStep::Row { at, .. } = rows.next() {
+                    let row = deal_row_at(payload, at, version);
+                    if let Some(d) = DealDirection::from_wire(row.direction) {
+                        if !directions.contains(&d) {
+                            directions.push(d);
+                        }
+                    }
+                    if let Some(r) = DealRoute::from_wire(row.route_kind) {
+                        if !routes.contains(&r) {
+                            routes.push(r);
+                        }
+                    }
+                    if version.carries_route_status() {
+                        status_union |= row.route_status_or_reserved;
+                    }
+                }
+                Ok(rows.into_end()?.next)
+            }
+            _ => Ok(discard_body(body)),
+        })
+        .expect("walk");
     }
     for kind in FlowKind::ALL {
         assert!(flow_kinds.contains(&kind), "no fixture states {:?}", kind);
@@ -1431,10 +1483,17 @@ fn the_deal_identity_is_read_at_the_width_its_version_spells() {
     let header = read_core_header(&payload).expect("header");
     let mut cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
     cursor.next(&payload).expect("magic");
-    let TrailerBody::ClassicDeal(t) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
+    let TrailerBody::ClassicDeal(c) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
         panic!("expected MTRD");
     };
-    let mut rows = t.rows();
+    let mut rows = c
+        .witnesses()
+        .discard_all()
+        .next
+        .incomplete_owners()
+        .discard_all()
+        .next
+        .rows();
     let RowStep::Row { at, .. } = rows.next() else {
         panic!("expected a row");
     };
@@ -1480,15 +1539,17 @@ fn an_identity_only_mtrr_delimits_its_identities_and_no_rows() {
     let header = read_core_header(&payload).expect("header");
     let mut cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
     cursor.next(&payload).expect("magic");
-    let TrailerBody::ResourceRow(t) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
+    let TrailerBody::ResourceRow(c) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
         panic!("expected MTRR");
     };
+    let t = *c.header();
     assert_eq!(t.row_count, 0);
     assert_eq!(t.identity_len, 3 * TEST_LIMITS.identity_stride());
-    let mut identities = t.identities(TEST_LIMITS);
+    let mut identities = c.identities();
     let mut tokens = Vec::new();
-    while let RowStep::Row { index, .. } = identities.next() {
-        let entry = identity_entry_at(&payload, &t, index, TEST_LIMITS);
+    while let RowStep::Row { at, .. } = identities.next() {
+        let entry = identity_entry_at(&payload, at, t.identity_stride)
+            .expect("the cursor yielded this offset");
         tokens.push(entry.token.expect("token fits the stride").to_vec());
         assert!(entry.padding.expect("padding").iter().all(|b| *b == 0));
     }
@@ -1497,6 +1558,11 @@ fn an_identity_only_mtrr_delimits_its_identities_and_no_rows() {
         vec![b"oil".to_vec(), b"steel".to_vec(), b"rubber".to_vec()]
     );
     assert_eq!(t.end, payload.len());
+    // The zero-row block still has to be consumed to reach the parent, which is
+    // what stops "this version has no rows" from being learned by NOT asking.
+    let rows = identities.into_end().expect("identities").next.rows();
+    assert_eq!(rows.remaining(), 0);
+    assert_eq!(rows.into_end().expect("rows").next.end(), payload.len());
 }
 
 /// An `MTRF` v3 with a resource count that is NOT seven walks, which is the
@@ -1840,38 +1906,37 @@ fn the_lane_only_families_have_row_readers() {
     mtrb_v1(&mut b);
     mtll_v1(&mut b);
     let payload = b.done();
-    let header = read_core_header(&payload).expect("header");
-    let mut cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
     let mut saw_residual = false;
     let mut saw_lend_lease = false;
-    while let Ok(TrailerStep::Magic { .. }) = cursor.next(&payload) {
-        match cursor.read_body(&payload, TEST_LIMITS).expect("body") {
-            TrailerBody::Residual(t) => {
-                let mut rows = t.sized.rows();
-                let RowStep::Row { at, .. } = rows.next() else {
-                    panic!("expected a row")
-                };
-                let row = residual_row_at(&payload, at);
-                assert_eq!(row.gap_id, 0);
-                assert_eq!(row.proof_status, 10);
-                assert_eq!(row.reserved, 11);
-                saw_residual = true;
-            }
-            TrailerBody::LendLease(t) => {
-                let mut rows = t.sized.rows();
-                let RowStep::Row { at, .. } = rows.next() else {
-                    panic!("expected a row")
-                };
-                let row = lend_lease_row_at(&payload, at);
-                assert_eq!(row.contract_id, 1);
-                assert_eq!(row.direction, LendLeaseDirection::Outgoing.wire());
-                assert_eq!(row.amount_raw, FIXED_SCALE_RAW as i64);
-                assert_eq!(row.reserved, 0);
-                saw_lend_lease = true;
-            }
-            _ => {}
+    visit_trailers(&payload, |payload, _, body| match body {
+        TrailerBody::Residual(c) => {
+            let mut rows = c.rows();
+            let RowStep::Row { at, .. } = rows.next() else {
+                panic!("expected a row")
+            };
+            let row = residual_row_at(payload, at);
+            assert_eq!(row.gap_id, 0);
+            assert_eq!(row.proof_status, 10);
+            assert_eq!(row.reserved, 11);
+            saw_residual = true;
+            Ok(rows.discard_all().next)
         }
-    }
+        TrailerBody::LendLease(c) => {
+            let mut rows = c.rows();
+            let RowStep::Row { at, .. } = rows.next() else {
+                panic!("expected a row")
+            };
+            let row = lend_lease_row_at(payload, at);
+            assert_eq!(row.contract_id, 1);
+            assert_eq!(row.direction, LendLeaseDirection::Outgoing.wire());
+            assert_eq!(row.amount_raw, FIXED_SCALE_RAW as i64);
+            assert_eq!(row.reserved, 0);
+            saw_lend_lease = true;
+            Ok(rows.discard_all().next)
+        }
+        _ => Ok(discard_body(body)),
+    })
+    .expect("walk");
     assert!(saw_residual && saw_lend_lease);
 }
 
@@ -1886,4 +1951,955 @@ fn the_lane_only_families_have_row_readers() {
 fn the_flow_masks_are_the_documented_literals() {
     assert_eq!(FLOW_KIND_MASK, 0x3F);
     assert_eq!(FLOW_RESOURCE_MASK, 0x7F);
+}
+
+
+// =============================================================================
+// 7. The owned walk: a skipped block is refused
+// =============================================================================
+//
+// This section is lane KU's open headline finding, closed. Its shape came from
+// Codex design thread `01a007a9-1e92-7a82-8263-3c5b37bcacab`.
+
+/// Write a fixture whose every declared block of `trailer` is NON-EMPTY.
+///
+/// A block with no rows cannot demonstrate the property -- `remaining() == 0` is
+/// exactly the legal state -- so the probe below needs fixtures that fill every
+/// block, and `every_declared_block_is_probed_and_non_empty` checks it got them.
+fn a_fixture_with_every_block_filled(trailer: Trailer) -> Vec<u8> {
+    let mut b = core_bytes(&[]);
+    match trailer {
+        Trailer::Detail => mtd1_v1(&mut b),
+        Trailer::ResourceFlow => mtrf(&mut b, FlowVersion::Variable, 3, &[1, 2, 3, 4, 5, 6]),
+        Trailer::FactoryHeader => mtrh_v1(&mut b),
+        Trailer::ResourceRow => mtrr(
+            &mut b,
+            ResourceRowVersion::Identity,
+            2,
+            &["oil", "steel"],
+            &[21],
+            &[
+                (0, NeededType::CurrentMax.wire(), RESOURCE_FLAGS_OIL),
+                (1, NeededType::Surplus.wire(), 0),
+            ],
+        ),
+        // v4 so the incomplete-owner block exists AND is non-empty.
+        Trailer::ClassicDeal => mtrd(&mut b, DealVersion::WideIdentity, &[21, 22], &[22]),
+        Trailer::Activation => mtra_v1(&mut b),
+        Trailer::Stockpile => mts1_v1(&mut b),
+        Trailer::Residual => mtrb_v1(&mut b),
+        Trailer::LendLease => mtll_v1(&mut b),
+    }
+    b.done()
+}
+
+/// Take the ONE trailer of `payload` and hand back its owned body.
+fn only_body(payload: &[u8]) -> TrailerBody {
+    let header = read_core_header(payload).expect("header");
+    let cursor = TrailerCursor::new(core_end(payload, header.row_count()).expect("core"));
+    let mut cursor = cursor;
+    let TrailerStep::Magic { .. } = cursor.next(payload).expect("magic") else {
+        panic!("expected a magic");
+    };
+    cursor.read_body(payload, TEST_LIMITS).expect("body")
+}
+
+fn assert_not_consumed(err: Violation, trailer: Trailer, block: TrailerBlock, remaining: usize) {
+    assert_eq!(
+        err.kind,
+        ViolationKind::CallerDefect(CallerDefect::BlockNotConsumed {
+            trailer,
+            block,
+            remaining,
+        }),
+        "{} {} produced {:?}",
+        trailer.label(),
+        block.name(),
+        err.kind
+    );
+}
+
+/// **THE PROPERTY.** For every declared block of every family, asking for the
+/// block's end without consuming it is refused, and the refusal names the
+/// family, the block and how many rows were left.
+///
+/// kills: `BlockCursor::into_end` returning `Ok` on a non-empty block;
+/// `read_body` handing the parent back before the last block; any family cursor
+/// growing a second route to `TrailerResume`; a new declared block reached
+/// through a path that does not go through `BlockCursor`.
+///
+/// The coverage assertion at the end is what makes it a drift-killer rather
+/// than thirteen hand-written cases: a tenth family, or a new arm of
+/// [`TrailerBlock`], leaves the covered set short of the declared one and fails
+/// HERE.
+#[test]
+fn every_declared_block_refuses_to_end_before_it_is_consumed() {
+    let mut covered: Vec<(Trailer, TrailerBlock)> = Vec::new();
+    let mut note = |trailer: Trailer, block: TrailerBlock| {
+        if !covered.contains(&(trailer, block)) {
+            covered.push((trailer, block));
+        }
+    };
+
+    // The five one-block families.
+    for trailer in [
+        Trailer::Detail,
+        Trailer::ResourceFlow,
+        Trailer::FactoryHeader,
+        Trailer::Residual,
+        Trailer::LendLease,
+    ] {
+        let payload = a_fixture_with_every_block_filled(trailer);
+        let rows = match only_body(&payload) {
+            TrailerBody::Detail(c) => c.rows(),
+            TrailerBody::ResourceFlow(c) => c.rows(),
+            TrailerBody::FactoryHeader(c) => c.rows(),
+            TrailerBody::Residual(c) => c.rows(),
+            TrailerBody::LendLease(c) => c.rows(),
+            _ => panic!("{} fixture produced another family", trailer.label()),
+        };
+        let remaining = rows.remaining();
+        assert!(remaining > 0, "{} fixture has no rows", trailer.label());
+        let err = rows
+            .into_end()
+            .unwrap_err_or_panic(&format!("{} rows skipped silently", trailer.label()));
+        assert_not_consumed(err, trailer, TrailerBlock::Rows, remaining);
+        note(trailer, TrailerBlock::Rows);
+    }
+
+    // MTRR: identities, then rows.
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let identities = c.identities();
+    let remaining = identities.remaining();
+    assert!(remaining > 0, "MTRR fixture has no identities");
+    let err = identities
+        .into_end()
+        .unwrap_err_or_panic("MTRR identities skipped silently");
+    assert_not_consumed(err, Trailer::ResourceRow, TrailerBlock::Identities, remaining);
+    note(Trailer::ResourceRow, TrailerBlock::Identities);
+
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let rows = c.identities().discard_all().next.rows();
+    let remaining = rows.remaining();
+    assert!(remaining > 0, "MTRR fixture has no rows");
+    let err = rows
+        .into_end()
+        .unwrap_err_or_panic("MTRR rows skipped silently");
+    assert_not_consumed(err, Trailer::ResourceRow, TrailerBlock::Rows, remaining);
+    note(Trailer::ResourceRow, TrailerBlock::Rows);
+
+    // MTRD: witnesses, then incomplete owners, then rows.
+    let payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
+    let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let witnesses = c.witnesses();
+    let remaining = witnesses.remaining();
+    assert!(remaining > 0, "MTRD fixture has no witnesses");
+    let err = witnesses
+        .into_end()
+        .unwrap_err_or_panic("MTRD witnesses skipped silently");
+    assert_not_consumed(err, Trailer::ClassicDeal, TrailerBlock::Witnesses, remaining);
+    note(Trailer::ClassicDeal, TrailerBlock::Witnesses);
+
+    let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let incomplete = c.witnesses().discard_all().next.incomplete_owners();
+    let remaining = incomplete.remaining();
+    assert!(remaining > 0, "MTRD fixture has no incomplete owners");
+    let err = incomplete
+        .into_end()
+        .unwrap_err_or_panic("MTRD incomplete owners skipped silently");
+    assert_not_consumed(
+        err,
+        Trailer::ClassicDeal,
+        TrailerBlock::IncompleteOwners,
+        remaining,
+    );
+    note(Trailer::ClassicDeal, TrailerBlock::IncompleteOwners);
+
+    let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let rows = c
+        .witnesses()
+        .discard_all()
+        .next
+        .incomplete_owners()
+        .discard_all()
+        .next
+        .rows();
+    let remaining = rows.remaining();
+    assert!(remaining > 0, "MTRD fixture has no rows");
+    let err = rows
+        .into_end()
+        .unwrap_err_or_panic("MTRD rows skipped silently");
+    assert_not_consumed(err, Trailer::ClassicDeal, TrailerBlock::Rows, remaining);
+    note(Trailer::ClassicDeal, TrailerBlock::Rows);
+
+    // MTS1: countries, then items.
+    let payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
+    let TrailerBody::Stockpile(c) = only_body(&payload) else {
+        panic!("expected MTS1");
+    };
+    let countries = c.countries();
+    let remaining = countries.remaining();
+    assert!(remaining > 0, "MTS1 fixture has no countries");
+    let err = countries
+        .into_end()
+        .unwrap_err_or_panic("MTS1 countries skipped silently");
+    assert_not_consumed(err, Trailer::Stockpile, TrailerBlock::Countries, remaining);
+    note(Trailer::Stockpile, TrailerBlock::Countries);
+
+    let TrailerBody::Stockpile(c) = only_body(&payload) else {
+        panic!("expected MTS1");
+    };
+    let items = c.countries().discard_all().next.items();
+    let remaining = items.remaining();
+    assert!(remaining > 0, "MTS1 fixture has no items");
+    let err = items
+        .into_end()
+        .unwrap_err_or_panic("MTS1 items skipped silently");
+    assert_not_consumed(err, Trailer::Stockpile, TrailerBlock::Items, remaining);
+    note(Trailer::Stockpile, TrailerBlock::Items);
+
+    // MTRA declares no block at all, so it has nothing to skip: its header IS
+    // its end. Stated rather than omitted, so "MTRA is missing from the covered
+    // set" cannot read as an oversight.
+    let payload = a_fixture_with_every_block_filled(Trailer::Activation);
+    let TrailerBody::Activation(c) = only_body(&payload) else {
+        panic!("expected MTRA");
+    };
+    assert_eq!(c.end().next.end(), payload.len());
+
+    // Drift-killer: every family with blocks is covered, and every arm of
+    // `TrailerBlock` is exercised at least once.
+    let mut families: Vec<Trailer> = Vec::new();
+    for (trailer, _) in &covered {
+        if !families.contains(trailer) {
+            families.push(*trailer);
+        }
+    }
+    for trailer in Trailer::ALL {
+        if trailer == Trailer::Activation {
+            continue;
+        }
+        assert!(
+            families.contains(&trailer),
+            "{} has declared blocks and none was probed",
+            trailer.label()
+        );
+    }
+    for block in TrailerBlock::ALL {
+        // Exhaustive and wildcard-free ON THE ENUM, not only on `ALL`. A
+        // seventh `TrailerBlock` arm is a compile error HERE even if nobody
+        // adds it to `ALL` -- which is the half the build-time ordinal
+        // assertion in `walk.rs` cannot reach.
+        let must_be_probed = match block {
+            TrailerBlock::Rows
+            | TrailerBlock::Identities
+            | TrailerBlock::Witnesses
+            | TrailerBlock::IncompleteOwners
+            | TrailerBlock::Countries
+            | TrailerBlock::Items => true,
+        };
+        assert_eq!(
+            covered.iter().any(|(_, b)| *b == block),
+            must_be_probed,
+            "no family's {} block was probed",
+            block.name()
+        );
+    }
+}
+
+/// `discard_all` is the OTHER way past a block, and it lands on the block's own
+/// end -- the offset the header already declared -- never past it.
+///
+/// kills: `discard_all` advancing by anything but `remaining * stride`, which
+/// would let a site that reads a block structurally-only resume at a wrong
+/// offset and still be accepted by the walk.
+#[test]
+fn discarding_a_block_lands_on_exactly_that_blocks_end() {
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *c.header();
+    let identities = c.identities();
+    let discarded = identities.discard_all();
+    assert_eq!(discarded.at, header.rows_at);
+
+    // And walking it reaches the same offset, which is what makes the two
+    // routes interchangeable to the GRAMMAR and different only at the site.
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let mut identities = c.identities();
+    while let RowStep::Row { .. } = identities.next() {}
+    assert_eq!(identities.into_end().expect("identities").at, header.rows_at);
+}
+
+/// `read_body` without a delimited magic is a CALLER defect, not a payload one,
+/// and it is reported rather than panicked.
+///
+/// kills: reinstating a `NotDelimited` body arm (which every site would have to
+/// write an unreachable arm for), or panicking in a leaf that runs under a
+/// recorder which must fail closed.
+#[test]
+fn reading_a_body_that_was_never_delimited_is_a_caller_defect() {
+    let payload = a_fixture_with_every_block_filled(Trailer::Detail);
+    let header = read_core_header(&payload).expect("header");
+    let cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
+    // No `next` call, so nothing is pending.
+    let err = cursor
+        .read_body(&payload, TEST_LIMITS)
+        .unwrap_err_or_panic("an undelimited body was read");
+    assert_eq!(
+        err.kind,
+        ViolationKind::CallerDefect(CallerDefect::BodyNotDelimited)
+    );
+}
+
+/// `peek_header` reads the family's own header words, applies no rule, and does
+/// not advance -- so a site can keep checking a header VALUE before it checks
+/// the header's SHAPE, which is the order three of the four sites already use.
+///
+/// kills: `peek_header` advancing the cursor, applying the version table, or
+/// applying the declared-header-length rule; and a preview whose words are read
+/// at different offsets from the body's.
+#[test]
+fn peeking_a_header_reads_the_bodys_words_and_moves_nothing() {
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceFlow);
+    let header = read_core_header(&payload).expect("header");
+    let core = core_end(&payload, header.row_count()).expect("core");
+    let mut cursor = TrailerCursor::new(core);
+    let TrailerStep::Magic { at, trailer } = cursor.next(&payload).expect("magic") else {
+        panic!("expected a magic");
+    };
+    assert_eq!(trailer, Trailer::ResourceFlow);
+
+    let HeaderPreview::ResourceFlow(words) = cursor.peek_header(&payload).expect("preview") else {
+        panic!("expected an MTRF preview");
+    };
+    // Peeking twice is the same answer, and neither moved the cursor.
+    let second = cursor.peek_header(&payload).expect("preview");
+    assert_eq!(second, HeaderPreview::ResourceFlow(words));
+    assert_eq!(cursor.offset(), core);
+    assert_eq!(words.sized.prefix.at, at);
+
+    let TrailerBody::ResourceFlow(c) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
+        panic!("expected MTRF");
+    };
+    let body = *c.header();
+    assert_eq!(words.sized.prefix.version, body.version.wire());
+    assert_eq!(words.sized.prefix.header_len as usize, body.header_len);
+    assert_eq!(words.sized.row_len as usize, body.row_len);
+    assert_eq!(words.sized.row_count as usize, body.row_count);
+    assert_eq!(
+        words.country_count_or_exported as usize,
+        body.country_count_or_exported
+    );
+    assert_eq!(words.scale_raw, body.scale_raw);
+    assert_eq!(words.mask_or_count, body.mask_or_count);
+    assert_eq!(words.kind_mask, body.kind_mask);
+}
+
+/// A preview of a header the payload is too short for carries the SAME
+/// violation `read_body` would, so looking first never changes what a truncated
+/// header reports.
+#[test]
+fn peeking_a_truncated_header_reports_what_reading_it_would() {
+    let payload = a_fixture_with_every_block_filled(Trailer::Detail);
+    let header = read_core_header(&payload).expect("header");
+    let core = core_end(&payload, header.row_count()).expect("core");
+    let truncated = &payload[..core + 8];
+    let mut cursor = TrailerCursor::new(core);
+    cursor.next(truncated).expect("magic");
+    let peeked = cursor
+        .peek_header(truncated)
+        .unwrap_err_or_panic("a truncated header previewed");
+    let mut cursor = TrailerCursor::new(core);
+    cursor.next(truncated).expect("magic");
+    let read = cursor
+        .read_body(truncated, TEST_LIMITS)
+        .unwrap_err_or_panic("a truncated header read");
+    assert_eq!(peeked, read);
+    assert_eq!(
+        read.kind,
+        ViolationKind::Need {
+            section: Section::TrailerHeader(Trailer::Detail),
+            needed: core + Trailer::Detail.header_len(),
+            available: truncated.len(),
+        }
+    );
+}
+
+
+/// `discard_all` after a PARTIAL walk still lands on the block's own end.
+///
+/// kills: `RowCursor::skip_all` advancing by `count * stride` instead of
+/// `remaining * stride`. The zero-consumed case cannot tell those apart -- they
+/// are the same number there -- which is exactly the hole Codex found in the
+/// first version of this section.
+#[test]
+fn discarding_a_partly_walked_block_still_lands_on_its_own_end() {
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *c.header();
+    let mut identities = c.identities();
+    assert!(
+        identities.remaining() >= 2,
+        "this case needs a block with at least two rows to be able to fail"
+    );
+    let RowStep::Row { index, .. } = identities.next() else {
+        panic!("expected a row");
+    };
+    assert_eq!(index, 0);
+    assert_eq!(identities.remaining(), 1);
+    let discarded = identities.discard_all();
+    assert_eq!(discarded.at, header.rows_at);
+
+    // Every intermediate consumed-count lands on the same end.
+    for consume in 0..=2usize {
+        let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+            panic!("expected MTRR");
+        };
+        let mut identities = c.identities();
+        for _ in 0..consume {
+            identities.next();
+        }
+        assert_eq!(identities.discard_all().at, header.rows_at, "after {consume}");
+    }
+}
+
+/// A block a version declares NOTHING for is already at its end, and discarding
+/// it moves nothing.
+///
+/// kills: `skip_all` on an empty cursor advancing at all, and a zero-length
+/// block whose `at` is not the next block's start.
+///
+/// It does NOT kill a wrong stride: zero rows advance zero bytes at every
+/// stride, so this case cannot observe one. `every_declared_block_discards_to_
+/// its_own_end_from_every_position` is what does (Codex round 3 called the
+/// earlier wording of this comment vacuous, and it was).
+#[test]
+fn discarding_a_version_absent_block_moves_nothing() {
+    // MTRR v2 carries no identity block; MTRD v2 carries no incomplete owners.
+    let mut b = core_bytes(&[]);
+    mtrr(
+        &mut b,
+        ResourceRowVersion::CountOnly,
+        2,
+        &[],
+        &[21],
+        &[
+            (0, NeededType::CurrentMax.wire(), RESOURCE_FLAGS_OIL),
+            (1, NeededType::Surplus.wire(), 0),
+        ],
+    );
+    let payload = b.done();
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *c.header();
+    assert_eq!(header.identity_len, 0);
+    let identities = c.identities();
+    assert_eq!(identities.remaining(), 0);
+    let discarded = identities.discard_all();
+    assert_eq!(discarded.at, header.identity_at);
+    assert_eq!(discarded.at, header.rows_at);
+
+    let mut b = core_bytes(&[]);
+    mtrd(&mut b, DealVersion::Statuses, &[21, 22], &[]);
+    let payload = b.done();
+    let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let header = *c.header();
+    assert_eq!(header.incomplete_count, 0);
+    let incomplete = c
+        .witnesses()
+        .discard_all()
+        .next
+        .incomplete_owners();
+    assert_eq!(incomplete.remaining(), 0);
+    assert_eq!(incomplete.discard_all().at, header.rows_at);
+}
+
+/// `peek_header` applies NO rule: it reports a header the body refuses, and
+/// reports it with the wrong value it actually found.
+///
+/// kills: `peek_header` applying the version table, the declared-header-length
+/// rule, or the declared-row-length rule -- any of which would move a site's
+/// pre-structural check behind a structural refusal and change which diagnostic
+/// a doubly-malformed payload carries. That is the whole reason the preview
+/// exists.
+#[test]
+fn peeking_reports_a_header_the_body_refuses() {
+    // A declared header_len of 64 where MTD1's is 32, and an unknown version.
+    for (version, declared_header_len, declared_row_len) in
+        [(1u16, 64u16, 64u16), (9u16, 32u16, 64u16), (1u16, 32u16, 48u16)]
+    {
+        let mut b = core_bytes(&[]);
+        b.magic(b"MTD1")
+            .u16(version)
+            .u16(declared_header_len)
+            .u16(declared_row_len)
+            .u16(0)
+            .u32(0);
+        b.zeros(16);
+        let payload = b.done();
+        let header = read_core_header(&payload).expect("header");
+        let core = core_end(&payload, header.row_count()).expect("core");
+        let mut cursor = TrailerCursor::new(core);
+        cursor.next(&payload).expect("magic");
+
+        let HeaderPreview::Detail(words) = cursor.peek_header(&payload).expect(
+            "the preview applies no rule, so a header the body refuses still previews",
+        ) else {
+            panic!("expected an MTD1 preview");
+        };
+        assert_eq!(words.sized.prefix.version, version);
+        assert_eq!(words.sized.prefix.header_len, declared_header_len);
+        assert_eq!(words.sized.row_len, declared_row_len);
+        assert_eq!(cursor.offset(), core);
+
+        // And the body refuses it, which is what makes the preview's silence a
+        // decision rather than an oversight.
+        cursor
+            .read_body(&payload, TEST_LIMITS)
+            .unwrap_err_or_panic("a malformed MTD1 header was accepted");
+    }
+}
+
+/// The preview is available for every one of the nine families and reads inside
+/// that family's own declared header.
+///
+/// kills: a family whose preview arm reads a word past its header (`MTRH`'s
+/// header is 24 bytes and has no `+24`), and a family added to `Trailer::ALL`
+/// with no preview arm.
+#[test]
+fn every_family_previews_inside_its_own_header() {
+    for trailer in Trailer::ALL {
+        let payload = a_fixture_with_every_block_filled(trailer);
+        let header = read_core_header(&payload).expect("header");
+        let core = core_end(&payload, header.row_count()).expect("core");
+        let mut cursor = TrailerCursor::new(core);
+        cursor.next(&payload).expect("magic");
+        let preview = cursor
+            .peek_header(&payload)
+            .unwrap_or_else(|error| panic!("{} preview: {error:?}", trailer.label()));
+        let prefix = preview.prefix();
+        assert_eq!(prefix.trailer, trailer, "{}", trailer.label());
+        assert_eq!(prefix.at, core, "{}", trailer.label());
+        assert_eq!(
+            prefix.header_len as usize,
+            trailer.header_len(),
+            "{} previewed a declared header_len its own table disagrees with",
+            trailer.label()
+        );
+        // Truncating the payload to one byte less than this family's header
+        // makes the preview refuse, which is what "reads inside its own header"
+        // means operationally.
+        let short = &payload[..core + trailer.header_len() - 1];
+        let mut cursor = TrailerCursor::new(core);
+        cursor.next(short).expect("magic");
+        cursor
+            .peek_header(short)
+            .unwrap_err_or_panic(&format!("{} previewed past its header", trailer.label()));
+    }
+}
+
+
+// =============================================================================
+// 8. Round-3 review: the identity stride, and the proofs that were vacuous
+// =============================================================================
+
+/// A stride an identity entry cannot fit is refused where the block is SIZED,
+/// so no reader ever holds a trailer it would have to defend against.
+///
+/// kills: dropping the `< 2` refusal in `read_resource_row_trailer`, which is
+/// what makes `identity_entry_at`'s `stride - 2` unable to underflow. Before
+/// this, `Limits::new(_, 0)` plus a v3 header whose `+28` word is zero parsed
+/// happily and handed a public reader a zero stride.
+#[test]
+fn an_identity_stride_an_entry_cannot_fit_is_refused() {
+    for stride in [0usize, 1] {
+        let limits = Limits::new(TEST_LIMITS.max_resource_count(), stride);
+        let mut b = core_bytes(&[]);
+        // A v3 header whose `+28` states exactly this stride, so nothing else
+        // in the header can be the reason it is refused.
+        b.magic(b"MTRR")
+            .u16(ResourceRowVersion::Identity.wire())
+            .u16(32)
+            .u16(64)
+            .u16(0)
+            .u32(0);
+        b.u32(0).u32(1).u32(1).u32(stride as u32);
+        let payload = b.done();
+        let header = read_core_header(&payload).expect("header");
+        let mut cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
+        cursor.next(&payload).expect("magic");
+        let err = cursor
+            .read_body(&payload, limits)
+            .unwrap_err_or_panic(&format!("a stride of {stride} was accepted"));
+        assert_eq!(
+            err.kind,
+            ViolationKind::IdentityStride {
+                trailer: Trailer::ResourceRow,
+                stride,
+            }
+        );
+    }
+}
+
+/// A version with no identity block yields no identity offsets, and the reader
+/// refuses the zero stride such a trailer carries.
+///
+/// kills: giving a version-absent block a non-empty cursor, or dropping the
+/// `stride < 2` guard that stops a zero stride reaching `stride - 2`.
+#[test]
+fn a_version_with_no_identity_block_yields_no_entries() {
+    // v2: no identity block at all.
+    let mut b = core_bytes(&[]);
+    mtrr(
+        &mut b,
+        ResourceRowVersion::CountOnly,
+        2,
+        &[],
+        &[21],
+        &[
+            (0, NeededType::CurrentMax.wire(), RESOURCE_FLAGS_OIL),
+            (1, NeededType::Surplus.wire(), 0),
+        ],
+    );
+    let payload = b.done();
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *c.header();
+    assert_eq!(header.identity_stride, 0);
+    // The CURSOR is what refuses a version with no identity block: it is empty,
+    // so it yields no offset to read with, and a zero stride is refused anyway.
+    let identities = c.identities();
+    assert_eq!(identities.remaining(), 0);
+    assert!(identity_entry_at(&payload, header.identity_at, header.identity_stride).is_none());
+
+    // v3: two slots, and the cursor yields exactly two offsets.
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *c.header();
+    assert_eq!(header.resource_count, 2);
+    let mut identities = c.identities();
+    let mut offsets = Vec::new();
+    while let RowStep::Row { at, .. } = identities.next() {
+        offsets.push(at);
+        assert!(identity_entry_at(&payload, at, header.identity_stride).is_some());
+    }
+    assert_eq!(offsets.len(), 2);
+    assert_eq!(offsets[1] - offsets[0], header.identity_stride);
+}
+
+/// EVERY family's preview reports a header its own body refuses, with the wrong
+/// value it actually found.
+///
+/// kills: any ONE family's preview arm starting to apply the version table or
+/// the declared-header-length rule. The earlier version of this proof tested
+/// `MTD1` alone, so eight of the nine arms were unpinned -- Codex round 3.
+#[test]
+fn every_familys_preview_reports_a_header_its_body_refuses() {
+    for trailer in Trailer::ALL {
+        let good = a_fixture_with_every_block_filled(trailer);
+        let header = read_core_header(&good).expect("header");
+        let core = core_end(&good, header.row_count()).expect("core");
+        // Corrupt the declared header_len at `+6`: a fully sized payload whose
+        // header is refused for a reason the preview must not apply.
+        let mut payload = good.clone();
+        let bad = (trailer.header_len() as u16) + 8;
+        payload[core + TRAILER_HEADER_LEN_OFFSET] = (bad & 0xFF) as u8;
+        payload[core + TRAILER_HEADER_LEN_OFFSET + 1] = (bad >> 8) as u8;
+
+        let mut cursor = TrailerCursor::new(core);
+        cursor.next(&payload).expect("magic");
+        let preview = cursor.peek_header(&payload).unwrap_or_else(|error| {
+            panic!(
+                "{} previewed a header its body refuses: {error:?}",
+                trailer.label()
+            )
+        });
+        assert_eq!(
+            preview.prefix().header_len,
+            bad,
+            "{} previewed a value it was not given",
+            trailer.label()
+        );
+        assert_eq!(cursor.offset(), core, "{}", trailer.label());
+
+        let err = cursor
+            .read_body(&payload, TEST_LIMITS)
+            .unwrap_err_or_panic(&format!("{} accepted a wrong header_len", trailer.label()));
+        assert_eq!(
+            err.kind,
+            ViolationKind::HeaderLen {
+                trailer,
+                declared: bad as usize,
+                expected: trailer.header_len(),
+            },
+            "{}",
+            trailer.label()
+        );
+
+        // And an unknown VERSION, which is the other rule the preview must not
+        // apply. `+4` is the version word in every family.
+        let mut payload = good.clone();
+        payload[core + TRAILER_VERSION_OFFSET] = 0xFE;
+        payload[core + TRAILER_VERSION_OFFSET + 1] = 0x00;
+        let mut cursor = TrailerCursor::new(core);
+        cursor.next(&payload).expect("magic");
+        let preview = cursor.peek_header(&payload).unwrap_or_else(|error| {
+            panic!(
+                "{} previewed an unknown version: {error:?}",
+                trailer.label()
+            )
+        });
+        assert_eq!(preview.prefix().version, 0x00FE, "{}", trailer.label());
+        let err = cursor
+            .read_body(&payload, TEST_LIMITS)
+            .unwrap_err_or_panic(&format!("{} accepted an unknown version", trailer.label()));
+        assert!(
+            matches!(err.kind, ViolationKind::UnknownVersion { version: 0x00FE, .. }),
+            "{} produced {:?}",
+            trailer.label(),
+            err.kind
+        );
+    }
+}
+
+/// EVERY declared block lands on its own end from EVERY consumed-count, not
+/// only from zero.
+///
+/// kills: `RowCursor::skip_all` using `count * stride` instead of
+/// `remaining * stride`. The zero-consumed case cannot tell those apart -- they
+/// are the same number there -- and the earlier version of this proof exercised
+/// a partial discard for MTRR identities alone, so eleven of the twelve blocks
+/// were unpinned (Codex round 3).
+#[test]
+fn every_declared_block_discards_to_its_own_end_from_every_position() {
+    // (family, block, the block's own end, how to reach the block)
+    for trailer in [
+        Trailer::Detail,
+        Trailer::ResourceFlow,
+        Trailer::FactoryHeader,
+        Trailer::Residual,
+        Trailer::LendLease,
+    ] {
+        let payload = a_fixture_with_every_block_filled(trailer);
+        let total = match only_body(&payload) {
+            TrailerBody::Detail(c) => c.rows().remaining(),
+            TrailerBody::ResourceFlow(c) => c.rows().remaining(),
+            TrailerBody::FactoryHeader(c) => c.rows().remaining(),
+            TrailerBody::Residual(c) => c.rows().remaining(),
+            TrailerBody::LendLease(c) => c.rows().remaining(),
+            _ => panic!("{} fixture produced another family", trailer.label()),
+        };
+        assert!(total > 0, "{} has no rows", trailer.label());
+        // The HEADER'S declared end, read off the grammar's own extent -- not
+        // this loop's zero-consumed answer. Comparing the positions with each
+        // other passes a `skip_all` that lands one byte past the end from every
+        // position, which is exactly the production change this test exists to
+        // catch (Codex round 4).
+        let declared_end = match only_body(&payload) {
+            TrailerBody::Detail(c) => c.header().sized.end,
+            TrailerBody::ResourceFlow(c) => c.header().end,
+            TrailerBody::FactoryHeader(c) => c.header().sized.end,
+            TrailerBody::Residual(c) => c.header().sized.end,
+            TrailerBody::LendLease(c) => c.header().sized.end,
+            _ => panic!("{} fixture produced another family", trailer.label()),
+        };
+        assert_eq!(
+            declared_end,
+            payload.len(),
+            "{} fixture is not a single trailer",
+            trailer.label()
+        );
+        for consume in 0..=total {
+            let mut rows = match only_body(&payload) {
+                TrailerBody::Detail(c) => c.rows(),
+                TrailerBody::ResourceFlow(c) => c.rows(),
+                TrailerBody::FactoryHeader(c) => c.rows(),
+                TrailerBody::Residual(c) => c.rows(),
+                TrailerBody::LendLease(c) => c.rows(),
+                _ => panic!("{} fixture produced another family", trailer.label()),
+            };
+            for _ in 0..consume {
+                rows.next();
+            }
+            assert_eq!(
+                rows.discard_all().at,
+                declared_end,
+                "{} rows discarded to the wrong end after {consume}",
+                trailer.label()
+            );
+        }
+    }
+
+    // MTRR: identities, then rows.
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let mtrr_header = *c.header();
+    for consume in 0..=mtrr_header.resource_count as usize {
+        let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+            panic!("expected MTRR");
+        };
+        let mut identities = c.identities();
+        for _ in 0..consume {
+            identities.next();
+        }
+        assert_eq!(identities.discard_all().at, mtrr_header.rows_at, "MTRR identities after {consume}");
+    }
+    for consume in 0..=mtrr_header.row_count {
+        let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+            panic!("expected MTRR");
+        };
+        let mut rows = c.identities().discard_all().next.rows();
+        for _ in 0..consume {
+            rows.next();
+        }
+        assert_eq!(rows.discard_all().at, mtrr_header.end, "MTRR rows after {consume}");
+    }
+
+    // MTRD: witnesses, incomplete owners, rows.
+    let payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
+    let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let mtrd = *c.header();
+    for consume in 0..=mtrd.witness_count {
+        let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+            panic!("expected MTRD");
+        };
+        let mut witnesses = c.witnesses();
+        for _ in 0..consume {
+            witnesses.next();
+        }
+        assert_eq!(witnesses.discard_all().at, mtrd.incomplete_at, "MTRD witnesses after {consume}");
+    }
+    for consume in 0..=mtrd.incomplete_count {
+        let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+            panic!("expected MTRD");
+        };
+        let mut incomplete = c.witnesses().discard_all().next.incomplete_owners();
+        for _ in 0..consume {
+            incomplete.next();
+        }
+        assert_eq!(incomplete.discard_all().at, mtrd.rows_at, "MTRD incomplete after {consume}");
+    }
+    for consume in 0..=mtrd.row_count {
+        let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
+            panic!("expected MTRD");
+        };
+        let mut rows = c
+            .witnesses()
+            .discard_all()
+            .next
+            .incomplete_owners()
+            .discard_all()
+            .next
+            .rows();
+        for _ in 0..consume {
+            rows.next();
+        }
+        assert_eq!(rows.discard_all().at, mtrd.end, "MTRD rows after {consume}");
+    }
+
+    // MTS1: countries, items.
+    let payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
+    let TrailerBody::Stockpile(c) = only_body(&payload) else {
+        panic!("expected MTS1");
+    };
+    let mts1 = *c.header();
+    for consume in 0..=mts1.country_count {
+        let TrailerBody::Stockpile(c) = only_body(&payload) else {
+            panic!("expected MTS1");
+        };
+        let mut countries = c.countries();
+        for _ in 0..consume {
+            countries.next();
+        }
+        assert_eq!(countries.discard_all().at, mts1.items_at, "MTS1 countries after {consume}");
+    }
+    for consume in 0..=mts1.item_count {
+        let TrailerBody::Stockpile(c) = only_body(&payload) else {
+            panic!("expected MTS1");
+        };
+        let mut items = c.countries().discard_all().next.items();
+        for _ in 0..consume {
+            items.next();
+        }
+        assert_eq!(items.discard_all().at, mts1.end, "MTS1 items after {consume}");
+    }
+}
+
+
+/// `identity_entry_at` refuses rather than panics for every argument a caller
+/// can invent, and it reads exactly the entry at the offset it was given.
+///
+/// It takes the CURSOR'S offset and the parsed stride, so it has no arithmetic
+/// of its own to redirect -- which is the whole of the round-5 fix. What is left
+/// is the argument checking, and all of it is RELEASE checking: a
+/// `debug_assert` is compiled out of the build that ships.
+///
+/// kills: turning the `stride < 2` guard into a `debug_assert`, turning
+/// `checked_add` back into `+`, dropping the payload bound, or making the bound
+/// `>=` instead of `>`.
+#[test]
+fn a_forged_identity_read_is_refused_rather_than_panicking() {
+    let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(c) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let parsed = *c.header();
+    let stride = parsed.identity_stride;
+    assert!(stride >= 2);
+    assert!(identity_entry_at(&payload, parsed.identity_at, stride).is_some());
+
+    // A stride the parser would have refused.
+    for bad in [0usize, 1] {
+        assert!(
+            identity_entry_at(&payload, parsed.identity_at, bad).is_none(),
+            "a stride of {bad} was read"
+        );
+    }
+
+    // Arithmetic that overflows rather than landing anywhere.
+    assert!(identity_entry_at(&payload, usize::MAX - 1, stride).is_none());
+    assert!(identity_entry_at(&payload, parsed.identity_at, usize::MAX).is_none());
+
+    // An offset past the payload, and a payload shorter than the parsed one.
+    assert!(identity_entry_at(&payload, payload.len(), stride).is_none());
+    let short = &payload[..parsed.identity_at + 1];
+    assert!(identity_entry_at(short, parsed.identity_at, stride).is_none());
+
+    // An entry that ends EXACTLY at the payload's end is still readable, so the
+    // bound is `>` and not `>=`.
+    let exact = &payload[..parsed.identity_at + stride];
+    assert!(identity_entry_at(exact, parsed.identity_at, stride).is_some());
+
+    // And the reader reads the entry it was given, not a neighbour: the two
+    // slots of this fixture carry different tokens.
+    let first = identity_entry_at(&payload, parsed.identity_at, stride).expect("slot 0");
+    let second = identity_entry_at(&payload, parsed.identity_at + stride, stride).expect("slot 1");
+    assert_ne!(first.token, second.token);
 }
