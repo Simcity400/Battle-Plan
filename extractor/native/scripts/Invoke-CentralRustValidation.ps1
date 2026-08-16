@@ -67,7 +67,26 @@ param(
     # runs the reduced committed-artifact check and says so; this switch is for
     # a machine that HAS the game somewhere else, so it can carry the full
     # game-derived authority rather than the reduced one.
-    [string]$C07GameRoot = ""
+    [string]$C07GameRoot = "",
+
+    # -Mode Iterate only. Adds cargo's dep-info to the iteration selection: a
+    # compile-only `cargo test --no-run --message-format=json` pass whose
+    # `compiler-artifact` events tie each `.d` file to a package, so every
+    # source file the COMPILER read for a target is attributed to that target's
+    # package. It is the only thing that sees a file spliced in by a COMPUTED
+    # literal (`include!(concat!(..))`, a macro-generated `#[path]`), which the
+    # lexical scan names as its own residual and which lane JD proved no regex
+    # over Rust can close.
+    #
+    # OPT-IN, NOT AUTOMATIC, and deliberately so. On a WARM target the pass is a
+    # freshness check that recompiles nothing (0.36 s for map_viewer, measured);
+    # on a cold or partly-stale one it is a full compile of every root, which
+    # would turn a sub-second iteration into minutes without the caller asking
+    # for it. There is no cheap way to tell those apart in advance -- running
+    # the pass IS the probe -- so the choice is the caller's rather than a guess
+    # this file makes on their behalf. It is additive either way: it can only
+    # widen the selection, never narrow it.
+    [switch]$DepInfo
 )
 
 Set-StrictMode -Version Latest
@@ -2532,7 +2551,7 @@ try {
     $hasSpecificTarget = $Lib -or $Bin.Count -gt 0 -or $TestTarget.Count -gt 0
 
     # Read only when something will actually USE it. Reading the graph walks
-    # `cargo metadata` in all nine cargo roots, so building it for a -Package
+    # `cargo metadata` in all ten cargo roots, so building it for a -Package
     # run whose expansion is then suppressed would make a previously
     # single-root invocation (a targeted -Bin, the Evidence tier) fail on an
     # unrelated root's metadata -- a caller that worked before this change.
@@ -2546,9 +2565,19 @@ try {
         # Derived BEFORE any slot is taken, like the partition: a selection that
         # cannot be derived is a refusal, never a run that tests a subset it
         # could not name.
+        # -Features REACHES THE DEP-INFO PASS TOO. Discovering on the default
+        # feature set while the battery builds the caller's would hide exactly
+        # the computed include that sits behind an off-by-default feature --
+        # the case they passed both flags for.
         $iterationSelection = Get-BatteryAffectedSelection -RepoRoot $repoRoot -Since $Since `
-            -DependencyGraph $batteryDependencyGraph
+            -DependencyGraph $batteryDependencyGraph -DepInfo:$DepInfo -Features $Features
         Write-BatteryAffectedSelectionSummary -Selection $iterationSelection
+    }
+    elseif ($DepInfo) {
+        # NOT a silent no-op. -DepInfo only has an input in the mode that
+        # derives a selection from a diff; accepting it elsewhere and doing
+        # nothing would let a caller believe a precision layer ran.
+        throw '-DepInfo applies to -Mode Iterate only: it refines the diff-derived iteration selection, and no other mode has one to refine.'
     }
 
     if ($splitBattery) {
@@ -2666,7 +2695,45 @@ try {
             # both HASHED spellings, name resolution scoped to the entered
             # roots, and the runner actually calling the exported root list at
             # both of its sites).
-            [int]$partitionTestResult.cases -ne 95) {
+            # 95 until lane LD, whose 6 cases cover the ORPHAN GUARD -- a
+            # package that is a member of no cargo root is refused rather than
+            # dropped, the refusal names the crate and the file that registers
+            # it, registering it clears the refusal, an orphan sharing a
+            # registered package's NAME is still an orphan (manifests are
+            # identity, names are not), and an empty inventory cannot make the
+            # guard pass vacuously.
+            # 101 until lane LD's second half, whose 8 cases cover the DEP-INFO
+            # PRECISION LAYER -- the `.d` reader's two Windows hazards (a drive
+            # letter is a colon, an escaped space is not a separator), its base
+            # directory being the cargo ROOT rather than the package, and the
+            # paired synthetic proof that a file spliced in by `concat!()` is
+            # MISSED by the lexical scan and FOUND by dep-info, additively.
+            # 109 until the adversarial round on that same lane returned seven
+            # defects; its 15 further cases pin each fix so the defect cannot
+            # come back: Makefile line continuations, an unreadable `.d` being a
+            # refusal rather than an empty source list, a FAILED compile-only
+            # pass being a refusal (in Iterate nothing downstream re-encounters
+            # it), the registered-manifest set surviving its function boundary
+            # as a case-insensitive HashSet rather than being pipeline-enumerated
+            # into an Object[] or a bare string, the [ordered]-dictionary key
+            # probe, and -- the two holes review found by deletion -- that the
+            # RUNNER actually calls the orphan guard and actually forwards
+            # -DepInfo and -Features. The last 4 pin the three ways cargo's
+            # ARTIFACT name diverges from its dep-info name -- the `lib` prefix,
+            # an uplifted bin whose `.d` stays in deps\, and a build script's
+            # hyphen-to-underscore-plus-hash rename -- each of which silently
+            # dropped a whole class of target until the completeness check
+            # refused on the real repository and named them.
+            # 128 until the CONFIRMATION round found three more: -Features was
+            # passed to every root although a feature only has to exist in its
+            # own (cargo exits 101, and the layer's own throw then refused a
+            # legitimate run); an ambiguous same-stem `.d` was attributed to the
+            # wrong package AND masked the completeness refusal; and cargo's
+            # UTF-8 output was read through PowerShell's ANSI default. Its 13
+            # cases pin all three, plus the summary test that drives the real
+            # function and reads what it PRINTS rather than restating the
+            # PowerShell semantics beside it.
+            [int]$partitionTestResult.cases -ne 141) {
             throw "battery partition source tests returned no authority"
         }
 
@@ -2983,17 +3050,20 @@ try {
         # CARGO_TARGET_DIR on the strength of the two workspaces agreeing.
         # Then that root would build somewhere the cleanup, timing and release
         # paths never look. Ask all of them.
+        # DERIVED, NOT RESTATED. This list was a hand-kept copy of the root
+        # inventory in BatteryPartition.ps1, and a copy is exactly how
+        # `portable_replay\native\terrain_fixture` came to be absent from three
+        # separate lists at once (lane LD). A root this guard does not ask about
+        # is a root that may build somewhere the cleanup, timing and release
+        # paths never look.
+        # NOT filtered to manifests that exist. A missing manifest makes
+        # Test-ConfigSelectsTargetDirectory return false, which KEEPS
+        # CARGO_TARGET_DIR set -- the safe direction. Filtering it out instead
+        # would let a root the guard could not read count as agreement.
         $targetDirManifests = @(
-            (Join-Path $repoRoot "extractor\native\Cargo.toml"),
-            (Join-Path $repoRoot "replay_interface\native\Cargo.toml"),
-            (Join-Path $repoRoot "extractor\native\project_progress_live_lane\Cargo.toml"),
-            (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify\Cargo.toml"),
-            (Join-Path $repoRoot "portable_replay\native\admission\Cargo.toml"),
-            (Join-Path $repoRoot "portable_replay\native\compact_stream\Cargo.toml"),
-            (Join-Path $repoRoot "portable_replay\native\content_manifest\Cargo.toml"),
-            (Join-Path $repoRoot "portable_replay\native\render_stream\Cargo.toml"),
-            (Join-Path $repoRoot "portable_replay\native\snapshot\Cargo.toml")
-        ) | Where-Object { Test-Path $_ }
+            Get-BatteryCargoRootPaths -RepoRoot $repoRoot |
+                ForEach-Object { Join-Path $_ "Cargo.toml" }
+        )
 
         $configSelectsSameDir = $targetDirManifests.Count -gt 0
         foreach ($manifest in $targetDirManifests) {
@@ -3035,6 +3105,22 @@ try {
         Write-Host $statsCache.StatsText
         return
     }
+
+    # THE ORPHAN GUARD, BEFORE ANY MODE COMPILES ANYTHING. A package under the
+    # battery trees that no registered cargo root has as a MEMBER is invisible
+    # to every selection this runner can make: `--workspace` does not reach it,
+    # `cargo -p` panics on it, and its tests have therefore never run. The
+    # battery still goes green, because green means "everything I selected
+    # passed" and the package was never selected.
+    #
+    # `portable_terrain_fixture` sat in that state for eleven days with three
+    # tests nobody ran (lane LD). It is placed here, after the Stats early
+    # return and before the first compile, because every mode below reports a
+    # verdict about "the repository" and none of them could see this crate.
+    # It costs one `cargo metadata --no-deps --offline` per root: 1.4 s for all
+    # ten, measured, and it is not conditional on the diff -- an orphan nobody
+    # edited is exactly the one that stays hidden.
+    Assert-BatteryEveryPackageIsRegistered -RepoRoot $repoRoot
 
     if ($Mode -in @('Final', 'Release')) {
         $interactionClosureOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $productionInteractionClosureTest)
@@ -3248,15 +3334,18 @@ try {
         throw "evidence binaries are accepted only by the explicit Evidence tier"
     }
 
+    # BOTH workspace roots, independent of the -Workspace selection. The
+    # standalone-root derivation below subtracts the workspaces from the root
+    # inventory, and subtracting only the SELECTED ones would turn the
+    # unselected workspace into a "standalone root" and try to enter it.
+    $workspaceRootsAll = @(
+        (Join-Path $repoRoot "extractor\native"),
+        (Join-Path $repoRoot "replay_interface\native")
+    )
     $workspaceRoots = switch ($Workspace) {
         "Extractor" { @(Join-Path $repoRoot "extractor\native") }
         "Replay" { @(Join-Path $repoRoot "replay_interface\native") }
-        default {
-            @(
-                (Join-Path $repoRoot "extractor\native"),
-                (Join-Path $repoRoot "replay_interface\native")
-            )
-        }
+        default { $workspaceRootsAll }
     }
 
     # ======================= THE SELECTED PACKAGE SET =========================
@@ -3344,17 +3433,28 @@ try {
         }
     }
 
-    # A PACKAGE NO CARGO ROOT HAS AS A MEMBER CANNOT BE SELECTED AT ALL, and
-    # asking for it is worse than useless: `cargo check -p portable_terrain_fixture`
-    # from the Replay root, where it is a path DEPENDENCY of map_viewer but not
-    # a workspace member, makes cargo PANIC (exit 101, "did not find features
-    # for (PackageId ...) within activated_features").
+    # A PACKAGE NO CARGO ROOT HAS AS A MEMBER IS A REFUSAL, NOT A DROP.
     #
-    # This repository has exactly one such package today. `--workspace` never
-    # selects it either, so the full battery does not run its tests and this
-    # mode excluding it changes no coverage - but it is NAMED rather than
-    # dropped, because "the battery runs no test of this package" is a fact an
-    # operator should hear from the tool rather than discover.
+    # Such a package cannot be selected by any battery, and asking for it is
+    # worse than useless: `cargo check -p <it>` from a root where it is a path
+    # DEPENDENCY but not a MEMBER makes cargo PANIC (exit 101, "did not find
+    # features for (PackageId ...) within activated_features"). `--workspace`
+    # never reaches it either, so NO test of that package runs anywhere in this
+    # repository.
+    #
+    # This used to print a notice and drop the package. Lane LD retired that
+    # arm, because the one package it was written for -- `portable_terrain_fixture`
+    # -- turned out not to be a structural fact at all: it had a live consumer,
+    # three tests of its own, and five structurally identical sibling crates
+    # that WERE registered. It was simply missing from the root inventory, and a
+    # notice is exactly how that survived from 2026-08-05 to now. The condition
+    # the notice described is gone; the guard against it recurring is not.
+    #
+    # So the generic guard stays and it THROWS. An unregistered package is a
+    # gap in the battery's coverage, and this file exists to refuse rather than
+    # to report green having tested nothing. The cost of being wrong here is one
+    # refusal with a one-line fix named in it; the cost of dropping is a crate
+    # whose tests nobody runs and nobody notices.
     if ($selectedPackageNames.Count -gt 0) {
         $allRootMembers = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($root in (Get-BatteryCargoRootPaths -RepoRoot $repoRoot)) {
@@ -3363,20 +3463,15 @@ try {
         }
         $unselectable = @($selectedPackageNames | Where-Object { -not $allRootMembers.Contains([string]$_) } | Sort-Object)
         if ($unselectable.Count -gt 0) {
-            $notice = (
-                ('{0} affected package(s) are a member of NO cargo root and cannot be selected by any ' +
-                 'battery, this one included: {1}. No cargo root builds them with --workspace either, ' +
-                 'so no test of theirs runs anywhere in this repository.') -f $unselectable.Count, ($unselectable -join ', ')
+            throw (
+                ('{0} affected package(s) are a member of NO cargo root: {1}. No battery can ' +
+                 'select them, `--workspace` does not reach them, and `cargo -p` PANICS on them, ' +
+                 'so no test of theirs runs anywhere in this repository -- this run would have ' +
+                 'compiled nothing for a change that touched them. Register each one as a cargo ' +
+                 'root (or as a member of an existing workspace) in the $script:BatteryCargoRoots ' +
+                 'inventory in BatteryPartition.ps1, which is the single list the runner derives ' +
+                 'every root from.') -f $unselectable.Count, ($unselectable -join ', ')
             )
-            Write-Host $notice
-            Write-Warning $notice
-            $selectedPackageNames = @($selectedPackageNames | Where-Object { $allRootMembers.Contains([string]$_) })
-            if ($selectedPackageNames.Count -eq 0) {
-                throw (
-                    'every package this run selected is a member of no cargo root, so there is ' +
-                    'nothing any battery can compile or run for this change: ' + ($unselectable -join ', ') + '.'
-                )
-            }
         }
     }
 
@@ -3781,31 +3876,68 @@ try {
         }
     }
 
-    # The extractor-owned standalone cargo roots. They belong to one workspace's
-    # tree but are deliberately not members of it.
-    $extractorStandaloneRoots = @(
-        (Join-Path $repoRoot "extractor\native\project_progress_live_lane"),
-        (Join-Path $repoRoot "extractor\native\lanes\occupation_resistance_compliance_live\replay_verify")
-    )
+    # THE STANDALONE ROOTS, DERIVED FROM THE ONE INVENTORY RATHER THAN RESTATED.
+    # These were two hand-kept lists. Lane LD found what a hand-kept list costs:
+    # `portable_replay\native\terrain_fixture` was missing from the portable list
+    # here, from the target-dir guard's list above, and from the inventory in
+    # BatteryPartition.ps1 -- three copies that all had to be edited and only
+    # ever two were, so one crate's tests had never run anywhere since it was
+    # added on 2026-08-05. Everything below is now computed from
+    # Get-BatteryCargoRootPaths, and a new standalone crate is registered by
+    # adding it in exactly ONE place.
+    $allCargoRoots = @(Get-BatteryCargoRootPaths -RepoRoot $repoRoot)
+    $standaloneCargoRoots = @($allCargoRoots | Where-Object {
+            $candidate = [IO.Path]::GetFullPath($_)
+            @($workspaceRootsAll | Where-Object { [IO.Path]::GetFullPath($_) -ieq $candidate }).Count -eq 0
+        })
 
-    # The neutral portable_replay crates. These CANNOT be members of either
-    # workspace: both path-depend on them, and a cargo package belongs to at
-    # most one workspace. Each is therefore a cargo root in its own right, with
-    # its own committed Cargo.lock, and is built (never tested) as a path
-    # dependency of the two workspaces above.
+    # The extractor-owned standalone roots belong to one workspace's TREE but
+    # are deliberately not members of it, so they follow that workspace's
+    # -Workspace selection.
+    $extractorStandaloneRoots = @($standaloneCargoRoots | Where-Object {
+            Test-PathIsInside -Root (Join-Path $repoRoot "extractor\native") -Path $_
+        })
+
+    # The neutral portable_replay crates CANNOT be members of either workspace:
+    # both trees path-depend on them, and a cargo package belongs to at most one
+    # workspace. Each is therefore a cargo root in its own right, with its own
+    # committed Cargo.lock, and is built (never tested) as a path dependency of
+    # the two workspaces above.
     #
     # That is a structural fact, not a decision to leave them unverified.
-    # Until they were listed here nothing ran their `#[cfg(test)]` modules at
-    # all, so `--workspace` reported green while ~190 tests in the crates BOTH
-    # halves statically link had never executed. They are validated for every
-    # -Workspace selection because both halves depend on them.
-    $portableStandaloneRoots = @(
-        (Join-Path $repoRoot "portable_replay\native\admission"),
-        (Join-Path $repoRoot "portable_replay\native\compact_stream"),
-        (Join-Path $repoRoot "portable_replay\native\content_manifest"),
-        (Join-Path $repoRoot "portable_replay\native\render_stream"),
-        (Join-Path $repoRoot "portable_replay\native\snapshot")
-    )
+    # Until they were listed nothing ran their `#[cfg(test)]` modules at all, so
+    # `--workspace` reported green while ~190 tests in crates the two halves
+    # link had never executed. They are validated for every -Workspace selection
+    # because at least one half depends on each of them -- MOST are linked by
+    # both halves, but `portable_terrain_fixture` is a replay-side
+    # dev-dependency only, so "both halves link every one of these" would be an
+    # overclaim. What is true of all of them is that no `--workspace` reaches
+    # them.
+    $portableStandaloneRoots = @($standaloneCargoRoots | Where-Object {
+            Test-PathIsInside -Root (Join-Path $repoRoot "portable_replay\native") -Path $_
+        })
+    if ($portableStandaloneRoots.Count -eq 0) {
+        throw (
+            'the battery root inventory names no portable_replay cargo root. Those crates are ' +
+            'linked into the workspaces and are members of neither, so nothing else runs their ' +
+            'tests; proceeding would lock and validate the repository with that coverage ' +
+            'silently absent.'
+        )
+    }
+    # EVERY standalone root must fall into one of the two buckets above, or it
+    # is a root this block silently never enters -- the same shape of hole the
+    # missing crate was. A root under neither tree is a refusal, not a skip.
+    $unclassifiedStandaloneRoots = @($standaloneCargoRoots | Where-Object {
+            $extractorStandaloneRoots -notcontains $_ -and $portableStandaloneRoots -notcontains $_
+        })
+    if ($unclassifiedStandaloneRoots.Count -gt 0) {
+        throw (
+            ('{0} registered cargo root(s) sit under neither extractor\native nor ' +
+             'portable_replay\native and would be locked and validated by nothing: {1}. Add the ' +
+             'tree to this classification rather than leaving the root unentered.') -f `
+                $unclassifiedStandaloneRoots.Count, ($unclassifiedStandaloneRoots -join ', ')
+        )
+    }
 
     if ($Mode -eq "Lock") {
         $standaloneRoots = @()
@@ -3824,7 +3956,7 @@ try {
         }
     }
 
-    # THE STANDALONE ROOTS, FOR ITERATE. Seven of this repository's nine cargo
+    # THE STANDALONE ROOTS, FOR ITERATE. Eight of this repository's ten cargo
     # roots are not members of either workspace, so the loop above never enters
     # them. An affected package living in one of them would otherwise be
     # selected, counted, and never run - which is the exact shape of "reported

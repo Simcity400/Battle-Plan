@@ -448,6 +448,93 @@ finally {
     Remove-Item -LiteralPath $bridgeTree -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ==========================================================================
+# GROUP: THE ORPHAN GUARD -- a package that is a member of no cargo root
+# ==========================================================================
+#
+# This reproduces the real defect exactly. `portable_terrain_fixture` sat under
+# `portable_replay\native`, was a path DEPENDENCY of a workspace member and a
+# member of nothing, and so was selected by no battery for eleven days while its
+# three tests never ran. `--workspace` does not reach such a package and
+# `cargo -p` PANICS on it (exit 101), so the battery reports green having tested
+# it not at all -- there is no loud failure mode to rely on, which is why this
+# assertion exists rather than a notice.
+$orphanTree = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_partition_orphan_{0}_{1}" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    New-SyntheticCargoWorkspace -Root $orphanTree
+    # The orphan sits under the portable tree with its OWN manifest, exactly
+    # where the real one sat, and is named in no workspace members list.
+    $orphanDir = Join-Path $orphanTree 'portable_replay\native\orphan_crate'
+    New-Item -ItemType Directory -Path (Join-Path $orphanDir 'src') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $orphanDir 'Cargo.toml') -Encoding utf8 -Value (
+        "[package]`nname = `"orphan_crate`"`nversion = `"0.1.0`"`nedition = `"2021`"`n")
+    Set-Content -LiteralPath (Join-Path $orphanDir 'src\lib.rs') -Encoding utf8 -Value `
+        '#[cfg(test)] mod tests { #[test] fn never_ran() { assert!(true); } }'
+
+    $savedRoots = $script:BatteryCargoRoots
+    try {
+        # kills: dropping the orphan guard, or downgrading it back to the
+        # notice-and-drop arm it replaced. With only the workspace registered,
+        # `orphan_crate` is a member of nothing and no battery can run its test.
+        $script:BatteryCargoRoots = @('extractor\native')
+        Assert-Throws 'a package that is a member of NO cargo root is REFUSED, not dropped' `
+            { Assert-BatteryEveryPackageIsRegistered -RepoRoot $orphanTree } `
+            'member of NO cargo root'
+        # kills: a refusal that does not say WHICH package, which is the whole
+        # difference between a fixable refusal and a puzzle.
+        $orphanMessage = ''
+        try { Assert-BatteryEveryPackageIsRegistered -RepoRoot $orphanTree }
+        catch { $orphanMessage = [string]$_.Exception.Message }
+        Assert-Case 'the refusal NAMES the unregistered package' ($orphanMessage -like '*orphan_crate*')
+        Assert-Case 'the refusal names the file that registers it' (
+            $orphanMessage -like '*BatteryCargoRoots*')
+
+        # kills: registering the root but leaving the guard keyed to something
+        # the registration does not change. Adding the crate as its own cargo
+        # root -- the fix lane LD applied to the real one -- must clear it.
+        $script:BatteryCargoRoots = @('extractor\native', 'portable_replay\native\orphan_crate')
+        $cleared = $true
+        try { Assert-BatteryEveryPackageIsRegistered -RepoRoot $orphanTree }
+        catch { $cleared = $false }
+        Assert-Case 'registering the crate as its own cargo root clears the refusal' $cleared
+    }
+    finally { $script:BatteryCargoRoots = $savedRoots }
+}
+finally { Remove-Item -LiteralPath $orphanTree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: comparing registration BY PACKAGE NAME. Names are not unique in this
+# repository -- the partition seeds closures on manifest identity for exactly
+# that reason -- so an orphan sharing a registered package's name would be
+# reported as covered by the package that IS registered, and its tests would go
+# on never running.
+$sameNameTree = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_partition_samename_{0}_{1}" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    New-SyntheticCargoWorkspace -Root $sameNameTree
+    $twinDir = Join-Path $sameNameTree 'portable_replay\native\unrelated_leaf'
+    New-Item -ItemType Directory -Path (Join-Path $twinDir 'src') -Force | Out-Null
+    # SAME NAME as a real member of the registered workspace, different manifest.
+    Set-Content -LiteralPath (Join-Path $twinDir 'Cargo.toml') -Encoding utf8 -Value (
+        "[package]`nname = `"unrelated_leaf`"`nversion = `"0.1.0`"`nedition = `"2021`"`n")
+    Set-Content -LiteralPath (Join-Path $twinDir 'src\lib.rs') -Encoding utf8 -Value 'pub fn f() {}'
+    $savedRoots = $script:BatteryCargoRoots
+    try {
+        $script:BatteryCargoRoots = @('extractor\native')
+        Assert-Throws 'an orphan sharing a REGISTERED package''s name is still an orphan' `
+            { Assert-BatteryEveryPackageIsRegistered -RepoRoot $sameNameTree } `
+            'member of NO cargo root'
+    }
+    finally { $script:BatteryCargoRoots = $savedRoots }
+}
+finally { Remove-Item -LiteralPath $sameNameTree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: an orphan guard that passes by having nothing to check. An empty
+# inventory is the vacuous direction -- every package is registered because
+# there are no packages -- and it is the shape a broken tree walk produces.
+Assert-Throws 'an EMPTY package inventory makes the orphan guard a refusal, not a pass' `
+    { Assert-BatteryEveryPackageIsRegistered -RepoRoot 'C:\nonexistent_ld' -Inventory @() `
+            -RegisteredManifests ([System.Collections.Generic.HashSet[string]]::new()) } `
+    'inventory is empty'
+
 # kills: reconciling the graph against the ownership scan BY NAME. Two
 # repository-local packages can share a name: a scanned, marker-free
 # `shared_facility` under a partition tree, and an unscanned one elsewhere in
@@ -789,6 +876,356 @@ try {
         ($owned.Packages -contains 'provides_the_file') -and ($owned.Packages -contains 'splices_it'))
 }
 finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# ==========================================================================
+# GROUP: THE DEP-INFO PRECISION LAYER
+# ==========================================================================
+#
+# kills: mis-parsing a rustc `.d` file. Both hazards below are Windows-specific
+# and both are present in every real dep-info this repository writes: the TARGET
+# is an absolute path whose drive letter is a colon (so the rule separator is
+# not the first colon on the line), and rustc escapes a space in a path as `\ `
+# while `\` is also the separator (so splitting on a bare space breaks a path
+# with a space in it into two nonexistent ones).
+$depInfoFile = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_depinfo_{0}_{1}.d" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    Set-Content -LiteralPath $depInfoFile -Encoding utf8 -Value @(
+        'C:\out\deps\thing-abc123.exe: src\lib.rs src\other.rs',
+        'C:\out\deps\thing-abc123.exe: src\my\ dir\spaced.rs',
+        '',
+        'src\lib.rs:')
+    $depSources = @(Get-BatteryDepInfoSourcePaths -DepInfoPath $depInfoFile -BaseDirectory 'C:\base')
+    Assert-Case 'the dep-info reader does not split the target path at its DRIVE LETTER colon' (
+        ($depSources -notcontains 'C:\base\C') -and
+        ($depSources -contains 'C:\base\src\lib.rs'))
+    Assert-Case 'the dep-info reader returns every prerequisite on a rule' (
+        $depSources -contains 'C:\base\src\other.rs')
+    # kills: splitting prerequisites on a bare space. `src\my\ dir\spaced.rs` is
+    # ONE path whose space rustc escaped, and a bare split yields two paths that
+    # exist nowhere while losing the real one.
+    Assert-Case 'the dep-info reader keeps an ESCAPED space as one path' (
+        $depSources -contains 'C:\base\src\my dir\spaced.rs')
+    # kills: resolving prerequisites against the PACKAGE directory. rustc writes
+    # them relative to the directory cargo invoked it from, which is the cargo
+    # ROOT, and resolving against anything else produces paths that match no
+    # changed file -- a layer that silently finds nothing.
+    Assert-Case 'prerequisites resolve against the cargo root, not the package' (
+        @($depSources | Where-Object { $_ -like 'C:\base\*' }).Count -eq $depSources.Count)
+}
+finally { Remove-Item -LiteralPath $depInfoFile -Force -ErrorAction SilentlyContinue }
+
+# kills: reading a `.d` line-by-line without joining MAKEFILE CONTINUATIONS. A
+# wrapped rule's continuation line carries no colon, so the rule-separator scan
+# skips it and every prerequisite after the wrap is lost silently. The pinned
+# compiler emits none today, which is precisely why a change in it must fail
+# here rather than quietly narrow what the layer can see.
+$continuationFile = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_depinfo_cont_{0}_{1}.d" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    Set-Content -LiteralPath $continuationFile -Encoding utf8 -Value @(
+        'C:\out\deps\thing-abc123.exe: src\first.rs \',
+        ' src\second.rs \',
+        ' src\third.rs')
+    $continued = @(Get-BatteryDepInfoSourcePaths -DepInfoPath $continuationFile -BaseDirectory 'C:\base')
+    Assert-Case 'a wrapped dep-info rule keeps the prerequisite BEFORE the wrap' (
+        $continued -contains 'C:\base\src\first.rs')
+    Assert-Case 'a wrapped dep-info rule keeps the prerequisites AFTER the wrap' (
+        ($continued -contains 'C:\base\src\second.rs') -and ($continued -contains 'C:\base\src\third.rs'))
+}
+finally { Remove-Item -LiteralPath $continuationFile -Force -ErrorAction SilentlyContinue }
+
+# kills: treating an UNREADABLE `.d` as an empty one. Both would return no
+# sources, and "this target reads nothing" is indistinguishable from a correct
+# answer -- so the layer would silently cover less than it reports.
+Assert-Throws 'an unreadable dep-info file is a refusal, not an empty source list' `
+    { Get-BatteryDepInfoSourcePaths -DepInfoPath 'C:\nonexistent_ld\missing.d' -BaseDirectory 'C:\base' } `
+    'could not be read'
+
+# kills: deriving the dep-info name from the artifact name by swapping the
+# extension. Cargo diverges from that in three ways, and each one silently
+# drops a whole class of target out of the layer. All three were found by the
+# completeness check refusing on the real repository, not by reasoning.
+$artifactTree = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_artifact_{0}_{1}" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    $depsDir = Join-Path $artifactTree 'debug\deps'
+    $buildDir = Join-Path $artifactTree 'debug\build\collector-8054e0867b9bec3c'
+    New-Item -ItemType Directory -Path $depsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+
+    # (1) the `lib` prefix: libfoo-<hash>.rlib pairs with foo-<hash>.d
+    Set-Content -LiteralPath (Join-Path $depsDir 'foo-0123456789abcdef.d') -Encoding utf8 -Value 'x:'
+    $libResolved = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $depsDir 'libfoo-0123456789abcdef.rlib'))
+    Assert-Case 'an rlib resolves to the dep-info written WITHOUT its lib prefix' (
+        @($libResolved | Where-Object { $_ -like '*foo-0123456789abcdef.d' }).Count -eq 1)
+
+    # (2) UPLIFTING: a bin's artifact is debug\pack_replay.exe while its
+    # dep-info stays behind in debug\deps\pack_replay.d.
+    Set-Content -LiteralPath (Join-Path $depsDir 'pack_replay.d') -Encoding utf8 -Value 'x:'
+    $upliftResolved = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $artifactTree 'debug\pack_replay.exe'))
+    Assert-Case 'an UPLIFTED bin resolves to the dep-info left behind in deps\' (
+        @($upliftResolved | Where-Object { $_ -like '*deps\pack_replay.d' }).Count -eq 1)
+
+    # (3) a build script's artifact is build-script-build.exe; its dep-info is
+    # build_script_build-<hash>.d beside it -- hyphens become underscores AND a
+    # hash appears.
+    Set-Content -LiteralPath (Join-Path $buildDir 'build_script_build-8054e0867b9bec3c.d') -Encoding utf8 -Value 'x:'
+    $buildResolved = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $buildDir 'build-script-build.exe'))
+    Assert-Case 'a BUILD SCRIPT resolves through the hyphen-to-underscore and hash rename' (
+        @($buildResolved | Where-Object { $_ -like '*build_script_build-8054e0867b9bec3c.d' }).Count -eq 1)
+
+    # kills: matching the hash suffix with a loose `-*` glob, which lets
+    # `foo-*.d` claim a DIFFERENT crate's `foo-bar-<hash>.d` and attribute that
+    # crate's sources here.
+    Set-Content -LiteralPath (Join-Path $depsDir 'foo-bar-fedcba9876543210.d') -Encoding utf8 -Value 'x:'
+    $strictResolved = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $depsDir 'libfoo-0123456789abcdef.rlib'))
+    Assert-Case 'the hash suffix is 16 hex, so a different crate''s dep-info is not claimed' (
+        @($strictResolved | Where-Object { $_ -like '*foo-bar-*' }).Count -eq 0)
+
+    # kills: returning EVERY hashed match. Two packages can each produce a
+    # `shared_bin` stem. Returning both attributes one package's sources to the
+    # other's manifest -- a WRONG attribution, not a conservative widening --
+    # and, worse, any same-stem file satisfies the caller's "did this target
+    # have a .d" test, so the completeness refusal stops firing for the target
+    # that actually lost one. Ambiguity must resolve to NOTHING.
+    Set-Content -LiteralPath (Join-Path $depsDir 'shared_bin-1111111111111111.d') -Encoding utf8 -Value 'x:'
+    Set-Content -LiteralPath (Join-Path $depsDir 'shared_bin-2222222222222222.d') -Encoding utf8 -Value 'x:'
+    $ambiguous = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $artifactTree 'debug\shared_bin.exe'))
+    Assert-Case 'an AMBIGUOUS same-stem dep-info match resolves to nothing, not to both' (
+        $ambiguous.Count -eq 0)
+    # ...and one unambiguous hashed match is still resolved, so the rule above
+    # is a tie-breaker rather than a blanket refusal of the hashed form.
+    Remove-Item -LiteralPath (Join-Path $depsDir 'shared_bin-2222222222222222.d') -Force
+    $unambiguous = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $artifactTree 'debug\shared_bin.exe'))
+    Assert-Case 'a single hashed dep-info match is still resolved' (
+        @($unambiguous | Where-Object { $_ -like '*shared_bin-1111111111111111.d' }).Count -eq 1)
+    # kills: searching the hashed form even when the exact name matched. The
+    # exact file is the right answer and the hashed scan is only a fallback;
+    # running both would reintroduce the collision above for hashed artifacts.
+    Set-Content -LiteralPath (Join-Path $depsDir 'shared_bin.d') -Encoding utf8 -Value 'x:'
+    $exactWins = @(Get-BatteryDepInfoPathsForArtifact `
+            -ArtifactPath (Join-Path $artifactTree 'debug\shared_bin.exe'))
+    Assert-Case 'an EXACT dep-info match wins outright over the hashed fallback' (
+        ($exactWins.Count -eq 1) -and ($exactWins[0] -like '*deps\shared_bin.d'))
+}
+finally { Remove-Item -LiteralPath $artifactTree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: passing the caller's whole -Features list to every cargo root. A
+# feature only has to exist in ITS OWN root: `replay_decoder/dq-v3-prototype` is
+# valid in the extractor workspace and makes cargo EXIT 101 in the replay one
+# ("none of the selected packages contains this feature"). The dep-info layer's
+# own compile-failure throw then refused a legitimate invocation.
+$scoped = @(Select-BatteryFeaturesForRoot `
+        -Features @('replay_decoder/dq-v3-prototype', 'map_viewer/d3d11', 'a-bare-feature', 'absent-bare') `
+        -MemberNames @('map_viewer', 'replay_core') `
+        -DeclaredFeatures @('a-bare-feature'))
+Assert-Case 'a package-qualified feature is KEPT for the root that has the package' (
+    $scoped -contains 'map_viewer/d3d11')
+Assert-Case 'a package-qualified feature is DROPPED for a root without that package' (
+    $scoped -notcontains 'replay_decoder/dq-v3-prototype')
+Assert-Case 'a bare feature some member DECLARES is kept' ($scoped -contains 'a-bare-feature')
+Assert-Case 'a bare feature no member declares is dropped' ($scoped -notcontains 'absent-bare')
+
+# kills: reading cargo's UTF-8 output through PowerShell 5.1's ANSI default.
+# Get-Content without -Encoding UTF8 decodes via the system codepage
+# (Windows-1252 here), so a non-ASCII manifest path arrives as mojibake --
+# `cafe\u0301` style bytes become `Ã©` -- BEFORE ConvertFrom-Json. The result is
+# a manifest path matching nothing: a false orphan refusal, or lost ownership.
+$encodingFile = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_enc_{0}_{1}.json" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    $nonAscii = 'C:\repo\caf' + [char]0xE9 + '\Cargo.toml'
+    [IO.File]::WriteAllText($encodingFile, $nonAscii, [System.Text.UTF8Encoding]::new($false))
+    $viaUtf8 = (Get-Content -LiteralPath $encodingFile -Raw -Encoding UTF8).Trim()
+    Assert-Case 'UTF-8 cargo output round-trips only when the encoding is stated' (
+        $viaUtf8 -ceq $nonAscii)
+    Assert-Case 'the ANSI default really does mangle it (so the case is not vacuous)' (
+        (Get-Content -LiteralPath $encodingFile -Raw).Trim() -cne $nonAscii)
+}
+finally { Remove-Item -LiteralPath $encodingFile -Force -ErrorAction SilentlyContinue }
+
+# kills: reverting the summary's key probe to $Selection.PSObject.Properties.Name.
+# The two cases above test the PowerShell semantics; this one drives the actual
+# production function and reads what it PRINTS, so the fix cannot be undone in
+# BatteryPartition.ps1 while the suite stays green.
+$summarySelection = [ordered]@{
+    ChangedPaths       = @('extractor/native/collector/src/lib.rs')
+    TouchedPackages    = @('collector')
+    AffectedPackages   = @('collector')
+    UnownedPaths       = @()
+    WorkspaceWideInput = @()
+    SelectsEverything  = $false
+    DepInfoUsed        = $true
+}
+# NOT Out-String: it wraps at the console width, which splits the "cannot see:"
+# sentence across lines and makes a single-line match fail for a reason that has
+# nothing to do with the code under test. Each record's own text is taken instead.
+$summaryOn = ((@(Write-BatteryAffectedSelectionSummary -Selection $summarySelection 6>&1) |
+        ForEach-Object { [string]$_ }) -join "`n")
+Assert-Case 'the summary ANNOUNCES the dep-info layer when it ran' (
+    $summaryOn -like '*DEP-INFO PRECISION LAYER ON*')
+# Scoped to the LIMITS sentence ("cannot see: ..."), because the announcement
+# the layer prints when it DID run also contains the words "computed literals" --
+# a bare -notlike would fail on the very message that proves the fix works.
+Assert-Case 'the summary stops LISTING computed literals among what it cannot see' (
+    $summaryOn -notmatch 'cannot see:[^\r\n]*computed literal')
+$summarySelection.DepInfoUsed = $false
+$summaryOff = ((@(Write-BatteryAffectedSelectionSummary -Selection $summarySelection 6>&1) |
+        ForEach-Object { [string]$_ }) -join "`n")
+Assert-Case 'the summary still names the computed-literal limit when the layer did NOT run' (
+    $summaryOff -match 'cannot see:[^\r\n]*computed literal')
+Assert-Case 'the summary does not announce a layer that did not run' (
+    $summaryOff -notlike '*DEP-INFO PRECISION LAYER ON*')
+
+# kills: shipping the lexical splice scan as if it were complete. THIS IS THE
+# CASE THE LEXICAL SCAN CANNOT SEE. `include!(concat!(..))` puts no path literal
+# in the source at all, so the regex has nothing to match -- lane JD proved that
+# residual needs macro expansion and a real Rust lexer, not more patterns
+# (runs/jd_battery_granularity/WHY_THIS_DID_NOT_LAND.md). The compiler resolved
+# it, so cargo's dep-info names the file and the layer attributes it correctly.
+#
+# The assertions are PAIRED on purpose: the same tree is asked both ways, so
+# this fails if the lexical scan silently starts matching (making the case
+# vacuous) as well as if the dep-info layer stops working.
+$concatTree = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_concat_{0}_{1}" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $concatTree 'replay_interface\native') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $concatTree 'portable_replay\native') -Force | Out-Null
+    $nativeRoot = Join-Path $concatTree 'extractor\native'
+    New-Item -ItemType Directory -Path $nativeRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'Cargo.toml') -Encoding utf8 -Value (
+        "[workspace]`nresolver = `"2`"`nmembers = [`"holds_it`", `"pulls_it`"]`n")
+    # The file lives in one package...
+    New-Item -ItemType Directory -Path (Join-Path $nativeRoot 'holds_it\src') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'holds_it\Cargo.toml') -Encoding utf8 -Value (
+        "[package]`nname = `"holds_it`"`nversion = `"0.1.0`"`nedition = `"2021`"`n")
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'holds_it\src\lib.rs') -Encoding utf8 -Value 'pub fn f() {}'
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'holds_it\src\spliced.rs') -Encoding utf8 -Value `
+        'pub fn spliced_value() -> u32 { 7 }'
+    # ...and ANOTHER package compiles it, through a path no literal spells out.
+    New-Item -ItemType Directory -Path (Join-Path $nativeRoot 'pulls_it\src') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'pulls_it\Cargo.toml') -Encoding utf8 -Value (
+        "[package]`nname = `"pulls_it`"`nversion = `"0.1.0`"`nedition = `"2021`"`n")
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'pulls_it\src\lib.rs') -Encoding utf8 -Value @(
+        'include!(concat!("../../holds_it/src/", "spliced.rs"));',
+        '#[cfg(test)]',
+        'mod tests {',
+        '    #[test]',
+        '    fn the_spliced_file_is_compiled_into_this_package() {',
+        '        assert_eq!(super::spliced_value(), 7);',
+        '    }',
+        '}')
+
+    $splicedPath = 'extractor/native/holds_it/src/spliced.rs'
+    $pullsManifest = [IO.Path]::GetFullPath((Join-Path $nativeRoot 'pulls_it\Cargo.toml'))
+
+    # THE LEXICAL FLOOR, ASKED FIRST. It attributes the file to the package it
+    # SITS IN and to nothing else, because there is no literal to read.
+    $concatSplices = Get-BatterySourceSpliceOwners -RepoRoot $concatTree
+    $lexical = Get-BatteryPackagesForPaths -RepoRoot $concatTree -Paths @($splicedPath) `
+        -SpliceOwners $concatSplices
+    Assert-Case 'the LEXICAL scan misses a file spliced in by a computed literal' (
+        ($lexical.Packages -contains 'holds_it') -and ($lexical.Packages -notcontains 'pulls_it'))
+
+    # THE PRECISION LAYER. One compile-only pass, and the compiler's own answer.
+    $concatRoots = @($nativeRoot)
+    $depOwners = Get-BatteryDepInfoOwners -RepoRoot $concatTree -CargoRoots $concatRoots
+    $splicedAbsolute = [IO.Path]::GetFullPath((Join-Path $concatTree ($splicedPath -replace '/', '\')))
+    Assert-Case 'DEP-INFO finds the file spliced in by a computed literal' (
+        $depOwners.ContainsKey($splicedAbsolute))
+    Assert-Case 'dep-info attributes it to the package whose COMPILER read it' (
+        $depOwners.ContainsKey($splicedAbsolute) -and
+        (@($depOwners[$splicedAbsolute]) -contains $pullsManifest))
+
+    # kills: making the precision layer a REPLACEMENT rather than a union. The
+    # file's own package still compiles it, and losing that would narrow the
+    # selection -- the one direction this layer is not allowed to move it.
+    $withDepInfo = Get-BatteryPackagesForPaths -RepoRoot $concatTree -Paths @($splicedPath) `
+        -SpliceOwners $concatSplices -DepInfoOwners $depOwners
+    Assert-Case 'the dep-info layer is ADDITIVE: both packages are named' (
+        ($withDepInfo.Packages -contains 'holds_it') -and ($withDepInfo.Packages -contains 'pulls_it'))
+
+    # kills: continuing past a failed compile-only pass. The first version of
+    # this printed a notice and carried on, reasoning that a missed edge only
+    # costs WIDTH. In -Mode Iterate that reasoning is false: the package this
+    # layer would have added is by construction one the run does NOT otherwise
+    # select, so nothing downstream re-encounters the failure and the run ends
+    # green having skipped the consumer the changed file actually breaks.
+    Set-Content -LiteralPath (Join-Path $nativeRoot 'holds_it\src\lib.rs') -Encoding utf8 -Value `
+        'pub fn f() { this is not rust }'
+    Assert-Throws 'a FAILED dep-info compile is a refusal, not a silent fall back to the floor' `
+        { Get-BatteryDepInfoOwners -RepoRoot $concatTree -CargoRoots $concatRoots } `
+        'exited'
+}
+finally { Remove-Item -LiteralPath $concatTree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: `return $set` instead of `return ,$set`. PowerShell ENUMERATES a
+# HashSet across a function boundary: the caller gets an Object[] whose
+# .Contains() is ordinal and case-SENSITIVE, or -- for a single member -- the
+# bare string, whose .Contains() is a SUBSTRING test. Either one turns a
+# registered package whose manifest path differs only in casing into an
+# "orphan" and refuses every mode of the battery. This asserts the type
+# survives, because the symptom is a false refusal nowhere near the cause.
+$caseTree = Join-Path ([IO.Path]::GetTempPath()) ("hoi4_partition_case_{0}_{1}" -f $PID, [guid]::NewGuid().ToString('N'))
+try {
+    New-SyntheticCargoWorkspace -Root $caseTree
+    $savedRoots = $script:BatteryCargoRoots
+    try {
+        $script:BatteryCargoRoots = @('extractor\native')
+        $registered = Get-BatteryRegisteredPackageManifests -RepoRoot $caseTree
+        Assert-Case 'the registered-manifest set survives the function boundary as a HashSet' (
+            $registered -is [System.Collections.Generic.HashSet[string]])
+        $anyManifest = @($registered)[0]
+        Assert-Case 'the registered-manifest set compares manifest paths CASE-INSENSITIVELY' (
+            $registered.Contains(([string]$anyManifest).ToLowerInvariant()) -and
+            $registered.Contains(([string]$anyManifest).ToUpperInvariant()))
+    }
+    finally { $script:BatteryCargoRoots = $savedRoots }
+}
+finally { Remove-Item -LiteralPath $caseTree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: probing an [ordered] dictionary with $Selection.PSObject.Properties.Name,
+# which lists the dictionary's .NET members (Count, Keys, Values) and NEVER a
+# key -- so the probe was always false and the summary printed the
+# computed-literal limitation even on the runs that had closed it.
+$orderedProbe = [ordered]@{ DepInfoUsed = $true; TouchedPackages = @() }
+Assert-Case 'a selection key is found through Keys, which is how the summary must probe it' (
+    @($orderedProbe.Keys) -contains 'DepInfoUsed')
+Assert-Case 'a selection key is NOT found through PSObject.Properties (the defect this replaced)' (
+    $orderedProbe.PSObject.Properties.Name -notcontains 'DepInfoUsed')
+
+# ==========================================================================
+# GROUP: THE RUNNER ACTUALLY WIRES THESE IN
+# ==========================================================================
+#
+# kills: a helper that is correct, tested, and CALLED BY NOBODY. Adversarial
+# review demonstrated both holes by deletion: removing the runner's orphan-guard
+# call left all six orphan cases green, and removing the -DepInfo forwarding
+# left all eight dep-info cases green. These assertions are source-level on
+# purpose -- driving the whole runner from here would take the machine-wide
+# battery mutex, which is what this suite runs INSIDE.
+$runnerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Invoke-CentralRustValidation.ps1') -Raw
+Assert-Case 'the runner CALLS the orphan guard' (
+    $runnerSource -match 'Assert-BatteryEveryPackageIsRegistered\s+-RepoRoot')
+Assert-Case 'the runner forwards -DepInfo into the affected selection' (
+    $runnerSource -match 'Get-BatteryAffectedSelection[\s\S]{0,400}?-DepInfo:\$DepInfo')
+Assert-Case 'the runner forwards -Features into the affected selection too' (
+    $runnerSource -match 'Get-BatteryAffectedSelection[\s\S]{0,400}?-Features\s+\$Features')
+Assert-Case 'the runner declares the -DepInfo switch' (
+    $runnerSource -match '\[switch\]\$DepInfo')
+# kills: accepting -DepInfo in a mode that has no diff-derived selection to
+# refine, where it would be a silent no-op the caller reads as precision.
+Assert-Case 'the runner refuses -DepInfo outside -Mode Iterate' (
+    $runnerSource -match "-DepInfo applies to -Mode Iterate only")
+# kills: reintroducing a hand-kept root list in the runner. Three copies is how
+# one crate came to be missing from all of them.
+Assert-Case 'the runner derives its standalone roots from the ONE inventory' (
+    $runnerSource -match '\$allCargoRoots\s*=\s*@\(Get-BatteryCargoRootPaths')
+Assert-Case 'the runner no longer hand-lists the portable roots' (
+    $runnerSource -notmatch 'Join-Path \$repoRoot "portable_replay\\native\\admission"')
 
 # kills: mapping a changed path to nothing and calling that "no packages
 # affected". A path under no package must be REPORTED as unowned, so the runner
