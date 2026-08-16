@@ -246,8 +246,14 @@ impl A729NamedOverlapHookOwner {
                     created += 1;
                 }
                 Err(status) => {
-                    remove_created(&targets, &originals, created);
-                    return Err(format!("named-overlap hook {index} creation failed: {status}"));
+                    let removed = remove_created(&targets, &originals, created);
+                    return Err(if removed {
+                        format!("named-overlap hook {index} creation failed: {status}")
+                    } else {
+                        format!(
+                            "named-overlap hook {index} creation failed: {status};                              created prefix RETAINED, teardown still owed"
+                        )
+                    });
                 }
             }
         }
@@ -255,22 +261,35 @@ impl A729NamedOverlapHookOwner {
         // Enable the shared consumer first. Foreign layout calls are ignored,
         // while every subsequently enabled owner registration is observable.
         if let Err(status) = unsafe { inline_detour::enable(targets[5] as *mut c_void) } {
-            CALLBACKS_OPEN.store(false, Ordering::Release);
-            remove_created(&targets, &originals, targets.len());
-            return Err(format!("named-overlap layout hook enable failed: {status}"));
+            // A FAILED ENABLE MAY STILL HAVE PATCHED (see `remove_created`), so
+            // this arm goes through the same close/disable/drain/free it does
+            // rather than freeing straight out.
+            let removed = remove_created(&targets, &originals, targets.len());
+            return Err(if removed {
+                format!("named-overlap layout hook enable failed: {status}")
+            } else {
+                format!(
+                    "named-overlap layout hook enable failed: {status};                      created prefix RETAINED, teardown still owed"
+                )
+            });
         }
         for index in 0..5 {
             if let Err(status) = unsafe { inline_detour::enable(targets[index] as *mut c_void) } {
-                CALLBACKS_OPEN.store(false, Ordering::Release);
-                for target in targets.iter().take(index) {
-                    let _ = unsafe { inline_detour::disable(*target as *mut c_void) };
-                }
-                let _ = unsafe { inline_detour::disable(targets[5] as *mut c_void) };
-                wait_for_quiescence(Duration::from_secs(30)).map_err(|error| {
-                    format!("named-overlap rollback left disabled hooks installed: {error}")
-                })?;
-                remove_created(&targets, &originals, targets.len());
-                return Err(format!("named-overlap hook {index} enable failed: {status}"));
+                // THE FAILING TARGET IS DISABLED TOO, and that is the fix here.
+                // This arm used to disable `take(index)` and the shared
+                // consumer and then drain -- leaving `targets[index]` itself,
+                // whose enable had just reported failure, still patched and
+                // still admitting, so the count it waited on was over a set
+                // that could refill. `remove_created` now closes admission and
+                // disables the WHOLE prefix before it measures anything.
+                let removed = remove_created(&targets, &originals, targets.len());
+                return Err(if removed {
+                    format!("named-overlap hook {index} enable failed: {status}")
+                } else {
+                    format!(
+                        "named-overlap hook {index} enable failed: {status};                          created prefix RETAINED, teardown still owed"
+                    )
+                });
             }
         }
         INSTALLED.store(true, Ordering::Release);
@@ -497,9 +516,13 @@ unsafe extern "system" fn hook_peace(
     beneficiary: usize,
     index: u32,
 ) -> usize {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         return call_original_peace(owner, gui, beneficiary, index);
-    };
+    }
     let result = call_original_peace(owner, gui, beneficiary, index);
     // The constructor's authenticated owner boundary is its returned item,
     // even though exact-a729 currently returns `param_1`.
@@ -516,9 +539,13 @@ unsafe extern "system" fn hook_upgrade(
     agency: usize,
     name: usize,
 ) -> usize {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         return call_original_upgrade(owner, idler, upgrade, branch, window, agency, name);
-    };
+    }
     let result = call_original_upgrade(owner, idler, upgrade, branch, window, agency, name);
     // Bind the returned item, matching the exact constructor contract.
     register_owner_field(result, UPGRADE_OVERLAP_OFFSET, UPGRADE_COLLECTION_ID);
@@ -526,9 +553,13 @@ unsafe extern "system" fn hook_upgrade(
 }
 
 unsafe extern "system" fn hook_divisions_item(owner: usize, parent: usize, selectable: u8) -> usize {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         return call_original_divisions_item(owner, parent, selectable);
-    };
+    }
     let result = call_original_divisions_item(owner, parent, selectable);
     match read_usize(result + DIVISIONS_OVERLAP_OFFSET) {
         Some(overlap) if overlap != 0 => register_divisions_owner(overlap),
@@ -538,10 +569,14 @@ unsafe extern "system" fn hook_divisions_item(owner: usize, parent: usize, selec
 }
 
 unsafe extern "system" fn hook_divisions_pool(pool: usize, gui: usize) {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         call_original_divisions_pool(pool, gui);
         return;
-    };
+    }
     call_original_divisions_pool(pool, gui);
     if let Err(error) = register_divisions_pool(pool) {
         poison(error);
@@ -549,19 +584,27 @@ unsafe extern "system" fn hook_divisions_pool(pool: usize, gui: usize) {
 }
 
 unsafe extern "system" fn hook_market(owner: usize) {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         call_original_market(owner);
         return;
-    };
+    }
     call_original_market(owner);
     register_owner_field(owner, MARKET_OVERLAP_OFFSET, MARKET_COLLECTION_ID);
 }
 
 unsafe extern "system" fn hook_layout(owner: usize) {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         call_original_layout(owner);
         return;
-    };
+    }
     call_original_layout(owner);
     let registration = match state_lock() {
         Ok(mut state) => {
@@ -809,31 +852,79 @@ fn original_slots() -> [&'static AtomicUsize; 6] {
     ]
 }
 
-fn remove_created(
-    targets: &[usize; 6],
-    originals: &[&AtomicUsize; 6],
-    created: usize,
-) {
+/// Take the created prefix back out: close admission, disable the WHOLE
+/// prefix, drain ONCE, then free.
+///
+/// # Why the order changed
+///
+/// This used to disable and free one target at a time, with nothing between
+/// the two. Both halves of that were wrong:
+///
+/// * A per-target drain is not a drain at all while the SIBLINGS are still
+///   patched in -- they keep admitting, so the count never settles for the
+///   reason the caller wants it to. Admission closes and the whole prefix is
+///   disabled before anything is measured.
+/// * "It only ever runs after a failed `enable`, so nothing was patched" is
+///   FALSE IN THIS PRODUCT. `minhook_h4/vendor/src/hook.c`'s `EnableHookLL`
+///   writes the patch, then sets `isEnabled` and reports
+///   `MH_ERROR_MEMORY_PROTECT` if the protection restore or the
+///   instruction-cache flush did not complete -- "the bytes ARE written by the
+///   time these run". So a game thread can be inside a detour body here, and it
+///   returns through the trampoline the free releases.
+///
+/// A prefix that cannot be proved quiet is RETAINED: disabled, so nothing new
+/// enters it, with trampolines and originals kept for whoever is inside. The
+/// caller reports that rather than treating cleanup as done.
+#[must_use = "a retained prefix is still owed a teardown and must reach the caller's error"]
+fn remove_created(targets: &[usize; 6], originals: &[&AtomicUsize; 6], created: usize) -> bool {
+    CALLBACKS_OPEN.store(false, Ordering::Release);
     for index in (0..created).rev() {
         let _ = unsafe { inline_detour::disable(targets[index] as *mut c_void) };
-        let _ = unsafe { inline_detour::remove(targets[index] as *mut c_void) };
+    }
+    if wait_for_quiescence(Duration::from_secs(30)).is_err() {
+        return false;
+    }
+    // QUIESCED: admission closed, the whole created prefix disabled, and the
+    // in-flight count observed at zero -- all three in this function, above
+    // this line, with nothing between them that could reopen any of them.
+    let mut removed = true;
+    for index in (0..created).rev() {
+        if unsafe { inline_detour::remove(targets[index] as *mut c_void) }.is_err() {
+            // RETAINED. The original stays published, because a target that is
+            // still created may still be reachable and a zeroed original makes
+            // its detour skip the game's own function.
+            removed = false;
+            continue;
+        }
         originals[index].store(0, Ordering::Release);
     }
+    removed
 }
 
 struct InFlight;
 
 impl InFlight {
-    fn enter() -> Option<Self> {
-        if !CALLBACKS_OPEN.load(Ordering::Acquire) {
-            return None;
-        }
+    /// ALWAYS COUNTS, admitted or not.
+    ///
+    /// This used to return `None` when `CALLBACKS_OPEN` was already closed --
+    /// and the detour then went on to CALL THE ORIGINAL anyway, uncounted. That
+    /// is the exact thread teardown must wait for: it is inside this crate's
+    /// own detour body, which the freeze cannot see, and it RETURNS THROUGH THE
+    /// TRAMPOLINE that `inline_detour::remove` frees. A drain taken after
+    /// closing admission read zero straight past it.
+    ///
+    /// So entry and ADMISSION are now two different questions. The count says
+    /// "a thread is in the body"; [`InFlight::admitted`] says "and it may
+    /// capture". Closing the gate stops the capture and never stops the count.
+    fn enter() -> Self {
         IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-        if !CALLBACKS_OPEN.load(Ordering::Acquire) {
-            IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-            return None;
-        }
-        Some(Self)
+        Self
+    }
+
+    /// Whether this entrant may do the observation half. The call through the
+    /// original happens either way -- it is the game's own function.
+    fn admitted(&self) -> bool {
+        CALLBACKS_OPEN.load(Ordering::Acquire)
     }
 }
 

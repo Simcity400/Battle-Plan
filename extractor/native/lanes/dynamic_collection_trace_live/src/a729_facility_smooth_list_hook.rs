@@ -140,7 +140,34 @@ impl A729FacilitySmoothListHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
+            //
+            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
+            // this product. Read `minhook_h4/vendor/src/hook.c`'s
+            // `EnableHookLL`: the fork deliberately writes the patch, then sets
+            // `isEnabled`/`queueEnable` and reports `MH_ERROR_MEMORY_PROTECT`
+            // when the protection restore or the instruction-cache flush did
+            // not complete -- "the bytes ARE written by the time these run, so
+            // the state is reported as it is". So this arm can be reached with
+            // a LIVE detour and a thread inside its body, which returns through
+            // the trampoline `remove` would free.
+            //
+            // Disable, drain, and only then free. A refusal RETAINS: the
+            // original pointer and module base are kept, because the detour may
+            // still dispatch into the callback and a zeroed original makes it
+            // skip the game's own function -- a mutated simulation, not a lost
+            // row.
+            let _ = unsafe { inline_detour::disable(target as *mut c_void) };
+            if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
+                return Err(format!(
+                    "A28 facility hook enable failed: {status}; detour retained: {quiescence}"
+                ));
+            }
+            if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
+                return Err(format!(
+                    "A28 facility hook enable failed: {status}; detour retained, removal failed: {removal}"
+                ));
+            }
             ORIGINAL_SETUP.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!("A28 facility hook enable failed: {status}"));
@@ -327,10 +354,14 @@ impl FacilitySmoothListObservation {
 }
 
 unsafe extern "system" fn hook_facility_setup(owner: usize) {
-    let Some(_in_flight) = InFlight::enter() else {
+    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
+    // arm below -- which still calls the game's original, through the
+    // trampoline -- is counted too.
+    let in_flight = InFlight::enter();
+    if !in_flight.admitted() {
         call_original(owner);
         return;
-    };
+    }
     call_original(owner);
     if let Err(error) = capture_post_return(owner) {
         poison(error);
@@ -486,16 +517,27 @@ fn capture_post_return(owner: usize) -> Result<(), String> {
 struct InFlight;
 
 impl InFlight {
-    fn enter() -> Option<Self> {
-        if !CALLBACKS_OPEN.load(Ordering::Acquire) {
-            return None;
-        }
+    /// ALWAYS COUNTS, admitted or not.
+    ///
+    /// This used to return `None` when `CALLBACKS_OPEN` was already closed --
+    /// and the detour then went on to CALL THE ORIGINAL anyway, uncounted. That
+    /// is the exact thread teardown must wait for: it is inside this crate's
+    /// own detour body, which the freeze cannot see, and it RETURNS THROUGH THE
+    /// TRAMPOLINE that `inline_detour::remove` frees. A drain taken after
+    /// closing admission read zero straight past it.
+    ///
+    /// So entry and ADMISSION are now two different questions. The count says
+    /// "a thread is in the body"; [`InFlight::admitted`] says "and it may
+    /// capture". Closing the gate stops the capture and never stops the count.
+    fn enter() -> Self {
         IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-        if !CALLBACKS_OPEN.load(Ordering::Acquire) {
-            IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-            return None;
-        }
-        Some(Self)
+        Self
+    }
+
+    /// Whether this entrant may do the observation half. The call through the
+    /// original happens either way -- it is the game's own function.
+    fn admitted(&self) -> bool {
+        CALLBACKS_OPEN.load(Ordering::Acquire)
     }
 }
 

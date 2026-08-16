@@ -232,7 +232,12 @@ impl A729TechnologyCanvasHookOwner {
         } {
             Ok(original) => original,
             Err(status) => {
-                cleanup_created_hooks(&[owner_target]);
+                let cleaned = cleanup_created_hooks(&[owner_target]);
+                if !cleaned {
+                    return Err(format!(
+                        "technology canvas rollback RETAINED created hooks; teardown still owed"
+                    ));
+                }
                 return Err(format!(
                     "technology canvas population hook creation failed: {status}"
                 ));
@@ -248,7 +253,12 @@ impl A729TechnologyCanvasHookOwner {
         } {
             Ok(original) => original,
             Err(status) => {
-                cleanup_created_hooks(&[population_target, owner_target]);
+                let cleaned = cleanup_created_hooks(&[population_target, owner_target]);
+                if !cleaned {
+                    return Err(format!(
+                        "technology canvas rollback RETAINED created hooks; teardown still owed"
+                    ));
+                }
                 return Err(format!(
                     "technology canvas refresh hook creation failed: {status}"
                 ));
@@ -276,7 +286,12 @@ impl A729TechnologyCanvasHookOwner {
                         "technology canvas {label} hook enable failed: {status}; disabled hooks could not quiesce: {quiescence}"
                     ));
                 }
-                cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
+                let cleaned = cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
+                if !cleaned {
+                    return Err(format!(
+                        "technology canvas rollback RETAINED created hooks; teardown still owed"
+                    ));
+                }
                 return Err(format!(
                     "technology canvas {label} hook enable failed: {status}"
                 ));
@@ -294,7 +309,12 @@ impl A729TechnologyCanvasHookOwner {
                     "technology canvas owner hook enable failed: {status}; disabled hooks could not quiesce: {quiescence}"
                 ));
             }
-            cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
+            let cleaned = cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
+            if !cleaned {
+                return Err(format!(
+                    "technology canvas rollback RETAINED created hooks; teardown still owed"
+                ));
+            }
             return Err(format!(
                 "technology canvas owner hook enable failed: {status}"
             ));
@@ -654,17 +674,39 @@ fn poison(error: String) {
     }
 }
 
-fn cleanup_created_hooks(targets: &[usize]) {
+#[must_use = "a retained target is still owed a teardown and must reach the caller's error"]
+fn cleanup_created_hooks(targets: &[usize]) -> bool {
+    // DRAINED-BY-CALLER: every caller is an install failure arm that first
+    // closes both admission gates, disables all three targets and refuses on a
+    // failed `wait_for_quiescence(30s)` before reaching here. That matters
+    // because the later arms run AFTER a successful `enable`, so a body can be
+    // in flight -- this is not the vacuous never-enabled case despite the name.
     OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
     COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
+    // THE REMOVAL RESULTS ARE READ. They were all discarded with `let _ =`, so
+    // a refused removal -- a freeze that could not be taken, a target a thread
+    // was parked in -- left a CREATED MinHook entry behind while the three
+    // lines below zeroed its original and the module base. That is the retry's
+    // own evidence being deleted: a detour that may still dispatch then finds a
+    // null original and skips the game's function, and nothing can find the
+    // target again to finish the job.
+    let mut removed = true;
     for target in targets {
-        let _ = unsafe { inline_detour::remove(*target as *mut c_void) };
+        if unsafe { inline_detour::remove(*target as *mut c_void) }.is_err() {
+            removed = false;
+        }
+    }
+    if !removed {
+        // RETAINED: originals, module base and game-state slot all stay, and
+        // the caller's error already names the failure. Cleanup is still owed.
+        return false;
     }
     ORIGINAL_REFRESH_COMMIT.store(0, Ordering::Release);
     ORIGINAL_POPULATION_COMMIT.store(0, Ordering::Release);
     ORIGINAL_OWNER_CONSTRUCTOR.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     GAME_STATE_ROOT_SLOT.store(0, Ordering::Release);
+    true
 }
 
 fn verify_executable_sha256(module: *mut c_void) -> Result<(), String> {

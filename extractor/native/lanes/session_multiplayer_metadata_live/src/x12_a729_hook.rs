@@ -1515,6 +1515,13 @@ fn remove_hook_owned_by_receipt_custody(
     target: usize,
     name: &str,
 ) -> Result<(), String> {
+    // DRAINED-BY-CALLER: both callers reach here only past
+    // `wait_for_callback_quiescence(..)` -- the teardown at the "teardown"
+    // stage, the failed-install path at the "install rollback" stage -- and
+    // that helper closes `ACCEPTING_CALLBACKS` and refuses unless the in-flight
+    // count reads zero. This function is the free plus its custody bookkeeping;
+    // the three targets are disabled and drained as one set, so a per-target
+    // drain here would measure a count the siblings keep refilling.
     let already_removed = HOOK_RECEIPTS
         .lock()
         .map_err(|_| "X12 hook receipt mutex poisoned before removal")?
@@ -1593,6 +1600,12 @@ fn with_rollback_result(reason: String, rollback: Result<(), String>) -> String 
 }
 
 fn rollback_created(addresses: &InstalledAddresses) -> Result<(), String> {
+    // NEVER-ENABLED: every caller is a `MinHook::create_hook` failure arm, and
+    // `inline_detour::enable_batch` does not run until all three creates have
+    // succeeded. Nothing was patched into the game on any path that reaches
+    // here, so no thread can have entered a detour body and there is nothing to
+    // drain. The enable-failure route has its own function, `rollback_enabled`,
+    // and that one is not this one.
     ACCEPTING_CALLBACKS.store(false, Ordering::Release);
     // Removing the three created sites now holds one freeze instead of three;
     // the batch preserves the original speed/toggle/forced ordering.

@@ -502,6 +502,30 @@ fn rollback(specs: &[HookSpec], created: usize, enabled: usize) -> String {
             failures.push(format!("0x{target:X} disable: {status}"));
         }
     }
+    // QUIESCED: `DRAINING` closed above, every enabled target disabled, and the
+    // in-flight count observed at zero here -- the same three steps `uninstall`
+    // takes, and for the same reason.
+    //
+    // THIS IS NOT THE VACUOUS CREATE-ONLY CASE, and the parameter list is the
+    // proof: `enabled` is how many of these targets were ENABLED, so whenever
+    // it is non-zero a game thread can be inside `hook_counter_update` right
+    // now, and the trampoline the loop below frees is what its call through the
+    // original returns into. The freeze inside `remove` cannot see that thread:
+    // the detour body is this module's own function, at an address
+    // `inline_detour` is never told. Classifying this path as create-only
+    // because it is named `rollback` is what a name-based audit does.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        if Instant::now() >= deadline {
+            // RETAINED, not freed: the targets are disabled so nothing new can
+            // enter them, and every trampoline stays allocated for whoever is
+            // still inside. `BROKEN` is the same latch a non-quiescing
+            // `uninstall` sets.
+            BROKEN.store(true, Ordering::Release);
+            return "; rollback incomplete: callbacks did not quiesce, hooks retained".to_string();
+        }
+        thread::yield_now();
+    }
     for (target, _, original) in specs.iter().take(created).rev() {
         match unsafe { inline_detour::remove(*target as *mut c_void) } {
             Ok(()) => original.store(0, Ordering::Release),

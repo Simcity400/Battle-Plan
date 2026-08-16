@@ -3923,6 +3923,57 @@ struct PeSection {
     characteristics: u32,
 }
 
+/// Force [`MAIN_MODULE_AUTHORITY`] to exist WHILE THE GAME IS STILL RUNNING.
+///
+/// # What this is protecting against
+///
+/// [`initialize_main_module`] opens `hoi4.exe`, `read_to_end`s the WHOLE file
+/// into a heap `Vec`, SHA-256s it and parses its PE layout. It runs exactly
+/// once per process, inside a `OnceLock::get_or_init`, and it runs on whichever
+/// caller reaches [`observe_main_module`] first.
+///
+/// At least one of those callers is inside a HELD `inline_detour::ProcessFreeze`
+/// -- `naval_combat_live::convoy_terminal_hook_windows`'s installer calls
+/// `observe_enabled_rel32_callsite` with `suspended` still alive, and that
+/// bottoms out here. So on a process where D90 installs first, the entire game
+/// is stopped for a file open, a full executable read and a full-file hash, and
+/// the `Vec` those bytes land in is `HeapAlloc` on the PROCESS DEFAULT HEAP --
+/// the heap a suspended game thread may hold the lock of, with nobody left to
+/// release it.
+///
+/// Which caller is first is INSTALL ORDER, so the exposure is intermittent:
+/// warm when some other lane's receipt ran first, and a multi-hundred-
+/// millisecond whole-game stop plus a possible deadlock when it did not.
+/// `freeze_window_audit` cannot see any of it -- it is a substring pass closed
+/// over one crate's own calls and says up front it cannot follow a call into
+/// another crate.
+///
+/// # What it does NOT fix
+///
+/// The rest of `observe_enabled_rel32_callsite` still runs frozen and still
+/// allocates: `observe_mapped_pe_identity`, the `Sha256` in `observe_common`
+/// and every `format!` refusal. Priming removes the file read, the whole-file
+/// hash and the largest allocation; it does not make that window allocation-
+/// free. See `extractor/native/runs/li_d75_teardown/FINDINGS.txt`.
+///
+/// Call it before taking the freeze, on any thread. Idempotent, and its error
+/// is the same one a later `observe_*` would return.
+#[cfg(windows)]
+pub fn prime_main_module_authority() -> Result<(), String> {
+    MAIN_MODULE_AUTHORITY
+        .get_or_init(initialize_main_module)
+        .as_ref()
+        .map(|_| ())
+        .map_err(Clone::clone)
+}
+
+/// True once [`prime_main_module_authority`] (or any `observe_*`) has built the
+/// authority, so a later call cannot be the one that reads the executable.
+#[cfg(windows)]
+pub fn main_module_authority_is_primed() -> bool {
+    MAIN_MODULE_AUTHORITY.get().is_some()
+}
+
 #[cfg(windows)]
 fn observe_main_module() -> Result<&'static ObservedMainModule, String> {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;

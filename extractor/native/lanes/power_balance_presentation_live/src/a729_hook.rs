@@ -1170,7 +1170,34 @@ mod installed_owner {
         ORIGINAL_POST_REFRESH.store(original as usize, Ordering::Release);
         MODULE_BASE.store(base, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
+            //
+            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
+            // this product. `minhook_h4/vendor/src/hook.c`'s `EnableHookLL`
+            // writes the patch, then sets `isEnabled` and reports
+            // `MH_ERROR_MEMORY_PROTECT` if the protection restore or the
+            // instruction-cache flush did not complete. So a game thread can be
+            // inside `hook_post_refresh` here, and it returns through the
+            // trampoline `remove` would free.
+            let _ = unsafe { inline_detour::disable(target as *mut c_void) };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while CALLBACKS_IN_FLIGHT.load(Ordering::Acquire) != 0 {
+                if std::time::Instant::now() >= deadline {
+                    // RETAINED: the target is disabled so nothing new enters
+                    // it, the trampoline stays allocated for whoever is inside,
+                    // and `ORIGINAL_POST_REFRESH` is kept because a detour that
+                    // may still dispatch must find a callable original.
+                    return Err(format!(
+                        "A37 hook enable failed: {status}; detour retained, callbacks did not quiesce"
+                    ));
+                }
+                std::thread::yield_now();
+            }
+            if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
+                return Err(format!(
+                    "A37 hook enable failed: {status}; detour retained, removal failed: {removal}"
+                ));
+            }
             MODULE_BASE.store(0, Ordering::Release);
             ORIGINAL_POST_REFRESH.store(0, Ordering::Release);
             return Err(format!("A37 hook enable failed: {status}"));

@@ -180,7 +180,29 @@ impl A729ResolvedTooltipHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
+            //
+            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
+            // this product. `minhook_h4/vendor/src/hook.c`'s `EnableHookLL`
+            // writes the patch, then sets `isEnabled` and reports
+            // `MH_ERROR_MEMORY_PROTECT` if the protection restore or the
+            // instruction-cache flush did not complete. So this arm can be
+            // reached with a LIVE detour and a thread inside its body, which
+            // returns through the trampoline `remove` would free.
+            let _ = unsafe { inline_detour::disable(target as *mut c_void) };
+            if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
+                // RETAINED. `ORIGINAL_CONTROLLER` is kept deliberately: a
+                // detour that may still dispatch must find a callable original,
+                // or the game's own function is skipped.
+                return Err(format!(
+                    "A26 tooltip controller hook enable failed: {status}; detour retained: {quiescence}"
+                ));
+            }
+            if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
+                return Err(format!(
+                    "A26 tooltip controller hook enable failed: {status}; detour retained, removal failed: {removal}"
+                ));
+            }
             ORIGINAL_CONTROLLER.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             return Err(format!(

@@ -4,7 +4,8 @@ use crate::{
     encode_payload, CarrierError, DesignCatalogContextFrame, DesignerFamily, DesignerViewContext,
 };
 use core::ffi::c_void;
-use minhook::MinHook;
+use inline_detour::InlineDetourReleaseError;
+use minhook::{MinHook, MH_STATUS};
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
 use production_hook_receipt::{
     ExpectedRvaHook, InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour,
@@ -96,6 +97,69 @@ thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
 }
 
+/// HOW MANY THREADS ARE INSIDE `hook_refresh` RIGHT NOW.
+///
+/// [`IN_CALLBACK`] above is a THREAD-LOCAL reentrancy flag and is not this: it
+/// answers "is this thread already inside the detour" so a nested refresh does
+/// not capture twice, and a teardown reading it reads its own `false`.
+///
+/// `inline_detour::remove` frees the trampoline, and `hook_refresh` returns
+/// through it after `original(view)`. The freeze's instruction-pointer check
+/// cannot see a thread in the body -- the body is this crate's own function, at
+/// an address `inline_detour` is never told -- so the count has to come from
+/// here. `a40_peace_evidence.rs` in this same crate has had exactly this pair
+/// since it was written; the designer-refresh site never did.
+static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
+/// Stops the CAPTURE half early during teardown. `inline_detour::disable` is
+/// what actually closes admission, because the detour stays reachable until the
+/// target's own bytes are back; this only means the bodies still in flight
+/// finish sooner.
+static ADMISSION_OPEN: AtomicBool = AtomicBool::new(false);
+/// Bounded: a teardown that spins forever is a hung game. On exhaustion the
+/// target is RETAINED and named rather than freed.
+const QUIESCE_YIELDS: usize = 4096;
+
+/// Spans the whole detour body, INCLUDING the call through the original, which
+/// is the part that returns through the trampoline.
+struct CallbackLease;
+
+impl CallbackLease {
+    fn enter() -> Self {
+        IN_FLIGHT_CALLBACKS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for CallbackLease {
+    fn drop(&mut self) {
+        IN_FLIGHT_CALLBACKS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The quiescence half of `inline_detour::remove`'s contract, measured AFTER
+/// the caller has disabled the target. A count taken while the detour is still
+/// patched in is stale before it is read, so the order is the caller's.
+fn drained_after_disable() -> bool {
+    ADMISSION_OPEN.store(false, Ordering::Release);
+    for _ in 0..QUIESCE_YIELDS {
+        if IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0 {
+            return true;
+        }
+        std::thread::yield_now();
+    }
+    IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0
+}
+
+/// The refusal a caller returns instead of freeing a trampoline a body is about
+/// to return through. The target stays DISABLED, so nothing new enters it, and
+/// its trampoline stays allocated for whoever is inside.
+fn retained_for_in_flight_bodies() -> String {
+    format!(
+        "A27 designer refresh detour retained: {} callback body/bodies still in flight after disable",
+        IN_FLIGHT_CALLBACKS.load(Ordering::Acquire)
+    )
+}
+
 #[derive(Clone, Debug, Default)]
 struct HookState {
     next_transition_sequence: u64,
@@ -147,11 +211,43 @@ pub fn install() -> Result<InstalledHookAddress, String> {
             .map_err(|status| format!("A27 designer refresh hook creation failed: {status}"))?;
     ORIGINAL_REFRESH.store(original as usize, Ordering::Release);
     MODULE_BASE.store(base, Ordering::Release);
+    ADMISSION_OPEN.store(true, Ordering::Release);
     if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
         // An enable that reported failure may still have patched the target,
         // and `remove` here is the only attempt to take it back out. Its result
         // was discarded outright before 2026-08-03, which left a possibly-live
         // detour with `INSTALLED` false and nothing recording it.
+        //
+        // QUIESCED: and it is NOT the vacuous never-enabled case, precisely
+        // because of the sentence above. `minhook_h4/vendor/src/hook.c`'s
+        // `EnableHookLL` WRITES THE PATCH, then sets `isEnabled` and reports
+        // `MH_ERROR_MEMORY_PROTECT` when the protection restore or the
+        // instruction-cache flush did not complete -- so a thread may be inside
+        // `hook_refresh` right now.
+        //
+        // THE DISABLE IS THIS ARM'S OWN. Closing `ADMISSION_OPEN` stops the
+        // capture half but NOT entry into the detour: the target's bytes are
+        // still the jump until `disable` puts them back, so a drain taken
+        // without it measures a set that keeps refilling. `NOT_CREATED` and
+        // `DISABLED` are the shapes where the enable genuinely did nothing.
+        match unsafe { inline_detour::disable(target as *mut c_void) } {
+            Ok(())
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+            | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+            Err(refusal) => {
+                FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
+                return Err(format!(
+                    "A27 designer refresh hook enable failed: {status}; disable failed: {refusal}"
+                ));
+            }
+        }
+        if !drained_after_disable() {
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
+            return Err(format!(
+                "A27 designer refresh hook enable failed: {status}; {}",
+                retained_for_in_flight_bodies()
+            ));
+        }
         if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             // BOTH statics survive an unproved removal, and neither is
@@ -183,6 +279,10 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         )],
     )
     {
+        // ADMISSION CLOSES BEFORE THE DISABLE, on every exit from this arm. The
+        // refusal below used to return with the capture gate still open over a
+        // site this branch has already decided to tear down.
+        ADMISSION_OPEN.store(false, Ordering::Release);
         let disabled = unsafe { inline_detour::disable(target as *mut c_void) };
         if disabled.is_err() {
             // The target may still be patched, so the custody record is the
@@ -201,6 +301,20 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         // `release_pending() == false`, so the registry recorded a clean
         // release over it and a later install could refuse with
         // MH_ERROR_ALREADY_CREATED.
+        //
+        // QUIESCED FIRST, and this branch is the one that most needs it: the
+        // enable above SUCCEEDED, so the detour has been live and a game thread
+        // can be inside `hook_refresh` right now. The disable stops new entries;
+        // it says nothing about the bodies already in. A refusal latches the
+        // same unproved-removal custody a refused `remove` does, because the
+        // outcome is the same -- a created MinHook target still owed a free.
+        if !drained_after_disable() {
+            FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
+            return Err(format!(
+                "A27 designer refresh hook receipt refused: {error}; {}",
+                retained_for_in_flight_bodies()
+            ));
+        }
         if let Err(status) = unsafe { inline_detour::remove(target as *mut c_void) } {
             // Keep the base and the custody: `retry_failed_install_cleanup`
             // needs the first to find the target and the second is the
@@ -295,6 +409,34 @@ pub fn retry_failed_install_cleanup() -> Result<(), String> {
         return Err("A27 designer refresh cleanup could not resolve the module base".into());
     }
     let target = base + DESIGNER_REFRESH_RVA as usize;
+    // QUIESCED, AND THE DISABLE IS THIS FUNCTION'S OWN NOW.
+    //
+    // The paragraph above used to end "`MH_RemoveHook` disables an enabled hook
+    // on the way out, so removal alone covers both shapes of failure", and that
+    // stopped being true when `inline_detour::remove` grew its quiescence
+    // contract: it now REFUSES a target MinHook still reports as enabled
+    // (`StillEnabled`) rather than removing it, because a caller that has not
+    // disabled cannot have drained. Relying on the old behaviour would have
+    // made this retry fail forever on the one shape it exists for -- a live
+    // detour -- which is the shape that matters.
+    //
+    // So: disable, drain, free. A `NOT_CREATED` disable is the other shape (the
+    // enable never took) and is not an error here.
+    match unsafe { inline_detour::disable(target as *mut c_void) } {
+        Ok(())
+        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
+        | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
+        Err(status) => {
+            return Err(format!(
+                "A27 designer refresh hook disable retry failed: {status}"
+            ))
+        }
+    }
+    if !drained_after_disable() {
+        // The latch stays set: this is still a site that may be live, and the
+        // next retry is the whole point of it.
+        return Err(retained_for_in_flight_bodies());
+    }
     unsafe { inline_detour::remove(target as *mut c_void) }
         .map_err(|status| format!("A27 designer refresh hook removal retry failed: {status}"))?;
     // The install never completed, so any custody on the installed side is a
@@ -416,6 +558,24 @@ pub fn uninstall() -> Result<(), String> {
         TEARDOWN_PHASE.store(TEARDOWN_OWES_REMOVE, Ordering::Release);
     }
     if owes_remove {
+        // QUIESCED, AND THE DRAIN IS ASKED ON EVERY ATTEMPT, not only the one
+        // that disabled. The phase machine lets a retry arrive with the disable
+        // already owed-and-done by an earlier attempt, and that earlier attempt
+        // proved nothing about whether a body is in flight NOW. Draining here,
+        // beside the free, is what makes the two adjacent rather than separated
+        // by a process restart's worth of state.
+        //
+        // A refusal RETAINS: the target stays disabled -- nothing new can enter
+        // it -- the trampoline stays allocated for whoever is inside, and the
+        // phase stays at `TEARDOWN_OWES_REMOVE` so the next attempt retries
+        // exactly this step. Freeing here instead is the use-after-free
+        // `inline_detour::remove`'s contract exists to prevent: the freeze's
+        // instruction-pointer check cannot see a thread in `hook_refresh`,
+        // because that body is this crate's own function at an address
+        // `inline_detour` is never told, and it returns THROUGH the trampoline.
+        if !drained_after_disable() {
+            return Err(retained_for_in_flight_bodies());
+        }
         unsafe { inline_detour::remove(target as *mut c_void) }
             .map_err(|status| format!("A27 designer refresh hook removal failed: {status}"))?;
         TEARDOWN_PHASE.store(TEARDOWN_OWES_RECEIPT, Ordering::Release);
@@ -525,13 +685,21 @@ pub fn encode_latest(
 }
 
 unsafe extern "system" fn hook_refresh(view: usize) {
+    // TAKEN FIRST AND HELD TO THE END, so it spans the call through the
+    // original -- the part that returns through the trampoline teardown wants
+    // to free.
+    let _lease = CallbackLease::enter();
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
     let original = ORIGINAL_REFRESH.load(Ordering::Acquire);
     if original != 0 {
         let original: RefreshFn = unsafe { mem::transmute(original) };
         unsafe { original(view) };
     }
-    if !nested {
+    // THE ORIGINAL IS ALWAYS CALLED, admission or not: it is the game's own
+    // refresh and skipping it would mutate the simulation. `ADMISSION_OPEN`
+    // gates only the OBSERVATION, so a teardown that has closed it stops paying
+    // for captures it is about to discard.
+    if !nested && ADMISSION_OPEN.load(Ordering::Acquire) {
         let result = capture_after_refresh(view);
         if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
             state.callback_count = state.callback_count.saturating_add(1);
@@ -731,6 +899,43 @@ fn read_usize(address: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drain has to be able to say NO, and it has to say it in bounded
+    /// time. A `drained_after_disable` that returned true with a body inside
+    /// `hook_refresh` is the use-after-free `inline_detour::remove`'s contract
+    /// exists to stop -- the body returns through the trampoline the free
+    /// releases -- and one that never returned is a hung game at teardown.
+    ///
+    /// kills: deleting the `CallbackLease::enter` in `hook_refresh` (the count
+    /// never rises, so this reads zero and returns true); replacing the bounded
+    /// loop with `while != 0` (this test never terminates); returning `true`
+    /// unconditionally. It also pins the ADMISSION half: the drain closes
+    /// `ADMISSION_OPEN`, so a caller cannot drain and leave the gate open.
+    #[test]
+    fn the_drain_refuses_while_a_detour_body_is_in_flight_and_closes_admission() {
+        assert_eq!(
+            IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
+            0,
+            "another test left a lease behind"
+        );
+        ADMISSION_OPEN.store(true, Ordering::Release);
+        let lease = CallbackLease::enter();
+        assert_eq!(IN_FLIGHT_CALLBACKS.load(Ordering::Acquire), 1);
+        assert!(
+            !drained_after_disable(),
+            "the drain reported quiescence with a callback body in flight"
+        );
+        assert!(
+            !ADMISSION_OPEN.load(Ordering::Acquire),
+            "the drain left admission open"
+        );
+        assert!(retained_for_in_flight_bodies().contains("retained"));
+        drop(lease);
+        assert!(
+            drained_after_disable(),
+            "the drain refused after every body returned"
+        );
+    }
 
     /// Law: the single pinned spec describes the site this module patches.
     ///

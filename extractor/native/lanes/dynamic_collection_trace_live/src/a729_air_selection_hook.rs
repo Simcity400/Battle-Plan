@@ -174,7 +174,34 @@ impl A729AirSelectionHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            let _ = unsafe { inline_detour::remove(target as *mut c_void) };
+            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
+            //
+            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
+            // this product. Read `minhook_h4/vendor/src/hook.c`'s
+            // `EnableHookLL`: the fork deliberately writes the patch, then sets
+            // `isEnabled`/`queueEnable` and reports `MH_ERROR_MEMORY_PROTECT`
+            // when the protection restore or the instruction-cache flush did
+            // not complete -- "the bytes ARE written by the time these run, so
+            // the state is reported as it is". So this arm can be reached with
+            // a LIVE detour and a thread inside its body, which returns through
+            // the trampoline `remove` would free.
+            //
+            // Disable, drain, and only then free. A refusal RETAINS: the
+            // original pointer and module base are kept, because the detour may
+            // still dispatch into the callback and a zeroed original makes it
+            // skip the game's own function -- a mutated simulation, not a lost
+            // row.
+            let _ = unsafe { inline_detour::disable(target as *mut c_void) };
+            if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
+                return Err(format!(
+                    "A28 air hook enable failed: {status}; detour retained: {quiescence}"
+                ));
+            }
+            if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
+                return Err(format!(
+                    "A28 air hook enable failed: {status}; detour retained, removal failed: {removal}"
+                ));
+            }
             ORIGINAL_MATERIALIZE.store(0, Ordering::Release);
             MODULE_BASE.store(0, Ordering::Release);
             GAME_CLOCK_ADDRESS.store(0, Ordering::Release);

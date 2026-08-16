@@ -1788,6 +1788,32 @@ fn install_convoy_terminal_hook_inner(
             prepared.activation_blockers,
         ));
     }
+    // THE RECEIPT AUTHORITY IS BOUGHT HERE, WITH THE GAME RUNNING, and BEFORE
+    // the owner token and the relay allocation below.
+    //
+    // WHY IT IS BOUGHT AT ALL: the frozen window further down calls
+    // `observe_enabled_rel32_callsite` with `suspended` still held, and that
+    // bottoms out in `production_hook_receipt`'s `MAIN_MODULE_AUTHORITY` -- a
+    // `OnceLock` whose initialiser OPENS `hoi4.exe`, READS THE WHOLE FILE into
+    // a heap `Vec` and SHA-256s it. Whether that already ran is install order,
+    // so on a process where this lane is first the entire game used to stop for
+    // a file read and a full-file hash, taking that `Vec` from the process
+    // default heap whose lock a suspended thread may own.
+    //
+    // WHY *HERE* AND NOT LOWER: `?` on a fallible call that sits after
+    // `next_teardown_owner_token` and `allocate_near_relay` returns without
+    // freeing the relay or recording it anywhere, so a repeatedly failing
+    // authority would leak executable pages and burn owner tokens. Before both
+    // allocations there is nothing to leak.
+    //
+    // WHY ONLY IN PRODUCTION: evidence mode mints no `teardown_owner_token`
+    // and therefore never reaches `observe_enabled_rel32_callsite` at all
+    // (the `match teardown_owner_token` below has `None => None`). Priming it
+    // unconditionally would invent a refusal evidence installation never had.
+    if mode.is_production() {
+        production_hook_receipt::prime_main_module_authority()
+            .map_err(ConvoyTerminalInstallError::HookReceipt)?;
+    }
     let teardown_owner_token = mode
         .is_production()
         .then(next_teardown_owner_token)
@@ -2614,6 +2640,56 @@ mod freeze_call_site_tests {
                  (freeze at {freeze}, check at {clear}, write at {mutation})"
             );
         }
+    }
+
+    /// Falsifiable: fails if the receipt authority is ever built with the game
+    /// stopped again.
+    ///
+    /// This installer calls `observe_enabled_rel32_callsite` with `suspended`
+    /// still held, and that reaches `production_hook_receipt`'s
+    /// `MAIN_MODULE_AUTHORITY` -- a `OnceLock` whose initialiser OPENS
+    /// `hoi4.exe`, reads the WHOLE file into a heap `Vec` and SHA-256s it.
+    /// Whichever caller in the process reaches it first pays for that, so
+    /// before `prime_main_module_authority` existed a process where D90
+    /// installed first stopped the entire game for a file read and a full-file
+    /// hash -- and took that `Vec` from the process default heap, whose lock a
+    /// suspended thread may own.
+    ///
+    /// A source pin and not a behavioural test for the same reason the two
+    /// tests either side of it are: the installer refuses before the freeze
+    /// unless the running process is the exact a729 `hoi4.exe`, so no offline
+    /// test can drive it that far.
+    ///
+    /// kills: deleting the prime call; moving it after
+    /// `suspend_all_other_threads()`; moving it after the first `write_code`.
+    #[test]
+    fn the_receipt_authority_is_bought_before_the_freeze_not_inside_it() {
+        let production = production_code();
+        let body = production
+            .split_once("fn install_convoy_terminal_hook_inner(")
+            .expect("the installer is declared in production")
+            .1;
+        let prime = body
+            .find("prime_main_module_authority()")
+            .expect("the installer must prime the receipt authority");
+        let freeze = body
+            .find("suspend_all_other_threads()")
+            .expect("the installer must freeze the process");
+        let observe = body
+            .find("observe_enabled_rel32_callsite(")
+            .expect("the installer must still mint its installed receipt");
+        assert!(
+            prime < freeze,
+            "the receipt authority must be built with the game RUNNING \
+             (prime at {prime}, freeze at {freeze})"
+        );
+        assert!(
+            freeze < observe,
+            "this pin assumes the receipt observation is still inside the \
+             window; if it has been hoisted out, the priming is no longer the \
+             thing standing between a player's game and a whole-file hash \
+             taken with every thread suspended -- re-derive this test"
+        );
     }
 
     /// Falsifiable: fails if this module reaches for a private suspender again.
