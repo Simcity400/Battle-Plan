@@ -95,10 +95,11 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// The H4CP header carries this same number, and deliberately so: an index and
 /// a cache from different format generations must never pair, and the per-hour
 /// digests only mean anything over records whose framing the index agrees with.
-/// Version 6 adds [`PATCH_NUMBER_DELTA`]. Every version-5 recording stops
-/// opening, which is what pre-production means: the header carries this number
-/// and a reader refuses a cache that does not state it.
-const FORMAT_VERSION: u16 = 6;
+/// Version 7 adds [`PATCH_ARRAY_EDIT`], and version 6 added
+/// [`PATCH_NUMBER_DELTA`]. Every recording of an earlier version stops opening,
+/// which is what pre-production means: the header carries this number and a
+/// reader refuses a cache that does not state it.
+const FORMAT_VERSION: u16 = 7;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -213,6 +214,35 @@ const PATCH_NUMBER_DELTA: u8 = 6;
 /// `fraction_digits` from asking for a power of ten nobody can hold. The widest
 /// fraction the fold actually mints is five (`FIXED_SCALE` is 100,000).
 const MAX_NUMBER_DELTA_DIGITS: u32 = 30;
+/// An array whose LENGTH changed, aligned by a key its own rows carry, as a
+/// left-to-right edit script over the old array.
+///
+/// AN ARRAY THAT GAINS OR LOSES ONE ROW IS RE-EMITTED WHOLE TODAY. `Patch::
+/// Array` can only address elements by index, so it is defined only where the
+/// two lengths agree; everything else falls to `Replace`, and a replace carries
+/// every row of the new array in full. Measured on capture t53 after lane LV,
+/// `divisions` cost 10,037 sealed bytes per game hour that way and
+/// `supply.by_province.<id>.divisions` another 2,697 -- and because a replace
+/// carries VALUES, none of the number deltas inside those rows applies either.
+///
+/// The script consumes the old array once: [`ARRAY_EDIT_COPY`] takes a run
+/// unchanged, [`ARRAY_EDIT_SKIP`] drops one, [`ARRAY_EDIT_PATCH`] carries a
+/// nested patch for one, and [`ARRAY_EDIT_INSERT`] carries a row the old array
+/// did not have. Rows are matched by a member the encoder DISCOVERS -- one
+/// present on every row of both arrays with a scalar value that is unique in
+/// each -- so no member name is written into this format and a mod's rows align
+/// on whatever identity they carry.
+const PATCH_ARRAY_EDIT: u8 = 7;
+/// Take the next `n` old elements unchanged. `n >= 1`.
+const ARRAY_EDIT_COPY: u64 = 0;
+/// Drop the next `n` old elements. `n >= 1`.
+const ARRAY_EDIT_SKIP: u64 = 1;
+/// Take the next old element with a patch on top.
+const ARRAY_EDIT_PATCH: u64 = 2;
+/// Emit a value the old array does not have. Consumes no old element.
+const ARRAY_EDIT_INSERT: u64 = 3;
+/// Smallest encoded edit op: its kind and one varint or value byte.
+const MIN_ARRAY_EDIT_OP_BYTES: usize = 1 + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheIdentityMode {
@@ -2361,6 +2391,9 @@ enum Patch {
         changes: Vec<(String, Patch)>,
     },
     Array(Vec<(u32, Patch)>),
+    /// The target is an array of a DIFFERENT length, spelled as an edit script
+    /// over it. See [`PATCH_ARRAY_EDIT`] and [`array_edit_between`].
+    ArrayEdit(Vec<ArrayEditOp>),
     /// The target is a number and becomes another number, spelled as the
     /// difference. See [`PATCH_NUMBER_DELTA`] and [`number_delta_between`].
     NumberDelta {
@@ -2374,6 +2407,15 @@ enum Patch {
     /// remembered value were not structurally compatible with the new one there
     /// would be nothing to diff and the encoder emits a plain `Replace`.
     Revive(Box<Patch>),
+}
+
+/// One step of a [`Patch::ArrayEdit`] script. See [`PATCH_ARRAY_EDIT`].
+#[derive(Debug, Clone)]
+enum ArrayEditOp {
+    Copy(u32),
+    Skip(u32),
+    Patch(Patch),
+    Insert(CanonValue),
 }
 
 /// What each currently-`null` path last held, for as long as it stays null.
@@ -2394,12 +2436,15 @@ enum Patch {
 #[derive(Debug, Default)]
 struct Shadow {
     remembered: Option<CanonValue>,
+    /// What [`ShadowBudget`] was charged for `remembered`, so releasing it
+    /// refunds exactly that and never a recomputation that could drift.
+    charge: u64,
     members: std::collections::HashMap<String, Shadow>,
     elements: std::collections::HashMap<u32, Shadow>,
 }
 
-/// The ceiling on what one checkpoint window may remember, and what it has
-/// spent so far.
+/// The ceiling on what one checkpoint window may remember, and what it is
+/// holding right now.
 ///
 /// WITHOUT THIS THE SHADOW IS UNBOUNDED. A window is up to 744 hours; a
 /// recording that nulls a different large member every hour and leaves it null
@@ -2407,17 +2452,29 @@ struct Shadow {
 /// with the WINDOW rather than with the world -- hundreds of times the size of
 /// the document it describes (Codex review round 6, finding S4).
 ///
-/// Spending is MONOTONIC within a window and never refunded when a memory is
-/// dropped. That over-counts, deliberately: an exact running total would have
-/// to be maintained through every clear and every re-insert, and the number
-/// that matters here is an upper bound on what the process can hold, not an
-/// accountant's balance. Over-counting also keeps the rule cheap enough that
-/// both sides can apply it identically.
+/// IT IS A BALANCE, NOT A METER. `spent` is the content of the memories that
+/// are LIVE at this instant: every charge is refunded at the moment its memory
+/// is dropped -- spent on a revive, overwritten by a new memory, cleared
+/// because the path became non-null, or removed with its member. The first cut
+/// of this never refunded, on the argument that an upper bound was all the cap
+/// needed to be; measured on capture t53 that argument cost the whole lever.
+/// A domain that folds out every fourth hour is charged every fourth hour, and
+/// on t53 the 256 MiB cap was exhausted at position 61 of a 168-hour window
+/// (`runs/lz_size_batch2/CADENCE_t53.txt`): from there to the end of the window
+/// EVERY revive was declined -- 1,326 memories, 1.15 GB of them, including 41
+/// of `map._r2_weather_live`'s 57 fold-outs -- and each declined revive is a
+/// whole subtree re-emitted in full.
 ///
-/// It is a SIZE lever with no correctness edge: once the cap is reached the
-/// encoder simply stops offering revives for the rest of the window and spends
-/// full replaces instead. Encoder and reader run this same rule over the same
-/// records in the same order, so they stop at the same hour and never disagree
+/// A balance is bounded by the WORLD and not by the window, which is what the
+/// cap was really for: the memories live at one instant sit at disjoint paths
+/// (a memory's own descendants are released when it is taken), so their total
+/// is at most the content of one world.
+///
+/// It is a SIZE lever with no correctness edge: while the cap is reached the
+/// encoder simply stops offering revives and spends full replaces instead.
+/// Encoder and reader run this same rule over the same records in the same
+/// order -- charges and refunds alike are driven by [`apply_patch`], which both
+/// sides call -- so they hold the same balance at every hour and never disagree
 /// about whether a memory exists.
 #[derive(Debug)]
 struct ShadowBudget {
@@ -2441,8 +2498,19 @@ impl Default for ShadowBudget {
 }
 
 impl ShadowBudget {
-    /// Charge for a memory, or decline it. Declining costs bytes, never truth.
-    fn admits(&mut self, value: &CanonValue) -> bool {
+    /// Give back what a dropped memory was charged.
+    ///
+    /// `saturating_sub` rather than a panic on underflow: the charge refunded
+    /// is the charge recorded beside the memory, so the balance cannot go
+    /// negative unless the two drifted, and a size lever must never be able to
+    /// refuse a recording.
+    fn refund(&mut self, charge: u64) {
+        self.spent = self.spent.saturating_sub(charge);
+    }
+
+    /// Charge for a memory and report what it cost, or decline it. Declining
+    /// costs bytes, never truth.
+    fn admits(&mut self, value: &CanonValue) -> Option<u64> {
         // CONTENT, NEVER CAPACITY. Both sides must reach the same verdict from
         // the same document, and `heap_bytes` cannot deliver that: the JSON
         // parser doubles its vectors while the binary decoder reserves exactly,
@@ -2454,9 +2522,9 @@ impl ShadowBudget {
         match self.spent.checked_add(cost) {
             Some(spent) if spent <= self.cap => {
                 self.spent = spent;
-                true
+                Some(cost)
             }
-            _ => false,
+            _ => None,
         }
     }
 }
@@ -2480,16 +2548,47 @@ impl Shadow {
     /// The children go with it EITHER WAY: they describe paths inside `was`,
     /// which the remembered subtree now carries itself, and if the budget
     /// declines the memory then those paths are gone from the world with
-    /// nothing standing in for them.
+    /// nothing standing in for them. Releasing them is also what keeps the
+    /// balance honest -- their charges are refunded here rather than stranded.
     fn remember(&mut self, was: CanonValue, budget: &mut ShadowBudget) {
-        self.members.clear();
-        self.elements.clear();
-        self.remembered = if budget.admits(&was) { Some(was) } else { None };
+        self.release(budget);
+        match budget.admits(&was) {
+            Some(charge) => {
+                self.remembered = Some(was);
+                self.charge = charge;
+            }
+            None => {
+                self.remembered = None;
+                self.charge = 0;
+            }
+        }
     }
 
-    /// Record that this path is non-null again. The memory is spent.
-    fn forget(&mut self) {
-        self.remembered = None;
+    /// Take this path's memory, refunding what it was charged.
+    ///
+    /// TAKEN, not read: a revive spends the memory in the same step it uses it,
+    /// so the balance stops holding it at exactly that moment.
+    fn take_remembered(&mut self, budget: &mut ShadowBudget) -> Option<CanonValue> {
+        let taken = self.remembered.take();
+        if taken.is_some() {
+            budget.refund(self.charge);
+            self.charge = 0;
+        }
+        taken
+    }
+
+    /// Drop this subtree's memories and refund every one of them.
+    ///
+    /// The recursion is over the SHADOW, which holds only the folded-out paths
+    /// -- not over the world.
+    fn release(&mut self, budget: &mut ShadowBudget) {
+        self.take_remembered(budget);
+        for (_, mut child) in self.members.drain() {
+            child.release(budget);
+        }
+        for (_, mut child) in self.elements.drain() {
+            child.release(budget);
+        }
     }
 }
 
@@ -2663,6 +2762,172 @@ fn varint_len(mut value: u64) -> usize {
     len
 }
 
+/// The member name both arrays can be ALIGNED by, or `None` if they carry no
+/// such identity.
+///
+/// DISCOVERED, NEVER NAMED. The recorder folds mod content as readily as
+/// vanilla content, so a format that hard-coded `div_id` would align vanilla
+/// divisions and give up on anything a mod adds. What this looks for is the
+/// property an identity actually has: a member that EVERY row of both arrays
+/// carries, whose value is a scalar, and which no two rows of the same array
+/// share. The first such name in member order is taken, so both arrays -- and
+/// any later re-derivation of this choice -- reach the same one.
+///
+/// A row without it is not an error; the arrays simply have no alignment and
+/// the change stays a `Replace`.
+///
+/// PICKING THE WRONG MEMBER COSTS BYTES, NEVER TRUTH. Any member that happens
+/// to be unique in both arrays qualifies, and one that is not really an
+/// identity -- a measurement whose values happen not to repeat -- simply
+/// produces a worse alignment: more inserts and skips, a longer script, and
+/// then `diff_value` keeps the `Replace` instead because it is shorter. The
+/// reconstruction is right either way, because the script is built by walking
+/// the NEW array and every row is either taken from the old array and patched
+/// until it equals the new one, or inserted whole.
+fn array_alignment_key(old: &[CanonValue], new: &[CanonValue]) -> Option<String> {
+    fn scalar_members(value: &CanonValue) -> Option<std::collections::HashSet<&str>> {
+        let CanonValue::Object(members) = value else {
+            return None;
+        };
+        Some(
+            members
+                .iter()
+                .filter(|(_, value)| {
+                    matches!(value, CanonValue::Number(_) | CanonValue::String(_))
+                })
+                .map(|(name, _)| name.as_str())
+                .collect(),
+        )
+    }
+
+    // A SET, not a scan: the arrays this matters on are thousands of rows of
+    // dozens of members each, and an intersection by linear search over every
+    // row is the difference between a walk and a stall at finalize.
+    let mut candidates: Vec<String> = scalar_members(old.first()?)?
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    for row in old.iter().chain(new.iter()) {
+        let present = scalar_members(row)?;
+        candidates.retain(|name| present.contains(name.as_str()));
+        if candidates.is_empty() {
+            return None;
+        }
+    }
+    candidates.sort_by(|left, right| key_cmp(left, right));
+    candidates.into_iter().find(|name| {
+        [old, new].iter().all(|rows| {
+            let mut seen = std::collections::HashSet::with_capacity(rows.len());
+            rows.iter()
+                .all(|row| row_key(row, name).is_some_and(|value| seen.insert(value)))
+        })
+    })
+}
+
+/// The alignment key's value on one row, if the row carries it as a scalar.
+///
+/// Returned as (is a string, its token) rather than as the value, so identical
+/// tokens of different types -- the number `7` and the string `"7"` -- are two
+/// different identities and can key a map.
+fn row_key<'value>(row: &'value CanonValue, name: &str) -> Option<(bool, &'value str)> {
+    let CanonValue::Object(members) = row else {
+        return None;
+    };
+    members
+        .iter()
+        .find(|(member, _)| member == name)
+        .and_then(|(_, value)| match value {
+            CanonValue::Number(token) => Some((false, token.as_str())),
+            CanonValue::String(token) => Some((true, token.as_str())),
+            _ => None,
+        })
+}
+
+/// THE ONE RULE BOTH SIDES READ for an array whose length changed: the edit
+/// script that turns `old` into `new`, or `None` if there is no alignment to
+/// build one from.
+///
+/// The script is produced in NEW order with a monotone cursor over the old
+/// array, so it is a left-to-right edit and never revisits a row it has passed:
+/// a row whose key matches one still ahead of the cursor is copied or patched,
+/// every old row the cursor steps over is skipped, and a row whose key the old
+/// array does not have (or has already passed) is inserted whole. Adjacent
+/// copies and adjacent skips are merged, so the script has exactly one shape
+/// for one pair of arrays.
+fn array_edit_between(
+    old: &[CanonValue],
+    new: &[CanonValue],
+    shadow: Option<&Shadow>,
+    depth: usize,
+) -> Result<Option<Vec<ArrayEditOp>>, ReplayCacheError> {
+    let Some(key) = array_alignment_key(old, new) else {
+        return Ok(None);
+    };
+    let old_at: std::collections::HashMap<(bool, &str), usize> = old
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| row_key(row, &key).map(|value| (value, index)))
+        .collect();
+
+    let mut ops: Vec<ArrayEditOp> = Vec::new();
+    let mut cursor = 0usize;
+    // Adjacent runs are merged as they are appended, which is what makes the
+    // script canonical enough for the decoder to refuse a longer spelling of it.
+    fn push_copy(ops: &mut Vec<ArrayEditOp>, count: u32) {
+        match ops.last_mut() {
+            Some(ArrayEditOp::Copy(run)) => *run += count,
+            _ => ops.push(ArrayEditOp::Copy(count)),
+        }
+    }
+    fn push_skip(ops: &mut Vec<ArrayEditOp>, count: u32) {
+        match ops.last_mut() {
+            Some(ArrayEditOp::Skip(run)) => *run += count,
+            _ => ops.push(ArrayEditOp::Skip(count)),
+        }
+    }
+
+    for row in new {
+        let matched = row_key(row, &key)
+            .and_then(|value| old_at.get(&value).copied())
+            .filter(|index| *index >= cursor);
+        match matched {
+            Some(index) => {
+                if index > cursor {
+                    push_skip(&mut ops, count_u32(index - cursor)?);
+                }
+                if old[index] == *row {
+                    push_copy(&mut ops, 1);
+                } else {
+                    let element = count_u32(index)?;
+                    ops.push(ArrayEditOp::Patch(diff_value(
+                        &old[index],
+                        row,
+                        shadow.and_then(|shadow| shadow.element(element)),
+                        depth + 1,
+                    )?));
+                }
+                cursor = index + 1;
+            }
+            None => ops.push(ArrayEditOp::Insert(row.clone())),
+        }
+    }
+    if cursor < old.len() {
+        push_skip(&mut ops, count_u32(old.len() - cursor)?);
+    }
+    // An edit that produces nothing is a `Replace` with an empty array and
+    // always shorter that way; an edit that neither skips nor inserts is a
+    // `Patch::Array`, which cannot happen here because the lengths differ, but
+    // the decoder refuses both shapes and the encoder must not mint them.
+    if new.is_empty()
+        || !ops
+            .iter()
+            .any(|op| matches!(op, ArrayEditOp::Skip(_) | ArrayEditOp::Insert(_)))
+    {
+        return Ok(None);
+    }
+    Ok(Some(ops))
+}
+
 fn diff_value(
     old: &CanonValue,
     new: &CanonValue,
@@ -2755,6 +3020,21 @@ fn diff_value(
             }
             Ok(Patch::Array(changes))
         }
+        // AN ARRAY WHOSE LENGTH CHANGED IS ALIGNED BY ITS ROWS' OWN IDENTITY
+        // where that is shorter than restating it. The comparison is against
+        // the `Replace` this displaces and it is made on the ENCODED bytes,
+        // because that is the thing the owner set a bar on; a script that is
+        // not shorter is not written, so `apply_patch` can refuse it.
+        (CanonValue::Array(old_rows), CanonValue::Array(new_rows)) => {
+            if let Some(ops) = array_edit_between(old_rows, new_rows, shadow, depth)? {
+                let edit = Patch::ArrayEdit(ops);
+                let replace = Patch::Replace(new.clone());
+                if encoded_patch_len(&edit, depth)? < encoded_patch_len(&replace, depth)? {
+                    return Ok(edit);
+                }
+            }
+            Ok(Patch::Replace(new.clone()))
+        }
         _ => Ok(Patch::Replace(new.clone())),
     }
 }
@@ -2814,11 +3094,9 @@ fn apply_patch(
             }
             *target = value;
             // A number has no children and was not null, so nothing can be
-            // remembered under it; cleared for the same reason `Replace` clears
-            // rather than on evidence that anything is there.
-            shadow.remembered = None;
-            shadow.members.clear();
-            shadow.elements.clear();
+            // remembered under it; released for the same reason `Replace`
+            // releases rather than on evidence that anything is there.
+            shadow.release(budget);
             Ok(())
         }
         Patch::ReviveSame | Patch::Revive(_) => {
@@ -2830,7 +3108,7 @@ fn apply_patch(
             // TAKEN, not read: the path is about to be non-null again, so the
             // memory is spent in the same step it is used. That is also what
             // frees the borrow the inner patch would otherwise contend for.
-            let Some(base) = shadow.remembered.take() else {
+            let Some(base) = shadow.take_remembered(budget) else {
                 return Err(ReplayCacheError::new(
                     "revive patch has no remembered value to revive",
                 ));
@@ -2928,9 +3206,7 @@ fn apply_patch(
             } else {
                 // Non-null again, and the subtree it replaces is gone, so every
                 // memory underneath it is stale.
-                shadow.remembered = None;
-                shadow.members.clear();
-                shadow.elements.clear();
+                shadow.release(budget);
             }
             Ok(())
         }
@@ -2961,7 +3237,9 @@ fn apply_patch(
                     }
                     // The member is gone, not nulled. Nothing may revive from
                     // a path the world no longer has.
-                    child_shadow.remove(&member.0);
+                    if let Some(mut child) = child_shadow.remove(&member.0) {
+                        child.release(budget);
+                    }
                     removed += 1;
                     continue;
                 }
@@ -3004,7 +3282,9 @@ fn apply_patch(
                             // An ADDED member has no history at this path: any
                             // memory here belonged to something removed earlier
                             // and must not become a revive base.
-                            child_shadow.remove(key);
+                            if let Some(mut child) = child_shadow.remove(key) {
+                                child.release(budget);
+                            }
                             out.push((key.clone(), value.clone()));
                         }
                         _ => {
@@ -3017,6 +3297,109 @@ fn apply_patch(
             }
             out.extend(remaining);
             *members = out;
+            Ok(())
+        }
+        Patch::ArrayEdit(ops) => {
+            let CanonValue::Array(array) = target else {
+                return Err(ReplayCacheError::new(
+                    "array edit patch targets a non-array value",
+                ));
+            };
+            let old = std::mem::take(array);
+            // THE MEMORIES MOVE WITH THEIR ROWS. An element shadow is keyed by
+            // INDEX, and this is the one patch that changes what index a row
+            // sits at, so a copied or patched row carries its memory to the
+            // slot it lands in and a skipped row's memory is released. Getting
+            // this wrong does not corrupt a document -- it strands a revive
+            // base -- and a stranded base is a refused recording, loudly, at
+            // `verify_every_hour`.
+            let mut old_shadows = std::mem::take(&mut shadow.elements);
+            let mut new_shadows = std::collections::HashMap::new();
+            let mut out: Vec<CanonValue> = Vec::new();
+            let mut old = old.into_iter();
+            let mut cursor = 0usize;
+            for op in ops {
+                match op {
+                    ArrayEditOp::Copy(run) => {
+                        for _ in 0..*run {
+                            let row = old.next().ok_or_else(|| {
+                                ReplayCacheError::new(
+                                    "array edit script copies past the end of its target",
+                                )
+                            })?;
+                            if let Some(carried) = old_shadows.remove(&count_u32(cursor)?) {
+                                new_shadows.insert(count_u32(out.len())?, carried);
+                            }
+                            out.push(row);
+                            cursor += 1;
+                        }
+                    }
+                    ArrayEditOp::Skip(run) => {
+                        for _ in 0..*run {
+                            old.next().ok_or_else(|| {
+                                ReplayCacheError::new(
+                                    "array edit script skips past the end of its target",
+                                )
+                            })?;
+                            if let Some(mut dropped) =
+                                old_shadows.remove(&count_u32(cursor)?)
+                            {
+                                dropped.release(budget);
+                            }
+                            cursor += 1;
+                        }
+                    }
+                    ArrayEditOp::Patch(patch) => {
+                        let mut row = old.next().ok_or_else(|| {
+                            ReplayCacheError::new(
+                                "array edit script patches past the end of its target",
+                            )
+                        })?;
+                        let mut child = old_shadows
+                            .remove(&count_u32(cursor)?)
+                            .unwrap_or_default();
+                        let applied = apply_patch(&mut row, patch, &mut child, budget, depth + 1);
+                        if !child.is_empty() {
+                            new_shadows.insert(count_u32(out.len())?, child);
+                        }
+                        applied?;
+                        out.push(row);
+                        cursor += 1;
+                    }
+                    ArrayEditOp::Insert(value) => {
+                        // An inserted row has no history at the slot it lands
+                        // in, so it starts with no memory under it.
+                        out.push(value.clone());
+                    }
+                }
+            }
+            if old.next().is_some() {
+                return Err(ReplayCacheError::new(
+                    "array edit script leaves elements of its target unconsumed",
+                ));
+            }
+            if out.is_empty() {
+                return Err(ReplayCacheError::new(
+                    "array edit script empties its target and must be a replacement",
+                ));
+            }
+            // AN ARRAY THAT KEEPS ITS LENGTH IS `Patch::Array`'S JOB, and this
+            // is where that is knowable: the encoder only reaches for a script
+            // when the two lengths differ, so a script that lands on the same
+            // length is a second spelling of an array patch (Codex round 1,
+            // finding 5, second example).
+            if out.len() == cursor {
+                return Err(ReplayCacheError::new(
+                    "array edit script keeps its target's length and must be an array patch",
+                ));
+            }
+            // Whatever the script did not carry forward is gone with the rows
+            // it belonged to.
+            for (_, mut stranded) in old_shadows.drain() {
+                stranded.release(budget);
+            }
+            shadow.elements = new_shadows;
+            *target = CanonValue::Array(out);
             Ok(())
         }
         Patch::Array(changes) => {
@@ -3044,6 +3427,17 @@ fn apply_patch(
             Ok(())
         }
     }
+}
+
+/// Bytes `patch` encodes to, for choosing between two spellings of one change.
+///
+/// It BUILDS them rather than pricing them from a formula, because a formula
+/// that drifted from [`encode_patch_into`] would pick the longer spelling and
+/// nothing would say so.
+fn encoded_patch_len(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
+    let mut out = Vec::new();
+    encode_patch_into(patch, &mut out, depth)?;
+    Ok(out.len())
 }
 
 fn encode_patch(patch: &Patch) -> Result<Vec<u8>, ReplayCacheError> {
@@ -3089,6 +3483,30 @@ fn encode_patch_into(
                 encode_patch_into(change, out, depth + 1)?;
             }
         }
+        Patch::ArrayEdit(ops) => {
+            out.push(PATCH_ARRAY_EDIT);
+            put_varint(out, ops.len() as u64);
+            for op in ops {
+                match op {
+                    ArrayEditOp::Copy(run) => {
+                        put_varint(out, ARRAY_EDIT_COPY);
+                        put_varint(out, u64::from(*run));
+                    }
+                    ArrayEditOp::Skip(run) => {
+                        put_varint(out, ARRAY_EDIT_SKIP);
+                        put_varint(out, u64::from(*run));
+                    }
+                    ArrayEditOp::Patch(patch) => {
+                        put_varint(out, ARRAY_EDIT_PATCH);
+                        encode_patch_into(patch, out, depth + 1)?;
+                    }
+                    ArrayEditOp::Insert(value) => {
+                        put_varint(out, ARRAY_EDIT_INSERT);
+                        encode_value_into(value, out, depth + 1)?;
+                    }
+                }
+            }
+        }
         Patch::Array(changes) => {
             out.push(PATCH_ARRAY);
             put_varint(out, changes.len() as u64);
@@ -3116,6 +3534,19 @@ fn encode_patch_into(
         }
     }
     Ok(())
+}
+
+/// A copy or skip run length: at least one element, and it must fit `u32` for
+/// the same reason an array index does.
+fn array_edit_run(reader: &mut ByteReader<'_>) -> Result<u32, ReplayCacheError> {
+    let run = u32::try_from(reader.varint()?)
+        .map_err(|_| ReplayCacheError::new("array edit run does not fit u32"))?;
+    if run == 0 {
+        return Err(ReplayCacheError::new(
+            "array edit run of zero elements does nothing and must be omitted",
+        ));
+    }
+    Ok(run)
 }
 
 fn decode_patch_exact(bytes: &[u8]) -> Result<Patch, ReplayCacheError> {
@@ -3263,6 +3694,93 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
                 ));
             }
             Ok(Patch::Array(changes))
+        }
+        // THE WORLD ROOT IS ALWAYS AN OBJECT, so an array edit can only ever be
+        // nested; one at depth 0 is a shape the encoder cannot produce -- the
+        // same rule the number delta and the revive state here.
+        PATCH_ARRAY_EDIT if depth == 0 => Err(ReplayCacheError::new(
+            "array edit patch at the world root, which is never an array",
+        )),
+        PATCH_ARRAY_EDIT => {
+            let count = reader.count(MIN_ARRAY_EDIT_OP_BYTES)?;
+            let mut ops: Vec<ArrayEditOp> = Vec::new();
+            reserve_exact(&mut ops, count)?;
+            for _ in 0..count {
+                let op = match reader.varint()? {
+                    ARRAY_EDIT_COPY => ArrayEditOp::Copy(array_edit_run(reader)?),
+                    ARRAY_EDIT_SKIP => ArrayEditOp::Skip(array_edit_run(reader)?),
+                    // A nested keep is already refused by `decode_patch`, which
+                    // is what stops a patch op standing in for a copy.
+                    //
+                    // AND A ROW PATCH IS ALWAYS AN OBJECT PATCH. Rows only
+                    // align when EVERY row of both arrays is an object
+                    // (`array_alignment_key`), and `diff_value` of two objects
+                    // that are not equal is an object patch -- never a replace,
+                    // a number delta or a revive. Without this rule an edit
+                    // script could carry `PATCH(Replace(x)); SKIP 1` and spell
+                    // a change the encoder writes as a plain `Replace` of the
+                    // whole array (Codex round 2, finding 2).
+                    ARRAY_EDIT_PATCH => {
+                        let inner = decode_patch(reader, depth + 1)?;
+                        if !matches!(inner, Patch::Object { .. }) {
+                            return Err(ReplayCacheError::new(
+                                "array edit row patch is not an object patch, which is the only \
+                                 shape an aligned row can take",
+                            ));
+                        }
+                        ArrayEditOp::Patch(inner)
+                    }
+                    ARRAY_EDIT_INSERT => ArrayEditOp::Insert(decode_value(reader, depth + 1)?),
+                    kind => {
+                        return Err(ReplayCacheError::new(format!(
+                            "unknown array edit op {kind}"
+                        )))
+                    }
+                };
+                // Adjacent runs of one kind are ONE op with a bigger count, so
+                // a split run is a second spelling of the same script.
+                let merged = matches!(
+                    (ops.last(), &op),
+                    (Some(ArrayEditOp::Copy(_)), ArrayEditOp::Copy(_))
+                        | (Some(ArrayEditOp::Skip(_)), ArrayEditOp::Skip(_))
+                );
+                if merged {
+                    return Err(ReplayCacheError::new(
+                        "array edit script splits a run that must be one op",
+                    ));
+                }
+                ops.push(op);
+            }
+            if ops.is_empty() {
+                return Err(ReplayCacheError::new(
+                    "array edit script has no ops and must be encoded as a keep",
+                ));
+            }
+            // An edit that only copies and patches is a `Patch::Array` spelled
+            // long, and an array that keeps its length is `Patch::Array`'s job.
+            if !ops
+                .iter()
+                .any(|op| matches!(op, ArrayEditOp::Skip(_) | ArrayEditOp::Insert(_)))
+            {
+                return Err(ReplayCacheError::new(
+                    "array edit script neither skips nor inserts and must be an array patch",
+                ));
+            }
+            // AND AN EDIT THAT KEEPS NO ROW OF ITS TARGET IS A REPLACEMENT,
+            // which is always shorter: every row it inserts costs an op kind on
+            // top of the row itself, and the skip that drops the old rows costs
+            // two bytes more again. The encoder writes the shorter of the two,
+            // so it can never mint this shape (Codex round 1, finding 5, first
+            // two examples).
+            if !ops
+                .iter()
+                .any(|op| matches!(op, ArrayEditOp::Copy(_) | ArrayEditOp::Patch(_)))
+            {
+                return Err(ReplayCacheError::new(
+                    "array edit script keeps no row of its target and must be a replacement",
+                ));
+            }
+            Ok(Patch::ArrayEdit(ops))
         }
         tag => Err(ReplayCacheError::new(format!(
             "unknown binary patch tag {tag}"
@@ -4285,9 +4803,19 @@ mod tests {
     /// revives; both sides apply the same rule over the same records, so they
     /// stop together and no delta becomes unresolvable.
     ///
-    /// kills: removing the budget check from `Shadow::remember`; refunding on
-    /// drop (which would make the two sides' spend depend on collection order);
-    /// charging the encoder but not the reader.
+    /// kills: removing the budget check from `Shadow::remember`; charging the
+    /// encoder but not the reader.
+    ///
+    /// The ceiling is a BALANCE and refunds are part of it (see
+    /// [`ShadowBudget`]), so "refunding on drop" is no longer in this test's
+    /// kill list -- it is the behaviour, and
+    /// [`a_spent_memory_is_refunded_to_the_window`] is what holds it. The
+    /// refund cannot make the two sides disagree: nothing is admitted during a
+    /// release, the amount given back is the charge recorded beside the memory
+    /// rather than a re-measurement, and both sides drive every charge and
+    /// every refund from [`apply_patch`] over the same records in the same
+    /// order -- so the balance after a step is the same number whatever order a
+    /// hash map happened to drain in.
     #[test]
     fn the_shadow_stops_remembering_at_its_ceiling() {
         let mut budget = ShadowBudget {
@@ -4297,10 +4825,10 @@ mod tests {
         let small = CanonValue::parse(br#"{"a":1}"#).unwrap();
         let large = CanonValue::parse(br#"{"a":"a value far past a sixty-four byte ceiling for sure"}"#).unwrap();
 
-        let mut shadow = Shadow::default();
-        shadow.remember(small.clone(), &mut budget);
+        let mut kept = Shadow::default();
+        kept.remember(small.clone(), &mut budget);
         assert!(
-            shadow.remembered.is_some(),
+            kept.remembered.is_some(),
             "a memory inside the ceiling is kept"
         );
 
@@ -4315,6 +4843,509 @@ mod tests {
 
         // The ceiling is a real number, not a placeholder.
         assert_eq!(MAX_SHADOW_BYTES, 256 * 1024 * 1024);
+    }
+
+    /// A MEMORY THE WINDOW NO LONGER HOLDS IS NOT STILL PAID FOR.
+    ///
+    /// This is the whole of lane LZ's first size lever. The budget used to be a
+    /// meter: every fold-out charged and nothing ever gave the charge back, so
+    /// a domain that folds out every fourth hour spent its own size every
+    /// fourth hour against a 256 MiB cap that never moved. On capture t53 that
+    /// exhausted the cap at position 61 of a 168-hour window and declined 1,326
+    /// revives after it -- each one a whole subtree re-emitted in full.
+    ///
+    /// The four ways a memory stops existing are all exercised here, because a
+    /// refund missing from any one of them leaks the balance in exactly the way
+    /// that emptied the budget.
+    ///
+    /// kills: dropping the refund in `take_remembered` (the revive arm), the
+    /// `release` in `Shadow::remember`, the `release` on a replace that lands
+    /// non-null, or the `release` on an object-patch removal -- each leaves the
+    /// balance holding a memory that is gone, and the assertion that the window
+    /// can remember again is what fails.
+    #[test]
+    fn a_spent_memory_is_refunded_to_the_window() {
+        let body = CanonValue::parse(br#"{"a":"sixty-four bytes of body is more than this cap allows"}"#)
+            .unwrap();
+        let charge = body.content_bytes();
+        let cap = charge + 1;
+
+        // (1) SPENT ON A REVIVE. The memory is taken, so the window gets it
+        // back and can hold the next one.
+        let mut budget = ShadowBudget { spent: 0, cap };
+        let mut shadow = Shadow::default();
+        shadow.remember(body.clone(), &mut budget);
+        assert_eq!(budget.spent, charge);
+        let mut target = CanonValue::Null;
+        apply_patch(&mut target, &Patch::ReviveSame, &mut shadow, &mut budget, 1)
+            .expect("a remembered value revives");
+        assert_eq!(budget.spent, 0, "a revive spends the memory and the charge");
+
+        // (2) OVERWRITTEN BY THE NEXT MEMORY AT THE SAME PATH.
+        let mut budget = ShadowBudget { spent: 0, cap };
+        let mut shadow = Shadow::default();
+        shadow.remember(body.clone(), &mut budget);
+        shadow.remember(body.clone(), &mut budget);
+        assert_eq!(
+            budget.spent, charge,
+            "one path holds one memory and is charged for one"
+        );
+        assert!(
+            shadow.remembered.is_some(),
+            "the second memory fits because the first was given back"
+        );
+
+        // (3) CLEARED BECAUSE THE PATH IS NON-NULL AGAIN.
+        let mut budget = ShadowBudget { spent: 0, cap };
+        let mut shadow = Shadow::default();
+        shadow.remember(body.clone(), &mut budget);
+        let mut target = CanonValue::Null;
+        apply_patch(
+            &mut target,
+            &Patch::Replace(CanonValue::parse(b"7").unwrap()),
+            &mut shadow,
+            &mut budget,
+            1,
+        )
+        .expect("a replace over a null applies");
+        assert_eq!(budget.spent, 0, "a path that is back is not still remembered");
+
+        // (4) REMOVED WITH ITS MEMBER. The child shadow goes, and its charge
+        // with it.
+        let mut budget = ShadowBudget { spent: 0, cap };
+        let mut shadow = Shadow::default();
+        let mut child = Shadow::default();
+        child.remember(body.clone(), &mut budget);
+        shadow.members.insert("gone".into(), child);
+        let mut target = CanonValue::parse(br#"{"gone":null}"#).unwrap();
+        apply_patch(
+            &mut target,
+            &Patch::Object {
+                removals: vec!["gone".into()],
+                changes: Vec::new(),
+            },
+            &mut shadow,
+            &mut budget,
+            0,
+        )
+        .expect("an object patch removes a member");
+        assert_eq!(
+            budget.spent, 0,
+            "a removed member's memory is not still charged"
+        );
+    }
+
+    /// AN ARRAY THAT GAINED A ROW IS NOT RESTATED, and what it costs tracks
+    /// what CHANGED rather than how long the array is.
+    ///
+    /// This is the whole of [`PATCH_ARRAY_EDIT`]. The old encoder could only
+    /// address array elements by index, so any length change fell to a
+    /// `Replace` carrying every row in full; on capture t53 that was 10,037
+    /// sealed bytes per game hour on `divisions` alone.
+    ///
+    /// The second half is what stops a cheaper-looking claim from being
+    /// vacuous: the wide array's delta must NOT grow with the array, which is
+    /// the property a replace fails and an edit script keeps.
+    ///
+    /// kills: dropping the `ArrayEdit` arm from `diff_value` (both assertions
+    /// fail); aligning on position instead of on the rows' own key (every row
+    /// after the inserted one becomes a patch, and the wide delta grows with
+    /// the array); reversing the shorter-of-the-two choice.
+    #[test]
+    fn an_array_that_gains_a_row_is_edited_not_restated() {
+        let rows = |count: usize| {
+            (0..count)
+                .map(|id| format!(r#"{{"id":{id},"v":"row body {id} with some width to it"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let narrow = [
+            (0, format!(r#"{{"rows":[{}]}}"#, rows(8))),
+            (1, format!(r#"{{"rows":[{},{}]}}"#, rows(8),
+                        r#"{"id":999,"v":"row body 999 with some width to it"}"#)),
+        ];
+        let narrow: Vec<(i64, &str)> = narrow.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (cache, index, sha) = build_revive(168, &narrow);
+        let delta = index.hours()[1].cache_record_len() - RECORD_HEADER_LEN;
+
+        // One row was added to an array of eight. A replace would carry all
+        // nine; the row itself is about 45 bytes.
+        assert!(
+            delta < 100,
+            "an added row must cost about the row, not the array: {delta} bytes"
+        );
+        ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 200, &sha)
+            .unwrap()
+            .verify_every_hour()
+            .unwrap();
+
+        // THE COST DOES NOT TRACK THE ARRAY. Four hundred rows, same single
+        // insertion, and the delta stays the size of one row.
+        let wide = [
+            (0, format!(r#"{{"rows":[{}]}}"#, rows(400))),
+            (1, format!(r#"{{"rows":[{},{}]}}"#, rows(400),
+                        r#"{"id":999,"v":"row body 999 with some width to it"}"#)),
+        ];
+        let wide: Vec<(i64, &str)> = wide.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (wide_cache, wide_index, wide_sha) = build_revive(168, &wide);
+        let wide_delta = wide_index.hours()[1].cache_record_len() - RECORD_HEADER_LEN;
+        assert!(
+            wide_delta < delta + 8,
+            "fifty times the array for the same one insertion: {wide_delta} against {delta}"
+        );
+        ReplayCacheReader::open(&wide_index.to_bytes().unwrap(), &wide_cache, 200, &wide_sha)
+            .unwrap()
+            .verify_every_hour()
+            .unwrap();
+
+        // A ROW REMOVED FROM THE MIDDLE, and a row changed beside it, both
+        // reconstruct exactly -- the interesting direction, because the cursor
+        // has to skip and patch in one script.
+        let mixed = [
+            (0, format!(r#"{{"rows":[{}]}}"#, rows(8))),
+            (
+                1,
+                r#"{"rows":[{"id":0,"v":"row body 0 with some width to it"},{"id":1,"v":"changed"},{"id":3,"v":"row body 3 with some width to it"},{"id":4,"v":"row body 4 with some width to it"},{"id":5,"v":"row body 5 with some width to it"},{"id":6,"v":"row body 6 with some width to it"},{"id":7,"v":"row body 7 with some width to it"}]}"#
+                    .to_string(),
+            ),
+        ];
+        let mixed: Vec<(i64, &str)> = mixed.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (mixed_cache, mixed_index, mixed_sha) = build_revive(168, &mixed);
+        ReplayCacheReader::open(
+            &mixed_index.to_bytes().unwrap(),
+            &mixed_cache,
+            200,
+            &mixed_sha,
+        )
+        .unwrap()
+        .verify_every_hour()
+        .unwrap();
+        // And it COSTS the removal and the one changed row, not the array: the
+        // six untouched rows are about 45 bytes each, so a replacement of the
+        // seven surviving rows could not fit in this.
+        let mixed_delta = mixed_index.hours()[1].cache_record_len() - RECORD_HEADER_LEN;
+        assert!(
+            mixed_delta < 90,
+            "a middle removal beside a changed row must cost the two, not the seven: \
+             {mixed_delta} bytes"
+        );
+    }
+
+    /// A ROW'S MEMORY MOVES WITH THE ROW.
+    ///
+    /// An element shadow is keyed by index, and the edit script is the one
+    /// patch that changes which index a row sits at. A member that folded out
+    /// while its row was at index 1 must still revive when the row has been
+    /// pushed to index 2 by an insertion in front of it.
+    ///
+    /// kills: leaving `shadow.elements` keyed by the OLD index across an edit
+    /// (the revive resolves against the wrong row's memory or none at all, and
+    /// `verify_every_hour` refuses the recording).
+    #[test]
+    fn an_edited_arrays_memories_follow_their_rows() {
+        let body = r#"{"deep":[1,2,3,4,5,6,7,8],"wide":"a long enough value to notice"}"#;
+        let hours = [
+            // Two rows; the second row's `dom` is live.
+            (
+                0,
+                format!(r#"{{"rows":[{{"dom":null,"id":1}},{{"dom":{body},"id":2}}]}}"#),
+            ),
+            // It folds out. The memory is filed under element 1.
+            (
+                1,
+                r#"{"rows":[{"dom":null,"id":1},{"dom":null,"id":2}]}"#.to_string(),
+            ),
+            // A row is INSERTED in front of it, so the row that owns the memory
+            // is now element 2, and the memory has to have moved with it.
+            (
+                2,
+                r#"{"rows":[{"dom":null,"id":0},{"dom":null,"id":1},{"dom":null,"id":2}]}"#
+                    .to_string(),
+            ),
+            // And it comes back unchanged, which is a revive or nothing.
+            (
+                3,
+                format!(
+                    r#"{{"rows":[{{"dom":null,"id":0}},{{"dom":null,"id":1}},{{"dom":{body},"id":2}}]}}"#
+                ),
+            ),
+        ];
+        let hours: Vec<(i64, &str)> = hours.iter().map(|(h, b)| (*h, b.as_str())).collect();
+        let (cache, index, sha) = build_revive(168, &hours);
+        ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 400, &sha)
+            .unwrap()
+            .verify_every_hour()
+            .unwrap();
+
+        // The memory really was used, against the control that cannot use one:
+        // the same hours through the encoder with revives forbidden pay for the
+        // body again, and this one does not.
+        let (_, control, _) = build(168, &hours);
+        let revived = index.hours()[3].cache_record_len();
+        let re_emitted = control.hours()[3].cache_record_len();
+        assert!(
+            revived + (body.len() as u64 / 2) < re_emitted,
+            "a row whose memory moved with it must revive: {revived} against {re_emitted}"
+        );
+    }
+
+    /// EVERY SECOND SPELLING OF AN EDIT SCRIPT IS REFUSED.
+    ///
+    /// The script is only worth its tag if one change has one spelling, so the
+    /// decoder rejects the shapes the encoder cannot produce: a run of zero, a
+    /// run split into two ops, a script that only copies and patches (which is
+    /// `Patch::Array`), one that empties its target (which is a `Replace`), and
+    /// one whose cursor does not consume its target exactly.
+    ///
+    /// kills: removing any one of those five checks from `decode_patch` or
+    /// `apply_patch`.
+    #[test]
+    fn array_edit_scripts_with_a_second_spelling_are_refused() {
+        // [tag][ops][kind][arg]..., decoded one level down because the world
+        // root is an object and the decoder refuses an edit at depth 0.
+        let nest = |script: &[u8]| {
+            let mut bytes = vec![PATCH_OBJECT, 0, 1, 1, b'x'];
+            bytes.extend_from_slice(script);
+            decode_patch_exact(&bytes)
+        };
+        assert!(
+            decode_patch_exact(&[PATCH_ARRAY_EDIT, 1, 1, 1])
+                .unwrap_err()
+                .to_string()
+                .contains("world root"),
+            "the world root is an object, never an array"
+        );
+
+        let zero_run = [PATCH_ARRAY_EDIT, 2, 0, 0, 1, 1];
+        assert!(
+            nest(&zero_run)
+                .unwrap_err()
+                .to_string()
+                .contains("run of zero"),
+            "a run of zero elements is not an op"
+        );
+
+        let split_run = [PATCH_ARRAY_EDIT, 3, 0, 1, 0, 1, 1, 1];
+        assert!(
+            nest(&split_run)
+                .unwrap_err()
+                .to_string()
+                .contains("splits a run"),
+            "two copies in a row are one copy"
+        );
+
+        let copies_only = [PATCH_ARRAY_EDIT, 1, 0, 3];
+        assert!(
+            nest(&copies_only)
+                .unwrap_err()
+                .to_string()
+                .contains("neither skips nor inserts"),
+            "an edit that only copies is an array patch"
+        );
+
+        // Applied shapes: the cursor must land exactly on the end of the target.
+        let mut target = CanonValue::parse(br#"[1,2,3]"#).unwrap();
+        let short = Patch::ArrayEdit(vec![ArrayEditOp::Copy(1), ArrayEditOp::Skip(1)]);
+        assert!(
+            apply_patch(
+                &mut target,
+                &short,
+                &mut Shadow::default(),
+                &mut ShadowBudget::default(),
+                1
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unconsumed"),
+            "a script that stops early leaves rows unaccounted for"
+        );
+
+        let mut target = CanonValue::parse(br#"[1,2]"#).unwrap();
+        let over = Patch::ArrayEdit(vec![ArrayEditOp::Copy(3), ArrayEditOp::Skip(1)]);
+        assert!(
+            apply_patch(
+                &mut target,
+                &over,
+                &mut Shadow::default(),
+                &mut ShadowBudget::default(),
+                1
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("past the end"),
+            "a script cannot copy rows its target does not have"
+        );
+
+        let mut target = CanonValue::parse(br#"[1,2]"#).unwrap();
+        let emptied = Patch::ArrayEdit(vec![ArrayEditOp::Skip(2)]);
+        assert!(
+            apply_patch(
+                &mut target,
+                &emptied,
+                &mut Shadow::default(),
+                &mut ShadowBudget::default(),
+                1
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("empties its target"),
+            "an emptied array is a replacement, which is shorter"
+        );
+
+        // A SCRIPT THAT KEEPS NO ROW is a replacement too, and it is refused at
+        // the bytes rather than at the target -- `SKIP 2; INSERT 3` over `[1,2]`
+        // reconstructs `[3]` perfectly and is still not this format's spelling
+        // of it (Codex round 1, finding 5).
+        let keeps_nothing = [PATCH_ARRAY_EDIT, 2, 1, 2, 3, INLINE_UINT_BASE + 3];
+        assert!(
+            nest(&keeps_nothing)
+                .unwrap_err()
+                .to_string()
+                .contains("keeps no row"),
+            "an edit that keeps nothing is a replacement"
+        );
+
+        // A ROW PATCH THAT IS NOT AN OBJECT PATCH is the same hole one step
+        // along: `PATCH(Replace(3)); SKIP 1` over `[1,2]` reconstructs `[3]`,
+        // keeps a row by the letter of the rule above, and is still not this
+        // format's spelling -- rows only align when they are objects (Codex
+        // round 2, finding 2).
+        let scalar_row_patch = [PATCH_ARRAY_EDIT, 2, 2, PATCH_REPLACE, INLINE_UINT_BASE + 3, 1, 1];
+        assert!(
+            nest(&scalar_row_patch)
+                .unwrap_err()
+                .to_string()
+                .contains("not an object patch"),
+            "an aligned row is an object, so its patch is an object patch"
+        );
+
+        // AND A SCRIPT THAT LANDS ON THE SAME LENGTH is an array patch: the
+        // encoder only reaches for a script when the lengths differ.
+        let mut target = CanonValue::parse(br#"[{"id":1},{"id":2}]"#).unwrap();
+        let same_length = Patch::ArrayEdit(vec![
+            ArrayEditOp::Copy(1),
+            ArrayEditOp::Skip(1),
+            ArrayEditOp::Insert(CanonValue::parse(br#"{"id":3}"#).unwrap()),
+        ]);
+        assert!(
+            apply_patch(
+                &mut target,
+                &same_length,
+                &mut Shadow::default(),
+                &mut ShadowBudget::default(),
+                1
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("keeps its target's length"),
+            "an array that keeps its length is an array patch"
+        );
+    }
+
+    /// AN ARRAY WITH NO IDENTITY ON ITS ROWS STAYS A REPLACE, and so does one
+    /// where the script would not be shorter.
+    ///
+    /// The key is DISCOVERED -- a member every row of both arrays carries, with
+    /// a scalar value unique in each -- so rows of scalars, rows that share a
+    /// value, and rows that do not all carry the same members have no alignment
+    /// at all. That is not a failure: it is the case where restating the array
+    /// is the honest spelling.
+    ///
+    /// kills: naming a key member in the format instead of discovering one;
+    /// accepting a key whose values repeat (the map from key to index would
+    /// then drop rows silently); emitting an edit that is longer than the
+    /// replace it displaces.
+    #[test]
+    fn an_array_with_no_row_identity_stays_a_replace() {
+        let numbers = CanonValue::parse(br#"[1,2,3]"#).unwrap();
+        let more_numbers = CanonValue::parse(br#"[1,2,3,4]"#).unwrap();
+        assert!(
+            matches!(
+                diff_value(&numbers, &more_numbers, None, 0).unwrap(),
+                Patch::Replace(_)
+            ),
+            "rows that are not objects carry no identity"
+        );
+
+        let repeated = CanonValue::parse(br#"[{"id":1},{"id":1}]"#).unwrap();
+        let repeated_more = CanonValue::parse(br#"[{"id":1},{"id":1},{"id":2}]"#).unwrap();
+        assert!(
+            matches!(
+                diff_value(&repeated, &repeated_more, None, 0).unwrap(),
+                Patch::Replace(_)
+            ),
+            "a member that repeats is not an identity"
+        );
+
+        let mismatched = CanonValue::parse(br#"[{"id":1},{"other":2}]"#).unwrap();
+        let mismatched_more = CanonValue::parse(br#"[{"id":1},{"other":2},{"id":3}]"#).unwrap();
+        assert!(
+            matches!(
+                diff_value(&mismatched, &mismatched_more, None, 0).unwrap(),
+                Patch::Replace(_)
+            ),
+            "a member only some rows carry is not an identity"
+        );
+
+        // Aligned -- every row carries `id` and no two share one -- but not one
+        // row of the old array survives, so the script is two inserts and a
+        // skip where a replace is two rows. The longer spelling is not written.
+        let tiny = CanonValue::parse(br#"[{"id":1}]"#).unwrap();
+        let replaced = CanonValue::parse(br#"[{"id":2},{"id":3}]"#).unwrap();
+        assert!(
+            matches!(
+                diff_value(&tiny, &replaced, None, 0).unwrap(),
+                Patch::Replace(_)
+            ),
+            "an edit that is not shorter is not written"
+        );
+
+        // The same shape one row wider IS shorter as a script, which is what
+        // makes the assertion above a measurement rather than a coincidence.
+        let kept = CanonValue::parse(br#"[{"id":1},{"id":2}]"#).unwrap();
+        let kept_more = CanonValue::parse(br#"[{"id":1},{"id":2},{"id":3}]"#).unwrap();
+        assert!(
+            matches!(
+                diff_value(&kept, &kept_more, None, 0).unwrap(),
+                Patch::ArrayEdit(_)
+            ),
+            "rows that survive are copied, not restated"
+        );
+
+        // THE KEY IS DISCOVERED, NOT THE NAME `id`. These rows carry a
+        // mod-shaped identity under a name this format has never heard of, as a
+        // STRING, and it does not sort first among their members. An aligner
+        // that knew a name instead of a property would restate these.
+        let modded = CanonValue::parse(
+            br#"[{"aaa_first":1,"zz_unit_key":"BRIG-a"},{"aaa_first":1,"zz_unit_key":"BRIG-b"}]"#,
+        )
+        .unwrap();
+        let modded_more = CanonValue::parse(
+            br#"[{"aaa_first":1,"zz_unit_key":"BRIG-a"},{"aaa_first":1,"zz_unit_key":"BRIG-b"},{"aaa_first":1,"zz_unit_key":"BRIG-c"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            array_alignment_key(
+                match &modded {
+                    CanonValue::Array(rows) => rows,
+                    _ => unreachable!("parsed as an array"),
+                },
+                match &modded_more {
+                    CanonValue::Array(rows) => rows,
+                    _ => unreachable!("parsed as an array"),
+                }
+            )
+            .as_deref(),
+            Some("zz_unit_key"),
+            "the key is the member that IS an identity, whatever it is called"
+        );
+        assert!(
+            matches!(
+                diff_value(&modded, &modded_more, None, 0).unwrap(),
+                Patch::ArrayEdit(_)
+            ),
+            "rows a mod named itself align like any other"
+        );
     }
 
     /// A MEMORY BELONGS TO A PATH, NOT TO A NAME. Removing a member and adding
