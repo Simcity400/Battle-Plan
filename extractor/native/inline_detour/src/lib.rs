@@ -166,6 +166,17 @@ mod windows_impl {
         FreezeRefused(FreezeRefusal),
         /// The freeze succeeded and MinHook refused.
         MinHook(MH_STATUS),
+        /// [`remove`] was asked to free the trampoline of a target that is
+        /// STILL ENABLED. NOTHING WAS FREED and nothing was restored; the
+        /// detour is retained.
+        ///
+        /// An enabled target is still admitting callbacks, so no drain of the
+        /// caller's detour body can have been stable -- and a body in flight
+        /// returns THROUGH the trampoline this call would have freed. The
+        /// freeze's instruction-pointer check cannot see that thread, because
+        /// a detour body is the caller's own function at an address this crate
+        /// is never told. See [`remove`]'s contract.
+        StillEnabled,
     }
 
     impl fmt::Display for InlineDetourReleaseError {
@@ -176,6 +187,12 @@ mod windows_impl {
                     "inline detour retained rather than restored: {refusal}"
                 ),
                 Self::MinHook(status) => write!(f, "{status}"),
+                Self::StillEnabled => write!(
+                    f,
+                    "inline detour retained rather than removed: the target is \
+                     still enabled, so its detour body cannot have been drained \
+                     and freeing the trampoline would strand a callback in it"
+                ),
             }
         }
     }
@@ -187,7 +204,7 @@ mod windows_impl {
         pub fn minhook_status(self) -> Option<MH_STATUS> {
             match self {
                 Self::MinHook(status) => Some(status),
-                Self::FreezeRefused(_) => None,
+                Self::FreezeRefused(_) | Self::StillEnabled => None,
             }
         }
 
@@ -205,7 +222,7 @@ mod windows_impl {
         /// True when a live detour was left installed because the process
         /// could not be frozen. The owning unit is NOT released.
         pub fn detour_retained(self) -> bool {
-            matches!(self, Self::FreezeRefused(_))
+            matches!(self, Self::FreezeRefused(_) | Self::StillEnabled)
         }
     }
 
@@ -1304,6 +1321,22 @@ mod windows_impl {
             let statuses_ref = &mut statuses;
             frozen.time_minhook(|lock| {
                 for &(_, target) in targets {
+                    // THE SAME QUIESCENCE REFUSAL [`remove`] MAKES, per target.
+                    // This frees every trampoline in the batch, so a target
+                    // still admitting callbacks is the same use-after-free one
+                    // step wider: the caller cannot have drained a detour body
+                    // that is still being entered. Only `Ok(true)` refuses --
+                    // `MH_ERROR_NOT_CREATED` must still reach the caller as
+                    // itself, because the batch's `already_released` roster is
+                    // built from it.
+                    //
+                    // Refusing one target does not refuse the batch. The others
+                    // are genuinely quiescent and their trampolines are freed;
+                    // this one is reported retained, by name, in `failures()`.
+                    if matches!(MinHook::hook_is_enabled(lock, target), Ok(true)) {
+                        statuses_ref.push(Err(InlineDetourReleaseError::StillEnabled));
+                        continue;
+                    }
                     statuses_ref.push(
                         unsafe { MinHook::remove_hook(lock, target) }
                             .map_err(InlineDetourReleaseError::MinHook),
@@ -1312,6 +1345,16 @@ mod windows_impl {
             });
         }
         drop(frozen);
+        // Counted after the resume; the loop above only recorded the answer.
+        RETAINED_DETOURS.fetch_add(
+            statuses
+                .iter()
+                .filter(|status| {
+                    matches!(status, Err(InlineDetourReleaseError::StillEnabled))
+                })
+                .count() as u64,
+            Ordering::AcqRel,
+        );
         if let Some(refusal) = parked_refusal {
             // Nothing was removed and nothing was freed. Every target keeps its
             // trampoline and its patch, which is what `detour_retained` means.
@@ -1449,11 +1492,53 @@ mod windows_impl {
     /// freeze risks both halves at once: a torn instruction stream at the
     /// target, and a freed trampoline underneath a thread that is inside it.
     ///
+    /// # Contract: THE CALLER MUST PROVE ITS DETOUR BODY IS QUIESCENT
+    ///
+    /// This is the half of the question the freeze cannot answer, and it is
+    /// stated here because until now it was only implied.
+    ///
+    /// `refuse_if_a_thread_is_in(.., true)` asks whether any frozen thread's
+    /// instruction pointer is inside the TARGET or the TRAMPOLINE. A thread
+    /// executing the caller's own detour body is inside NEITHER -- the detour
+    /// is the caller's function, at an address this crate is never told -- and
+    /// yet it is the thread most likely to be there, because that is where a
+    /// detour spends its time. When it finishes it RETURNS THROUGH THE
+    /// TRAMPOLINE, into memory `MH_RemoveHook` has by then freed.
+    ///
+    /// So this call is sound only when the caller has already established, for
+    /// this target:
+    ///
+    /// 1. ADMISSION IS CLOSED. No new callback may enter the detour body.
+    ///    Closing it AFTER measuring is not closing it: a count taken while
+    ///    entries are still admitted is stale before it is read.
+    /// 2. THE BODIES IN FLIGHT HAVE DRAINED TO ZERO, measured after (1), by a
+    ///    counter the detour itself increments on entry and decrements after
+    ///    its call through the original returns -- not before it.
+    /// 3. NEITHER (1) NOR (2) HAS BEEN UNDONE since, which in practice means
+    ///    both are established under the same lock this release runs under.
+    ///
+    /// [`disable`] is the ordinary way to get (1), and this call REFUSES with
+    /// [`InlineDetourReleaseError::StillEnabled`] if the target is not already
+    /// disabled, because a caller that has not disabled cannot have satisfied
+    /// (1) at all -- its detour is still live and still admitting. That refusal
+    /// is necessary, not sufficient: (2) and (3) are the caller's, and nothing
+    /// here can check them.
+    ///
+    /// A hook that was CREATED but never ENABLED has no detour body to drain --
+    /// nothing was ever patched into the game, so no thread can have entered
+    /// it -- and this refusal passes it, which is why rollback paths need no
+    /// drain at all.
+    ///
+    /// `supply_logistics_attrition_live`'s tooltip teardown is the worked
+    /// example -- an `ADMISSION_OPEN` flag cleared before any drain begins, a
+    /// bounded drain of `CALLBACKS_IN_FLIGHT`, and a refusal that reports the
+    /// target as retained rather than freeing it.
+    ///
     /// # Safety
     ///
-    /// As `MH_RemoveHook`. On a retained refusal nothing was freed and nothing
-    /// was restored, so the caller's trampoline and detour must both stay
-    /// valid for the life of the process.
+    /// As `MH_RemoveHook`, plus the contract above. On a retained refusal
+    /// nothing was freed and nothing was restored, so the caller's trampoline
+    /// and detour must both stay valid for the life of the process.
     pub unsafe fn remove(target: *mut c_void) -> Result<(), InlineDetourReleaseError> {
         let mut frozen = match freeze_other_threads() {
             Ok(frozen) => frozen,
@@ -1468,16 +1553,53 @@ mod windows_impl {
         };
         // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(FreezeEntryPoint::Remove, "", 1);
+        // STEP 1 OF THE CONTRACT, AS FAR AS THIS CRATE CAN SEE IT, AND IT
+        // FAILS CLOSED. A target still enabled is still admitting callbacks, so
+        // the caller cannot have drained its detour body -- whatever count it
+        // took is stale, and the trampoline this call would free is one a body
+        // in flight will return through.
+        //
+        // A REFUSAL AND NOT AN ASSERTION, for two reasons the first spelling of
+        // this got wrong. A `debug_assert!` checks nothing in the shipped
+        // build, which is the build that runs inside a player's game; and it
+        // would unwind from INSIDE THE HELD FREEZE, where the panic machinery
+        // itself formats and allocates -- the exact hang this whole audit
+        // exists to prevent, reached through the guard against it.
+        //
+        // So the question is asked while frozen, where it is cheap and cannot
+        // go stale (`MH_HookIsEnabled` checks lock ownership, walks the
+        // existing hook table and reads a boolean; it allocates nothing and
+        // waits for nothing, and this thread already holds the lock), and the
+        // ANSWER IS ACTED ON AFTER THE RESUME.
+        //
+        // ONLY `Ok(true)` IS "STILL ENABLED", and the other answers are not
+        // this refusal's business. `MH_ERROR_NOT_CREATED` means MinHook has no
+        // hook here at all -- no trampoline to free and no body to strand --
+        // and it MUST reach the caller as itself, because every per-target
+        // teardown in the workspace reads it as nothing-to-do and a second,
+        // idempotent release depends on it. Any other status is one
+        // `MH_RemoveHook` will refuse on its own, in its own vocabulary.
+        let enabled = matches!(
+            MinHook::hook_is_enabled(frozen.minhook_lock(), target),
+            Ok(true)
+        );
         // THE TRAMPOLINE IS IN THE CHECK HERE, and that is the difference from
         // [`disable`]: `MH_RemoveHook` frees the slot, so a thread stopped
         // inside it resumes into freed memory.
-        let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), true) {
-            Ok(()) => frozen
-                .time_minhook(|lock| unsafe { MinHook::remove_hook(lock, target) })
-                .map_err(InlineDetourReleaseError::MinHook),
-            Err(refusal) => Err(InlineDetourReleaseError::FreezeRefused(refusal)),
+        let outcome = if enabled {
+            Err(InlineDetourReleaseError::StillEnabled)
+        } else {
+            match frozen.refuse_if_a_thread_is_in(core::iter::once(target), true) {
+                Ok(()) => frozen
+                    .time_minhook(|lock| unsafe { MinHook::remove_hook(lock, target) })
+                    .map_err(InlineDetourReleaseError::MinHook),
+                Err(refusal) => Err(InlineDetourReleaseError::FreezeRefused(refusal)),
+            }
         };
         drop(frozen);
+        if enabled {
+            RETAINED_DETOURS.fetch_add(1, Ordering::AcqRel);
+        }
         record_release(target, ReleaseOperation::Remove, outcome)
     }
 
@@ -3072,6 +3194,16 @@ mod batch_tests {
 
         let enabled = unsafe { enable_batch(&targets) };
         assert!(enabled.all_succeeded(), "{:?}", enabled.outcomes());
+        // DISABLED BEFORE REMOVED, which is now the contract rather than a
+        // courtesy. This test used to go straight from `enable_batch` to
+        // `remove_batch`, and that is exactly the shape `remove`'s quiescence
+        // contract refuses: a target still enabled is still admitting, so no
+        // drain of its detour body can have been stable, and removal frees the
+        // trampoline a body in flight returns through. Its sibling
+        // `twelve_hooks_cost_twelve_freezes_one_at_a_time_and_one_as_a_batch`
+        // always did it in this order.
+        let disabled = unsafe { disable_batch(&targets) };
+        assert!(disabled.all_succeeded(), "{:?}", disabled.outcomes());
         let released = unsafe { remove_batch(&targets) };
         assert!(released.all_succeeded(), "{:?}", released.outcomes());
 

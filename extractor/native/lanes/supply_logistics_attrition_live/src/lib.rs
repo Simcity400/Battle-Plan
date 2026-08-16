@@ -6,6 +6,19 @@
 
 use std::collections::BTreeSet;
 
+/// THE TEST BINARY'S ALLOCATOR IS A COUNTER, so this crate's frozen windows can
+/// be proved allocation-free by measurement and not only by reading their text.
+///
+/// `#[cfg(test)]` and therefore present in no shipped build: the collector
+/// cdylib still declares no `#[global_allocator]` at all, which is exactly why
+/// an allocation inside a stopped window is a hang -- Rust's System allocator
+/// is `HeapAlloc` on the PROCESS DEFAULT HEAP, the same heap the game's own
+/// threads reach through ordinary Win32 calls.
+#[cfg(test)]
+#[global_allocator]
+static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
+    freeze_window_audit::AllocationProbe;
+
 pub mod domain44_contract;
 
 #[cfg(windows)]
@@ -536,43 +549,29 @@ mod attrition_component_tests {
 /// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    use freeze_window_audit::{audit, crate_sources, fingerprint};
-
     /// How many findings this crate still carries, and WHICH ones.
     ///
-    /// THE 19 ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted findings,
-    /// so any change to which ones exist fails here even when there are the same
-    /// number of them. Both may only move when a human decides they should.
-    const OPEN_FINDINGS: usize = 19;
-    const OPEN_4347730519296784527u64: u64 = 4347730519296784527u64;
+    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
+    /// another leaves it unchanged. The fingerprint is over the sorted
+    /// findings, so any change to which ones exist fails here even when there
+    /// are the same number of them. Both may only move when a human decides
+    /// they should, and only DOWNWARD.
+    ///
+    /// IT IS ZERO. Every one of the 19 this crate carried is closed: the
+    /// ranges, the row queue and the three restore buffers are built before the
+    /// first suspension, and `patch_rel32`, `restore_hook` and
+    /// `any_instruction_pointer_in` hand back reasons that own no memory, which
+    /// the caller renders once the game is running again.
+    const OPEN_FINDINGS: usize = 0;
+    const OPEN_FINDINGS_FINGERPRINT: u64 = 14695981039346656037u64;
 
     #[test]
     fn nothing_in_a_held_freeze_window_allocates_or_blocks() {
-        // THE DIRECTORY IS THE FILE LIST. A hand-written one cannot see a
-        // module added later, and an unscanned module is an unscanned window.
-        let sources = crate_sources(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        )));
-        assert!(
-            sources.len() >= 2,
-            "the scan found only {} source file(s); it is not reaching the crate",
-            sources.len()
-        );
-        let findings = audit(&sources, &["suspend_all_other_threads()"]);
-        let listed = findings
-            .iter()
-            .map(|finding| format!("  {finding}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            (findings.len(), fingerprint(&findings)),
-            (OPEN_FINDINGS, OPEN_4347730519296784527u64),
-            "the held-freeze windows of this crate changed. If you FIXED one, \
-             lower `OPEN_FINDINGS` and update `OPEN_4347730519296784527u64`. If this grew, \
-             the change put new work inside a window where the whole game is \
-             stopped:\n{listed}"
+        freeze_window_audit::assert_ratchet(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &["suspend_all_other_threads()"],
+            OPEN_FINDINGS,
+            OPEN_FINDINGS_FINGERPRINT,
         );
     }
 }

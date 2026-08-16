@@ -5151,43 +5151,23 @@ mod tests {
 /// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    use freeze_window_audit::{audit, crate_sources, fingerprint};
-
     /// How many findings this crate still carries, and WHICH ones.
     ///
-    /// THE 0 ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted findings,
-    /// so any change to which ones exist fails here even when there are the same
-    /// number of them. Both may only move when a human decides they should.
+    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
+    /// another leaves it unchanged. The fingerprint is over the sorted
+    /// findings, so any change to which ones exist fails here even when there
+    /// are the same number of them. Both may only move when a human decides
+    /// they should, and only DOWNWARD.
     const OPEN_FINDINGS: usize = 0;
-    const OPEN_14695981039346656037u64: u64 = 14695981039346656037u64;
+    const OPEN_FINDINGS_FINGERPRINT: u64 = 14695981039346656037u64;
 
     #[test]
     fn nothing_in_a_held_freeze_window_allocates_or_blocks() {
-        // THE DIRECTORY IS THE FILE LIST. A hand-written one cannot see a
-        // module added later, and an unscanned module is an unscanned window.
-        let sources = crate_sources(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        )));
-        assert!(
-            sources.len() >= 2,
-            "the scan found only {} source file(s); it is not reaching the crate",
-            sources.len()
-        );
-        let findings = audit(&sources, &["inline_detour::freeze_process()"]);
-        let listed = findings
-            .iter()
-            .map(|finding| format!("  {finding}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            (findings.len(), fingerprint(&findings)),
-            (OPEN_FINDINGS, OPEN_14695981039346656037u64),
-            "the held-freeze windows of this crate changed. If you FIXED one, \
-             lower `OPEN_FINDINGS` and update `OPEN_14695981039346656037u64`. If this grew, \
-             the change put new work inside a window where the whole game is \
-             stopped:\n{listed}"
+        freeze_window_audit::assert_ratchet(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &["inline_detour::freeze_process()"],
+            OPEN_FINDINGS,
+            OPEN_FINDINGS_FINGERPRINT,
         );
     }
 }

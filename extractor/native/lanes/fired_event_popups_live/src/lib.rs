@@ -7,6 +7,19 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
+/// THE TEST BINARY'S ALLOCATOR IS A COUNTER, so this crate's frozen windows can
+/// be proved allocation-free by measurement and not only by reading their text.
+///
+/// `#[cfg(test)]` and therefore present in no shipped build: the collector
+/// cdylib still declares no `#[global_allocator]` at all, which is exactly why
+/// an allocation inside a stopped window is a hang -- Rust's System allocator
+/// is `HeapAlloc` on the PROCESS DEFAULT HEAP, the same heap the game's own
+/// threads reach through ordinary Win32 calls.
+#[cfg(test)]
+#[global_allocator]
+static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
+    freeze_window_audit::AllocationProbe;
+
 #[cfg(windows)]
 pub mod a729_bridge;
 #[cfg(windows)]
@@ -1269,43 +1282,50 @@ mod tests {
 /// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    use freeze_window_audit::{audit, crate_sources, fingerprint};
-
     /// How many findings this crate still carries, and WHICH ones.
     ///
-    /// THE 89 ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted findings,
-    /// so any change to which ones exist fails here even when there are the same
-    /// number of them. Both may only move when a human decides they should.
-    const OPEN_FINDINGS: usize = 89;
-    const OPEN_7718934201450115808u64: u64 = 7718934201450115808u64;
+    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
+    /// another leaves it unchanged. The fingerprint is over the sorted
+    /// findings, so any change to which ones exist fails here even when there
+    /// are the same number of them. Both may only move when a human decides
+    /// they should, and only DOWNWARD.
+    ///
+    /// SIX, DOWN FROM 89, AND ALL SIX ARE ONE THING. `install_sites` does not
+    /// drop the freeze it takes: it moves the guard into the returned
+    /// `InstalledHookSet` and `publish()` releases it, from `a729_runtime.rs`.
+    /// So the window is not bounded by the function that took it, and
+    /// everything the scan can still see in that function is reported inside
+    /// it -- the `Vec::new`, the `Box::new` and the `.lock(` on the recovery
+    /// custody path, and `InstalledHook::install`'s `to_vec` and receipt
+    /// message.
+    ///
+    /// THAT IS DELIBERATE AND CANNOT BE UNPICKED HERE. Holding one freeze from
+    /// the byte patching through to the admission gate opening is what buys
+    /// exactly-once observation: open the gate earlier and an event that fires
+    /// before the baseline is read is counted twice; read the baseline earlier
+    /// and one that fires after it is lost. Closing it needs the baseline to
+    /// become idempotent against the live detour on the game's own instance id,
+    /// and the design review of that (`codex_d1_reply.txt`, thread
+    /// 01a007ca-0470-7fe3-bc35-b64845566c33) rejected the straightforward
+    /// version and specified a prepared-baseline/validate/commit protocol with
+    /// twenty proof properties. It is its own lane, and the specification is in
+    /// `extractor/native/runs/kz_freeze_audit_ratchets/D75_REMAINING.md`.
+    ///
+    /// The 83 that ARE closed were closed by moving preparation out: the patch
+    /// ranges, the callback unwind regions, the slot rosters and the
+    /// execution-range buffer are all built before the first suspension, the
+    /// release receipts are minted after the resume, and the recovery custody
+    /// path drops the freeze before it takes the custody lock.
+    const OPEN_FINDINGS: usize = 6;
+    const OPEN_FINDINGS_FINGERPRINT: u64 = 14225969886152033195u64;
 
     #[test]
     fn nothing_in_a_held_freeze_window_allocates_or_blocks() {
-        // THE DIRECTORY IS THE FILE LIST. A hand-written one cannot see a
-        // module added later, and an unscanned module is an unscanned window.
-        let sources = crate_sources(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src"
-        )));
-        assert!(
-            sources.len() >= 2,
-            "the scan found only {} source file(s); it is not reaching the crate",
-            sources.len()
-        );
-        let findings = audit(&sources, &["suspend_all_other_threads()"]);
-        let listed = findings
-            .iter()
-            .map(|finding| format!("  {finding}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            (findings.len(), fingerprint(&findings)),
-            (OPEN_FINDINGS, OPEN_7718934201450115808u64),
-            "the held-freeze windows of this crate changed. If you FIXED one, \
-             lower `OPEN_FINDINGS` and update `OPEN_7718934201450115808u64`. If this grew, \
-             the change put new work inside a window where the whole game is \
-             stopped:\n{listed}"
+        freeze_window_audit::assert_ratchet(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &["suspend_all_other_threads()"],
+            OPEN_FINDINGS,
+            OPEN_FINDINGS_FINGERPRINT,
         );
     }
 }

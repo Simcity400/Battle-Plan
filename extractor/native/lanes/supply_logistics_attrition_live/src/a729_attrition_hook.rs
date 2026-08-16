@@ -526,6 +526,79 @@ impl InstalledSet {
     }
 }
 
+/// EVERY BUFFER THE STOPPED WINDOW NEEDS, RESERVED BEFORE THE FIRST SUSPENSION.
+///
+/// The window compares each site's live bytes against what it expects three
+/// times -- once before the first write, and twice more per site during a
+/// restore -- and each comparison used to allocate its own `vec![0u8; ..]` with
+/// the whole game stopped. That is the hang this module's audit exists to
+/// prevent: the allocator's lock can be held by a thread that can no longer
+/// run.
+///
+/// So the buffers are reserved out here, where the game is still moving, sized
+/// to the WIDEST site rather than to each one. Inside the window the code takes
+/// `&mut scratch.observed[..len]` -- a subslice of memory that already exists.
+/// Nothing in it grows, and `reserved_for` is the only place it is sized.
+struct FrozenScratch {
+    /// The live bytes read back from a site.
+    observed: Vec<u8>,
+    /// The patch a restore expects to find there.
+    expected: Vec<u8>,
+    /// The bytes read back after a restore, to verify it.
+    restored: Vec<u8>,
+}
+
+impl FrozenScratch {
+    fn reserved_for(hooks: &[InstalledHook]) -> Self {
+        let widest = hooks
+            .iter()
+            .map(|hook| hook.original.len())
+            .max()
+            .unwrap_or_default();
+        Self {
+            observed: vec![0u8; widest],
+            expected: vec![0u8; widest],
+            restored: vec![0u8; widest],
+        }
+    }
+}
+
+/// Why a restore refused, WITHOUT building the sentence that says so.
+///
+/// `restore_hook` runs inside the stopped window on both the install rollback
+/// path and the whole of `uninstall`, and it used to build its messages there --
+/// on the failure paths, which is the worst place for it, because the hang
+/// would then happen exactly when something had already gone wrong. This is
+/// `Copy` and carries no owned memory; [`RestoreRefusal::message`] turns it into
+/// ARC1's own error vocabulary AFTER the game is running again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestoreRefusal {
+    CurrentBytesUnreadable,
+    Rel32OutOfRange,
+    /// Someone else's bytes are at the site; ARC1 will not overwrite them.
+    ForeignBytes,
+    ProtectFailed,
+    ProtectionRestoreFailed,
+    FlushFailed,
+    VerificationFailed,
+}
+
+impl RestoreRefusal {
+    fn message(self, rva: usize) -> String {
+        match self {
+            Self::CurrentBytesUnreadable => "ARC1 restore current-byte read failed".to_string(),
+            Self::Rel32OutOfRange => "ARC1 restore rel32 out of range".to_string(),
+            Self::ForeignBytes => {
+                format!("ARC1 restore refused foreign bytes at RVA {rva:#x}")
+            }
+            Self::ProtectFailed => "ARC1 restore protect failed".to_string(),
+            Self::ProtectionRestoreFailed => "ARC1 restore protection restore failed".to_string(),
+            Self::FlushFailed => "ARC1 restore instruction-cache flush failed".to_string(),
+            Self::VerificationFailed => "ARC1 restore byte verification failed".to_string(),
+        }
+    }
+}
+
 pub fn install() -> Result<(), String> {
     let mut lifecycle = LIFECYCLE.lock().map_err(|_| "ARC1 lifecycle poisoned")?;
     if lifecycle.is_some() {
@@ -589,17 +662,47 @@ pub fn install() -> Result<(), String> {
         });
     }
 
-    let suspended = match suspend_all_other_threads() {
-        Ok(value) => value,
-        Err(error) => { free_stubs(&mut hooks); return Err(error); }
-    };
+    // EVERYTHING THE STOPPED WINDOW WILL NEED, BUILT WHILE THE GAME IS STILL
+    // RUNNING. The ranges, the scratch buffers and the row queue were all
+    // produced between the freeze and its drop, where an allocation is a hang
+    // rather than a slow path.
     let ranges: Vec<_> = hooks
         .iter()
         .map(|hook| (hook.target as usize, hook.target as usize + hook.original.len()))
         .collect();
+    let mut scratch = FrozenScratch::reserved_for(&hooks);
+    // THE LOCK IS TAKEN HERE; THE QUEUE IS STILL EMPTIED DOWN THERE.
+    //
+    // Acquiring a mutex with every other thread suspended is the hang -- the
+    // holder may be a thread that can no longer run. HOLDING one across the
+    // freeze is not: nothing is waited for, and any game thread that wants it
+    // is suspended rather than blocking us.
+    //
+    // So the acquisition moves out and the `clear` stays exactly where it was,
+    // after every refusal gate. Emptying it out here instead would destroy a
+    // queue that a freeze refusal, an instruction-pointer refusal or a sentinel
+    // drift then declines to replace -- deleting observations because an
+    // install that never happened was attempted.
+    //
+    // The `clear` allocates and frees nothing: `ExactDivisionAttritionComponentRow`
+    // is `Copy`, so no element owns memory, and clearing keeps the buffer.
+    let rows = ROWS.get_or_init(|| Mutex::new(VecDeque::new()));
+    let Ok(mut queue) = rows.lock() else {
+        free_stubs(&mut hooks);
+        return Err("ARC1 queue poisoned".into());
+    };
+
+    let suspended = match suspend_all_other_threads() {
+        Ok(value) => value,
+        Err(error) => { free_stubs(&mut hooks); return Err(error); }
+    };
     let inside = match any_instruction_pointer_in(&suspended, &ranges) {
         Ok(value) => value,
-        Err(error) => { drop(suspended); free_stubs(&mut hooks); return Err(error); }
+        Err(refusal) => {
+            drop(suspended);
+            free_stubs(&mut hooks);
+            return Err(freeze_refusal_message(refusal));
+        }
     };
     if inside {
         drop(suspended);
@@ -608,27 +711,15 @@ pub fn install() -> Result<(), String> {
     }
     // Allocation can take time. Recheck every exact sentinel with all other
     // threads stopped immediately before the first non-atomic five-byte write.
-    let mut drift_rva = None;
-    for hook in &hooks {
-        let mut actual = vec![0u8; hook.original.len()];
-        if !unsafe { read_exact(hook.target as usize, &mut actual) }
-            || actual.as_slice() != hook.original.as_slice()
-        {
-            drift_rva = Some(hook.site.rva);
-            break;
-        }
-    }
+    let drift_rva = unsafe { first_drifted_site(&hooks, &mut scratch) };
     if let Some(rva) = drift_rva {
         drop(suspended);
         free_stubs(&mut hooks);
         return Err(format!("ARC1 prepatch sentinel drift at RVA {rva:#x}"));
     }
-    let rows = ROWS.get_or_init(|| Mutex::new(VecDeque::new()));
-    let Ok(mut queue) = rows.lock() else {
-        drop(suspended);
-        free_stubs(&mut hooks);
-        return Err("ARC1 queue poisoned".into());
-    };
+    // PAST EVERY REFUSAL GATE, so this is the first point at which discarding
+    // the previous session's rows is not discarding them for nothing. The lock
+    // was taken before the freeze; only the emptying happens here.
     queue.clear();
     drop(queue);
     DROPPED_ROWS.store(0, Ordering::Release);
@@ -647,7 +738,9 @@ pub fn install() -> Result<(), String> {
         if let Err(error) = unsafe { patch_rel32(hook.target, hook.original.len(), hook.stub) } {
             let mut rollback_clean = true;
             for attempted in hooks[..=patched].iter().rev() {
-                if unsafe { restore_hook(attempted) }.is_err() { rollback_clean = false; }
+                if unsafe { restore_hook(attempted, &mut scratch) }.is_err() {
+                    rollback_clean = false;
+                }
             }
             drop(suspended);
             if rollback_clean {
@@ -661,7 +754,9 @@ pub fn install() -> Result<(), String> {
                 ADMISSION_OPEN.store(false, Ordering::Release);
                 *lifecycle = Some(InstalledSet { hooks });
             }
-            return Err(error);
+            // Rendered after the resume: `error` is a `&'static str` for
+            // exactly as long as the process is stopped.
+            return Err(error.to_string());
         }
         patched += 1;
     }
@@ -701,6 +796,10 @@ pub fn uninstall() -> Result<(), String> {
     let mut lifecycle = LIFECYCLE.lock().map_err(|_| "ARC1 lifecycle poisoned")?;
     let Some(set) = lifecycle.as_mut() else { return Ok(()); };
     let reopen_admission = ADMISSION_OPEN.swap(false, Ordering::AcqRel);
+    // Both of these were built inside the stopped window: `execution_ranges`
+    // reserves a vector, and every `restore_hook` used to allocate three more.
+    let ranges = set.execution_ranges();
+    let mut scratch = FrozenScratch::reserved_for(&set.hooks);
     let suspended = match suspend_all_other_threads() {
         Ok(value) => value,
         Err(error) => {
@@ -709,12 +808,12 @@ pub fn uninstall() -> Result<(), String> {
         }
     };
     let in_flight = CALLBACKS_IN_FLIGHT.load(Ordering::Acquire);
-    let inside = match any_instruction_pointer_in(&suspended, &set.execution_ranges()) {
+    let inside = match any_instruction_pointer_in(&suspended, &ranges) {
         Ok(value) => value,
-        Err(error) => {
+        Err(refusal) => {
             drop(suspended);
             if reopen_admission { ADMISSION_OPEN.store(true, Ordering::Release); }
-            return Err(error);
+            return Err(freeze_refusal_message(refusal));
         }
     };
     if in_flight != 0 || inside {
@@ -722,13 +821,18 @@ pub fn uninstall() -> Result<(), String> {
         if reopen_admission { ADMISSION_OPEN.store(true, Ordering::Release); }
         return Err(format!("ARC1 callbacks/execution still active ({in_flight})"));
     }
+    let mut refused = None;
     for hook in set.hooks.iter().rev() {
-        if let Err(error) = unsafe { restore_hook(hook) } {
-            drop(suspended);
-            return Err(error);
+        if let Err(refusal) = unsafe { restore_hook(hook, &mut scratch) } {
+            refused = Some((refusal, hook.site.rva));
+            break;
         }
     }
     drop(suspended);
+    if let Some((refusal, rva)) = refused {
+        // Rendered after the resume; inside the window it is two `Copy` words.
+        return Err(refusal.message(rva));
+    }
     for hook in &mut set.hooks {
         if hook.stub.is_null() { continue; }
         if unsafe { VirtualFree(hook.stub.cast(), 0, MEM_RELEASE) } == 0 {
@@ -804,12 +908,21 @@ unsafe fn allocate_near(target: usize) -> Result<*mut u8, String> {
     Err(format!("ARC1 near allocation failed for {target:#x}"))
 }
 
-unsafe fn patch_rel32(target: *mut u8, span: usize, destination: *mut u8) -> Result<(), String> {
+/// Write one site's five-byte branch, ALLOCATING NOTHING.
+///
+/// It runs with the process stopped, so its refusals are `&'static str` and the
+/// caller turns one into ARC1's `String` error after the resume. `.into()` here
+/// was a `String` built inside the stopped window.
+unsafe fn patch_rel32(
+    target: *mut u8,
+    span: usize,
+    destination: *mut u8,
+) -> Result<(), &'static str> {
     let delta = destination as isize as i128 - (target as usize + 5) as i128;
     let delta = i32::try_from(delta).map_err(|_| "ARC1 rel32 destination out of range")?;
     let mut old = 0;
     if unsafe { VirtualProtect(target.cast(), span, PAGE_EXECUTE_READWRITE, &mut old) } == 0 {
-        return Err("ARC1 target protect failed".into());
+        return Err("ARC1 target protect failed");
     }
     unsafe {
         target.write(0xe9);
@@ -818,47 +931,75 @@ unsafe fn patch_rel32(target: *mut u8, span: usize, destination: *mut u8) -> Res
     }
     let mut ignored = 0;
     if unsafe { VirtualProtect(target.cast(), span, old, &mut ignored) } == 0 {
-        return Err("ARC1 target protection restore failed".into());
+        return Err("ARC1 target protection restore failed");
     }
     if unsafe { FlushInstructionCache(GetCurrentProcess(), target.cast(), span) } == 0 {
-        return Err("ARC1 target instruction-cache flush failed".into());
+        return Err("ARC1 target instruction-cache flush failed");
     }
     Ok(())
 }
 
-unsafe fn restore_hook(hook: &InstalledHook) -> Result<(), String> {
+/// The first site whose live bytes are no longer its recorded original, or
+/// `None` when every one still matches. ALLOCATES NOTHING.
+///
+/// A named function rather than a loop inside `install` so that the allocation
+/// proof can drive THE PRODUCTION CODE. A test that re-typed this loop would
+/// prove that the copy in the test allocates nothing, which is not the claim.
+unsafe fn first_drifted_site(hooks: &[InstalledHook], scratch: &mut FrozenScratch) -> Option<usize> {
+    for hook in hooks {
+        let span = hook.original.len();
+        let actual = &mut scratch.observed[..span];
+        if !unsafe { read_exact(hook.target as usize, actual) } || actual != hook.original.as_slice()
+        {
+            return Some(hook.site.rva);
+        }
+    }
+    None
+}
+
+/// Restore one site's original bytes, ALLOCATING NOTHING.
+///
+/// Every buffer it uses is a subslice of `scratch`, which was sized before the
+/// process was stopped, and every refusal is a `Copy` reason rendered by the
+/// caller once the game is running again.
+unsafe fn restore_hook(
+    hook: &InstalledHook,
+    scratch: &mut FrozenScratch,
+) -> Result<(), RestoreRefusal> {
     let target = hook.target;
     let original = &hook.original;
-    let mut current = vec![0u8; original.len()];
-    if !unsafe { read_exact(target as usize, &mut current) } {
-        return Err("ARC1 restore current-byte read failed".into());
+    let span = original.len();
+    let current = &mut scratch.observed[..span];
+    if !unsafe { read_exact(target as usize, current) } {
+        return Err(RestoreRefusal::CurrentBytesUnreadable);
     }
-    if current.as_slice() == original.as_slice() { return Ok(()); }
+    if current == original.as_slice() {
+        return Ok(());
+    }
     let delta = hook.stub as isize as i128 - (target as usize + 5) as i128;
-    let delta = i32::try_from(delta).map_err(|_| "ARC1 restore rel32 out of range")?;
-    let mut expected_patch = vec![0x90; original.len()];
+    let delta = i32::try_from(delta).map_err(|_| RestoreRefusal::Rel32OutOfRange)?;
+    let expected_patch = &mut scratch.expected[..span];
+    expected_patch.fill(0x90);
     expected_patch[0] = 0xe9;
     expected_patch[1..5].copy_from_slice(&delta.to_le_bytes());
-    if current != expected_patch {
-        return Err(format!("ARC1 restore refused foreign bytes at RVA {:#x}", hook.site.rva));
+    if scratch.observed[..span] != scratch.expected[..span] {
+        return Err(RestoreRefusal::ForeignBytes);
     }
     let mut old = 0;
-    if unsafe { VirtualProtect(target.cast(), original.len(), PAGE_EXECUTE_READWRITE, &mut old) } == 0 {
-        return Err("ARC1 restore protect failed".into());
+    if unsafe { VirtualProtect(target.cast(), span, PAGE_EXECUTE_READWRITE, &mut old) } == 0 {
+        return Err(RestoreRefusal::ProtectFailed);
     }
-    unsafe { ptr::copy_nonoverlapping(original.as_ptr(), target, original.len()); }
+    unsafe { ptr::copy_nonoverlapping(original.as_ptr(), target, span); }
     let mut ignored = 0;
-    if unsafe { VirtualProtect(target.cast(), original.len(), old, &mut ignored) } == 0 {
-        return Err("ARC1 restore protection restore failed".into());
+    if unsafe { VirtualProtect(target.cast(), span, old, &mut ignored) } == 0 {
+        return Err(RestoreRefusal::ProtectionRestoreFailed);
     }
-    if unsafe { FlushInstructionCache(GetCurrentProcess(), target.cast(), original.len()) } == 0 {
-        return Err("ARC1 restore instruction-cache flush failed".into());
+    if unsafe { FlushInstructionCache(GetCurrentProcess(), target.cast(), span) } == 0 {
+        return Err(RestoreRefusal::FlushFailed);
     }
-    let mut restored = vec![0u8; original.len()];
-    if !unsafe { read_exact(target as usize, &mut restored) }
-        || restored.as_slice() != original.as_slice()
-    {
-        return Err("ARC1 restore byte verification failed".into());
+    let restored = &mut scratch.restored[..span];
+    if !unsafe { read_exact(target as usize, restored) } || restored != original.as_slice() {
+        return Err(RestoreRefusal::VerificationFailed);
     }
     Ok(())
 }
@@ -885,13 +1026,136 @@ fn suspend_all_other_threads() -> Result<inline_detour::ProcessFreeze, String> {
 ///
 /// Fail-closed exactly as before: a context that cannot be read is a refusal,
 /// never "not inside".
+///
+/// IT IS CALLED WITH THE PROCESS ALREADY STOPPED, so it hands the typed refusal
+/// back instead of rendering it. `format!` here built a `String` while every
+/// other thread was suspended -- on the refusal path, so the hang would have
+/// happened exactly when the freeze had already found something wrong.
+/// [`freeze_refusal_message`] is what says it, after the resume.
 fn any_instruction_pointer_in(
     suspended: &inline_detour::ProcessFreeze,
     ranges: &[(usize, usize)],
-) -> Result<bool, String> {
-    suspended
-        .any_instruction_pointer_in(ranges)
-        .map_err(|refusal| format!("ARC1 patch refused: {refusal}"))
+) -> Result<bool, inline_detour::FreezeRefusal> {
+    suspended.any_instruction_pointer_in(ranges)
+}
+
+fn freeze_refusal_message(refusal: inline_detour::FreezeRefusal) -> String {
+    format!("ARC1 patch refused: {refusal}")
+}
+
+/// WHAT THE STOPPED WINDOW ACTUALLY REACHED, MEASURED.
+///
+/// The source scan in `lib.rs` proves nothing here is SPELLED like an
+/// allocation, on every path, whether or not a test drives it. It cannot prove
+/// the other half: that a subslice of a reserved buffer really does not grow,
+/// or that a comparison of two `&[u8]` really does not copy. That is what this
+/// module does -- it runs the window's own helpers under a counting allocator
+/// and reads the number.
+///
+/// Neither proof subsumes the other. The scan covers paths no test reaches; the
+/// count covers spellings no roster contains.
+#[cfg(test)]
+mod frozen_window_allocation_tests {
+    use super::*;
+
+    /// A hook whose "live bytes" are an ordinary buffer in this process, so
+    /// `read_exact` -- which is `ReadProcessMemory` against our OWN process --
+    /// reads it exactly as it reads the game's code.
+    fn hook_over(bytes: &mut [u8], original: Vec<u8>) -> InstalledHook {
+        InstalledHook {
+            site: SITES[0],
+            target: bytes.as_mut_ptr(),
+            stub: ptr::null_mut(),
+            stub_len: 0,
+            original,
+        }
+    }
+
+    /// Without this every count below is zero for the wrong reason.
+    #[test]
+    fn the_allocation_probe_is_this_test_binarys_allocator() {
+        assert!(
+            freeze_window_audit::the_probe_is_installed(),
+            "the #[global_allocator] in lib.rs is not in force, so every \
+             allocation count in this module is vacuously zero"
+        );
+    }
+
+    /// THE SENTINEL RECHECK ALLOCATES NOTHING -- the real one, not a copy.
+    ///
+    /// What production change would make this fail? Restoring the
+    /// `vec![0u8; hook.original.len()]` this loop used to build per site, or
+    /// any `to_vec`/`format!` added to it later.
+    #[test]
+    fn rechecking_every_sentinel_allocates_nothing() {
+        let mut first = [0x11u8; 8];
+        let mut second = [0x22u8; 8];
+        let mut hooks = vec![
+            hook_over(&mut first, vec![0x11; 8]),
+            hook_over(&mut second, vec![0x22; 8]),
+        ];
+        let mut scratch = FrozenScratch::reserved_for(&hooks);
+
+        let (clean, allocations) =
+            freeze_window_audit::observed(|| unsafe { first_drifted_site(&hooks, &mut scratch) });
+        assert_eq!(clean, None, "matching bytes are not drift");
+        assert_eq!(allocations, 0, "the sentinel recheck reached the allocator");
+
+        // And the drifted answer -- the path that used to build a message.
+        hooks[1].original[0] = 0x99;
+        let (drifted, allocations) =
+            freeze_window_audit::observed(|| unsafe { first_drifted_site(&hooks, &mut scratch) });
+        assert_eq!(drifted, Some(SITES[0].rva), "drift must be reported");
+        assert_eq!(allocations, 0, "reporting drift reached the allocator");
+    }
+
+    /// A RESTORE ALLOCATES NOTHING, on the path that succeeds without writing
+    /// and on the path that refuses.
+    ///
+    /// Both are the frozen-window paths that used to build three `Vec`s and a
+    /// `format!`. The paths that rewrite bytes need a real patched site and are
+    /// covered by the source scan instead.
+    #[test]
+    fn a_restore_allocates_nothing() {
+        let mut untouched = [0x33u8; 8];
+        let already = hook_over(&mut untouched, vec![0x33; 8]);
+        let mut scratch = FrozenScratch::reserved_for(std::slice::from_ref(&already));
+        let (outcome, allocations) =
+            freeze_window_audit::observed(|| unsafe { restore_hook(&already, &mut scratch) });
+        assert_eq!(outcome, Ok(()), "bytes that already match need no restore");
+        assert_eq!(allocations, 0, "an already-restored site allocated");
+
+        // Bytes that are neither the original nor ARC1's own patch: refused,
+        // and the RVA-bearing sentence is built by the caller after the resume.
+        // The stub is the site itself, purely so the rel32 to it is in range
+        // and the refusal reached is the FOREIGN-BYTES one under test rather
+        // than the out-of-range one.
+        let mut foreign = [0x44u8; 8];
+        let mut stranger = hook_over(&mut foreign, vec![0x33; 8]);
+        stranger.stub = stranger.target;
+        let mut scratch = FrozenScratch::reserved_for(std::slice::from_ref(&stranger));
+        let (outcome, allocations) =
+            freeze_window_audit::observed(|| unsafe { restore_hook(&stranger, &mut scratch) });
+        assert_eq!(outcome, Err(RestoreRefusal::ForeignBytes));
+        assert_eq!(allocations, 0, "refusing foreign bytes allocated");
+    }
+
+    /// The scratch is sized to the WIDEST site, so no site's subslice grows it.
+    #[test]
+    fn the_scratch_covers_every_site_it_was_reserved_for() {
+        let mut narrow = [0u8; 5];
+        let mut wide = [0u8; 17];
+        let hooks = vec![
+            hook_over(&mut narrow, vec![0; 5]),
+            hook_over(&mut wide, vec![0; 17]),
+        ];
+        let scratch = FrozenScratch::reserved_for(&hooks);
+        for hook in &hooks {
+            assert!(scratch.observed.len() >= hook.original.len());
+            assert!(scratch.expected.len() >= hook.original.len());
+            assert!(scratch.restored.len() >= hook.original.len());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -25,14 +25,15 @@ use std::io::Read;
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::convoy_route_source::{
     read_exact_a729_client_route, ExactA729RouteRead, RouteSourceError,
 };
 use crate::convoy_terminal_attribution::{
-    activation_blockers, capture_candidate, prepare_a729_hook, A729PreCollapseRegisters,
+    a729_call_window_is_exact, activation_blockers, capture_candidate, prepare_a729_hook,
+    A729PreCollapseRegisters,
     ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory, A729_CALL_BYTES,
     A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
 };
@@ -1120,7 +1121,43 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
     }
 }
 
-fn reset_observer_state_for_install() {
+/// Every lock [`reset_observer_state_with`] needs, HELD.
+///
+/// Acquiring a mutex with every other thread suspended is the hang this
+/// module's audit exists to prevent -- the holder may be a thread that can no
+/// longer run. HOLDING one across a freeze is not: nothing is waited for, and a
+/// game thread that wants it is suspended rather than blocking us.
+///
+/// So the three acquisitions happen out here and the reset happens inside the
+/// window, where it belongs: past the freeze refusal, the instruction-pointer
+/// refusal and the byte-drift refusal, none of which should be able to delete a
+/// queue they then decline to replace.
+struct HeldObserverState<'a> {
+    reservation: Option<MutexGuard<'a, DrainReservationState>>,
+    queue: Option<MutexGuard<'a, VecDeque<ConvoyTerminalValidatedEvent>>>,
+    positive: Option<MutexGuard<'a, Option<HConvoyPositiveRawObservation>>>,
+}
+
+fn lock_observer_state() -> HeldObserverState<'static> {
+    HeldObserverState {
+        reservation: DRAIN_RESERVATION
+            .get()
+            .map(|slot| slot.lock().unwrap_or_else(|poison| poison.into_inner())),
+        queue: EVENT_QUEUE
+            .get()
+            .map(|slot| slot.lock().unwrap_or_else(|poison| poison.into_inner())),
+        positive: POSITIVE_RAW_OBSERVATION
+            .get()
+            .map(|slot| slot.lock().unwrap_or_else(|poison| poison.into_inner())),
+    }
+}
+
+/// Reset every observer counter and buffer, ALLOCATING AND LOCKING NOTHING.
+///
+/// Safe to call with the process stopped, because `held` already owns the three
+/// mutexes and the counters are atomics. `clear` frees nothing: the carrier is
+/// a fixed-width record that owns no memory, and clearing keeps the buffer.
+fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
     for counter in [
         &CALLBACKS_SEEN,
         &ORIGINAL_CALLS,
@@ -1151,22 +1188,22 @@ fn reset_observer_state_for_install() {
     PRODUCER_SEQUENCE.store(1, Ordering::Release);
     QUEUE_MUTATION_GENERATION.store(1, Ordering::Release);
     SEALED_PUBLICATION_PENDING.store(false, Ordering::Release);
-    if let Some(reservation) = DRAIN_RESERVATION.get() {
-        reservation
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .sealed_snapshot = None;
+    if let Some(reservation) = held.reservation.as_mut() {
+        reservation.sealed_snapshot = None;
     }
-    if let Some(queue) = EVENT_QUEUE.get() {
-        queue
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+    if let Some(queue) = held.queue.as_mut() {
+        queue.clear();
     }
-    if let Some(slot) = POSITIVE_RAW_OBSERVATION.get() {
-        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+    if let Some(positive) = held.positive.as_mut() {
+        **positive = None;
     }
     EVIDENCE_HEARTBEAT_SEQUENCE.store(1, Ordering::Release);
+}
+
+/// The whole reset, for callers that are NOT inside a stopped window.
+fn reset_observer_state_for_install() {
+    let mut held = lock_observer_state();
+    reset_observer_state_with(&mut held);
 }
 
 unsafe extern "system" fn convoy_terminal_hook(
@@ -1764,6 +1801,10 @@ fn install_convoy_terminal_hook_inner(
             return Err(ConvoyTerminalInstallError::Rel32OutOfRange);
         }
     };
+    // THE LOCKS ARE TAKEN HERE; THE RESET HAPPENS PAST THE REFUSAL GATES.
+    // Acquiring a mutex with every other thread suspended is the hang; holding
+    // one across the freeze is not. See `lock_observer_state`.
+    let mut held_observer_state = lock_observer_state();
     let suspended = suspend_all_other_threads()?;
     // The five bytes about to be rewritten, and the relay they will branch to.
     // Both are asked about while the freeze is held, so the answer cannot go
@@ -1780,7 +1821,12 @@ fn install_convoy_terminal_hook_inner(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(error);
     }
-    if prepare_a729_hook(&memory, module_base, executable_sha256).is_err() {
+    // THE BYTE GATE, RE-ASKED UNDER THE FREEZE -- but only the byte gate.
+    // `prepare_a729_hook` was called here, and it builds an activation-blocker
+    // `Vec` that this caller discards, having asked only whether it errored.
+    // `a729_call_window_is_exact` is the same reads and the same refusals with
+    // nothing built.
+    if a729_call_window_is_exact(&memory, module_base, executable_sha256).is_err() {
         drop(suspended);
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(ConvoyTerminalInstallError::ByteGateDrift);
@@ -1793,12 +1839,34 @@ fn install_convoy_terminal_hook_inner(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(ConvoyTerminalInstallError::ByteGateDrift);
     }
-    reset_observer_state_for_install();
+    // PAST EVERY REFUSAL GATE -- the freeze, the parked-thread check, the
+    // frozen byte gate and the exact original-call compare have all passed, so
+    // this install is going to happen. Discarding the previous observer's
+    // counters and queued rows before that point would delete observations
+    // because an install that never happened was attempted.
+    reset_observer_state_with(&mut held_observer_state);
+    // AND RELEASED IMMEDIATELY, still inside the window, which is the whole
+    // reason the guards were bound to a name at all.
+    //
+    // Holding them one statement longer is two separate defects. Every rollback
+    // path below re-enters `reset_observer_state_for_install`, which takes
+    // these same three mutexes -- and a `MutexGuard` lives until its scope
+    // ends, not until its last use, so this thread would block on a lock it
+    // holds itself, forever, while still owning `HOOK_LIFECYCLE_LOCK` and
+    // `INSTALL_STATE`. And the success path resumes the game before returning,
+    // so a callback that arrives in that gap would wait on the event queue --
+    // making the game wait, which is the law this hoist exists to serve.
+    //
+    // RELEASING a mutex with the process stopped is not the hazard that
+    // ACQUIRING one is: it hands ownership on and waits for nothing. Nothing
+    // can be observing yet either -- not one byte of the callsite has been
+    // rewritten; `write_code` below is the first.
+    drop(held_observer_state);
     MODULE_BASE.store(module_base, Ordering::Release);
     ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
     TEARDOWN.store(false, Ordering::Release);
     if let Err(error) = unsafe { write_code(prepared.hook_address, &patched_call) } {
-        let error = rollback_failed_install(
+        let outcome = rollback_failed_install(
             &mut state,
             &memory,
             mode,
@@ -1807,14 +1875,19 @@ fn install_convoy_terminal_hook_inner(
             relay as usize,
             original_call,
             patched_call,
-            error,
         );
         drop(suspended);
-        return Err(error);
+        // Everything below runs with the game moving again: the
+        // counters take two mutexes, and both errors are built from
+        // `Copy` reasons the frozen rollback handed back.
+        if outcome == RollbackOutcome::Restored {
+            reset_observer_state_for_install();
+        }
+        return Err(outcome.into_error(error.into()));
     }
     let mut exact_patch = [0u8; A729_CALL_BYTES.len()];
     if !memory.read_exact(prepared.hook_address, &mut exact_patch) || exact_patch != patched_call {
-        let error = rollback_failed_install(
+        let outcome = rollback_failed_install(
             &mut state,
             &memory,
             mode,
@@ -1823,13 +1896,18 @@ fn install_convoy_terminal_hook_inner(
             relay as usize,
             original_call,
             patched_call,
-            ConvoyTerminalInstallError::PatchedBytesDrift,
         );
         drop(suspended);
-        return Err(error);
+        // Everything below runs with the game moving again: the
+        // counters take two mutexes, and both errors are built from
+        // `Copy` reasons the frozen rollback handed back.
+        if outcome == RollbackOutcome::Restored {
+            reset_observer_state_for_install();
+        }
+        return Err(outcome.into_error(ConvoyTerminalInstallError::PatchedBytesDrift));
     }
     if !relay_targets_convoy_terminal_hook(&memory, relay as usize) {
-        let error = rollback_failed_install(
+        let outcome = rollback_failed_install(
             &mut state,
             &memory,
             mode,
@@ -1838,10 +1916,15 @@ fn install_convoy_terminal_hook_inner(
             relay as usize,
             original_call,
             patched_call,
-            ConvoyTerminalInstallError::RelayDrift,
         );
         drop(suspended);
-        return Err(error);
+        // Everything below runs with the game moving again: the
+        // counters take two mutexes, and both errors are built from
+        // `Copy` reasons the frozen rollback handed back.
+        if outcome == RollbackOutcome::Restored {
+            reset_observer_state_for_install();
+        }
+        return Err(outcome.into_error(ConvoyTerminalInstallError::RelayDrift));
     }
     let installed_receipt = match teardown_owner_token {
         Some(token) => match observe_enabled_rel32_callsite(
@@ -1852,7 +1935,7 @@ fn install_convoy_terminal_hook_inner(
         ) {
             Ok(receipt) => Some(receipt),
             Err(error) => {
-                let error = rollback_failed_install(
+                let outcome = rollback_failed_install(
                     &mut state,
                     &memory,
                     mode,
@@ -1861,10 +1944,15 @@ fn install_convoy_terminal_hook_inner(
                     relay as usize,
                     original_call,
                     patched_call,
-                    ConvoyTerminalInstallError::HookReceipt(error),
                 );
                 drop(suspended);
-                return Err(error);
+                // Everything below runs with the game moving again: the
+                // counters take two mutexes, and both errors are built from
+                // `Copy` reasons the frozen rollback handed back.
+                if outcome == RollbackOutcome::Restored {
+                    reset_observer_state_for_install();
+                }
+                return Err(outcome.into_error(ConvoyTerminalInstallError::HookReceipt(error)));
             }
         },
         None => None,
@@ -1924,9 +2012,7 @@ fn rollback_failed_install(
     relay: usize,
     original_call: [u8; 5],
     patched_call: [u8; 5],
-    install_error: ConvoyTerminalInstallError,
-) -> ConvoyTerminalInstallError {
-    let install_error_text = format!("{install_error:?}");
+) -> RollbackOutcome {
     let mut observed = [0u8; A729_CALL_BYTES.len()];
     let observed_before = memory
         .read_exact(callsite, &mut observed)
@@ -1944,18 +2030,14 @@ fn rollback_failed_install(
                 }
                 (write_result, observed_after) => {
                     let error = match write_result {
-                        Err(error) => format!("{error:?}"),
-                        Ok(()) => "exact original bytes were not observed after rollback".into(),
+                        Err(error) => RollbackRefusal::WriteFailed(error),
+                        Ok(()) => RollbackRefusal::BytesNotRestored,
                     };
                     (false, observed_after, Some(error))
                 }
             }
         }
-        None => (
-            false,
-            None,
-            Some("failed to observe D90 bytes before guarded rollback".into()),
-        ),
+        None => (false, None, Some(RollbackRefusal::BytesUnreadable)),
     };
 
     if patch_restored && rollback_error.is_none() {
@@ -1966,13 +2048,12 @@ fn rollback_failed_install(
             EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
             TEARDOWN.store(false, Ordering::Release);
             INSTALLED.store(false, Ordering::Release);
-            reset_observer_state_for_install();
             *state = None;
-            return install_error;
+            return RollbackOutcome::Restored;
         }
     }
 
-    let rollback_error = rollback_error.unwrap_or_else(|| "D90 relay release failed".into());
+    let rollback_error = rollback_error.unwrap_or(RollbackRefusal::RelayReleaseFailed);
     *state = Some(InstalledState {
         mode,
         callsite,
@@ -1992,9 +2073,57 @@ fn rollback_failed_install(
     });
     INSTALLED.store(false, Ordering::Release);
     TEARDOWN.store(true, Ordering::Release);
-    ConvoyTerminalInstallError::InstallRollbackFailed {
-        install_error: install_error_text,
-        rollback_error,
+    RollbackOutcome::Retained(rollback_error)
+}
+
+/// What a rollback under the freeze did, WITHOUT SAYING IT IN WORDS.
+///
+/// `rollback_failed_install` runs with every other thread in the process
+/// suspended, and it used to `format!` both the install error and its own -- on
+/// the failure paths, which is the worst place for it, because the hang would
+/// then happen exactly when the install had already gone wrong. Both of these
+/// are `Copy` and own no memory; [`RollbackOutcome::into_error`] builds the
+/// sentences after the resume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RollbackOutcome {
+    /// The original bytes are back and the relay is released.
+    Restored,
+    /// The callsite is still mutated, or the relay is still mapped, or both;
+    /// custody of it stays in `INSTALL_STATE` for an explicit retry.
+    Retained(RollbackRefusal),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RollbackRefusal {
+    WriteFailed(WriteRefusal),
+    BytesNotRestored,
+    BytesUnreadable,
+    RelayReleaseFailed,
+}
+
+impl RollbackOutcome {
+    /// The error to return, built once the game is running again.
+    ///
+    /// `Restored` gives back the install error unchanged -- the rollback was
+    /// clean, so what failed is the install and nothing else.
+    fn into_error(self, install_error: ConvoyTerminalInstallError) -> ConvoyTerminalInstallError {
+        let refusal = match self {
+            Self::Restored => return install_error,
+            Self::Retained(refusal) => refusal,
+        };
+        ConvoyTerminalInstallError::InstallRollbackFailed {
+            install_error: format!("{install_error:?}"),
+            rollback_error: match refusal {
+                RollbackRefusal::WriteFailed(error) => format!("{error:?}"),
+                RollbackRefusal::BytesNotRestored => {
+                    "exact original bytes were not observed after rollback".to_string()
+                }
+                RollbackRefusal::BytesUnreadable => {
+                    "failed to observe D90 bytes before guarded rollback".to_string()
+                }
+                RollbackRefusal::RelayReleaseFailed => "D90 relay release failed".to_string(),
+            },
+        }
     }
 }
 
@@ -2342,7 +2471,29 @@ fn relay_targets_convoy_terminal_hook(memory: &ProcessMemory, relay: usize) -> b
             == convoy_terminal_hook as usize as u64
 }
 
-unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), ConvoyTerminalInstallError> {
+/// Why a code write refused. `Copy`, and owning no memory, because
+/// `write_code` runs with every other thread in the process suspended.
+///
+/// It used to hand back a `ConvoyTerminalInstallError`, which carries a `String`
+/// in one variant and a `Vec` in another -- so merely holding the refusal
+/// inside the stopped window was one `match` away from an allocation, and the
+/// rollback path really did `format!` it there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WriteRefusal {
+    Protect,
+    Flush,
+}
+
+impl From<WriteRefusal> for ConvoyTerminalInstallError {
+    fn from(refusal: WriteRefusal) -> Self {
+        match refusal {
+            WriteRefusal::Protect => Self::PatchProtect,
+            WriteRefusal::Flush => Self::PatchFlush,
+        }
+    }
+}
+
+unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), WriteRefusal> {
     let mut old = 0;
     if unsafe {
         VirtualProtect(
@@ -2353,17 +2504,17 @@ unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), ConvoyTerminalI
         )
     } == 0
     {
-        return Err(ConvoyTerminalInstallError::PatchProtect);
+        return Err(WriteRefusal::Protect);
     }
     unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), address as *mut u8, bytes.len()) };
     let mut ignored = 0;
     if unsafe { VirtualProtect(address as *mut c_void, bytes.len(), old, &mut ignored) } == 0 {
-        return Err(ConvoyTerminalInstallError::PatchProtect);
+        return Err(WriteRefusal::Protect);
     }
     if unsafe { FlushInstructionCache(GetCurrentProcess(), address as *const c_void, bytes.len()) }
         == 0
     {
-        return Err(ConvoyTerminalInstallError::PatchFlush);
+        return Err(WriteRefusal::Flush);
     }
     Ok(())
 }
@@ -2744,6 +2895,115 @@ mod receipt_hour_distance_tests {
         assert_eq!(
             receipt_hour_distance(i32::MIN, i32::MAX),
             (ReceiptHourDirection::Lag, 4_294_967_295)
+        );
+    }
+}
+
+/// WHAT THE STOPPED WINDOW ACTUALLY REACHED, MEASURED.
+///
+/// The source scan in `lib.rs` proves nothing in the window is SPELLED like an
+/// allocation, on every path, whether or not a test drives it. It cannot prove
+/// the other half -- that the frozen re-validation really builds nothing, and
+/// that a refusal really carries no owned memory. That is what this module
+/// does: it runs the window's own helpers under a counting allocator and reads
+/// the number.
+#[cfg(test)]
+mod frozen_window_allocation_tests {
+    use super::*;
+    use crate::convoy_terminal_attribution::PrepareError;
+
+    /// Without this every count below is zero for the wrong reason.
+    #[test]
+    fn the_allocation_probe_is_this_test_binarys_allocator() {
+        assert!(
+            freeze_window_audit::the_probe_is_installed(),
+            "the #[global_allocator] in lib.rs is not in force, so every \
+             allocation count in this module is vacuously zero"
+        );
+    }
+
+    /// THE FROZEN RE-VALIDATION ALLOCATES NOTHING.
+    ///
+    /// What production change would make this fail? Putting
+    /// `prepare_a729_hook` back at the frozen callsite -- it builds the
+    /// activation-blocker `Vec` this caller throws away -- or adding anything
+    /// owned to `PrepareError`.
+    ///
+    /// It is driven against an image base that cannot be the game's, so the
+    /// path measured is the REFUSAL, which is the one that mattered: a gate
+    /// that allocates only when it rejects hangs exactly when the install had
+    /// already found something wrong.
+    #[test]
+    fn the_frozen_byte_gate_allocates_nothing_when_it_refuses() {
+        let memory = ProcessMemory;
+        let mut refusals = [PrepareError::NullImageBase; 3];
+        let ((), allocations) = freeze_window_audit::observed(|| {
+            refusals[0] = a729_call_window_is_exact(&memory, 0, A729_EXE_SHA256).unwrap_err();
+            refusals[1] = a729_call_window_is_exact(&memory, 0x1000, "not the a729 hash")
+                .unwrap_err();
+            refusals[2] = a729_call_window_is_exact(&memory, usize::MAX, A729_EXE_SHA256)
+                .unwrap_err();
+        });
+        assert_eq!(refusals[0], PrepareError::NullImageBase);
+        assert_eq!(refusals[1], PrepareError::BinaryHashMismatch);
+        assert_eq!(refusals[2], PrepareError::AddressOverflow);
+        assert_eq!(allocations, 0, "the frozen byte gate reached the allocator");
+    }
+
+    /// THE ROLLBACK ITSELF ALLOCATES NOTHING -- the real function, driven.
+    ///
+    /// `rollback_failed_install` runs with every other thread in the process
+    /// suspended, and it used to `format!` both the install error and its own,
+    /// on the failure paths. This drives it over the shape that reaches the
+    /// most of it: bytes that already match the original (so no `write_code`
+    /// is attempted on this process's own memory) and a relay of 0, whose
+    /// `VirtualFree` fails and sends it down the RETAINED path that publishes
+    /// custody and returns a refusal.
+    ///
+    /// What production change would make this fail? Putting the `format!` of
+    /// the install error back at the top of it, or giving `RollbackRefusal` or
+    /// `WriteRefusal` a variant that owns memory.
+    #[test]
+    fn the_frozen_rollback_allocates_nothing() {
+        let original_call = A729_CALL_BYTES;
+        let mut site = original_call;
+        let mut state: Option<InstalledState> = None;
+        let memory = ProcessMemory;
+        let (outcome, allocations) = freeze_window_audit::observed(|| {
+            rollback_failed_install(
+                &mut state,
+                &memory,
+                HookInstallMode::Production,
+                None,
+                site.as_mut_ptr() as usize,
+                0,
+                original_call,
+                [0x90; 5],
+            )
+        });
+        assert_eq!(
+            outcome,
+            RollbackOutcome::Retained(RollbackRefusal::RelayReleaseFailed),
+            "a relay that cannot be released is retained custody"
+        );
+        assert!(state.is_some(), "retained custody must be published");
+        assert_eq!(allocations, 0, "the frozen rollback reached the allocator");
+
+        let (rendered, allocations) = freeze_window_audit::observed(|| {
+            outcome.into_error(ConvoyTerminalInstallError::PatchedBytesDrift)
+        });
+        assert!(
+            matches!(
+                rendered,
+                ConvoyTerminalInstallError::InstallRollbackFailed { .. }
+            ),
+            "{rendered:?}"
+        );
+        assert!(
+            allocations > 0,
+            "rendering the sentence must be what allocates -- if this is zero \
+             the test is no longer proving that the rendering was moved out of \
+             the stopped window"
         );
     }
 }
