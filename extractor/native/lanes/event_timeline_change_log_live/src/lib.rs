@@ -1436,6 +1436,9 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
         total_bytes: raw.len(),
         ..CompactSourceSummary::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut expected_sequence = 1u64;
     while offset < raw.len() {
@@ -1508,8 +1511,19 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
             .saturating_add(payload_len as u64);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
         summary.domains_seen.insert(domain_id);
-        match record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                offset += record_len;
+                continue;
+            }
+        };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 summary.domain_perf_record_count =
                     summary.domain_perf_record_count.saturating_add(1);
                 *summary
@@ -1526,7 +1540,7 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
                     summary.status_flags_or |= read_u32_le(payload, 32);
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 summary.domain_data_record_count =
                     summary.domain_data_record_count.saturating_add(1);
                 *summary
@@ -1540,7 +1554,7 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
                     .entry(domain_id)
                     .or_default() += 1;
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_record_count = summary.frame_end_record_count.saturating_add(1);
                 summary.unique_hours.insert(game_hour_raw);
                 *summary
@@ -1551,9 +1565,19 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
                     summary.status_flags_or |= read_u32_le(payload, 24);
                 }
             }
-            other => summary.parse_errors.push(format!(
-                "offset {offset}: unsupported compact record type {other}"
-            )),
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: record type {} is outside the event-timeline summary grammar",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset += record_len;
     }
@@ -1614,6 +1638,7 @@ pub fn gate_event_compact_stream(
     let mut owned_perf_status_this_hour = None;
     let mut observed_perf_this_hour = 0u32;
     let mut last_record_was_frame_end = false;
+    let mut release_epilogue_seen = false;
     while offset < raw.len() {
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
@@ -1624,10 +1649,20 @@ pub fn gate_event_compact_stream(
             break;
         }
         let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
-        last_record_was_frame_end = header.record_type == COMPACT_RECORD_TYPE_FRAME_END;
+        let previous_record_closed_world = last_record_was_frame_end;
+        last_record_was_frame_end = false;
+        let known_record_type = match compact_contract::KnownRecordType::try_from(header.record_type) {
+            Ok(record_type) => record_type,
+            Err(error) => {
+                gate.payload_errors.push(format!("offset {offset}: {error}"));
+                offset += record_len;
+                continue;
+            }
+        };
 
-        match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_DATA | COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainPerf => {
                 match open_hour {
                     Some(hour) if hour != header.game_hour_raw => {
                         gate.payload_errors.push(format!(
@@ -1814,7 +1849,7 @@ pub fn gate_event_compact_stream(
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 match open_hour {
                     Some(hour) if hour != header.game_hour_raw => {
                         gate.payload_errors.push(format!(
@@ -1921,8 +1956,21 @@ pub fn gate_event_compact_stream(
                 referenced_source_sequences.clear();
                 referenced_source_domains.clear();
                 perf_records.clear();
+                last_record_was_frame_end = true;
             }
-            _ => {}
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    last_record_was_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader
+            | compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {}
         }
         offset += record_len;
     }

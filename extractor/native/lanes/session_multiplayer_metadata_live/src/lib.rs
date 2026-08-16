@@ -77,8 +77,7 @@ pub const WORLD_TENSION_COUNTRY_FLAG_POLICY_CAP_ENABLED: u32 = 1;
 pub const WORLD_TENSION_COUNTRY_FLAG_KNOWN_MASK: u32 =
     WORLD_TENSION_COUNTRY_FLAG_POLICY_CAP_ENABLED;
 pub const WORLD_TENSION_DETAILS_FLAG_INCREASED: u32 = 1;
-pub const WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK: u32 =
-    WORLD_TENSION_DETAILS_FLAG_INCREASED;
+pub const WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK: u32 = WORLD_TENSION_DETAILS_FLAG_INCREASED;
 pub const MAX_WORLD_TENSION_LEDGER_ROWS: u32 = 100_000;
 
 pub const PLAYER_FLAG_HOST: u32 = 1;
@@ -353,10 +352,19 @@ fn encode_world_tension_extension(details: &WorldTensionDetails) -> Vec<u8> {
     out.extend_from_slice(&(WORLD_TENSION_EXTENSION_HEADER_LEN as u16).to_le_bytes());
     out.extend_from_slice(&(WORLD_TENSION_COUNTRY_ROW_LEN as u16).to_le_bytes());
     out.extend_from_slice(&(WORLD_TENSION_LEDGER_ROW_LEN as u16).to_le_bytes());
-    out.extend_from_slice(&(details.country_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
+    out.extend_from_slice(
+        &(details.country_rows.len().min(u32::MAX as usize) as u32).to_le_bytes(),
+    );
     out.extend_from_slice(&(details.ledger_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     out.extend_from_slice(&(strings.bytes.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    out.extend_from_slice(&(if details.increased { WORLD_TENSION_DETAILS_FLAG_INCREASED } else { 0 }).to_le_bytes());
+    out.extend_from_slice(
+        &(if details.increased {
+            WORLD_TENSION_DETAILS_FLAG_INCREASED
+        } else {
+            0
+        })
+        .to_le_bytes(),
+    );
     out.extend_from_slice(&details.current_fixed5.to_le_bytes());
     out.extend_from_slice(&details.prior_fixed5.to_le_bytes());
     out.extend_from_slice(&details.monthly_decrease_fixed5.to_le_bytes());
@@ -515,11 +523,17 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
     let event_count = read_u32(payload, 32) as usize;
     let base_string_bytes = read_u32(payload, 36) as usize;
     let base_end = PAYLOAD_HEADER_LEN
-        .checked_add(player_count.checked_mul(PLAYER_COUNTRY_ROW_LEN).ok_or("player byte overflow")?)
+        .checked_add(
+            player_count
+                .checked_mul(PLAYER_COUNTRY_ROW_LEN)
+                .ok_or("player byte overflow")?,
+        )
         .and_then(|v| v.checked_add(event_count.checked_mul(SESSION_EVENT_ROW_LEN)?))
         .and_then(|v| v.checked_add(base_string_bytes))
         .ok_or("base payload length overflow")?;
-    let ext = payload.get(base_end..).ok_or("world-tension extension offset out of bounds")?;
+    let ext = payload
+        .get(base_end..)
+        .ok_or("world-tension extension offset out of bounds")?;
     if ext.len() < WORLD_TENSION_EXTENSION_HEADER_LEN {
         return Err("world-tension extension shorter than header".into());
     }
@@ -537,7 +551,9 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
     let ledger_count = read_u32(ext, 16);
     let string_bytes = read_u32(ext, 20) as usize;
     let flags = read_u32(ext, 24);
-    if country_count > MAX_WORLD_TENSION_COUNTRY_ROWS || ledger_count > MAX_WORLD_TENSION_LEDGER_ROWS {
+    if country_count > MAX_WORLD_TENSION_COUNTRY_ROWS
+        || ledger_count > MAX_WORLD_TENSION_LEDGER_ROWS
+    {
         return Err("world-tension extension row count exceeds bound".into());
     }
     if string_bytes > MAX_STRING_BLOB_BYTES || flags & !WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK != 0 {
@@ -567,9 +583,7 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
     if read_u32(ext, 64) != 0 || read_u32(ext, 68) != 0 {
         return Err("world-tension extension reserved bytes are non-zero".into());
     }
-    if !(0..=100_000).contains(&current_fixed5)
-        || !(0..=100_000).contains(&prior_fixed5)
-    {
+    if !(0..=100_000).contains(&current_fixed5) || !(0..=100_000).contains(&prior_fixed5) {
         return Err("world-tension extension scalar outside exact bounds".into());
     }
     let increased = flags & WORLD_TENSION_DETAILS_FLAG_INCREASED != 0;
@@ -584,8 +598,12 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
         let tag_db_id = read_u32(row, 0);
         let row_flags = read_u32(row, 4);
         let values = [
-            read_i64(row, 8), read_i64(row, 16), read_i64(row, 24),
-            read_i64(row, 32), read_i64(row, 40), read_i64(row, 48),
+            read_i64(row, 8),
+            read_i64(row, 16),
+            read_i64(row, 24),
+            read_i64(row, 32),
+            read_i64(row, 40),
+            read_i64(row, 48),
         ];
         if tag_db_id == 0 || tag_db_id > MAX_TAG_DB_ID || tag_db_id <= previous_tag {
             return Err("world-tension country ids are invalid or non-canonical".into());
@@ -616,7 +634,10 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
         let source_tag_db_id = read_u32(row, 0);
         let current_threat_fixed = read_i64(row, 8);
         let original_threat_fixed = read_i64(row, 16);
-        let reason_ref = StringRef { off: read_u32(row, 24), len: read_u16(row, 28) };
+        let reason_ref = StringRef {
+            off: read_u32(row, 24),
+            len: read_u16(row, 28),
+        };
         let source_sequence = read_u64(row, 32);
         if read_u16(row, 30) != 0
             || source_tag_db_id == 0
@@ -628,7 +649,9 @@ pub fn decode_world_tension_details(payload: &[u8]) -> Result<Option<WorldTensio
             return Err("world-tension ledger row outside exact bounds".into());
         }
         let start = reason_ref.off as usize;
-        let end = start.checked_add(reason_ref.len as usize).ok_or("reason overflow")?;
+        let end = start
+            .checked_add(reason_ref.len as usize)
+            .ok_or("reason overflow")?;
         let reason_bytes = strings.get(start..end).ok_or("reason out of bounds")?;
         if reason_bytes.contains(&0) {
             return Err("world-tension reason contains NUL".into());
@@ -756,11 +779,11 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
     if tension_schema_present != summary.world_tension_fixed5.is_some()
         || tension_root_present != summary.world_tension_fixed5.is_some()
     {
-        errors.push(
-            "world-tension value/schema/root evidence disagree".to_string(),
-        );
+        errors.push("world-tension value/schema/root evidence disagree".to_string());
     }
-    if details_schema_present != details_root_present || details_schema_present && !tension_schema_present {
+    if details_schema_present != details_root_present
+        || details_schema_present && !tension_schema_present
+    {
         errors.push("world-tension detail schema/root/scalar evidence disagree".to_string());
     }
     if summary.world_tension_fixed5.is_some_and(|value| {
@@ -848,7 +871,8 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
             summary.world_tension_ledger_rows =
                 details.ledger_rows.len().min(u32::MAX as usize) as u32;
             if summary.world_tension_fixed5 != Some(details.current_fixed5) {
-                errors.push("world-tension detail current value disagrees with header scalar".into());
+                errors
+                    .push("world-tension detail current value disagrees with header scalar".into());
             }
         }
         Ok(None) if details_schema_present => {
@@ -972,8 +996,7 @@ pub fn gate_payload(payload: &[u8]) -> PayloadGate {
                     _ => None,
                 };
                 let tick = f32::from_bits(event_state);
-                let exact_shape = flags
-                    == (EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK)
+                let exact_shape = flags == (EVENT_FLAG_DIRECT_CAPTURE | EVENT_FLAG_TRANSITION_HOOK)
                     && summary.source_flags & SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED != 0
                     && actor_key_hash > 0
                     && actor_key_hash <= u32::MAX as u64
@@ -1139,15 +1162,21 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
         zero_skipped_hours: true,
         ..StreamGate::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        gate.errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_frame_hour: Option<i32> = None;
     let mut previous_sequence: Option<u64> = None;
     let mut open_frame_hour = None;
     let mut saw_frame_end = false;
-    let mut last_record_type = None;
+    let mut final_record_is_clean_world_boundary = false;
+    let mut release_epilogue_seen = false;
     let mut frame_domain_data_records = 0u32;
     let mut frame_domain_perf_records = 0u32;
     while offset < raw.len() {
+        let previous_record_closed_world = final_record_is_clean_world_boundary;
+        final_record_is_clean_world_boundary = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
             Err(RecordFramingError::TruncatedHeader(_)) => {
@@ -1209,8 +1238,19 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
             offset += record_len;
             continue;
         }
-        match record_type {
-            RECORD_TYPE_DOMAIN_DATA if domain_id == DOMAIN_ID => {
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                gate.errors.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                offset += record_len;
+                continue;
+            }
+        };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainData if domain_id == DOMAIN_ID => {
                 observe_open_frame(&mut gate, &mut open_frame_hour, game_hour_raw, offset);
                 gate.domain_data_records = gate.domain_data_records.saturating_add(1);
                 frame_domain_data_records = frame_domain_data_records.saturating_add(1);
@@ -1232,13 +1272,13 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
                 merge_payload_summary(&mut gate.payload_summary, &payload_gate.summary);
                 observe_stream_status(&mut gate, payload_gate.summary.status_flags);
             }
-            RECORD_TYPE_DOMAIN_PERF if domain_id == DOMAIN_ID => {
+            compact_contract::KnownRecordType::DomainPerf if domain_id == DOMAIN_ID => {
                 observe_open_frame(&mut gate, &mut open_frame_hour, game_hour_raw, offset);
                 gate.domain_perf_records = gate.domain_perf_records.saturating_add(1);
                 frame_domain_perf_records = frame_domain_perf_records.saturating_add(1);
                 observe_stream_status(&mut gate, read_u32(payload, 32));
             }
-            RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 saw_frame_end = true;
                 gate.frame_end_records = gate.frame_end_records.saturating_add(1);
                 observe_stream_status(&mut gate, read_u32(payload, 24));
@@ -1281,18 +1321,33 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
                 gate.last_hour_raw = Some(game_hour_raw);
                 frame_domain_data_records = 0;
                 frame_domain_perf_records = 0;
+                final_record_is_clean_world_boundary = true;
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 observe_open_frame(&mut gate, &mut open_frame_hour, game_hour_raw, offset);
             }
-            RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainPerf => {
                 observe_open_frame(&mut gate, &mut open_frame_hour, game_hour_raw, offset);
             }
-            other => gate
-                .errors
-                .push(format!("offset {offset}: unknown record type {other}")),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                gate.errors.push(format!(
+                    "offset {offset}: record type {} is outside the session-metadata gate grammar",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
-        last_record_type = Some(record_type);
         offset += record_len;
     }
     if offset != raw.len() {
@@ -1309,7 +1364,7 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
         gate.errors
             .push(format!("compact stream ended with open frame hour {open}"));
     }
-    if last_record_type != Some(RECORD_TYPE_FRAME_END) {
+    if !final_record_is_clean_world_boundary {
         gate.errors
             .push("compact stream does not end at a clean FRAME_END boundary".to_string());
     }
@@ -2360,7 +2415,10 @@ mod tests {
         frame.event_rows.last_mut().unwrap().command_sequence = 3;
         let gate = gate_payload(&encode_payload(&frame));
         assert!(!gate.ok);
-        assert!(gate.errors.iter().any(|error| error.contains("does not follow")));
+        assert!(gate
+            .errors
+            .iter()
+            .any(|error| error.contains("does not follow")));
     }
 
     #[test]

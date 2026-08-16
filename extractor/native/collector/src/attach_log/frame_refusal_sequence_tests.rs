@@ -913,6 +913,7 @@ fn identity_v1_transport(logical_stream_id: u64, path: &std::path::Path) -> Capt
         }),
         ordinary_control: None,
         injected_boundaries: std::collections::VecDeque::new(),
+        injected_logical_stream_id: None,
     }
 }
 

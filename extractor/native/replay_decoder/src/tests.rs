@@ -1571,8 +1571,7 @@ fn seek_rejects_wrong_source_and_valid_prefix_copy_mutations() {
     // a persisted index may never be served against bytes it was not built
     // from.
     match seek_to_hour(&original, &index, HOUR_A, &opts) {
-        Err(SeekError::Open(OpenError::Certification(_)))
-        | Err(SeekError::InvalidIndex(_)) => {}
+        Err(SeekError::Open(OpenError::Certification(_))) | Err(SeekError::InvalidIndex(_)) => {}
         other => panic!("malformed suffix must prevent seek result: {other:?}"),
     }
 
@@ -1634,6 +1633,89 @@ fn identity_v1_cursor_retains_cid1_and_excludes_it_from_ordinary_dispatch() {
     assert_eq!(cursor.stats().other_records, 0);
     assert!(cursor.stats().certification_verdict().is_ok());
     cursor.certify_complete().unwrap();
+}
+
+/// kills: counting H4FC as generic/unknown telemetry, opening hour zero, or
+/// allowing it to affect world folding changes the counter, coverage, or bytes.
+#[test]
+fn identity_cursor_names_freeze_census_without_changing_world_state() {
+    use compact_contract::freeze_census_record::{
+        FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+    };
+    let with_tail = identity_v1_stream();
+    let cid = compact_contract::parse_compact_record_header(&with_tail).unwrap();
+    let cid_bytes = &with_tail[..cid.record_len()];
+    let hour = raw_for(HOUR_A);
+
+    let mut without = cid_bytes.to_vec();
+    push_record(
+        &mut without,
+        1,
+        hour,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut without,
+        2,
+        hour,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let census = FreezeCensusRecordV1::encode_bounded(
+        FreezeCensusPhase::Install,
+        FreezeCensusCounterSnapshot::default(),
+        FreezeCensusCounterSnapshot::default(),
+        &[],
+    )
+    .unwrap();
+    let mut with = cid_bytes.to_vec();
+    push_record(
+        &mut with,
+        1,
+        0,
+        DOMAIN_FRAME,
+        compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+        &census,
+    );
+    push_record(
+        &mut with,
+        2,
+        hour,
+        18,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &country_identity_payload(&[(47, "GER")]),
+    );
+    push_record(
+        &mut with,
+        3,
+        hour,
+        DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(),
+    );
+
+    let mut plain = open_reader_with_identity_mode(
+        Cursor::new(without.clone()),
+        without.len() as u64,
+        "fold_check",
+        StreamIdentityMode::IdentityV1,
+    );
+    let mut censused = open_reader_with_identity_mode(
+        Cursor::new(with.clone()),
+        with.len() as u64,
+        "fold_check",
+        StreamIdentityMode::IdentityV1,
+    );
+    let plain_hours = plain.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    let censused_hours = censused.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(plain_hours[0].snapshot, censused_hours[0].snapshot);
+    assert_eq!(censused.stats().freeze_census_records, 1);
+    assert_eq!(censused.stats().other_records, 0);
+    assert!(censused.stats().certification_verdict().is_ok());
 }
 
 #[test]
@@ -2162,8 +2244,7 @@ fn a_terminal_frame_refusal_keeps_its_bytes_in_the_spool() {
         "the pre-fix watermark would have chosen the boundary inside the refused hour"
     );
 
-    let outcome =
-        recorder_host::spool_trim::trim_spool_prefix(&spool, &frames, &receipt).unwrap();
+    let outcome = recorder_host::spool_trim::trim_spool_prefix(&spool, &frames, &receipt).unwrap();
     match &outcome {
         recorder_host::spool_trim::TrimOutcome::NothingReleasable { reason } => {
             // No frame boundary falls at or below the accepted hour's end, so
@@ -2903,8 +2984,7 @@ const T26_HOUR_17032314_FUEL_OBJECT: &str =
 fn a_real_captured_hours_float_spelling_survives_a_certified_seek() {
     // Half one: the defect is real, measured against the library the fold and
     // the old cache both used.
-    let reparsed: serde_json::Value =
-        serde_json::from_str(T26_HOUR_17032314_FUEL_OBJECT).unwrap();
+    let reparsed: serde_json::Value = serde_json::from_str(T26_HOUR_17032314_FUEL_OBJECT).unwrap();
     let reserialized = serde_json::to_string(&reparsed).unwrap();
     assert_ne!(
         reserialized, T26_HOUR_17032314_FUEL_OBJECT,
@@ -2917,7 +2997,10 @@ fn a_real_captured_hours_float_spelling_survives_a_certified_seek() {
 
     // Half two: through the certified cache, at a checkpoint AND at a delta.
     let bodies = [
-        format!(r#"{{"fuel":{}}}"#, r#"{"cost":0.0,"current":0.0,"gain":0.0,"max":207000.0}"#),
+        format!(
+            r#"{{"fuel":{}}}"#,
+            r#"{"cost":0.0,"current":0.0,"gain":0.0,"max":207000.0}"#
+        ),
         format!(r#"{{"fuel":{T26_HOUR_17032314_FUEL_OBJECT}}}"#),
         format!(r#"{{"fuel":{T26_HOUR_17032314_FUEL_OBJECT}}}"#),
     ];
@@ -2945,7 +3028,8 @@ fn a_real_captured_hours_float_spelling_survives_a_certified_seek() {
         .finish("t26", "1", snapshot::CacheIdentityMode::Legacy, 300)
         .unwrap();
     let index_bytes = index.to_bytes().unwrap();
-    let cache = snapshot::CertifiedReplayCache::open(&index_bytes, cache, 300, &source_sha).unwrap();
+    let cache =
+        snapshot::CertifiedReplayCache::open(&index_bytes, cache, 300, &source_sha).unwrap();
     for (position, body) in bodies.iter().enumerate() {
         let hour = 17_032_314 + position as i64;
         let (reconstructed, _) = cache.reconstruct_json(hour).unwrap();
@@ -3010,7 +3094,9 @@ fn certified_artifacts_publish_the_retained_campaign_identity() {
         .campaign_identity_manifest
         .expect("IdentityV1 artifacts must retain the placement-authoritative CID1");
     assert_eq!(
-        retained.get("game_unique_id").and_then(serde_json::Value::as_str),
+        retained
+            .get("game_unique_id")
+            .and_then(serde_json::Value::as_str),
         Some(CAMPAIGN_UUID)
     );
 }
@@ -3295,11 +3381,7 @@ fn an_interior_excluded_hour_becomes_a_named_hole_and_the_rest_of_the_recording_
         .expect("an interior hole must not cost the whole recording");
 
     let served: Vec<i64> = index.hours.iter().map(|hour| hour.hour_index).collect();
-    let holes: Vec<i64> = index
-        .excluded
-        .iter()
-        .map(|hole| hole.hour_index)
-        .collect();
+    let holes: Vec<i64> = index.excluded.iter().map(|hole| hole.hour_index).collect();
     assert_eq!(
         served,
         vec![HOUR_A, HOUR_A + 3],

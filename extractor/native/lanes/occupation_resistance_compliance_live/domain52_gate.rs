@@ -139,11 +139,15 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
     let mut status_flags_or = 0u32;
     let mut units = BTreeMap::new();
     let mut errors = Vec::new();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+        errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut previous_sequence: Option<u64> = None;
     let mut pending_perf_hour: Option<i32> = None;
     let mut open_frame_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut owned_frame = OwnedFrameAuthority::default();
 
     while cursor < bytes.len() {
@@ -198,6 +202,7 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
             _ => {}
         }
         previous_sequence = Some(header.sequence);
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         cursor += COMPACT_RECORD_HEADER_LEN;
         let Some(payload_end) = cursor.checked_add(header.payload_len) else {
@@ -226,8 +231,20 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
                 false
             }
         };
-        match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    errors.push(format!(
+                        "offset {record_offset}: unsupported compact record type {}",
+                        unknown.0
+                    ));
+                    cursor = payload_end;
+                    continue;
+                }
+            };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 if record_semantics_ok {
                     owned_frame.emitted_perf_records =
                         owned_frame.emitted_perf_records.saturating_add(1);
@@ -254,7 +271,7 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 if record_semantics_ok {
                     observe_data_hour(
                         &mut errors,
@@ -285,7 +302,7 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 let mut clean = record_semantics_ok;
                 if record_semantics_ok {
                     let frame_status_flags = read_u32_le(payload, 24);
@@ -346,8 +363,21 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
                     owned_frame = OwnedFrameAuthority::default();
                 }
             }
-            other => errors.push(format!(
-                "offset {record_offset}: unsupported compact record type {other}"
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => errors.push(format!(
+                "offset {record_offset}: unsupported compact record type {}",
+                known_record_type.canonical_name()
             )),
         }
         cursor = payload_end;

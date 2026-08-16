@@ -194,6 +194,7 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
     let mut last_closed_hour: Option<i32> = None;
     let mut saw_frame_end = false;
     let mut last_record_was_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut hours = BTreeSet::new();
     let mut owned_frame = OwnedFrameAuthority::default();
 
@@ -289,11 +290,30 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
             .saturating_add(payload_len as u64);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
         summary.max_record_len = summary.max_record_len.max(record_len);
-        summary.domains_seen.insert(header.domain_id);
+        let previous_record_closed_world = last_record_was_clean_frame_end;
         last_record_was_clean_frame_end = false;
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: unsupported record type {}",
+                        unknown.0
+                    ));
+                    offset = payload_end;
+                    continue;
+                }
+            };
+        if !matches!(
+            known_record_type,
+            compact_contract::KnownRecordType::FreezeCensus
+                | compact_contract::KnownRecordType::StreamHeader
+        ) {
+            summary.domains_seen.insert(header.domain_id);
+        }
 
-        match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf if semantics_valid => {
                 if header.domain_id != RC_PROBE_DOMAIN_ID {
                     owned_frame.all_perf_records = owned_frame.all_perf_records.saturating_add(1);
                     owned_frame.perf_domains.insert(header.domain_id);
@@ -344,7 +364,7 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                     decode_domain_perf_record(offset, header.domain_id, payload, &mut summary);
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END if semantics_valid => {
+            compact_contract::KnownRecordType::FrameEnd if semantics_valid => {
                 let open_matches = match open_hour {
                     Some(open) if open == header.game_hour_raw => true,
                     Some(open) => {
@@ -411,7 +431,7 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                     owned_frame = OwnedFrameAuthority::default();
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+            compact_contract::KnownRecordType::DomainData if semantics_valid => {
                 match open_hour {
                     Some(open) if open != header.game_hour_raw => summary.parse_errors.push(format!(
                         "offset {offset}: data hour {} encountered before frame-end closed hour {open}",
@@ -471,13 +491,27 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                     _ => {}
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_PERF
-            | COMPACT_RECORD_TYPE_FRAME_END
-            | COMPACT_RECORD_TYPE_DOMAIN_DATA => {}
-            _ => summary.parse_errors.push(format!(
+            compact_contract::KnownRecordType::DomainPerf
+            | compact_contract::KnownRecordType::FrameEnd
+            | compact_contract::KnownRecordType::DomainData => {}
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
                 "offset {offset}: unsupported record type {}",
-                header.record_type
-            )),
+                    known_record_type.canonical_name()
+                ))
+            }
         }
 
         offset = payload_end;

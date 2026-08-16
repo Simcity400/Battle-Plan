@@ -74,7 +74,8 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL, COMPACT_RECORD_TYPE_DOMAIN_DATA,
     COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_DOMAIN_PERF,
     COMPACT_RECORD_TYPE_FRAME_DEGRADED, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
+    COMPACT_RECORD_TYPE_FRAME_REFUSED, COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -89,6 +90,7 @@ enum Category {
     Framing,
     PerfBase,
     PerfDiagTrailer,
+    FreezeCensus,
     Unknown,
 }
 
@@ -100,6 +102,7 @@ impl Category {
             Self::Framing => "(d) FRAMING           FRAME_END + STREAM_HEADER",
             Self::PerfBase => "(d) PERF BASE         DOMAIN_PERF outcome + 40B counters",
             Self::PerfDiagTrailer => "(c) DEV PERF DIAG     PDU1 trailer units",
+            Self::FreezeCensus => "(e) FREEZE CENSUS     H4FC stopped-window telemetry",
             Self::Unknown => "(e) UNKNOWN           unclassified record type",
         }
     }
@@ -117,6 +120,7 @@ fn category_of(record_type: u16) -> Category {
         | COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => Category::LossAccounting,
         COMPACT_RECORD_TYPE_FRAME_END | COMPACT_RECORD_TYPE_STREAM_HEADER => Category::Framing,
         COMPACT_RECORD_TYPE_DOMAIN_PERF => Category::PerfBase,
+        COMPACT_RECORD_TYPE_FREEZE_CENSUS => Category::FreezeCensus,
         _ => Category::Unknown,
     }
 }
@@ -170,7 +174,10 @@ impl Census {
         let record_len = (COMPACT_RECORD_HEADER_LEN + payload.len()) as u64;
         self.records += 1;
         self.total_bytes += record_len;
-        self.per_type.entry(record_type).or_default().add(record_len);
+        self.per_type
+            .entry(record_type)
+            .or_default()
+            .add(record_len);
 
         if record_type != COMPACT_RECORD_TYPE_DOMAIN_PERF {
             self.bucket(category_of(record_type), record_len);
@@ -480,12 +487,16 @@ fn run() -> Result<(), String> {
         payload.resize(parsed.payload_len as usize, 0);
         let got = fill(&mut reader, &mut payload)?;
         if got < payload.len() {
-            census.unparsed_tail +=
-                (COMPACT_RECORD_HEADER_LEN + got) as u64 + drain(&mut reader)?;
+            census.unparsed_tail += (COMPACT_RECORD_HEADER_LEN + got) as u64 + drain(&mut reader)?;
             eprintln!("wire_byte_census: truncated final record");
             break;
         }
-        census.ingest(parsed.domain_id, parsed.record_type, parsed.record_flags, &payload);
+        census.ingest(
+            parsed.domain_id,
+            parsed.record_type,
+            parsed.record_flags,
+            &payload,
+        );
     }
 
     // Only a verbatim source has a decoded length known independently of the
@@ -496,7 +507,14 @@ fn run() -> Result<(), String> {
         compact_stream::StreamCompression::None => Some(encoded_len),
         compact_stream::StreamCompression::Zstd => None,
     };
-    report(&census, &path, encoded_len, compression, decoded_len, name_limit)
+    report(
+        &census,
+        &path,
+        encoded_len,
+        compression,
+        decoded_len,
+        name_limit,
+    )
 }
 
 /// Read the rest of the source, returning how many bytes were there. Used only
@@ -549,7 +567,12 @@ fn report(
     }
     writeln!(w).ok();
 
-    writeln!(w, "{:<56} {:>12} {:>14} {:>8}", "category", "records", "bytes", "%").ok();
+    writeln!(
+        w,
+        "{:<56} {:>12} {:>14} {:>8}",
+        "category", "records", "bytes", "%"
+    )
+    .ok();
     for (category, bucket) in &census.buckets {
         writeln!(
             w,
@@ -562,7 +585,15 @@ fn report(
         .ok();
     }
     let classified: u64 = census.buckets.values().map(|b| b.bytes).sum();
-    writeln!(w, "{:<56} {:>12} {:>14} {:>7.3}%", "TOTAL", census.records, classified, pct(classified, total)).ok();
+    writeln!(
+        w,
+        "{:<56} {:>12} {:>14} {:>7.3}%",
+        "TOTAL",
+        census.records,
+        classified,
+        pct(classified, total)
+    )
+    .ok();
     // The partition must be exact against the WHOLE source, not merely against
     // the bytes that happened to parse: categories + residual == every byte the
     // decoder produced. Anything weaker lets a suffix disappear.
@@ -583,7 +614,12 @@ fn report(
     writeln!(w).ok();
 
     writeln!(w, "-- per record type --").ok();
-    writeln!(w, "{:<10} {:<34} {:>12} {:>14} {:>8}", "type", "name", "records", "bytes", "%").ok();
+    writeln!(
+        w,
+        "{:<10} {:<34} {:>12} {:>14} {:>8}",
+        "type", "name", "records", "bytes", "%"
+    )
+    .ok();
     for (record_type, bucket) in &census.per_type {
         writeln!(
             w,
@@ -664,7 +700,12 @@ fn report(
     writeln!(w, "-- top {name_limit} diagnostic units by bytes --").ok();
     let mut names: Vec<_> = census.diag_by_name.iter().collect();
     names.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(b.0)));
-    writeln!(w, "{:<44} {:>14} {:>14} {:>10}", "unit", "occurrences", "bytes", "% stream").ok();
+    writeln!(
+        w,
+        "{:<44} {:>14} {:>14} {:>10}",
+        "unit", "occurrences", "bytes", "% stream"
+    )
+    .ok();
     for (name, bucket) in names.iter().take(name_limit) {
         writeln!(
             w,
@@ -693,6 +734,28 @@ fn type_name(record_type: u16) -> &'static str {
         COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => "CAPTURE_TERMINATED",
         COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => "CLOCK_UNREADABLE_INTERVAL",
         COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => "UNTRUSTED_CLOCK_RECOVERY",
+        COMPACT_RECORD_TYPE_FREEZE_CENSUS => "FREEZE_CENSUS",
         _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod freeze_census_tests {
+    use super::*;
+
+    /// kills: folding type 11 back into the tolerant unknown bucket loses the
+    /// named telemetry category while also hiding a future raw type 12.
+    #[test]
+    fn freeze_census_is_named_but_unassigned_type_remains_unknown() {
+        assert_eq!(
+            category_of(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            Category::FreezeCensus
+        );
+        assert_eq!(
+            type_name(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            "FREEZE_CENSUS"
+        );
+        assert_eq!(category_of(12), Category::Unknown);
+        assert_eq!(type_name(12), "UNKNOWN");
     }
 }

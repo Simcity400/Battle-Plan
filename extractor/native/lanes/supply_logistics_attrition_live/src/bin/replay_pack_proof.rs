@@ -189,6 +189,9 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
         total_bytes: raw.len(),
         ..StreamGate::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        gate.problems.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut previous_closed_hour: Option<i32> = None;
@@ -197,7 +200,9 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
     let mut frame_perf_records = 0u32;
     let mut frame_health_ok = true;
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     while offset < raw.len() {
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
@@ -259,8 +264,19 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
             continue;
         }
         gate.record_count = gate.record_count.saturating_add(1);
-        match record_type {
-            RECORD_TYPE_DOMAIN_DATA if domain_id == domain44::DOMAIN_ID => {
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                gate.problems.push(format!(
+                    "offset {offset}: unexpected compact record type {} domain {domain_id}",
+                    unknown.0
+                ));
+                offset += record_len;
+                continue;
+            }
+        };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainData if domain_id == domain44::DOMAIN_ID => {
                 observe_open_frame(
                     &mut gate,
                     &mut open_frame_hour,
@@ -295,9 +311,7 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
                     .saturating_add(summary.pressure_candidate_rows_total);
                 gate.data_rows_total = gate.data_rows_total.saturating_add(summary.data_rows_total);
             }
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF
-                if domain_id == domain44::DOMAIN_ID =>
-            {
+            compact_contract::KnownRecordType::DomainPerf if domain_id == domain44::DOMAIN_ID => {
                 observe_open_frame(
                     &mut gate,
                     &mut open_frame_hour,
@@ -311,7 +325,9 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
                 frame_health_ok &=
                     observe_status(&mut gate, "DOMAIN_PERF", read_u32_le(payload, 32), offset);
             }
-            RECORD_TYPE_FRAME_END if domain_id == compact_contract::COMPACT_DOMAIN_FRAME => {
+            compact_contract::KnownRecordType::FrameEnd
+                if domain_id == compact_contract::COMPACT_DOMAIN_FRAME =>
+            {
                 gate.frame_end_records = gate.frame_end_records.saturating_add(1);
                 let frame_end_health_ok =
                     observe_status(&mut gate, "FRAME_END", read_u32_le(payload, 24), offset);
@@ -392,9 +408,27 @@ fn gate_stream(raw: &[u8]) -> Result<StreamGate, String> {
                 frame_health_ok = true;
                 final_record_is_clean_frame_end = clean_boundary;
             }
-            other => gate.problems.push(format!(
-                "offset {offset}: unexpected compact record type {other} domain {domain_id}"
-            )),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainPerf
+            | compact_contract::KnownRecordType::FrameEnd
+            | compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                gate.problems.push(format!(
+                    "offset {offset}: unexpected compact record type {} domain {domain_id}",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset += record_len;
     }

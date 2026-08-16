@@ -8,8 +8,62 @@ use std::collections::BTreeMap;
 
 use crate::campaign_identity::{parse_cid1_record, Cid1Error, ValidatedCid1};
 use crate::domain_gap::DomainGapRecordV1;
-use crate::record_header::CompactRecordHeader;
-use crate::record_semantics::{validate_compact_record_semantics, COMPACT_RECORD_TYPE_DOMAIN_GAP};
+use crate::freeze_census_record::{
+    validate_freeze_census_placement_policy, validate_record_allowed_after_release_epilogue,
+    FreezeCensusPlacement, FreezeCensusRecordV1, RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+};
+use crate::record_header::{parse_compact_record_header, CompactRecordHeader, COMPACT_RECORD_HEADER_LEN};
+use crate::record_semantics::{
+    validate_compact_record_semantics, KnownRecordType, COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    COMPACT_RECORD_TYPE_STREAM_HEADER,
+};
+
+/// Validate the H4FC placement slice of one H4CR byte stream's stateful grammar.
+///
+/// The first envelope selects IdentityV1 only when it is the assigned CID1
+/// type; there is no fallback if that protocol then fails. This helper exists
+/// so secondary whole-stream scanners cannot accidentally validate only each
+/// record's stateless payload while accepting a late/duplicate H4FC. Other
+/// framing and semantic errors remain the caller's existing diagnostics.
+pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let first = match parse_compact_record_header(raw) {
+        Ok(header) => header,
+        Err(_) => return Ok(()),
+    };
+    let mut validator = if first.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER {
+        StatefulStreamValidator::identity_v1()
+    } else {
+        StatefulStreamValidator::legacy()
+    };
+    let mut offset = 0usize;
+    while offset < raw.len() {
+        let header = match parse_compact_record_header(&raw[offset..]) {
+            Ok(header) => header,
+            Err(_) => return Ok(()),
+        };
+        let record_len = header.record_len();
+        if record_len > raw.len().saturating_sub(offset) {
+            return Ok(());
+        }
+        let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
+        if let Err(error) = validator.validate_record(&header, payload) {
+            let rendered = error.to_string();
+            if rendered.contains("FREEZE_CENSUS") {
+                return Err(format!("offset {offset}: {rendered}"));
+            }
+            // This helper supplies the stateful H4FC placement check to
+            // secondary scanners. Every other framing/semantic failure stays
+            // with that scanner's existing diagnostics, avoiding duplicate
+            // errors and preserving its domain-specific evidence.
+            return Ok(());
+        }
+        offset += record_len;
+    }
+    Ok(())
+}
 
 /// Protocol selected before any bytes from a stream are accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +144,8 @@ enum PendingCommit {
     Ordinary {
         next_sequence: u64,
         gap_outcome: Option<((u16, u16), GapOutcomeState)>,
+        record_type: KnownRecordType,
+        release_epilogue: bool,
     },
 }
 
@@ -107,6 +163,8 @@ pub struct StatefulStreamValidator {
     phase: StreamPhase,
     identity: Option<ValidatedCid1>,
     ordinary_record_count: u64,
+    last_ordinary_record_type: Option<KnownRecordType>,
+    release_epilogue_seen: bool,
     gap_outcomes: BTreeMap<(u16, u16), GapOutcomeState>,
     failure: Option<StreamValidationError>,
 }
@@ -120,6 +178,8 @@ impl StatefulStreamValidator {
             phase: StreamPhase::AwaitingIdentity,
             identity: None,
             ordinary_record_count: 0,
+            last_ordinary_record_type: None,
+            release_epilogue_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         }
@@ -133,6 +193,8 @@ impl StatefulStreamValidator {
             phase: StreamPhase::AwaitingOrdinary { next_sequence: 1 },
             identity: None,
             ordinary_record_count: 0,
+            last_ordinary_record_type: None,
+            release_epilogue_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         }
@@ -199,9 +261,13 @@ impl StatefulStreamValidator {
             PendingCommit::Ordinary {
                 next_sequence,
                 gap_outcome,
+                record_type,
+                release_epilogue,
             } => {
                 self.phase = StreamPhase::AwaitingOrdinary { next_sequence };
                 self.ordinary_record_count += 1;
+                self.last_ordinary_record_type = Some(record_type);
+                self.release_epilogue_seen = release_epilogue;
                 if let Some((key, state)) = gap_outcome {
                     self.gap_outcomes.insert(key, state);
                 }
@@ -220,6 +286,8 @@ impl StatefulStreamValidator {
                 .map(PendingCommit::Identity)
                 .map_err(StreamValidationError::InvalidCampaignIdentity),
             StreamPhase::AwaitingOrdinary { next_sequence } => {
+                validate_record_allowed_after_release_epilogue(self.release_epilogue_seen)
+                    .map_err(StreamValidationError::InvalidRecordSemantics)?;
                 if header.sequence != next_sequence {
                     return Err(StreamValidationError::UnexpectedSequence {
                         expected: next_sequence,
@@ -254,6 +322,33 @@ impl StatefulStreamValidator {
                     payload,
                 )
                 .map_err(StreamValidationError::InvalidRecordSemantics)?;
+                let record_type =
+                    KnownRecordType::try_from(header.record_type).map_err(|error| {
+                        StreamValidationError::InvalidRecordSemantics(error.to_string())
+                    })?;
+                let release_epilogue = if record_type == KnownRecordType::FreezeCensus {
+                    if header.game_hour_raw != 0 {
+                        return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                            "FREEZE_CENSUS H4CR hour {} is not the zero no-coverage sentinel",
+                            header.game_hour_raw
+                        )));
+                    }
+                    let census = FreezeCensusRecordV1::decode(payload)
+                        .map_err(StreamValidationError::InvalidRecordSemantics)?;
+                    validate_freeze_census_placement_policy(
+                        RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+                        census.phase(),
+                        self.identity.is_some(),
+                        header.sequence,
+                        self.ordinary_record_count,
+                        self.last_ordinary_record_type,
+                        self.release_epilogue_seen,
+                    )
+                    .map_err(StreamValidationError::InvalidRecordSemantics)?
+                        == FreezeCensusPlacement::ReleaseEpilogue
+                } else {
+                    false
+                };
                 let gap_outcome = if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
                     let gap = DomainGapRecordV1::decode(payload).map_err(|error| {
                         StreamValidationError::InvalidRecordSemantics(error.to_string())
@@ -304,6 +399,8 @@ impl StatefulStreamValidator {
                 Ok(PendingCommit::Ordinary {
                     next_sequence: following_sequence,
                     gap_outcome,
+                    record_type,
+                    release_epilogue,
                 })
             }
         }
@@ -319,8 +416,13 @@ mod tests {
         COMPACT_RECORD_TYPE_STREAM_HEADER,
     };
     use crate::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
+    use crate::freeze_census_record::{
+        FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+    };
     use crate::record_semantics::{
-        COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        COMPACT_DOMAIN_FRAME, COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
+        COMPACT_RECORD_TYPE_FREEZE_CENSUS,
     };
 
     const UUID: &str = "a4b17fed-ed12-4361-9064-fb6576638110";
@@ -379,6 +481,27 @@ mod tests {
         )
     }
 
+    fn census_payload(phase: FreezeCensusPhase) -> Vec<u8> {
+        FreezeCensusRecordV1::encode_bounded(
+            phase,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn census_header(sequence: u64, payload: &[u8]) -> CompactRecordHeader {
+        let mut value = header(
+            sequence,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            payload,
+        );
+        value.game_hour_raw = 0;
+        value
+    }
+
     #[test]
     fn identity_v1_retains_only_placement_validated_authority_and_excludes_it_from_count() {
         let payload = cid1_payload();
@@ -401,6 +524,117 @@ mod tests {
         );
         assert_eq!(validator.next_sequence(), 2);
         assert_eq!(validator.ordinary_record_count(), 1);
+    }
+
+    /// kills: rejecting the defined CID1 -> install census -> first-frame
+    /// preamble, assigning the census an hour, or failing to advance sequence
+    /// only after the census is accepted.
+    #[test]
+    fn cid1_then_census_then_first_frame_is_the_canonical_preamble() {
+        let cid1 = cid1_payload();
+        let census = census_payload(FreezeCensusPhase::Install);
+        let data = b"DATA";
+        let mut validator = StatefulStreamValidator::identity_v1();
+        validator
+            .validate_record(&cid1_header(&cid1), &cid1)
+            .unwrap();
+        assert_eq!(
+            validator.validate_record(&census_header(1, &census), &census),
+            Ok(AcceptedRecordKind::Ordinary)
+        );
+        assert_eq!(
+            validator.validate_record(&data_header(2, 18, data), data),
+            Ok(AcceptedRecordKind::Ordinary)
+        );
+    }
+
+    /// kills: making census presence mandatory and thereby rejecting an honest
+    /// capture that failed to publish optional telemetry.
+    #[test]
+    fn missing_census_is_legal() {
+        let cid1 = cid1_payload();
+        let data = b"DATA";
+        let mut validator = StatefulStreamValidator::identity_v1();
+        validator
+            .validate_record(&cid1_header(&cid1), &cid1)
+            .unwrap();
+        assert_eq!(
+            validator.validate_record(&data_header(1, 18, data), data),
+            Ok(AcceptedRecordKind::Ordinary)
+        );
+    }
+
+    /// kills: accepting install telemetry after world records or accepting a
+    /// second install census in one logical stream.
+    #[test]
+    fn late_and_duplicate_install_census_are_rejected() {
+        let census = census_payload(FreezeCensusPhase::Install);
+        let data = b"DATA";
+        let cid1 = cid1_payload();
+
+        let mut late = StatefulStreamValidator::identity_v1();
+        late.validate_record(&cid1_header(&cid1), &cid1).unwrap();
+        late.validate_record(&data_header(1, 18, data), data)
+            .unwrap();
+        assert!(late
+            .validate_record(&census_header(2, &census), &census)
+            .is_err());
+
+        let mut duplicate = StatefulStreamValidator::identity_v1();
+        duplicate
+            .validate_record(&cid1_header(&cid1), &cid1)
+            .unwrap();
+        duplicate
+            .validate_record(&census_header(1, &census), &census)
+            .unwrap();
+        assert!(duplicate
+            .validate_record(&census_header(2, &census), &census)
+            .is_err());
+    }
+
+    /// kills: admitting type-11 install telemetry without the CID1 that defines
+    /// the logical stream it must immediately follow.
+    #[test]
+    fn legacy_mode_cannot_carry_an_install_census() {
+        let census = census_payload(FreezeCensusPhase::Install);
+        let mut validator = StatefulStreamValidator::legacy();
+        assert!(validator
+            .validate_record(&census_header(1, &census), &census)
+            .is_err());
+    }
+
+    /// kills: generalising the type-8 sentinel rule incorrectly or accepting a
+    /// type-11 census whose own H4CR hour is not the explicit zero sentinel.
+    #[test]
+    fn freeze_census_has_its_own_zero_hour_rule() {
+        let census = census_payload(FreezeCensusPhase::Install);
+        let mut bad_header = census_header(1, &census);
+        bad_header.game_hour_raw = game_hour();
+        let mut validator = StatefulStreamValidator::legacy();
+        assert!(validator.validate_record(&bad_header, &census).is_err());
+    }
+
+    /// kills: shipping release-epilogue acceptance while the shared owner
+    /// ruling constant remains false.
+    #[test]
+    fn shipped_validator_rejects_release_census_after_a_boundary() {
+        let boundary = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
+        let release = census_payload(FreezeCensusPhase::Release);
+        let mut validator = StatefulStreamValidator::legacy();
+        validator
+            .validate_record(
+                &header(
+                    1,
+                    COMPACT_DOMAIN_FRAME,
+                    COMPACT_RECORD_TYPE_FRAME_END,
+                    &boundary,
+                ),
+                &boundary,
+            )
+            .unwrap();
+        assert!(validator
+            .validate_record(&census_header(2, &release), &release)
+            .is_err());
     }
 
     #[test]
@@ -544,6 +778,8 @@ mod tests {
             },
             identity: None,
             ordinary_record_count: 7,
+            last_ordinary_record_type: Some(KnownRecordType::DomainData),
+            release_epilogue_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         };

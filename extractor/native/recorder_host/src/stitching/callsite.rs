@@ -14,11 +14,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use compact_contract::campaign_identity::ValidatedCid1;
 use compact_contract::calendar::hour_index_from_raw;
+use compact_contract::campaign_identity::ValidatedCid1;
 use compact_contract::{
-    parse_compact_record_header, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_FRAME_END,
+    parse_compact_record_header, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_FRAME_END,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,9 +25,7 @@ use snapshot::container::{Container, ExpectedIdentity, SpoolEntryReceipt};
 use snapshot::sha256::{to_hex, Sha256};
 use snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES;
 
-use super::product::{
-    publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome,
-};
+use super::product::{publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome};
 use super::publish::{
     PublishReport, RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
     StitchedRebuiltWireSource, VerifiedPayloadReceipt,
@@ -128,10 +125,8 @@ pub fn allocate_product_append_ticket(
     require_direct_run(product_root, run_dir)?;
     let machine_scope_sha256 = machine_scope(product_root)?;
     let campaign_key = identity.campaign_id();
-    let ticket = DurableAppendLedger::new(
-        product_root.join("stitching").join("append-ledgers"),
-    )
-    .allocate(&campaign_key, session_nonce, process_start_identity)?;
+    let ticket = DurableAppendLedger::new(product_root.join("stitching").join("append-ledgers"))
+        .allocate(&campaign_key, session_nonce, process_start_identity)?;
     let receipt = TicketReceipt {
         schema: TICKET_SCHEMA.to_string(),
         logical_stream_id,
@@ -178,8 +173,7 @@ pub fn publish_registered_rollover_stitches(
     let expected_transitions = serde_json::to_value(&descriptor.transitions)
         .map_err(|error| format!("encode rollover transitions for stitch join failed: {error}"))?;
     validate_rollover_package_set_shape(&package_set)?;
-    if package_set.get("schema").and_then(Value::as_str)
-        != Some("cid1-rollover-package-set-v1")
+    if package_set.get("schema").and_then(Value::as_str) != Some("cid1-rollover-package-set-v1")
         || package_set.get("source_descriptor").and_then(Value::as_str)
             != Some(expected_source_relative.as_str())
         || package_set
@@ -216,8 +210,7 @@ pub fn publish_registered_rollover_stitches(
                 raw.logical_stream_id
             ));
         }
-        if member.get("logical_stream_id").and_then(Value::as_u64)
-            != Some(raw.logical_stream_id)
+        if member.get("logical_stream_id").and_then(Value::as_u64) != Some(raw.logical_stream_id)
             || member.get("campaign_id_hex").and_then(Value::as_str)
                 != Some(raw.campaign_id_hex.as_str())
             || member
@@ -297,9 +290,7 @@ fn compose_and_publish(
     mut entries: Vec<RegistryEntry>,
     destination: &Path,
 ) -> Result<ProductStitchOutcome, String> {
-    entries.sort_by_key(|entry| {
-        (entry.ticket.play_order, entry.ticket.logical_stream_id)
-    });
+    entries.sort_by_key(|entry| (entry.ticket.play_order, entry.ticket.logical_stream_id));
     let mut segments = Vec::with_capacity(entries.len());
     let mut payloads = RetainedProductPayloads::default();
     let mut created_utc = None;
@@ -313,11 +304,8 @@ fn compose_and_publish(
         let raw_path = join_relative(product_root, &entry.raw_path)?;
         let raw = inspect_registered_raw(&raw_path, entry)?;
         let (container, package_bytes, package_sha256) =
-            Container::open_strict_with_file_receipt(
-                &package_path,
-                &ExpectedIdentity::default(),
-            )
-            .map_err(|error| format!("open registered standalone replay failed: {error}"))?;
+            Container::open_strict_with_file_receipt(&package_path, &ExpectedIdentity::default())
+                .map_err(|error| format!("open registered standalone replay failed: {error}"))?;
         if package_bytes == 0 || package_sha256 != entry.package_sha256 {
             return Err("opened standalone replay differs from its registry receipt".into());
         }
@@ -348,9 +336,7 @@ fn compose_and_publish(
             .map_err(|error| format!("hash registered content manifest failed: {error}"))?;
         if let Some((expected_digest, _)) = wire_content_manifest.as_ref() {
             if expected_digest != &content_digest {
-                return Err(
-                    "registered stitch members use different content manifests".to_string(),
-                );
+                return Err("registered stitch members use different content manifests".to_string());
             }
         } else {
             wire_content_manifest = Some((content_digest, content_manifest));
@@ -380,7 +366,9 @@ fn compose_and_publish(
             )
             .is_some()
         {
-            return Err("registered stitch maps multiple retained raws to one container path".into());
+            return Err(
+                "registered stitch maps multiple retained raws to one container path".into(),
+            );
         }
         for (hour, snapshot) in built.snapshots {
             if payloads
@@ -469,9 +457,9 @@ fn verify_registered_rebuilt_wire_authority(
     let descriptors = registered_rebuilt_wire_descriptors(container)?;
     let read_entry = |path: &str| {
         let packed_path = format!("payload/{}/{path}", container.game_id());
-        container.read_entry_bytes(&packed_path).map_err(|error| {
-            format!("read registered rebuilt-wire entry {packed_path}: {error}")
-        })
+        container
+            .read_entry_bytes(&packed_path)
+            .map_err(|error| format!("read registered rebuilt-wire entry {packed_path}: {error}"))
     };
     let verified = wire_product::verify_entry_source(&descriptors, read_entry)
         .map_err(|error| format!("registered rebuilt-wire bundle rejected: {error}"))?;
@@ -565,7 +553,9 @@ fn registered_rebuilt_wire_descriptors(
             .and_then(Value::as_bool)
             != Some(true)
     {
-        return Err("registered rebuilt-wire discovery is not production-authoritative".to_string());
+        return Err(
+            "registered rebuilt-wire discovery is not production-authoritative".to_string(),
+        );
     }
     let rows = rebuilt
         .get("entries")
@@ -594,8 +584,7 @@ fn registered_rebuilt_wire_descriptors(
             .get("bytes")
             .and_then(Value::as_u64)
             .ok_or_else(|| "registered rebuilt-wire descriptor has invalid bytes".to_string())?;
-        let blake3: [u8; 32] =
-            decode_sha256(&required_pointer_string(row, "/blake3")?)?
+        let blake3: [u8; 32] = decode_sha256(&required_pointer_string(row, "/blake3")?)?
             .try_into()
             .map_err(|_| "registered rebuilt-wire BLAKE3 is not 32 bytes".to_string())?;
         descriptors.push(wire_product::BundleEntryDescriptor {
@@ -651,9 +640,7 @@ fn registered_rebuilt_wire_descriptors(
         }
     }
     if packed.len() != descriptors.len() {
-        return Err(
-            "registered rebuilt-wire discovery/container cardinality differs".to_string(),
-        );
+        return Err("registered rebuilt-wire discovery/container cardinality differs".to_string());
     }
     for descriptor in &descriptors {
         let (role, len) = packed.get(&descriptor.path).ok_or_else(|| {
@@ -727,22 +714,22 @@ fn build_segment(
             )
             .is_some()
         {
-            return Err(format!("standalone replay has duplicate snapshot hour {hour}"));
+            return Err(format!(
+                "standalone replay has duplicate snapshot hour {hour}"
+            ));
         }
     }
     let frame_hours: Vec<i64> = frames.keys().copied().collect();
     let snapshot_hours: Vec<i64> = snapshots.keys().copied().collect();
     if frame_hours != snapshot_hours || snapshot_hours.is_empty() {
         return Err(
-            "standalone frame/snapshot hour sets differ; refusing to invent stitch coverage"
-                .into(),
+            "standalone frame/snapshot hour sets differ; refusing to invent stitch coverage".into(),
         );
     }
     for adjacent in snapshot_hours.windows(2) {
         if adjacent[0].checked_add(1) != Some(adjacent[1]) {
             return Err(
-                "standalone segment has an unmaterialized internal hour gap; keep separate"
-                    .into(),
+                "standalone segment has an unmaterialized internal hour gap; keep separate".into(),
             );
         }
     }
@@ -994,10 +981,7 @@ fn hash_retained_storage(file: &mut File, path: &Path) -> Result<(String, u64), 
 /// by an offset. The storage file is verified separately against the registry's
 /// storage digest; conflating the two is only invisible while the member is
 /// stored raw.
-fn inspect_registered_raw(
-    path: &Path,
-    entry: &RegistryEntry,
-) -> Result<RawInspection, String> {
+fn inspect_registered_raw(path: &Path, entry: &RegistryEntry) -> Result<RawInspection, String> {
     const SCAN_CHUNK: usize = 1024 * 1024;
 
     let mut handle = open_retained_raw(path)?;
@@ -1070,9 +1054,10 @@ fn inspect_registered_raw(
         let mut remaining = payload_len;
         while remaining != 0 {
             let take = remaining.min(payload_buffer.len());
-            file.read_exact(&mut payload_buffer[..take]).map_err(|error| {
-                format!("read registered raw payload at {offset} failed: {error}")
-            })?;
+            file.read_exact(&mut payload_buffer[..take])
+                .map_err(|error| {
+                    format!("read registered raw payload at {offset} failed: {error}")
+                })?;
             hasher.update(&payload_buffer[..take]);
             if offset == 0 {
                 first_record.extend_from_slice(&payload_buffer[..take]);
@@ -1091,9 +1076,8 @@ fn inspect_registered_raw(
             if header.record_type == COMPACT_RECORD_TYPE_FRAME_END {
                 let (hour, frame_first_sequence, start_byte) =
                     open.take().ok_or("FRAME_END has no open logical frame")?;
-                let hour = hour_index_from_raw(hour).ok_or(
-                    "registered raw FRAME_END carries an out-of-range game_hour_raw",
-                )?;
+                let hour = hour_index_from_raw(hour)
+                    .ok_or("registered raw FRAME_END carries an out-of-range game_hour_raw")?;
                 if frames
                     .insert(
                         hour,
@@ -1205,9 +1189,8 @@ fn scan_complete_frames(raw: &[u8]) -> Result<BTreeMap<i64, FrameExtent>, String
             if header.record_type == COMPACT_RECORD_TYPE_FRAME_END {
                 let (hour, first_sequence, start_byte) =
                     open.take().ok_or("FRAME_END has no open logical frame")?;
-                let hour = hour_index_from_raw(hour).ok_or(
-                    "registered raw FRAME_END carries an out-of-range game_hour_raw",
-                )?;
+                let hour = hour_index_from_raw(hour)
+                    .ok_or("registered raw FRAME_END carries an out-of-range game_hour_raw")?;
                 if frames
                     .insert(
                         hour,
@@ -1269,10 +1252,7 @@ fn add_cross_session_gaps(segments: &mut [SegmentInput]) -> Result<(), String> {
             continue;
         }
         for hour in first_gap..cutover {
-            let evidence_id = format!(
-                "inter-segment-gap-{}-{}",
-                segments[index].play_order, hour
-            );
+            let evidence_id = format!("inter-segment-gap-{}-{}", segments[index].play_order, hour);
             segments[index].transition_coverage.insert(
                 hour,
                 CoverageDisposition::Gap {
@@ -1453,12 +1433,11 @@ fn register_entry(product_root: &Path, entry: &RegistryEntry) -> Result<(), Stri
             &logical_stream_bytes,
         ],
     );
-    let path = campaign_registry_dir(product_root, &entry.ticket.campaign_key_hex)
-        .join(format!(
-            "{:020}-{}.json",
-            entry.ticket.play_order,
-            &stem_digest[..24]
-        ));
+    let path = campaign_registry_dir(product_root, &entry.ticket.campaign_key_hex).join(format!(
+        "{:020}-{}.json",
+        entry.ticket.play_order,
+        &stem_digest[..24]
+    ));
     write_immutable_json(&path, entry)
 }
 
@@ -1472,7 +1451,8 @@ fn load_campaign_entries(
     for candidate in fs::read_dir(&dir)
         .map_err(|error| format!("read campaign stitch registry failed: {error}"))?
     {
-        let candidate = candidate.map_err(|error| format!("read registry entry failed: {error}"))?;
+        let candidate =
+            candidate.map_err(|error| format!("read registry entry failed: {error}"))?;
         let metadata = candidate
             .file_type()
             .map_err(|error| format!("inspect registry entry failed: {error}"))?;
@@ -1480,13 +1460,12 @@ fn load_campaign_entries(
         let file_name = file_name
             .to_str()
             .ok_or("campaign stitch registry contains a non-UTF-8 entry")?;
-        if metadata.is_file()
-            && file_name.starts_with('.')
-            && file_name.contains(".incoming-")
-        {
+        if metadata.is_file() && file_name.starts_with('.') && file_name.contains(".incoming-") {
             continue;
         }
-        if !metadata.is_file() || candidate.path().extension().and_then(|v| v.to_str()) != Some("json") {
+        if !metadata.is_file()
+            || candidate.path().extension().and_then(|v| v.to_str()) != Some("json")
+        {
             return Err("campaign stitch registry contains a non-JSON/non-file entry".into());
         }
         let value: RegistryEntry = serde_json::from_value(read_strict_json(&candidate.path())?)
@@ -1625,9 +1604,11 @@ fn machine_scope(product_root: &Path) -> Result<String, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let secret = crate::auto_attach::staging::generate_secret_128()?;
             write_immutable_bytes(&path, &secret)?;
-            validate_machine_scope(&fs::read(&path).map_err(|error| {
-                format!("read persisted machine stitch scope failed: {error}")
-            })?)
+            validate_machine_scope(
+                &fs::read(&path).map_err(|error| {
+                    format!("read persisted machine stitch scope failed: {error}")
+                })?,
+            )
         }
         Err(error) => Err(format!("read machine stitch scope failed: {error}")),
     }
@@ -1681,10 +1662,16 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
             "source_descriptor",
             "source_descriptor_sha256",
             "first_recording_logical_stream_id",
+            "freeze_census",
             "ordered_streams",
             "transitions",
         ],
         "rollover package set",
+    )?;
+    let (carried_census, absent_census) = validate_rollover_freeze_census_presence(
+        package_set
+            .get("freeze_census")
+            .ok_or("rollover package set has no freeze_census presence section")?,
     )?;
     let members = package_set
         .get("ordered_streams")
@@ -1713,7 +1700,106 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
             "rollover package member",
         )?;
     }
+    let mut census_accounted = carried_census;
+    census_accounted.extend(absent_census);
+    census_accounted.sort_unstable();
+    let admitted = members
+        .iter()
+        .filter(|member| member.get("recording_admitted").and_then(Value::as_bool) == Some(true))
+        .map(|member| {
+            member
+                .get("logical_stream_id")
+                .and_then(Value::as_u64)
+                .ok_or("rollover package member has no u64 logical_stream_id")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if census_accounted != admitted {
+        return Err(
+            "rollover freeze census presence does not account every admitted member exactly once"
+                .to_string(),
+        );
+    }
     Ok(())
+}
+
+fn validate_rollover_freeze_census_presence(value: &Value) -> Result<(Vec<u64>, Vec<u64>), String> {
+    require_exact_object_keys(
+        value,
+        &[
+            "schema",
+            "status",
+            "carried_by_logical_streams",
+            "absent_from_logical_streams",
+            "problems",
+        ],
+        "rollover freeze census presence",
+    )?;
+    if value.get("schema").and_then(Value::as_str)
+        != Some("hoi4.rollover-freeze-census-presence.v1")
+    {
+        return Err("rollover freeze census presence has the wrong schema".to_string());
+    }
+    let decode_ids = |field: &str| -> Result<Vec<u64>, String> {
+        let values = value
+            .get(field)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("rollover freeze census presence {field} is not an array"))?;
+        let ids = values
+            .iter()
+            .map(|item| {
+                item.as_u64().ok_or_else(|| {
+                    format!("rollover freeze census presence {field} contains a non-u64 id")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(format!(
+                "rollover freeze census presence {field} is not strictly increasing"
+            ));
+        }
+        Ok(ids)
+    };
+    let carried = decode_ids("carried_by_logical_streams")?;
+    let absent = decode_ids("absent_from_logical_streams")?;
+    if carried.iter().any(|id| absent.binary_search(id).is_ok()) {
+        return Err(
+            "rollover freeze census presence puts a logical stream in both lists".to_string(),
+        );
+    }
+    let problems = value
+        .get("problems")
+        .and_then(Value::as_array)
+        .ok_or("rollover freeze census presence problems is not an array")?;
+    if problems.iter().any(|problem| !problem.is_string()) {
+        return Err("rollover freeze census presence contains a non-string problem".to_string());
+    }
+    let mixed = !carried.is_empty() && !absent.is_empty();
+    let expected_status = if mixed {
+        "partial"
+    } else if carried.is_empty() {
+        "absent"
+    } else {
+        "complete"
+    };
+    if value.get("status").and_then(Value::as_str) != Some(expected_status) {
+        return Err("rollover freeze census presence status contradicts its member lists".into());
+    }
+    let expected_problems = if mixed {
+        vec![format!(
+            "rollover install freeze census presence is partial: carried by logical streams {carried:?}; absent from logical streams {absent:?}"
+        )]
+    } else {
+        Vec::new()
+    };
+    if problems
+        != &expected_problems
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>()
+    {
+        return Err("rollover freeze census presence problems contradict its member lists".into());
+    }
+    Ok((carried, absent))
 }
 
 fn require_exact_object_keys(
@@ -1839,13 +1925,19 @@ fn hex_nibble(value: u8) -> Result<u8, String> {
 
 fn verify_file_sha(path: &Path, expected: &str) -> Result<(), String> {
     let mut file = File::open(path).map_err(|error| {
-        format!("read registered stitch input {} failed: {error}", path.display())
+        format!(
+            "read registered stitch input {} failed: {error}",
+            path.display()
+        )
     })?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         let read = file.read(&mut buffer).map_err(|error| {
-            format!("read registered stitch input {} failed: {error}", path.display())
+            format!(
+                "read registered stitch input {} failed: {error}",
+                path.display()
+            )
         })?;
         if read == 0 {
             break;
@@ -1853,7 +1945,10 @@ fn verify_file_sha(path: &Path, expected: &str) -> Result<(), String> {
         hasher.update(&buffer[..read]);
     }
     if to_hex(&hasher.finalize()) != expected {
-        return Err(format!("registered stitch input {} changed", path.display()));
+        return Err(format!(
+            "registered stitch input {} changed",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -1864,8 +1959,12 @@ fn read_strict_json(path: &Path) -> Result<Value, String> {
     if bytes.len() > MAX_CONTROL_BYTES {
         return Err(format!("stitch control {} exceeds 16 MiB", path.display()));
     }
-    snapshot::parse_json_strict(&bytes)
-        .map_err(|error| format!("strict-decode stitch control {} failed: {error}", path.display()))
+    snapshot::parse_json_strict(&bytes).map_err(|error| {
+        format!(
+            "strict-decode stitch control {} failed: {error}",
+            path.display()
+        )
+    })
 }
 
 fn write_immutable_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -1894,9 +1993,7 @@ fn write_immutable_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!("create immutable stitch temp failed: {error}"))
-            }
+            Err(error) => return Err(format!("create immutable stitch temp failed: {error}")),
         };
         if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
             drop(file);
@@ -1964,8 +2061,8 @@ fn rename_new_durable(source: &Path, destination: &Path) -> std::io::Result<()> 
 }
 
 fn compare_immutable(path: &Path, expected: &[u8]) -> Result<(), String> {
-    let existing = fs::read(path)
-        .map_err(|error| format!("read immutable stitch control failed: {error}"))?;
+    let existing =
+        fs::read(path).map_err(|error| format!("read immutable stitch control failed: {error}"))?;
     if existing == expected {
         Ok(())
     } else {
@@ -2093,8 +2190,8 @@ mod tests {
 
     #[test]
     fn registered_frame_scan_retains_exact_source_extents() {
-        let first_raw_hour = compact_contract::calendar::DATE_EPOCH_CONST
-            + ((1936 * 365 + 10) * 24 + 5);
+        let first_raw_hour =
+            compact_contract::calendar::DATE_EPOCH_CONST + ((1936 * 365 + 10) * 24 + 5);
         let first_hour_index = compact_contract::calendar::hour_index_from_raw(first_raw_hour)
             .expect("fixture raw hour");
         let mut raw = record(0, first_raw_hour, 5, b"cid1");
@@ -2125,7 +2222,10 @@ mod tests {
         assert_eq!((second.first_sequence, second.last_sequence), (3, 4));
         assert_eq!(second.start_byte, second_start);
         assert_eq!(second.end_byte, raw.len() as u64);
-        assert_eq!(scan_source_bounds(&raw).unwrap(), ((0, 4), (0, raw.len() as u64)));
+        assert_eq!(
+            scan_source_bounds(&raw).unwrap(),
+            ((0, 4), (0, raw.len() as u64))
+        );
     }
 
     /// One member, two storage encodings, one inspection result.
@@ -2145,8 +2245,7 @@ mod tests {
             COMPACT_RECORD_TYPE_STREAM_HEADER,
         };
 
-        let raw_hour =
-            compact_contract::calendar::DATE_EPOCH_CONST + ((1936 * 365 + 10) * 24 + 5);
+        let raw_hour = compact_contract::calendar::DATE_EPOCH_CONST + ((1936 * 365 + 10) * 24 + 5);
         let observation = Cid1Observation {
             game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
             game_unique_seed: -4242,
@@ -2166,10 +2265,11 @@ mod tests {
             header[20..22].copy_from_slice(&COMPACT_DOMAIN_STREAM_HEADER.to_le_bytes());
             decoded.extend(header);
         }
-        let validated = crate::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
-            0, &decoded,
-        )
-        .unwrap();
+        let validated =
+            crate::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(
+                0, &decoded,
+            )
+            .unwrap();
         let identity = validated.validated_cid1().unwrap().clone();
         let first_record = decoded.clone();
         // Highly repetitive so the compressed member is genuinely smaller; a
@@ -2257,7 +2357,10 @@ mod tests {
         assert_eq!(from_raw.first_record, first_record);
         assert_eq!(from_raw.source_bounds, from_zstd.source_bounds);
         assert_eq!(from_zstd.source_bounds.1, (0, decoded.len() as u64));
-        assert_eq!(from_zstd.compression, compact_stream::StreamCompression::Zstd);
+        assert_eq!(
+            from_zstd.compression,
+            compact_stream::StreamCompression::Zstd
+        );
 
         // The retained payload is what the stitched container embeds. It must
         // hand on decoded H4CR, not the storage bytes it was read from.
@@ -2341,6 +2444,12 @@ mod tests {
     /// produces — fatally, at the end of a production rollover capture. This
     /// fixture is the writer's literal output shape; the assertions below are
     /// what makes a one-sided field a test failure instead of a capture failure.
+    ///
+    /// kills: removing the final set-wide freeze-census field, widening either
+    /// exact-key roster, or accepting a status/problems value that contradicts
+    /// the two member lists makes one of these direct production-validator
+    /// calls fail. No byte mutation loop is needed because each semantic class
+    /// is represented by one analytically chosen malformed value.
     #[test]
     fn the_package_set_shape_is_one_authority_shared_by_writer_and_reader() {
         let member = || {
@@ -2368,6 +2477,13 @@ mod tests {
                 "source_descriptor": "logical-streams/logical-stream-set.json",
                 "source_descriptor_sha256": "77".repeat(32),
                 "first_recording_logical_stream_id": 0,
+                "freeze_census": {
+                    "schema": "hoi4.rollover-freeze-census-presence.v1",
+                    "status": "complete",
+                    "carried_by_logical_streams": [0],
+                    "absent_from_logical_streams": [],
+                    "problems": [],
+                },
                 "ordered_streams": members,
                 "transitions": [],
             })
@@ -2385,6 +2501,26 @@ mod tests {
             .unwrap()
             .remove("first_recording_logical_stream_id");
         assert!(validate_rollover_package_set_shape(&missing_top).is_err());
+
+        let mut contradictory_presence = package_set(serde_json::json!([member()]));
+        contradictory_presence["freeze_census"] = serde_json::json!({
+            "schema": "hoi4.rollover-freeze-census-presence.v1",
+            "status": "complete",
+            "carried_by_logical_streams": [0],
+            "absent_from_logical_streams": [1],
+            "problems": [],
+        });
+        assert!(validate_rollover_package_set_shape(&contradictory_presence).is_err());
+
+        let mut omitted_member = package_set(serde_json::json!([member()]));
+        omitted_member["freeze_census"] = serde_json::json!({
+            "schema": "hoi4.rollover-freeze-census-presence.v1",
+            "status": "absent",
+            "carried_by_logical_streams": [],
+            "absent_from_logical_streams": [],
+            "problems": [],
+        });
+        assert!(validate_rollover_package_set_shape(&omitted_member).is_err());
 
         let mut extra_member = member();
         extra_member["unexpected"] = serde_json::json!(true);
@@ -2406,13 +2542,10 @@ mod tests {
 
     #[test]
     fn registered_frame_scan_rejects_sequence_and_hour_ambiguity() {
-        let raw_hour = compact_contract::calendar::DATE_EPOCH_CONST
-            + ((1936 * 365 + 10) * 24 + 5);
+        let raw_hour = compact_contract::calendar::DATE_EPOCH_CONST + ((1936 * 365 + 10) * 24 + 5);
         let mut gap = record(0, raw_hour, 5, b"cid1");
         gap.extend(record(2, raw_hour, 1, b"world"));
-        assert!(scan_complete_frames(&gap)
-            .unwrap_err()
-            .contains("sequence"));
+        assert!(scan_complete_frames(&gap).unwrap_err().contains("sequence"));
 
         let mut interleaved = record(0, raw_hour, 5, b"cid1");
         interleaved.extend(record(1, raw_hour, 1, b"world"));
@@ -2444,24 +2577,19 @@ mod tests {
     #[test]
     fn package_control_objects_reject_schema_drift() {
         let exact = serde_json::json!({"schema":"v1", "ordered_streams":[]});
-        assert!(require_exact_object_keys(
-            &exact,
-            &["schema", "ordered_streams"],
-            "fixture",
-        )
-        .is_ok());
+        assert!(
+            require_exact_object_keys(&exact, &["schema", "ordered_streams"], "fixture",).is_ok()
+        );
 
         let unknown = serde_json::json!({
             "schema":"v1",
             "ordered_streams":[],
             "unreviewed":true,
         });
-        assert!(require_exact_object_keys(
-            &unknown,
-            &["schema", "ordered_streams"],
-            "fixture",
-        )
-        .is_err());
+        assert!(
+            require_exact_object_keys(&unknown, &["schema", "ordered_streams"], "fixture",)
+                .is_err()
+        );
     }
 
     #[test]

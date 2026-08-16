@@ -123,8 +123,10 @@ use compact_contract::{
     COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
-    COMPACT_RECORD_TYPE_FRAME_REFUSED,
+    KnownRecordType,
 };
+#[cfg(test)]
+use compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
@@ -380,6 +382,8 @@ struct FrameSpan {
 struct ScanState {
     bytes_consumed: u64,
     records_seen: u64,
+    freeze_census_records: u64,
+    unknown_record_type_records: u64,
     parse_errors: Vec<String>,
     current: FrameAccumulator,
     frames: Vec<FrameSpan>,
@@ -472,6 +476,18 @@ fn process_record(
     if header.record_type == COMPACT_RECORD_TYPE_STREAM_HEADER {
         return;
     }
+    let known_record_type = match KnownRecordType::try_from(header.record_type) {
+        Ok(record_type) => record_type,
+        Err(error) => {
+            state.unknown_record_type_records =
+                state.unknown_record_type_records.saturating_add(1);
+            state.parse_errors.push(format!(
+                "unknown record type at sequence {}: {error}",
+                header.sequence
+            ));
+            return;
+        }
+    };
     // Validate BEFORE any type-specific arm returns. FRAME_REFUSED used to be
     // handled above this call and returned early, so this audit accepted every
     // type-6 record as a refusal without ever reading its payload: a truncated
@@ -487,6 +503,17 @@ fn process_record(
     );
     let semantics_ok = semantics.is_ok();
 
+    if known_record_type == KnownRecordType::FreezeCensus {
+        state.freeze_census_records = state.freeze_census_records.saturating_add(1);
+        if let Err(error) = semantics {
+            state.parse_errors.push(format!(
+                "FREEZE_CENSUS at sequence {} is unreadable: {error}",
+                header.sequence
+            ));
+        }
+        return;
+    }
+
     // A refused frame published no sweep, so its partial accumulation describes
     // nothing and is dropped rather than folded into the distributions. Exactly
     // one H4FR version is legal on the wire and the validator above is what says
@@ -496,7 +523,7 @@ fn process_record(
     //
     // How the other record types treat a semantics failure is deliberately
     // unchanged: `semantics_ok` gates the PERF arm exactly as before.
-    if header.record_type == COMPACT_RECORD_TYPE_FRAME_REFUSED {
+    if known_record_type == KnownRecordType::FrameRefused {
         if let Err(error) = semantics {
             state.parse_errors.push(format!(
                 "FRAME_REFUSED at sequence {} dropped the open frame but its payload is \
@@ -771,6 +798,8 @@ struct Report {
     collector_build: serde_json::Value,
     bytes_consumed: u64,
     records_seen: u64,
+    freeze_census_records: u64,
+    unknown_record_type_records: u64,
     parse_errors: Vec<String>,
     frames_seen: u64,
     frames_without_probe: u64,
@@ -920,6 +949,8 @@ impl ScanState {
             input_path,
             bytes_consumed: self.bytes_consumed,
             records_seen: self.records_seen,
+            freeze_census_records: self.freeze_census_records,
+            unknown_record_type_records: self.unknown_record_type_records,
             parse_errors: self.parse_errors.clone(),
             frames_seen: self.frames_seen,
             frames_without_probe: self.frames_without_probe,

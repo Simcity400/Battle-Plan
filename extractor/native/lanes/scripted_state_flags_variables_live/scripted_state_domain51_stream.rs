@@ -32,7 +32,8 @@ pub use compact_record_header::{
 #[cfg(test)]
 use compact_record_semantics::COMPACT_DOMAIN_PERF_BASE_LEN as DOMAIN_PERF_PAYLOAD_LEN;
 use compact_record_semantics::{
-    validate_compact_record_semantics, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+    validate_compact_record_semantics, KnownRecordType,
+    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
 };
 #[cfg(test)]
 const RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
@@ -481,12 +482,14 @@ pub fn verify_domain51_h4cr_stream(
     let mut last_closed_hour: Option<i32> = None;
     let mut saw_frame_end = false;
     let mut terminal_frame_end_authoritative = false;
+    let mut release_epilogue_seen = false;
     let mut owned = OwnedHourAuthority::default();
     let mut domains_seen = BTreeSet::new();
 
     while offset < raw.len() {
         // Any bytes after a previously authoritative FRAME_END make that
         // record non-terminal, even if the trailing bytes do not frame.
+        let previous_record_closed_world = terminal_frame_end_authoritative;
         terminal_frame_end_authoritative = false;
         let remaining = raw.len().saturating_sub(offset);
         let header = match parse_compact_record_header(&raw[offset..]) {
@@ -565,8 +568,16 @@ pub fn verify_domain51_h4cr_stream(
         report.record_count = report.record_count.saturating_add(1);
         domains_seen.insert(record.domain_id);
 
-        match record.record_type {
-            RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+        let known_record_type = match KnownRecordType::try_from(record.record_type) {
+            Ok(record_type) => record_type,
+            Err(error) => {
+                report.errors.push(format!("offset {offset}: {error}"));
+                offset = offset.saturating_add(record_len);
+                continue;
+            }
+        };
+        match known_record_type {
+            KnownRecordType::DomainPerf if semantics_valid => {
                 observe_perf_hour(
                     &mut report.errors,
                     &mut pending_hour,
@@ -604,7 +615,7 @@ pub fn verify_domain51_h4cr_stream(
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+            KnownRecordType::DomainData if semantics_valid => {
                 observe_data_hour(
                     &mut report.errors,
                     pending_hour,
@@ -657,7 +668,7 @@ pub fn verify_domain51_h4cr_stream(
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END => {
+            KnownRecordType::FrameEnd => {
                 saw_frame_end = true;
                 report.frame_end_records = report.frame_end_records.saturating_add(1);
                 *report
@@ -692,7 +703,20 @@ pub fn verify_domain51_h4cr_stream(
                     owned = OwnedHourAuthority::default();
                 }
             }
-            _ => {}
+            KnownRecordType::DomainPerf | KnownRecordType::DomainData => {}
+            KnownRecordType::FreezeCensus => {
+                if let Ok(census) = crate::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    terminal_frame_end_authoritative = crate::freeze_census_record::release_epilogue_closes_stream_policy(crate::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == crate::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            KnownRecordType::StreamHeader
+            | KnownRecordType::DomainGap
+            | KnownRecordType::FrameRefused
+            | KnownRecordType::FrameDegraded
+            | KnownRecordType::CaptureTerminated
+            | KnownRecordType::ClockUnreadableInterval
+            | KnownRecordType::UntrustedClockRecovery => {}
         }
         offset = offset.saturating_add(record_len);
     }

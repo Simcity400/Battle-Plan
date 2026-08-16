@@ -38,18 +38,18 @@ use std::process::ExitCode;
 
 use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
 use compact_contract::frame_refusal::FrameRefusalRecordV2;
+use compact_contract::stream_validator::{
+    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
+};
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance,
     compact_status_for_global_interpretation, compact_status_is_failure, lane_local_status_mask,
     parse_compact_record_header, validate_compact_record_semantics, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
-    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
     COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
-};
-use compact_contract::stream_validator::{
-    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
+    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
 };
 use replay_decoder::{DecodeStats, OpenOptions, Source};
 use serde_json::{json, Map, Value};
@@ -636,8 +636,10 @@ impl CompletenessAudit {
         payload: &[u8],
     ) -> Result<(), String> {
         validate_compact_record_semantics(domain_id, record_type, record_flags, payload)?;
+        let record_type = compact_contract::KnownRecordType::try_from(record_type)
+            .map_err(|unknown| format!("unknown compact record type {}", unknown.0))?;
         match record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 // A DOMAIN_DATA payload carries its own status, and that is the
                 // status `WorldFold` actually decides on: 35 of its 90 fold
                 // functions read it straight out of the payload and return
@@ -740,7 +742,7 @@ impl CompletenessAudit {
                         status_flags & lane_local_status_mask(domain_id);
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainPerf => {
                 let status_flags = read_u32_at(payload, 32, "DOMAIN_PERF status")?;
                 let normalized = compact_status_for_global_interpretation(domain_id, status_flags);
                 let residual = compact_status_failure_flags_after_expected_partial_tolerance(
@@ -782,11 +784,12 @@ impl CompletenessAudit {
                     ));
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
-                let record = compact_contract::frame_degraded::FrameDegradedRecordV2::decode(
-                    payload,
-                )
-                .map_err(|reason| format!("FRAME_DEGRADED payload is unreadable: {reason}"))?;
+            compact_contract::KnownRecordType::FrameDegraded => {
+                let record =
+                    compact_contract::frame_degraded::FrameDegradedRecordV2::decode(payload)
+                        .map_err(|reason| {
+                            format!("FRAME_DEGRADED payload is unreadable: {reason}")
+                        })?;
                 // Deliberately NOT re-checked here: that the payload's
                 // `degraded_hour` equals the envelope hour. `stream_fold`'s
                 // boundary tracker owns that rule for both frame-level records
@@ -816,7 +819,7 @@ impl CompletenessAudit {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 let emitted = read_u32_at(payload, 16, "FRAME_END emitted-domain count")?;
                 let scheduled = read_u32_at(payload, 20, "FRAME_END scheduled-domain count")?;
                 let status_flags = read_u32_at(payload, 24, "FRAME_END status")?;
@@ -994,7 +997,7 @@ impl CompletenessAudit {
                     ));
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_GAP => {
+            compact_contract::KnownRecordType::DomainGap => {
                 // An ACCOUNTED ABSENCE. `H4DG` consumes the ordinary H4CR
                 // sequence under the affected domain id and IS that scheduled
                 // domain's terminal outcome, so it belongs in the hour's
@@ -1014,7 +1017,7 @@ impl CompletenessAudit {
                 domain.gap_reason_mask |= 1u32 << gap.reason.code();
                 domain.gap_part_mask |= 1u32 << gap.part.code();
             }
-            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+            compact_contract::KnownRecordType::FrameRefused => {
                 // A TERMINATED FRAME. The hour was assembled and closed WITHOUT
                 // publishing, so it produces no folded snapshot and must not
                 // enter `hours`. It closes the hour exactly as FRAME_END does,
@@ -1036,8 +1039,8 @@ impl CompletenessAudit {
                 // The decode above succeeded, so the payload bore the magic and
                 // declared the one version this build knows; the fallback
                 // cannot be reached from here.
-                let wire_version = compact_contract::frame_refusal::
-                    declared_frame_refusal_version(payload)
+                let wire_version =
+                    compact_contract::frame_refusal::declared_frame_refusal_version(payload)
                     .unwrap_or(compact_contract::frame_refusal::FRAME_REFUSAL_VERSION);
                 let hour_index = compact_contract::calendar::hour_index_from_raw(game_hour_raw)
                     .ok_or_else(|| format!("FRAME_REFUSED game hour {game_hour_raw} is invalid"))?;
@@ -1109,9 +1112,11 @@ impl CompletenessAudit {
                     ));
                 }
             }
-            COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
-                let termination = compact_contract::capture_termination::
-                    CaptureTerminationRecordV1::decode(payload)
+            compact_contract::KnownRecordType::CaptureTerminated => {
+                let termination =
+                    compact_contract::capture_termination::CaptureTerminationRecordV1::decode(
+                        payload,
+                    )
                     .map_err(|error| format!("CAPTURE_TERMINATED payload: {error}"))?;
                 return Err(format!(
                     "capture terminated abnormally after {} ms: reasons={:?}; detail={}",
@@ -1120,7 +1125,7 @@ impl CompletenessAudit {
                     termination.detail
                 ));
             }
-            COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+            compact_contract::KnownRecordType::ClockUnreadableInterval => {
                 // AN ACCOUNTED ABSENCE OF HOURS, which is why it appears here
                 // and does almost nothing.
                 //
@@ -1142,7 +1147,7 @@ impl CompletenessAudit {
                     ClockUnreadableIntervalRecordV1::decode(payload)
                     .map_err(|error| format!("CLOCK_UNREADABLE_INTERVAL payload: {error}"))?;
             }
-            COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+            compact_contract::KnownRecordType::UntrustedClockRecovery => {
                 // AN UNACCOUNTED ABSENCE OF HOURS -- the difference from the
                 // arm above is the whole reason this is a separate record.
                 //
@@ -1158,19 +1163,19 @@ impl CompletenessAudit {
                 // hour; it does not contradict an interval) belong to
                 // `BoundaryTracker`, which owns every boundary rule in this
                 // workspace.
-                compact_contract::untrusted_clock_recovery::
-                    UntrustedClockRecoveryRecordV1::decode(payload)
+                compact_contract::untrusted_clock_recovery::UntrustedClockRecoveryRecordV1::decode(
+                    payload,
+                )
                     .map_err(|error| format!("UNTRUSTED_CLOCK_RECOVERY payload: {error}"))?;
             }
-            other => {
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader => {
                 // Not a skip. A record type this audit has not been taught is
                 // exactly how a certifier drifts out of date while still
                 // reporting success — which is what the previous `unreachable!`
                 // turned into a panic on every real capture, because DOMAIN_GAP
                 // and FRAME_REFUSED were always reachable here.
-                return Err(format!(
-                    "compact record type {other} is not accounted by the completeness audit"
-                ));
+                // Stream metadata closes and claims no world state.
             }
         }
         Ok(())
@@ -1315,10 +1320,7 @@ fn audit_compact_reader_with_identity_mode(
     })
 }
 
-fn audit_source(
-    source: &Source,
-    identity_mode: StreamIdentityMode,
-) -> Result<AuditResult, String> {
+fn audit_source(source: &Source, identity_mode: StreamIdentityMode) -> Result<AuditResult, String> {
     match source {
         Source::StreamFile(path) => {
             let reader = compact_stream::open(path)
@@ -2079,7 +2081,10 @@ fn frame_finding_predicates(refusals: &BTreeMap<i64, HourRefusal>) -> (usize, Ve
     let total = names.len();
     (
         total,
-        names.into_iter().take(FRAME_FINDING_PREDICATE_LIMIT).collect(),
+        names
+            .into_iter()
+            .take(FRAME_FINDING_PREDICATE_LIMIT)
+            .collect(),
     )
 }
 
@@ -2087,8 +2092,7 @@ fn frame_finding_predicates(refusals: &BTreeMap<i64, HourRefusal>) -> (usize, Ve
 /// named. This is what makes an attempted-and-refused hour distinguishable from
 /// an hour the stream never reached.
 fn refusals_json(refusals: &BTreeMap<i64, HourRefusal>) -> Value {
-    let mut offending_domains: std::collections::BTreeSet<u16> =
-        std::collections::BTreeSet::new();
+    let mut offending_domains: std::collections::BTreeSet<u16> = std::collections::BTreeSet::new();
     for refusal in refusals.values() {
         offending_domains.extend(refusal.offenders.iter().map(|offender| offender.domain_id));
     }
@@ -2289,10 +2293,8 @@ fn cmd_compare(args: &[String]) -> Result<u8, String> {
     }
     let path_a = Path::new(&positional[0]);
     let path_b = Path::new(&positional[1]);
-    let (run_a, kind_a) =
-        run_input_with_identity_mode(path_a, &expected_roster, identity_mode)?;
-    let (run_b, kind_b) =
-        run_input_with_identity_mode(path_b, &expected_roster, identity_mode)?;
+    let (run_a, kind_a) = run_input_with_identity_mode(path_a, &expected_roster, identity_mode)?;
+    let (run_b, kind_b) = run_input_with_identity_mode(path_b, &expected_roster, identity_mode)?;
 
     let first_divergence = first_divergence(
         &run_a,
@@ -2408,8 +2410,16 @@ fn refusal_divergence(
     if a == b {
         return None;
     }
-    let only_a: Vec<i64> = a.keys().filter(|hour| !b.contains_key(hour)).copied().collect();
-    let only_b: Vec<i64> = b.keys().filter(|hour| !a.contains_key(hour)).copied().collect();
+    let only_a: Vec<i64> = a
+        .keys()
+        .filter(|hour| !b.contains_key(hour))
+        .copied()
+        .collect();
+    let only_b: Vec<i64> = b
+        .keys()
+        .filter(|hour| !a.contains_key(hour))
+        .copied()
+        .collect();
     Some(json!({
         "kind": "refused_hour_mismatch",
         "a_refused_hours": a.len(),

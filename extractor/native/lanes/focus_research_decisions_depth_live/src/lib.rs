@@ -6,7 +6,7 @@ use compact_contract::{
     COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN, COMPACT_FRAME_END_PAYLOAD_LEN,
     COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
-    COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_STATUS_FAILURE_MASK, KnownRecordType,
 };
 use recorder_host::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
 
@@ -935,12 +935,16 @@ fn validate_authoritative_stream(
     require_owned_schema_v2: bool,
 ) -> AuthoritativeStreamValidation {
     let mut result = AuthoritativeStreamValidation::default();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        result.errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut pending_perf_hour: Option<i32> = None;
     let mut open_frame_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut final_record_is_certified_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut data_counts = BTreeMap::<(i32, u16), u32>::new();
     let mut perf_counts = BTreeMap::<(i32, u16), u32>::new();
     let mut observed_perf_counts_by_hour = BTreeMap::<i32, u64>::new();
@@ -950,6 +954,7 @@ fn validate_authoritative_stream(
     }
 
     while offset < raw.len() {
+        let previous_record_closed_world = final_record_is_certified_frame_end;
         final_record_is_certified_frame_end = false;
         let record = match parse_h4cr_record(raw, offset) {
             Ok(record) => record,
@@ -992,8 +997,16 @@ fn validate_authoritative_stream(
             }
         };
 
-        match record.record_type {
-            RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type = match KnownRecordType::try_from(record.record_type) {
+            Ok(record_type) => record_type,
+            Err(error) => {
+                result.errors.push(format!("offset {offset}: {error}"));
+                offset = record.next_offset;
+                continue;
+            }
+        };
+        match known_record_type {
+            KnownRecordType::DomainPerf => {
                 if record.domain_id != DOMAIN_RC_PROBE {
                     *observed_perf_counts_by_hour
                         .entry(record.game_hour_raw)
@@ -1063,7 +1076,7 @@ fn validate_authoritative_stream(
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            KnownRecordType::DomainData => {
                 if let Some(open) = open_frame_hour {
                     if record.game_hour_raw != open {
                         result.errors.push(format!(
@@ -1169,7 +1182,7 @@ fn validate_authoritative_stream(
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END => {
+            KnownRecordType::FrameEnd => {
                 result.frame_end_records = result.frame_end_records.saturating_add(1);
                 let mut certified = semantics_ok;
                 match open_frame_hour {
@@ -1335,7 +1348,19 @@ fn validate_authoritative_stream(
                 }
                 final_record_is_certified_frame_end = certified;
             }
-            _ => {}
+            KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(record.payload) {
+                    final_record_is_certified_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            KnownRecordType::StreamHeader
+            | KnownRecordType::DomainGap
+            | KnownRecordType::FrameRefused
+            | KnownRecordType::FrameDegraded
+            | KnownRecordType::CaptureTerminated
+            | KnownRecordType::ClockUnreadableInterval
+            | KnownRecordType::UntrustedClockRecovery => {}
         }
 
         offset = record.next_offset;

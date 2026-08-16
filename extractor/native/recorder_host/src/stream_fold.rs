@@ -26,13 +26,14 @@ use compact_contract::stream_validator::{
     AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode,
 };
 use compact_contract::{
-    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_GAP,
+    parse_compact_record_header, validate_compact_record_semantics, KnownRecordType,
+    RecordFramingError, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
     COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
-    COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY, COMPACT_STATUS_FAILURE_MASK,
+    COMPACT_RECORD_TYPE_FREEZE_CENSUS, COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY,
+    COMPACT_STATUS_FAILURE_MASK,
 };
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -180,6 +181,8 @@ pub struct FoldStreamStats {
     pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
     pub frame_end_records: u64,
     pub perf_records: u64,
+    /// Frame-independent H4FC telemetry records; they change no world state.
+    pub freeze_census_records: u64,
     /// Ordinary non-DATA/non-PERF/non-FRAME_END records; excludes CID1.
     pub other_records: u64,
     pub hours_emitted: u64,
@@ -344,6 +347,9 @@ pub struct BoundaryTracker {
     pending_perf_hour: Option<i32>,
     last_closed_hour: Option<i32>,
     last_record_kind: Option<u16>,
+    /// True only after the optional, policy-gated phase-2 record. No further
+    /// physical record is legal once this is set.
+    release_freeze_census_seen: bool,
     terminal_outcome_domains: BTreeSet<u16>,
     gap_domains: BTreeSet<u16>,
     data_domains: BTreeSet<u16>,
@@ -468,8 +474,7 @@ impl OpenHourSpan {
         self.hasher.update(&header.domain_id.to_le_bytes());
         self.hasher.update(&header.record_type.to_le_bytes());
         self.hasher.update(&header.record_flags.to_le_bytes());
-        self.hasher
-            .update(&(payload.len() as u64).to_le_bytes());
+        self.hasher.update(&(payload.len() as u64).to_le_bytes());
         self.hasher.update(payload);
     }
 
@@ -612,9 +617,7 @@ impl BoundaryTracker {
                         missing,
                         at_byte,
                         0,
-                        format!(
-                            "game hour {missing} was never delivered: {reason}"
-                        ),
+                        format!("game hour {missing} was never delivered: {reason}"),
                     );
                     missing = missing.saturating_add(1);
                 }
@@ -658,10 +661,7 @@ impl BoundaryTracker {
         self.gap_domains.clear();
         self.data_domains.clear();
         self.prev_sequence = header.sequence.checked_sub(1);
-        self.lost_between_frames = (
-            self.lost_between_frames.0.saturating_add(1),
-            reason,
-        );
+        self.lost_between_frames = (self.lost_between_frames.0.saturating_add(1), reason);
         let latched = self.violation.take();
         self.observe_rules(header, payload, at_byte);
         let fired = self.violation.take();
@@ -687,8 +687,10 @@ impl BoundaryTracker {
         // The sequence-zero CID1 protocol header belongs to the stream, not to
         // any hour; it is consumed by the identity validator before the fold
         // and is not part of an hour's basis.
-        if header.record_type == compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER
-        {
+        if matches!(
+            KnownRecordType::try_from(header.record_type),
+            Ok(KnownRecordType::StreamHeader | KnownRecordType::FreezeCensus)
+        ) {
             return;
         }
         let span = self.hour_span.get_or_insert_with(|| OpenHourSpan {
@@ -881,12 +883,8 @@ impl BoundaryTracker {
             return;
         };
         for hour in &state.hours {
-            self.coverage.record_excluded(
-                *hour,
-                state.first_byte,
-                state.len,
-                state.reason.clone(),
-            );
+            self.coverage
+                .record_excluded(*hour, state.first_byte, state.len, state.reason.clone());
         }
         if state.hours_overflowed {
             self.coverage.note_unattributed_loss(format!(
@@ -973,7 +971,10 @@ impl BoundaryTracker {
     /// How many sequence holes have been reconciled between frames, and the
     /// diagnosis of the latest. See [`BoundaryTracker::lost_between_frames`].
     pub fn lost_between_frames(&self) -> (u64, &str) {
-        (self.lost_between_frames.0, self.lost_between_frames.1.as_str())
+        (
+            self.lost_between_frames.0,
+            self.lost_between_frames.1.as_str(),
+        )
     }
 
     /// How many hours a damaged span has been seen to abandon, which hour the
@@ -1007,18 +1008,13 @@ impl BoundaryTracker {
     /// a structurally-odd but complete hour, where nothing was lost and no
     /// delta chain was broken.
     pub fn resync_lost_records(&self) -> bool {
-        self.resync
-            .as_ref()
-            .is_some_and(|state| state.lost_records)
+        self.resync.as_ref().is_some_and(|state| state.lost_records)
     }
 
     /// Close the coverage map at end of stream: an hour still open read real
     /// bytes and never closed, so it is excluded and named; residual bytes that
     /// framed into no hour are named as an unattributed loss.
-    pub fn seal_coverage(
-        &mut self,
-        residual: &[u8],
-    ) -> crate::hour_coverage::HourCoverageMap {
+    pub fn seal_coverage(&mut self, residual: &[u8]) -> crate::hour_coverage::HourCoverageMap {
         let residual_carry = residual.len();
         if let Some(state) = self.resync.take() {
             for hour in &state.hours {
@@ -1112,6 +1108,14 @@ impl BoundaryTracker {
             ));
             return;
         }
+        if let Err(reason) =
+            compact_contract::freeze_census_record::validate_record_allowed_after_release_epilogue(
+                self.release_freeze_census_seen,
+            )
+        {
+            self.violation = Some(format!("record at byte {at_byte} is illegal: {reason}"));
+            return;
+        }
         match self.prev_sequence {
             None if header.sequence != 1 => {
                 self.violation = Some(format!(
@@ -1158,9 +1162,22 @@ impl BoundaryTracker {
             return;
         }
 
+        let record_type = match KnownRecordType::try_from(header.record_type) {
+            Ok(record_type) => record_type,
+            Err(_) => {
+                self.violation = Some(format!(
+                    "unknown compact record type {} at byte {at_byte}: this fold has not been taught to close, count, or ignore it",
+                    header.record_type
+                ));
+                return;
+            }
+        };
+        let previous_record_type = self
+            .last_record_kind
+            .and_then(|raw| KnownRecordType::try_from(raw).ok());
         self.last_record_kind = Some(header.record_type);
-        match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF | COMPACT_RECORD_TYPE_DOMAIN_GAP => {
+        match record_type {
+            KnownRecordType::DomainPerf | KnownRecordType::DomainGap => {
                 let is_probe = header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
                     && header.domain_id == 250;
                 if !is_probe && !self.terminal_outcome_domains.insert(header.domain_id) {
@@ -1211,7 +1228,7 @@ impl BoundaryTracker {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            KnownRecordType::DomainData => {
                 if self.gap_domains.contains(&header.domain_id) {
                     self.violation = Some(format!(
                         "DOMAIN_DATA for domain {} in hour {} coexists with DOMAIN_GAP at byte {at_byte}",
@@ -1252,7 +1269,7 @@ impl BoundaryTracker {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            KnownRecordType::FrameEnd => {
                 let (emitted_domains, scheduled_domains) =
                     match validate_frame_end_seal_fields(payload) {
                         Ok(counts) => counts,
@@ -1301,8 +1318,7 @@ impl BoundaryTracker {
                         return;
                     }
                 }
-                if let Some((start, end)) =
-                    self.unobserved_interval_covering(header.game_hour_raw)
+                if let Some((start, end)) = self.unobserved_interval_covering(header.game_hour_raw)
                 {
                     self.violation = Some(format!(
                         "FRAME_END at byte {at_byte} closes hour {}, which an earlier \
@@ -1318,7 +1334,7 @@ impl BoundaryTracker {
                 self.data_domains.clear();
                 self.last_closed_hour = Some(header.game_hour_raw);
             }
-            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+            KnownRecordType::FrameRefused => {
                 // A refused frame IS a closed frame -- it closed without
                 // publishing. It therefore clears the per-hour sets exactly as
                 // FRAME_END does. Leaving them populated (what the old `_ => {}`
@@ -1387,8 +1403,7 @@ impl BoundaryTracker {
                 // A refused hour was ASSEMBLED and judged unpublishable, so the
                 // producer read its clock for it. An hour an interval declared
                 // never observed cannot also be one of those.
-                if let Some((start, end)) =
-                    self.unobserved_interval_covering(header.game_hour_raw)
+                if let Some((start, end)) = self.unobserved_interval_covering(header.game_hour_raw)
                 {
                     self.violation = Some(format!(
                         "FRAME_REFUSED at byte {at_byte} refuses hour {}, which an earlier \
@@ -1404,7 +1419,7 @@ impl BoundaryTracker {
                 self.data_domains.clear();
                 self.last_closed_hour = Some(header.game_hour_raw);
             }
-            COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
+            KnownRecordType::FrameDegraded => {
                 // NOT a boundary record. A degraded frame still ends with a
                 // canonical FRAME_END, because it PUBLISHED -- the notice only
                 // says which of its domains are unknown. So this arm closes
@@ -1457,7 +1472,7 @@ impl BoundaryTracker {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
+            KnownRecordType::CaptureTerminated => {
                 if header.game_hour_raw != 0 {
                     self.violation = Some(format!(
                         "CAPTURE_TERMINATED at byte {at_byte} uses game hour {}; expected zero no-coverage sentinel",
@@ -1482,7 +1497,7 @@ impl BoundaryTracker {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+            KnownRecordType::ClockUnreadableInterval => {
                 // NOT a boundary record, and the opposite of one. It closes no
                 // hour, opens none, and clears nothing: the hours it names were
                 // never observed, so there is no per-hour state to close and
@@ -1565,7 +1580,7 @@ impl BoundaryTracker {
                 self.unobserved_intervals
                     .push((record.range_start_hour_raw, record.range_end_hour_raw));
             }
-            COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+            KnownRecordType::UntrustedClockRecovery => {
                 // The counterpart to the interval above, and the one place the
                 // two must NOT be treated alike: this record declares no hour
                 // unobserved. It says the producer will not vouch for the span
@@ -1639,20 +1654,50 @@ impl BoundaryTracker {
                 // records arrive the other way round. Nothing else consults
                 // this: a disclaimed span excludes no frame, only the opposite
                 // statement about the same hours.
-                self.disclaimed_spans.push((disclaimed_start, disclaimed_end));
+                self.disclaimed_spans
+                    .push((disclaimed_start, disclaimed_end));
             }
             // Not a frame-boundary record: it carries campaign identity and is
             // validated where identity is folded, not here.
-            compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER => {}
-            // A record type this fold has not been taught is a violation, not a
-            // skip. Silence here is how a consumer drifts out of date while
-            // still reporting success.
-            other => {
+            KnownRecordType::FreezeCensus => {
+                let census =
+                    match compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(
+                        payload,
+                    ) {
+                        Ok(census) => census,
+                        Err(reason) => {
+                            self.violation = Some(format!(
+                                "FREEZE_CENSUS payload at byte {at_byte} is unreadable: {reason}"
+                            ));
+                            return;
+                        }
+                    };
+                let ordinary_before = header.sequence.saturating_sub(1);
+                match compact_contract::freeze_census_record::
+                    validate_freeze_census_placement_policy(
+                        compact_contract::freeze_census_record::
+                            RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+                        census.phase(),
+                        true,
+                        header.sequence,
+                        ordinary_before,
+                        previous_record_type,
+                        self.release_freeze_census_seen,
+                    )
+                {
+                    Ok(compact_contract::freeze_census_record::FreezeCensusPlacement::InstallPreamble) => {}
+                    Ok(compact_contract::freeze_census_record::FreezeCensusPlacement::ReleaseEpilogue) => {
+                        self.release_freeze_census_seen = true;
+                    }
+                    Err(reason) => {
                 self.violation = Some(format!(
-                    "unknown compact record type {other} at byte {at_byte}: this fold \
-                     has not been taught to close, count, or ignore it"
+                            "FREEZE_CENSUS placement at byte {at_byte} is invalid: {reason}"
                 ));
             }
+        }
+    }
+            // CID1 is validated and consumed by the identity state machine.
+            KnownRecordType::StreamHeader => {}
         }
     }
 
@@ -1684,15 +1729,19 @@ impl BoundaryTracker {
             ));
         }
         if self.last_closed_hour.is_none() {
-            return Err("stream closes no game hour (no FRAME_END or FRAME_REFUSED records)".to_string());
+            return Err(
+                "stream closes no game hour (no FRAME_END or FRAME_REFUSED records)".to_string(),
+            );
         }
         // A stream may legitimately end on a refusal: that hour was closed, it
         // simply closed without publishing. Requiring FRAME_END here would call
         // an honestly-refused stream malformed.
-        if !matches!(
+        let physical_close_is_valid = boundary_eof_policy(
+            compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
             self.last_record_kind,
-            Some(COMPACT_RECORD_TYPE_FRAME_END) | Some(COMPACT_RECORD_TYPE_FRAME_REFUSED)
-        ) {
+            self.release_freeze_census_seen,
+        );
+        if !physical_close_is_valid {
             return Err(format!(
                 "stream ends after record type {}; final record must be a canonical FRAME_END or FRAME_REFUSED boundary",
                 self.last_record_kind
@@ -1701,6 +1750,19 @@ impl BoundaryTracker {
         }
         Ok(())
     }
+}
+
+fn boundary_eof_policy(
+    release_epilogue_enabled: bool,
+    last_record_kind: Option<u16>,
+    release_freeze_census_seen: bool,
+) -> bool {
+    matches!(
+        last_record_kind,
+        Some(COMPACT_RECORD_TYPE_FRAME_END) | Some(COMPACT_RECORD_TYPE_FRAME_REFUSED)
+    ) || (release_epilogue_enabled
+        && release_freeze_census_seen
+        && matches!(last_record_kind, Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS)))
 }
 
 /// What a walker must tell the fold about the record it just observed, decided
@@ -1736,9 +1798,7 @@ pub enum FoldDamageStep {
 /// have to precede it.
 pub fn apply_fold_damage_step(step: FoldDamageStep, fold: &mut WorldFold) {
     match step {
-        FoldDamageStep::LostRecords { hour, reason } => {
-            fold.record_framing_damage(hour, &reason)
-        }
+        FoldDamageStep::LostRecords { hour, reason } => fold.record_framing_damage(hour, &reason),
         FoldDamageStep::CloseAbandonedHour { hour, reason } => {
             fold.close_damaged_hour(hour, &reason)
         }
@@ -1784,8 +1844,7 @@ impl FoldDamageWatch {
                 _ => FoldDamageStep::Clean,
             },
             _ => {
-                let (abandoned_events, abandoned_hour, abandoned_reason) =
-                    tracker.abandoned_hour();
+                let (abandoned_events, abandoned_hour, abandoned_reason) = tracker.abandoned_hour();
                 if abandoned_events > self.abandoned_hours {
                     return FoldDamageStep::CloseAbandonedHour {
                         hour: abandoned_hour,
@@ -2609,8 +2668,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 let before = FoldDamageWatch::before(&tracker);
                 tracker.note_framing_damage(at, record_len as u64, &message);
                 apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
-                stats.unframeable_bytes =
-                    stats.unframeable_bytes.saturating_add(record_len as u64);
+                stats.unframeable_bytes = stats.unframeable_bytes.saturating_add(record_len as u64);
                 off += record_len;
                 continue;
             }
@@ -2653,7 +2711,9 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     stats.records_total += 1;
                     stats.data_records += 1;
                     stats.malformed_payload_records += 1;
-                    stats.excluded_domain_data_records.push(ExcludedDomainDataRecord {
+                    stats
+                        .excluded_domain_data_records
+                        .push(ExcludedDomainDataRecord {
                         stream_offset: processed + off as u64,
                         game_hour_raw: header.game_hour_raw,
                         domain_id: header.domain_id,
@@ -2684,11 +2744,21 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
             }
 
             stats.records_total += 1;
-            match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
-                COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
-                COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
-                _ => stats.other_records += 1,
+            match KnownRecordType::try_from(header.record_type) {
+                Ok(KnownRecordType::DomainData) => stats.data_records += 1,
+                Ok(KnownRecordType::FrameEnd) => stats.frame_end_records += 1,
+                Ok(KnownRecordType::DomainPerf) => stats.perf_records += 1,
+                Ok(KnownRecordType::FreezeCensus) => stats.freeze_census_records += 1,
+                Ok(
+                    KnownRecordType::StreamHeader
+                    | KnownRecordType::DomainGap
+                    | KnownRecordType::FrameRefused
+                    | KnownRecordType::FrameDegraded
+                    | KnownRecordType::CaptureTerminated
+                    | KnownRecordType::ClockUnreadableInterval
+                    | KnownRecordType::UntrustedClockRecovery,
+                ) => stats.other_records += 1,
+                Err(_) => stats.other_records += 1,
             }
             let before = FoldDamageWatch::before(&tracker);
             tracker.observe(&header, payload, processed + off as u64);
@@ -2856,7 +2926,9 @@ mod tests {
                     authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
                     locator: Vec::new(),
                     units: Vec::new(),
-                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(
+                        0,
+                    ),
                     off_frame: None,
                     reason: "d64_rejected_timed_effect_frames=1".to_string(),
                     reason_units_named: 0,
@@ -3053,8 +3125,8 @@ mod tests {
         // The two are minted by disjoint branches of one decision, so a stream
         // carrying both over the same hours is one producer making two
         // contradictory statements.
-        let interval = compact_contract::clock_unreadable_interval::
-            ClockUnreadableIntervalRecordV1 {
+        let interval =
+            compact_contract::clock_unreadable_interval::ClockUnreadableIntervalRecordV1 {
                 range_start_hour_raw: base + 1,
                 range_end_hour_raw: base + 4,
                 last_observed_hour_raw: base,
@@ -3076,7 +3148,11 @@ mod tests {
             &interval,
             0,
         );
-        assert!(contradicted.violation.is_none(), "{:?}", contradicted.violation);
+        assert!(
+            contradicted.violation.is_none(),
+            "{:?}",
+            contradicted.violation
+        );
         observe_recovery(&mut contradicted, 2, resumed, &payload);
         assert!(
             contradicted
@@ -3095,8 +3171,8 @@ mod tests {
         let mut reversed = BoundaryTracker::default();
         observe_recovery(&mut reversed, 1, resumed, &payload);
         assert!(reversed.violation.is_none(), "{:?}", reversed.violation);
-        let inside_interval = compact_contract::clock_unreadable_interval::
-            ClockUnreadableIntervalRecordV1 {
+        let inside_interval =
+            compact_contract::clock_unreadable_interval::ClockUnreadableIntervalRecordV1 {
                 range_start_hour_raw: base + 101,
                 range_end_hour_raw: base + 104,
                 last_observed_hour_raw: base + 100,
@@ -3157,7 +3233,8 @@ mod tests {
             .encode()
             .expect("canonical interval fixture")
         };
-        let observe_interval = |tracker: &mut BoundaryTracker, seq: u64, resumed: i32, payload: &[u8]| {
+        let observe_interval =
+            |tracker: &mut BoundaryTracker, seq: u64, resumed: i32, payload: &[u8]| {
             tracker.observe(
                 &boundary_header(
                     seq,
@@ -3311,14 +3388,7 @@ mod tests {
             seq += 1;
         }
         admitted.observe(
-            &boundary_header(
-                seq,
-                hour,
-                D81,
-                COMPACT_RECORD_TYPE_DOMAIN_GAP,
-                gap.len(),
-                0,
-            ),
+            &boundary_header(seq, hour, D81, COMPACT_RECORD_TYPE_DOMAIN_GAP, gap.len(), 0),
             &gap,
             0,
         );
@@ -3332,14 +3402,7 @@ mod tests {
         // itself, which is why the units cannot simply ride d81's own record.
         let mut rejected = BoundaryTracker::default();
         rejected.observe(
-            &boundary_header(
-                1,
-                hour,
-                D81,
-                COMPACT_RECORD_TYPE_DOMAIN_PERF,
-                perf.len(),
-                0,
-            ),
+            &boundary_header(1, hour, D81, COMPACT_RECORD_TYPE_DOMAIN_PERF, perf.len(), 0),
             &perf,
             0,
         );
@@ -3392,7 +3455,9 @@ mod tests {
                     authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
                     locator: Vec::new(),
                     units: Vec::new(),
-                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(0),
+                    truncation: compact_contract::diagnostic_channel::TruncationAccount::complete(
+                        0,
+                    ),
                     off_frame: None,
                     reason: "d64_rejected_timed_effect_frames=1".to_string(),
                     reason_units_named: 0,
@@ -3725,7 +3790,14 @@ mod tests {
             let hour = raw_for(*hour_index);
             let data = country_identity_payload(&[(47, "GER")]);
             tracker.observe(
-                &boundary_header(*seq, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+                &boundary_header(
+                    *seq,
+                    hour,
+                    18,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                    data.len(),
+                    0,
+                ),
                 &data,
                 *at,
             );
@@ -3780,7 +3852,14 @@ mod tests {
         let hour_b = raw_for(HOUR_B);
         let data = country_identity_payload(&[(47, "GER")]);
         tracker.observe(
-            &boundary_header(seq, hour_b, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data.len(), 0),
+            &boundary_header(
+                seq,
+                hour_b,
+                18,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                data.len(),
+                0,
+            ),
             &data,
             at,
         );
@@ -3821,7 +3900,9 @@ mod tests {
         walk_clean_hours(&mut tracker, &mut seq, &[HOUR_C + 1], &mut at);
 
         let coverage = tracker.seal_coverage(&[]);
-        coverage.validate().expect("the map the seal publishes must be admissible");
+        coverage
+            .validate()
+            .expect("the map the seal publishes must be admissible");
         assert!(
             coverage.is_hour_verified(raw_for(HOUR_A)),
             "the hour BEFORE the injury is verified: {}",
@@ -3834,8 +3915,9 @@ mod tests {
         );
         let excluded = coverage.excluded_hours();
         assert!(
-            excluded.iter().any(|(hour, reason)| *hour == hour_b
-                && reason.contains("hour interleaving")),
+            excluded
+                .iter()
+                .any(|(hour, reason)| *hour == hour_b && reason.contains("hour interleaving")),
             "the injured hour is excluded and NAMED, got {excluded:?}"
         );
         // The whole-stream verdict is deliberately unchanged: it still reports
@@ -5488,12 +5570,8 @@ mod tests {
 
     #[test]
     fn structural_certification_classes_remain_fatal() {
-        let framing = strict_stream_certification_verdict(
-            Some("bad H4CR magic at byte 64"),
-            0,
-            true,
-            None,
-        )
+        let framing =
+            strict_stream_certification_verdict(Some("bad H4CR magic at byte 64"), 0, true, None)
         .expect_err("a framing stop must refuse sealing");
         assert!(framing.contains("framing stopped"), "{framing}");
 
@@ -5508,7 +5586,10 @@ mod tests {
             Some("game hour 42 left open at EOF"),
         )
         .expect_err("an unclosed boundary must refuse sealing");
-        assert!(boundary.contains("stream boundary is not closed"), "{boundary}");
+        assert!(
+            boundary.contains("stream boundary is not closed"),
+            "{boundary}"
+        );
     }
 
     fn expect_frame_end_seal_rejection(tag: &str, frame_payload: &[u8], expected: &str) {
@@ -6006,12 +6087,15 @@ mod tests {
     #[test]
     fn boundary_tracker_reports_typed_abnormal_termination_without_closing_an_hour() {
         let reasons = compact_contract::capture_termination::CaptureTerminationReasons::from_bits(
-            compact_contract::capture_termination::
-                CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED,
+            compact_contract::capture_termination::CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED,
         )
         .unwrap();
-        let payload = compact_contract::capture_termination::CaptureTerminationRecordV1::
-            encode_bounded(reasons, 1_900, "H4FR encoder rejected its detail");
+        let payload =
+            compact_contract::capture_termination::CaptureTerminationRecordV1::encode_bounded(
+                reasons,
+                1_900,
+                "H4FR encoder rejected its detail",
+            );
         let mut tracker = BoundaryTracker::default();
         tracker.observe(
             &boundary_header(
@@ -6028,6 +6112,107 @@ mod tests {
         let error = tracker.eof_check(0).unwrap_err();
         assert!(error.contains("capture terminated abnormally"), "{error}");
         assert!(error.contains("capture_loop_aborted"), "{error}");
-        assert!(error.contains("H4FR encoder rejected its detail"), "{error}");
+        assert!(
+            error.contains("H4FR encoder rejected its detail"),
+            "{error}"
+        );
+    }
+
+    fn one_freeze_census_payload(
+        phase: compact_contract::freeze_census_record::FreezeCensusPhase,
+    ) -> Vec<u8> {
+        use compact_contract::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusEntryPoint, FreezeCensusRecordV1,
+            FreezeCensusRowRef,
+        };
+        let before = FreezeCensusCounterSnapshot {
+            process_attempts: 10,
+            producer_thread_attempts: 7,
+            process_refusals: 2,
+            census_recorded: 10,
+            census_dropped: 0,
+        };
+        let after = FreezeCensusCounterSnapshot {
+            process_attempts: 11,
+            producer_thread_attempts: 8,
+            process_refusals: 2,
+            census_recorded: 11,
+            census_dropped: 0,
+        };
+        FreezeCensusRecordV1::encode_bounded(
+            phase,
+            before,
+            after,
+            &[FreezeCensusRowRef {
+                ordinal: 11,
+                refused: false,
+                entry_point: Some(FreezeCensusEntryPoint::EnableBatch),
+                label: "production hooks",
+                target_count: 4,
+                window_us: 90,
+                acquire_us: 20,
+                minhook_us: 30,
+                passes: 1,
+            }],
+        )
+        .unwrap()
+    }
+
+    /// kills: removing the H4FC exclusion from `absorb_into_hour` opens a
+    /// fabricated hour-zero span and moves the first real hour's first byte.
+    #[test]
+    fn freeze_census_does_not_open_or_extend_world_hour_coverage() {
+        let payload = one_freeze_census_payload(
+            compact_contract::freeze_census_record::FreezeCensusPhase::Install,
+        );
+        let mut tracker = BoundaryTracker::default();
+        let census_header = boundary_header(
+            1,
+            0,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            payload.len(),
+            0,
+        );
+        tracker.absorb_into_hour(&census_header, &payload, 0);
+        tracker.observe(&census_header, &payload, 0);
+        assert!(tracker.hour_span.is_none());
+
+        let first_world_byte = (COMPACT_RECORD_HEADER_LEN + payload.len()) as u64;
+        let data = country_identity_payload(&[(47, "GER")]);
+        let data_header = boundary_header(
+            2,
+            raw_for(HOUR_A),
+            18,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            data.len(),
+            0,
+        );
+        tracker.absorb_into_hour(&data_header, &data, first_world_byte);
+        assert_eq!(
+            tracker.hour_span.as_ref().unwrap().first_byte,
+            first_world_byte
+        );
+    }
+
+    /// kills: accepting phase-2 bytes in the shipped policy or forgetting the
+    /// ruled-on epilogue path makes one of these two pure-policy assertions fail.
+    #[test]
+    fn release_epilogue_eof_policy_is_compiled_for_both_owner_rulings() {
+        assert!(!boundary_eof_policy(
+            false,
+            Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            true,
+        ));
+        assert!(boundary_eof_policy(
+            true,
+            Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            true,
+        ));
+        assert!(!boundary_eof_policy(
+            true,
+            Some(COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            false,
+        ));
     }
 }

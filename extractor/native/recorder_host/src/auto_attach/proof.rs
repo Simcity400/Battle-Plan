@@ -569,7 +569,17 @@ impl FirstCompactRecordGate {
             if self.buffered.len() < record_len {
                 return Ok(None);
             }
-            if compact_contract::calendar::hour_index_from_raw(header.game_hour_raw).is_none() {
+            // H4FC is deliberately sequence 1 and uses the zero no-hour
+            // sentinel. It must reach the exhaustive dispatch below without
+            // being mistaken for a world record with an implausible clock.
+            let carries_no_world_hour = matches!(
+                compact_contract::KnownRecordType::try_from(header.record_type),
+                Ok(compact_contract::KnownRecordType::FreezeCensus
+                    | compact_contract::KnownRecordType::StreamHeader)
+            );
+            if !carries_no_world_hour
+                && compact_contract::calendar::hour_index_from_raw(header.game_hour_raw).is_none()
+            {
                 return Err(format!(
                     "first world-record proof rejected implausible game clock {}",
                     header.game_hour_raw
@@ -626,8 +636,15 @@ impl FirstCompactRecordGate {
         header: compact_contract::CompactRecordHeader,
         payload: &[u8],
     ) -> Result<bool, String> {
-        match header.record_type {
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+        let record_type =
+            compact_contract::KnownRecordType::try_from(header.record_type).map_err(|unknown| {
+                format!(
+                    "first world-record proof rejected unknown record type {}",
+                    unknown.0
+                )
+            })?;
+        match record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 // Always discard an older candidate for this domain first. An
                 // invalid/non-baseline PERF record must never leave a previous
                 // clean candidate available for a later DATA record.
@@ -639,7 +656,7 @@ impl FirstCompactRecordGate {
                 }
                 Ok(false)
             }
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 let evidence = self.pending_perf.remove(&header.domain_id);
                 let Some(evidence) = evidence else {
                     return Ok(false);
@@ -655,13 +672,18 @@ impl FirstCompactRecordGate {
                 }
                 world_fold_proves_material_record(header, payload, evidence.elapsed_wall_ms)
             }
-            compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 self.pending_perf.clear();
                 Ok(false)
             }
-            other => Err(format!(
-                "first world-record proof rejected unknown record type {other}"
-            )),
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader => Ok(false),
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => Ok(false),
         }
     }
 }
@@ -1306,6 +1328,53 @@ mod tests {
                 .sequence(),
             2
         );
+    }
+
+    /// kills: applying the generic plausible-hour check before recognizing
+    /// sequence-1 H4FC makes attach proof reject the mandated zero sentinel.
+    #[test]
+    fn install_freeze_census_precedes_first_world_proof_without_proving_world() {
+        use compact_contract::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+        };
+        let payload = FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Install,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap();
+        let mut stream = compact_record(
+            1,
+            0,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            0,
+            &payload,
+        );
+        let hour = plausible_game_hour();
+        stream.extend_from_slice(&compact_record(
+            2,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &domain_perf_payload(2, 2, 2, 2, 0),
+        ));
+        stream.extend_from_slice(&compact_record(
+            3,
+            hour,
+            10,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &fuel_payload(&[1, 47], 0),
+        ));
+
+        let proof = FirstCompactRecordGate::new([10])
+            .observe(&stream)
+            .unwrap()
+            .expect("world DATA after H4FC should prove attach");
+        assert_eq!(proof.sequence(), 3);
     }
 
     #[test]

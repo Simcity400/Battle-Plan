@@ -255,6 +255,7 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
     let mut last_closed_hour = None::<i32>;
     let mut saw_frame_end = false;
     let mut last_record_was_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
 
     while offset < bytes.len() {
         let header = match parse_compact_record_header(&bytes[offset..]) {
@@ -338,10 +339,22 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
             }
         };
         summary.record_count = summary.record_count.saturating_add(1);
+        let previous_record_closed_world = last_record_was_clean_frame_end;
         last_record_was_clean_frame_end = false;
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported record type {}",
+                    unknown.0
+                ));
+                offset += record_len;
+                continue;
+            }
+        };
 
-        match record_type {
-            RECORD_TYPE_FRAME_END if semantics_valid => {
+        match known_record_type {
+            compact_contract::KnownRecordType::FrameEnd if semantics_valid => {
                 let open_matches = match open_hour {
                     Some(open) if open == game_hour_raw => true,
                     Some(open) => {
@@ -387,7 +400,7 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+            compact_contract::KnownRecordType::DomainData if semantics_valid => {
                 match open_hour {
                     Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
                         "offset {offset}: data hour {game_hour_raw} encountered before frame-end closed hour {open}"
@@ -417,7 +430,7 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
                     _ => {}
                 }
             }
-            RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+            compact_contract::KnownRecordType::DomainPerf if semantics_valid => {
                 match (open_hour, pending_perf_hour) {
                     (Some(open), _) if open == game_hour_raw => {}
                     (Some(open), _) => summary.parse_errors.push(format!(
@@ -434,10 +447,27 @@ pub fn decode_compact_stream(bytes: &[u8]) -> CompactGateSummary {
                         status_for_global_interpretation(domain_id, read_u32(payload, 32));
                 }
             }
-            RECORD_TYPE_FRAME_END | RECORD_TYPE_DOMAIN_DATA | RECORD_TYPE_DOMAIN_PERF => {}
-            other => summary
-                .parse_errors
-                .push(format!("offset {offset}: unsupported record type {other}")),
+            compact_contract::KnownRecordType::FrameEnd
+            | compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainPerf => {}
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported record type {}",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
 
         offset += record_len;
@@ -963,11 +993,14 @@ mod tests {
     #[test]
     fn army_orders_payload_accepts_typed_army_group_and_rejects_unknown_kind() {
         let mut payload = test_army_orders_payload(0);
-        payload[40 + 40..40 + 44]
-            .copy_from_slice(&ARMY_ORDER_OWNER_KIND_ARMY_GROUP.to_le_bytes());
+        payload[40 + 40..40 + 44].copy_from_slice(&ARMY_ORDER_OWNER_KIND_ARMY_GROUP.to_le_bytes());
         let mut summary = CompactGateSummary::default();
         decode_army_orders_payload(0, &payload, &mut summary);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
 
         payload[40 + 40..40 + 44].copy_from_slice(&2u32.to_le_bytes());
         let mut invalid = CompactGateSummary::default();

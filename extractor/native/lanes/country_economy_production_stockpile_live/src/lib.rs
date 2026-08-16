@@ -660,12 +660,16 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         ordered: true,
         ..CompactStreamSummary::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut pending_perf_hour: Option<i32> = None;
     let mut open_frame_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut observed_perf_status_or_by_hour = BTreeMap::<i32, u32>::new();
     let mut observed_owned_perf_roster_by_hour = BTreeMap::<i32, BTreeSet<u16>>::new();
     let mut observed_lane_perf_status_by_hour_domain = BTreeMap::<i32, BTreeMap<u16, u32>>::new();
@@ -730,6 +734,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
             _ => {}
         }
         previous_sequence = Some(sequence);
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
 
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
@@ -760,8 +765,19 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         summary.total_payload_bytes = summary.total_payload_bytes.saturating_add(payload_len);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
 
-        match record_type {
-            RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                offset = offset.saturating_add(record_len);
+                continue;
+            }
+        };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 let owned_perf_authority = is_owned_perf_authority_domain(domain_id);
                 if !owned_perf_authority {
                     summary.parse_errors.push(format!(
@@ -814,7 +830,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                     offset,
                 );
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 if record_semantics_ok && is_lane_owned_data_domain(domain_id) {
                     match observed_lane_perf_status_by_hour_domain
                         .get(&game_hour_raw)
@@ -890,7 +906,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_record_count = summary.frame_end_record_count.saturating_add(1);
                 *summary.frame_hour_counts.entry(game_hour_raw).or_default() += 1;
                 let mut clean = record_semantics_ok;
@@ -978,9 +994,24 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                     final_record_is_clean_frame_end = true;
                 }
             }
-            other => summary
-                .parse_errors
-                .push(format!("offset {offset}: unknown record type {other}")),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: record type {} is outside the country-economy proof grammar",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset = offset.saturating_add(record_len);
     }

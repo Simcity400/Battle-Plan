@@ -533,10 +533,18 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
         let current_manpower = read_u32_le(payload, cursor + 96);
         let cumulative_losses = read_u32_le(payload, cursor + 100);
-        let max_organisation_raw = extended.then(|| read_u32_le(payload, cursor + 104)).unwrap_or(0);
-        let counter_supply_status_raw = extended.then(|| read_u32_le(payload, cursor + 108)).unwrap_or(0);
-        let dig_in_raw = extended.then(|| read_u32_le(payload, cursor + 112)).unwrap_or(0);
-        let dig_in_cap_raw = extended.then(|| read_u32_le(payload, cursor + 116)).unwrap_or(0);
+        let max_organisation_raw = extended
+            .then(|| read_u32_le(payload, cursor + 104))
+            .unwrap_or(0);
+        let counter_supply_status_raw = extended
+            .then(|| read_u32_le(payload, cursor + 108))
+            .unwrap_or(0);
+        let dig_in_raw = extended
+            .then(|| read_u32_le(payload, cursor + 112))
+            .unwrap_or(0);
+        let dig_in_cap_raw = extended
+            .then(|| read_u32_le(payload, cursor + 116))
+            .unwrap_or(0);
         cursor += row_len;
         reserved_tail_zero_rows = reserved_tail_zero_rows.saturating_add((reserved1 == 0) as usize);
 
@@ -670,11 +678,9 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             ));
         }
         training_ui_rows = training_ui_rows.saturating_add(training_observed as usize);
-        training_visible_rows =
-            training_visible_rows.saturating_add(training_visible as usize);
+        training_visible_rows = training_visible_rows.saturating_add(training_visible as usize);
         dig_in_ui_rows = dig_in_ui_rows.saturating_add(dig_in_ui_observed as usize);
-        dig_in_ui_visible_rows =
-            dig_in_ui_visible_rows.saturating_add(dig_in_ui_visible as usize);
+        dig_in_ui_visible_rows = dig_in_ui_visible_rows.saturating_add(dig_in_ui_visible as usize);
 
         if delta_data {
             delta_upsert_rows = delta_upsert_rows.saturating_add(1);
@@ -900,8 +906,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             MAX_ORGANISATION_RAW,
             "max_organisation_raw",
         );
-        max_organisation_rows =
-            max_organisation_rows.saturating_add(has_max_organisation as usize);
+        max_organisation_rows = max_organisation_rows.saturating_add(has_max_organisation as usize);
         validate_optional_u32(
             &mut summary,
             offset,
@@ -912,8 +917,8 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             MAX_COUNTER_SUPPLY_STATUS_RAW,
             "counter_supply_status_raw",
         );
-        counter_supply_status_rows = counter_supply_status_rows
-            .saturating_add(has_counter_supply_status as usize);
+        counter_supply_status_rows =
+            counter_supply_status_rows.saturating_add(has_counter_supply_status as usize);
         validate_optional_u32(
             &mut summary,
             offset,
@@ -1063,6 +1068,7 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
     let mut last_closed_hour: Option<i32> = None;
     let mut saw_frame_end = false;
     let mut last_record_was_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut lifecycle = LifecycleTracker::default();
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
@@ -1135,6 +1141,7 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
         summary.record_count = summary.record_count.saturating_add(1);
         summary.domains_seen.insert(header.domain_id);
         summary.max_payload_len = summary.max_payload_len.max(payload_len);
+        let previous_record_closed_world = last_record_was_clean_frame_end;
         last_record_was_clean_frame_end = false;
 
         let payload = &raw[offset + STREAM_HEADER_LEN..offset + record_len];
@@ -1152,8 +1159,20 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
                 false
             }
         };
-        match header.record_type {
-            RECORD_TYPE_FRAME_END if semantics_valid => {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: unsupported record type {}",
+                        unknown.0
+                    ));
+                    offset += record_len;
+                    continue;
+                }
+            };
+        match known_record_type {
+            compact_contract::KnownRecordType::FrameEnd if semantics_valid => {
                 let open_matches = match open_hour {
                     Some(open) if open == header.game_hour_raw => true,
                     Some(open) => {
@@ -1199,7 +1218,7 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_PERF if semantics_valid => {
+            compact_contract::KnownRecordType::DomainPerf if semantics_valid => {
                 match (open_hour, pending_perf_hour) {
                     (Some(open), _) if open == header.game_hour_raw => {}
                     (Some(open), _) => summary.parse_errors.push(format!(
@@ -1219,7 +1238,7 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
                     decode_domain_perf(offset, payload, &mut summary);
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA if semantics_valid => {
+            compact_contract::KnownRecordType::DomainData if semantics_valid => {
                 match open_hour {
                     Some(open) if open != header.game_hour_raw => summary.parse_errors.push(format!(
                         "offset {offset}: data hour {} encountered before frame-end closed hour {open}",
@@ -1255,10 +1274,27 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END | RECORD_TYPE_DOMAIN_DATA | RECORD_TYPE_DOMAIN_PERF => {}
-            other => summary
-                .parse_errors
-                .push(format!("offset {offset}: unsupported record type {other}")),
+            compact_contract::KnownRecordType::FrameEnd
+            | compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainPerf => {}
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unsupported record type {}",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset = offset.saturating_add(record_len);
     }
@@ -1929,7 +1965,11 @@ mod tests {
         let mut legacy = encode_payload(&header, &rows);
         legacy.truncate(PAYLOAD_HEADER_LEN + LEGACY_ROW_LEN);
         let summary = decode_payload(0, &legacy);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
     #[test]

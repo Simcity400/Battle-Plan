@@ -715,6 +715,9 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
 
 pub fn gate_stream(data: &[u8]) -> GateResult {
     let mut errors = Vec::new();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(data) {
+        errors.push(format!("stateful stream placement: {error}"));
+    }
     let records = match decode_records(data) {
         Ok(records) => records,
         Err(err) => {
@@ -735,6 +738,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
     let mut open_frame_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut frame_lifecycle_data_records = 0usize;
     let mut frame_member_data_records = 0usize;
     let mut frame_lifecycle_perf_records = 0usize;
@@ -778,10 +782,22 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
             _ => {}
         }
         last_sequence = Some(record.sequence);
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
 
-        match record.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(record.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    errors.push(format!(
+                        "offset {}: unknown compact record type {}",
+                        record.offset, unknown.0
+                    ));
+                    continue;
+                }
+            };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 match open_frame_hour {
                     Some(open) if open != record.game_hour_raw => errors.push(format!(
                         "offset {}: DOMAIN_PERF hour {} does not match open DATA frame hour {open}",
@@ -859,7 +875,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     _ => {}
                 }
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 match open_frame_hour {
                     Some(open) if open != record.game_hour_raw => errors.push(format!(
                         "offset {}: DOMAIN_DATA hour {} encountered before FRAME_END closed open frame hour {open}",
@@ -952,8 +968,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                     record.offset, row.combat_id, row.generation
                                 ));
                             }
-                            let exact_side_scalar_flags =
-                                LIFECYCLE_ATTACKER_POSITIONING_PRESENT
+                            let exact_side_scalar_flags = LIFECYCLE_ATTACKER_POSITIONING_PRESENT
                                     | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
                                     | LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT
                                     | LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
@@ -1182,7 +1197,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     }
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 let mut clean = true;
                 let emitted_domains = read_u32(record.payload, 16);
                 let scheduled_domains = read_u32(record.payload, 20);
@@ -1342,7 +1357,23 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     final_record_is_clean_frame_end = true;
                 }
             }
-            _ => unreachable!("canonical record semantics reject unknown record types"),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(record.payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => errors.push(format!(
+                "offset {}: record type {} is outside the naval-combat proof grammar",
+                record.offset,
+                known_record_type.canonical_name()
+            )),
         }
     }
 
@@ -1928,15 +1959,13 @@ fn validate_decoded_lifecycle_row(
             "offset {offset}: lifecycle row {row_index} has defender count without flag"
         ));
     }
-    if row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT == 0
-        && row.attacker_positioning_raw != 0
+    if row.flags & LIFECYCLE_ATTACKER_POSITIONING_PRESENT == 0 && row.attacker_positioning_raw != 0
     {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has attacker positioning without flag"
         ));
     }
-    if row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT == 0
-        && row.defender_positioning_raw != 0
+    if row.flags & LIFECYCLE_DEFENDER_POSITIONING_PRESENT == 0 && row.defender_positioning_raw != 0
     {
         errors.push(format!(
             "offset {offset}: lifecycle row {row_index} has defender positioning without flag"
@@ -2073,8 +2102,8 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} non-convoy ship lacks ship-instance identity"
         ));
     }
-    let terminal_sunk = row.flags & MEMBER_STATE_BITMASK_PRESENT != 0
-        && row.state_bitmask == FEX_STATE_SUNK;
+    let terminal_sunk =
+        row.flags & MEMBER_STATE_BITMASK_PRESENT != 0 && row.state_bitmask == FEX_STATE_SUNK;
     if !is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 && !terminal_sunk {
         errors.push(format!(
             "offset {offset}: member row {row_index} non-terminal non-convoy ship lacks CShip validation"
@@ -2086,9 +2115,7 @@ fn validate_decoded_member_row(
         | MEMBER_ORGANISATION_PRESENT
         | MEMBER_EXPERIENCE_PRESENT
         | MEMBER_SUNK_CONVOYS_PRESENT;
-    if !is_convoy
-        && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0
-        && row.flags & cship_derived != 0
+    if !is_convoy && row.flags & MEMBER_CSHIP_JOIN_VALIDATED == 0 && row.flags & cship_derived != 0
     {
         errors.push(format!(
             "offset {offset}: member row {row_index} without a live CShip join carries CShip-derived flags 0x{:08x}",
@@ -2137,8 +2164,7 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} has state bitmask without flag"
         ));
     }
-    if row.flags & MEMBER_STATE_BITMASK_PRESENT != 0
-        && fex_state_name(row.state_bitmask).is_none()
+    if row.flags & MEMBER_STATE_BITMASK_PRESENT != 0 && fex_state_name(row.state_bitmask).is_none()
     {
         errors.push(format!(
             "offset {offset}: member row {row_index} has unknown CFEX state enum 0x{:x}",
@@ -2255,10 +2281,7 @@ fn validate_lifecycle_row(row: &LifecycleRow) -> Result<(), String> {
             return Err("invalid lifecycle region_id".to_string());
         }
     }
-    for positioning in [
-        row.attacker_positioning_raw,
-        row.defender_positioning_raw,
-    ]
+    for positioning in [row.attacker_positioning_raw, row.defender_positioning_raw]
     .into_iter()
     .flatten()
     {
@@ -2327,7 +2350,10 @@ fn validate_member_row(row: &MemberRow) -> Result<(), String> {
             return Err("invalid owner_tag_db_id".to_string());
         }
     }
-    if row.state_bitmask.is_some_and(|raw| fex_state_name(raw).is_none()) {
+    if row
+        .state_bitmask
+        .is_some_and(|raw| fex_state_name(raw).is_none())
+    {
         return Err("invalid CFEX member state enum".to_string());
     }
     if let Some(task_force_id) = row.task_force_id {

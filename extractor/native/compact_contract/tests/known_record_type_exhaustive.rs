@@ -1,0 +1,30 @@
+use compact_contract::KnownRecordType;
+
+// This match intentionally has no wildcard. Adding a twelfth variant makes
+// this fixture and every migrated whole-stream consumer fail to compile until
+// each one states what the new record means.
+const fn consumer_action(record_type: KnownRecordType) -> &'static str {
+    match record_type {
+        KnownRecordType::DomainPerf => "domain outcome",
+        KnownRecordType::FrameEnd => "frame boundary",
+        KnownRecordType::DomainData => "world data",
+        KnownRecordType::StreamHeader => "identity",
+        KnownRecordType::DomainGap => "domain outcome",
+        KnownRecordType::FrameRefused => "frame boundary",
+        KnownRecordType::FrameDegraded => "frame annotation",
+        KnownRecordType::CaptureTerminated => "termination",
+        KnownRecordType::ClockUnreadableInterval => "clock annotation",
+        KnownRecordType::UntrustedClockRecovery => "clock annotation",
+        KnownRecordType::FreezeCensus => "no coverage",
+    }
+}
+
+/// kills: adding a record type while leaving an exhaustive consumer unaware;
+/// the compile error occurs before this assertion can run.
+#[test]
+fn public_record_type_vocabulary_is_exhaustively_matchable() {
+    assert_eq!(
+        consumer_action(KnownRecordType::FreezeCensus),
+        "no coverage"
+    );
+}

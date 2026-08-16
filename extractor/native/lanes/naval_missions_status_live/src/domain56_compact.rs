@@ -697,14 +697,20 @@ fn compact_record_with_flags(
 
 pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
     let mut summary = Domain56GateSummary::default();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut open_frame_hour: Option<i32> = None;
     let mut previous_frame_hour: Option<i32> = None;
-    let mut final_record_type = None;
+    let mut final_record_is_clean_world_boundary = false;
+    let mut release_epilogue_seen = false;
     let mut frame_domain_data_records = 0u32;
     let mut frame_domain_perf_records = 0u32;
     while offset < raw.len() {
+        let previous_record_closed_world = final_record_is_clean_world_boundary;
+        final_record_is_clean_world_boundary = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
             Err(RecordFramingError::TruncatedHeader(actual)) => {
@@ -753,7 +759,6 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
         }
         let payload = &raw[payload_start..payload_end];
         summary.record_count += 1;
-        summary.domains_seen.insert(header.domain_id);
         if let Err(error) = validate_compact_record_semantics(
             header.domain_id,
             header.record_type,
@@ -766,9 +771,27 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
             offset = payload_end;
             continue;
         }
-        final_record_type = Some(header.record_type);
-        match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_DATA if header.domain_id == DOMAIN_ID => {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: unsupported record type {}",
+                        unknown.0
+                    ));
+                    offset = payload_end;
+                    continue;
+                }
+            };
+        if !matches!(
+            known_record_type,
+            compact_contract::KnownRecordType::FreezeCensus
+                | compact_contract::KnownRecordType::StreamHeader
+        ) {
+            summary.domains_seen.insert(header.domain_id);
+        }
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainData if header.domain_id == DOMAIN_ID => {
                 observe_open_frame(
                     &mut summary,
                     &mut open_frame_hour,
@@ -786,13 +809,13 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                 }
                 summary.parse_errors.extend(decoded.parse_errors);
             }
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => observe_open_frame(
+            compact_contract::KnownRecordType::DomainData => observe_open_frame(
                 &mut summary,
                 &mut open_frame_hour,
                 header.game_hour_raw,
                 offset,
             ),
-            COMPACT_RECORD_TYPE_DOMAIN_PERF if header.domain_id == DOMAIN_ID => {
+            compact_contract::KnownRecordType::DomainPerf if header.domain_id == DOMAIN_ID => {
                 observe_open_frame(
                     &mut summary,
                     &mut open_frame_hour,
@@ -803,13 +826,13 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                 frame_domain_perf_records = frame_domain_perf_records.saturating_add(1);
                 observe_status_flags(&mut summary, read_u32(payload, 32));
             }
-            COMPACT_RECORD_TYPE_DOMAIN_PERF => observe_open_frame(
+            compact_contract::KnownRecordType::DomainPerf => observe_open_frame(
                 &mut summary,
                 &mut open_frame_hour,
                 header.game_hour_raw,
                 offset,
             ),
-            COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_record_count += 1;
                 observe_status_flags(&mut summary, read_u32(payload, 24));
                 validate_frame_cardinality(
@@ -845,11 +868,26 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                 previous_frame_hour = Some(header.game_hour_raw);
                 frame_domain_data_records = 0;
                 frame_domain_perf_records = 0;
+                final_record_is_clean_world_boundary = true;
             }
-            _ => summary.parse_errors.push(format!(
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
                 "offset {offset}: unsupported record type {}",
-                header.record_type
-            )),
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset = payload_end;
     }
@@ -858,7 +896,7 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
             .parse_errors
             .push(format!("stream ended with open frame hour {open}"));
     }
-    if final_record_type != Some(COMPACT_RECORD_TYPE_FRAME_END) {
+    if !final_record_is_clean_world_boundary {
         summary
             .parse_errors
             .push("stream is not closed by a complete FRAME_END record".to_string());
@@ -974,7 +1012,13 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         "repair_base_province_id",
         index,
     )?;
-    validate_optional_max(false, row.repair_progress_milli, 0, "repair_progress_milli", index)?;
+    validate_optional_max(
+        false,
+        row.repair_progress_milli,
+        0,
+        "repair_progress_milli",
+        index,
+    )?;
     validate_optional_max(false, row.retreat_state, 0, "retreat_state", index)?;
     validate_optional_max(
         row.flags & FLAG_HAS_SUNK_CONVOY_COUNT != 0,

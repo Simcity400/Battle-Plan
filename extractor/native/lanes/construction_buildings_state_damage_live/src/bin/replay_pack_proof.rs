@@ -586,6 +586,9 @@ fn verify_domain48_stream(
         .checked_add(1)
         .ok_or_else(|| "requested game-hour advancement count overflows usize".to_string())?;
     let mut errors = Vec::new();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut pending_perf_hour: Option<i32> = None;
@@ -593,6 +596,7 @@ fn verify_domain48_stream(
     let mut open_frame_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut record_count = 0usize;
     let mut domain_perf_records = 0usize;
     let mut domain_data_records = 0usize;
@@ -609,6 +613,7 @@ fn verify_domain48_stream(
     while offset < raw.len() {
         // Physical EOF authority: even a tail too short to parse as a header
         // invalidates the previous FRAME_END as the final physical record.
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
@@ -667,8 +672,6 @@ fn verify_domain48_stream(
         }
         previous_sequence = Some(sequence);
         record_count += 1;
-        domains_seen.insert(domain_id);
-        observed_record_hours.insert(game_hour_raw);
         let payload = &raw[payload_start..payload_end];
         let record_semantics_ok = match validate_compact_record_semantics(
             domain_id,
@@ -682,9 +685,28 @@ fn verify_domain48_stream(
                 false
             }
         };
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                errors.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                offset = payload_end;
+                continue;
+            }
+        };
+        if !matches!(
+            known_record_type,
+            compact_contract::KnownRecordType::FreezeCensus
+                | compact_contract::KnownRecordType::StreamHeader
+        ) {
+            domains_seen.insert(domain_id);
+            observed_record_hours.insert(game_hour_raw);
+        }
 
-        match record_type {
-            RECORD_TYPE_DOMAIN_PERF => {
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 domain_perf_records += 1;
                 *perf_by_hour.entry(game_hour_raw).or_default() += 1;
                 if domain_id != DOMAIN_ID {
@@ -735,7 +757,7 @@ fn verify_domain48_stream(
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 domain_data_records += 1;
                 *data_by_hour.entry(game_hour_raw).or_default() += 1;
                 let mut data_status = None;
@@ -807,7 +829,7 @@ fn verify_domain48_stream(
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 frame_end_records += 1;
                 *frame_end_by_hour.entry(game_hour_raw).or_default() += 1;
                 let mut clean = record_semantics_ok;
@@ -869,7 +891,27 @@ fn verify_domain48_stream(
                 owned_perf_roster.clear();
                 owned_perf_status_or = 0;
             }
-            other => errors.push(format!("offset {offset}: unknown record type {other}")),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(
+                        compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+                        previous_record_closed_world,
+                        census.phase(),
+                        release_epilogue_seen,
+                    );
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => errors.push(format!(
+                "offset {offset}: record type {} is outside the construction proof grammar",
+                known_record_type.canonical_name()
+            )),
         }
 
         offset = payload_end;

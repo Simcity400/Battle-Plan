@@ -867,7 +867,11 @@ pub fn validate_run_dir(options: &GateOptions) -> GateReport {
             &mut errors,
         );
         if let Some(authority) = replay_authority.as_ref() {
-            bind_run_stream_to_certification(&authority.stream_certification, artifact, &mut errors);
+            bind_run_stream_to_certification(
+                &authority.stream_certification,
+                artifact,
+                &mut errors,
+            );
         }
     }
 
@@ -1471,6 +1475,7 @@ fn validate_stream_file_against_manifest(
     validate_scanned_domain_authority(&summary, compact, expected_contracts, errors);
     validate_domain57_stream_authority(&summary, compact, errors);
     validate_campaign_identity_stream_authority(&summary, manifest, identity_mode, errors);
+    validate_freeze_census_stream_authority(&summary, raw, manifest, errors);
 
     if summary.framed_max_record_len > options.max_record_bytes {
         errors.push(format!(
@@ -2919,8 +2924,7 @@ fn verify_static_manifest_authority(
         claimed_artifacts.insert(role.to_string(), row);
     }
 
-    let retained_manifest =
-        verify_retained_file_evidence(&bundles, "manifest", false)?;
+    let retained_manifest = verify_retained_file_evidence(&bundles, "manifest", false)?;
     if retained_manifest
         .path
         .file_name()
@@ -3740,7 +3744,9 @@ fn certify_attach_time_content_proof(
     let proof = embedded_manifest
         .get(field)
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("recording declares the attach-time proof but carries no {field}"))?;
+        .ok_or_else(|| {
+            format!("recording declares the attach-time proof but carries no {field}")
+        })?;
     if proof.get("schema").and_then(Value::as_str)
         != Some(recorder_host::attach_content_proof::SCHEMA)
     {
@@ -3752,7 +3758,9 @@ fn certify_attach_time_content_proof(
     if proof.get("kind").and_then(Value::as_str)
         != Some(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1)
     {
-        return Err(format!("{field}.kind disagrees with the declared proof kind"));
+        return Err(format!(
+            "{field}.kind disagrees with the declared proof kind"
+        ));
     }
     // THE ROUTE MUST MATCH THE EVIDENCE, and the verifier decides that for
     // itself (Codex review round 2, finding 1).
@@ -3767,7 +3775,10 @@ fn certify_attach_time_content_proof(
     // `portable_content_manifest` is deliberately NOT in this list: the
     // recorder builds one from a `portable_content_use_trace` on an ordinary
     // late attach, so its presence is not pre-resume evidence. These two are.
-    for pre_resume in ["early_render_launch_manifest", "early_render_capture_receipt"] {
+    for pre_resume in [
+        "early_render_launch_manifest",
+        "early_render_capture_receipt",
+    ] {
         if embedded_manifest
             .get(pre_resume)
             .is_some_and(|value| !value.is_null())
@@ -3869,7 +3880,9 @@ fn certify_attach_time_content_proof(
             .get("kind")
             .and_then(Value::as_str)
             .and_then(recorder_host::attach_content_proof::layer_kind_from_wire)
-            .ok_or_else(|| format!("{field}.layer_stack[{index}].kind is not a known layer kind"))?;
+            .ok_or_else(|| {
+                format!("{field}.layer_stack[{index}].kind is not a known layer kind")
+            })?;
         if (index == 0) != (kind == "base") {
             return Err(format!(
                 "{field}.layer_stack must begin with ordinal-zero base content and carry no other"
@@ -4143,7 +4156,10 @@ fn certify_attach_time_content_proof(
             .ok_or_else(|| {
                 format!("{field}.required_content {logical_path:?} names no winning layer")
             })?;
-        if !layers.iter().any(|layer| layer.layer_id == winning_layer_id) {
+        if !layers
+            .iter()
+            .any(|layer| layer.layer_id == winning_layer_id)
+        {
             return Err(format!(
                 "{field}.required_content {logical_path:?} was won by layer {winning_layer_id:?}, \
                  which is not in the layer stack the proof states"
@@ -4413,9 +4429,7 @@ fn bind_run_dir_manifest_to_sealed_authority(
     let mut sealed = embedded_manifest.clone();
     let mut run_dir = external_manifest.clone();
 
-    let sealed_host_finalize_is_object = sealed
-        .get("host_finalize")
-        .is_some_and(Value::is_object);
+    let sealed_host_finalize_is_object = sealed.get("host_finalize").is_some_and(Value::is_object);
     if !sealed_host_finalize_is_object {
         return Err(format!(
             "authoritative sealed recorder_manifest has no object-valued \"host_finalize\" block (found {}); \
@@ -4604,7 +4618,10 @@ fn first_binding_violation(
                     right.len()
                 ));
             }
-            left.iter().zip(right).enumerate().find_map(|(index, (l, r))| {
+            left.iter()
+                .zip(right)
+                .enumerate()
+                .find_map(|(index, (l, r))| {
                 first_binding_violation(l, r, &format!("{path}[{index}]"), redactions)
             })
         }
@@ -4909,7 +4926,7 @@ fn load_verified_replay_authority(
             let stream_entry = &stream_entries[0];
             let Some(stream_relative) = layout.stream else {
                 return Err(
-                    "packaged composition resolved no replay_entries.stream layout".to_string()
+                    "packaged composition resolved no replay_entries.stream layout".to_string(),
                 );
             };
             let expected_stream_path = format!("payload/{replay_game_id}/{stream_relative}");
@@ -4919,7 +4936,8 @@ fn load_verified_replay_authority(
                     stream_entry.path, expected_stream_path
                 ));
             }
-            let container_stream = container
+            let container_stream =
+                container
                 .read_entry_bytes(&stream_entry.path)
                 .map_err(|err| {
                     format!(
@@ -5021,8 +5039,8 @@ fn load_verified_replay_authority(
             // agree with the recorder authority: the attach-time route relaxes
             // the REQUIREMENT for one, never the binding of one that exists.
             if let Some(container_content) = container.content_manifest() {
-                let container_content_value = serde_json::to_value(container_content)
-                    .map_err(|error| {
+                let container_content_value =
+                    serde_json::to_value(container_content).map_err(|error| {
                         format!("serialize admitted container content manifest failed: {error}")
                     })?;
                 if embedded_manifest.get("portable_content_manifest")
@@ -5035,11 +5053,7 @@ fn load_verified_replay_authority(
                     );
                 }
             }
-            certify_attach_time_content_proof(
-                &container,
-                &embedded_manifest,
-                container.game_id(),
-            )?
+            certify_attach_time_content_proof(&container, &embedded_manifest, container.game_id())?
         }
     };
     // -----------------------------------------------------------------------
@@ -5481,7 +5495,11 @@ fn certify_cache_only_recording(
                  manifest-attested",
                 snapshot::RawStreamPackaging::Omitted.as_str(),
                 stream_entries.len(),
-                if stream_entries.len() == 1 { "y" } else { "ies" },
+                if stream_entries.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
             ),
         ));
     }
@@ -5509,7 +5527,10 @@ fn certify_cache_only_recording(
             )
         })?
         .to_string();
-    let attested_bytes = storage.get("decoded_bytes").and_then(Value::as_u64).ok_or_else(|| {
+    let attested_bytes = storage
+        .get("decoded_bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
         cache_only_link_refusal(
             CACHE_ONLY_LINK_STREAM_STORAGE,
             "stream_storage.decoded_bytes is missing or not a u64",
@@ -5552,7 +5573,10 @@ fn certify_cache_only_recording(
         Err(error) => {
             return Err(cache_only_link_refusal(
                 CACHE_ONLY_LINK_SOURCE_READABLE,
-                format!("cannot stat run-dir source stream {}: {error}", candidate.display()),
+                format!(
+                    "cannot stat run-dir source stream {}: {error}",
+                    candidate.display()
+                ),
             ))
         }
         Ok(metadata) if !metadata.is_file() => {
@@ -5614,9 +5638,8 @@ fn certify_cache_only_recording(
     // route is admissible at all — the identity is not merely copied between
     // container documents, it is recomputed here from bytes on disk.
     let (observed_sha256, observed_bytes) =
-        hash_decoded_source_stream(&stream_path, compression, attested_bytes).map_err(|error| {
-            cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error)
-        })?;
+        hash_decoded_source_stream(&stream_path, compression, attested_bytes)
+            .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error))?;
     if observed_bytes > attested_bytes {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_STREAM_STORAGE,
@@ -5646,10 +5669,15 @@ fn certify_cache_only_recording(
         snapshot::HOUR_INDEX_FILE,
         CACHE_ONLY_LINK_HOUR_INDEX,
     )?;
-    let index_bytes = container.read_entry_bytes(&index_entry.path).map_err(|error| {
+    let index_bytes = container
+        .read_entry_bytes(&index_entry.path)
+        .map_err(|error| {
         cache_only_link_refusal(
             CACHE_ONLY_LINK_HOUR_INDEX,
-            format!("cannot read {} from the container: {error}", index_entry.path),
+                format!(
+                    "cannot read {} from the container: {error}",
+                    index_entry.path
+                ),
         )
     })?;
     let hour_index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).map_err(|error| {
@@ -6057,8 +6085,12 @@ fn hash_decoded_source_stream(
     compression: compact_stream::StreamCompression,
     attested_bytes: u64,
 ) -> Result<(String, u64), String> {
-    let reader = compact_stream::open_with_compression(path, compression)
-        .map_err(|error| format!("open decoded compact stream {} failed: {error}", path.display()))?;
+    let reader = compact_stream::open_with_compression(path, compression).map_err(|error| {
+        format!(
+            "open decoded compact stream {} failed: {error}",
+            path.display()
+        )
+    })?;
     let mut reader = reader.take(attested_bytes.saturating_add(1));
     let mut hasher = Sha256::new();
     let mut total = 0u64;
@@ -6393,6 +6425,180 @@ struct HeaderScanSummary {
     skipped_hours: i32,
     parse_errors: Vec<String>,
     ordering_errors: Vec<String>,
+    freeze_census_records: Vec<(
+        u64,
+        compact_contract::freeze_census_record::FreezeCensusRecordV1,
+    )>,
+}
+
+fn validate_freeze_census_stream_authority(
+    summary: &HeaderScanSummary,
+    raw: &[u8],
+    manifest: &Value,
+    errors: &mut Vec<String>,
+) {
+    let mut hasher = Sha256::new();
+    hasher.update(raw);
+    let decoded_sha256 = snapshot::sha256::to_hex(&hasher.finalize());
+    let derived = freeze_census_manifest_from_scan(summary, &decoded_sha256);
+    match manifest.get("freeze_census") {
+        Some(declared) if declared == &derived => {}
+        Some(declared) => errors.push(format!(
+            "freeze_census manifest section does not equal the independently decoded sealed H4CR authority: declared={declared} derived={derived}"
+        )),
+        None => errors.push(
+            "recorder manifest is missing the stream-derived freeze_census section".to_string(),
+        ),
+    }
+}
+
+fn freeze_census_manifest_from_scan(summary: &HeaderScanSummary, decoded_sha256: &str) -> Value {
+    use compact_contract::freeze_census_record::{FreezeCensusPhase, FreezeCensusQuality};
+    let quality_json = |quality: FreezeCensusQuality| {
+        json!({
+            "bits": quality.bits(),
+            "attempts_unrepresented": quality.attempts_unrepresented(),
+            "census_overflowed_before_phase": quality.census_overflowed_before_phase(),
+            "census_dropped_during_phase": quality.census_dropped_during_phase(),
+            "process_thread_attempts_differ": quality.process_thread_attempts_differ(),
+            "counter_reconciliation_issue": quality.counter_reconciliation_issue(),
+            "encoder_bound_truncated": quality.encoder_bound_truncated(),
+        })
+    };
+    let mut rows_present = 0u64;
+    let mut attempts_unrepresented = 0u64;
+    let mut window_sum = 0u64;
+    let mut acquire_sum = 0u64;
+    let mut minhook_sum = 0u64;
+    let mut refused_rows = 0u64;
+    let mut install_records = 0usize;
+    let mut problems = Vec::<String>::new();
+    let records = summary
+        .freeze_census_records
+        .iter()
+        .map(|(sequence, record)| {
+            if record.phase() == FreezeCensusPhase::Install {
+                install_records += 1;
+            }
+            rows_present = rows_present.saturating_add(record.rows().len() as u64);
+            attempts_unrepresented =
+                attempts_unrepresented.saturating_add(record.attempts_unrepresented_total());
+            window_sum = window_sum.saturating_add(record.present_window_us_sum());
+            acquire_sum = acquire_sum.saturating_add(record.present_acquire_us_sum());
+            minhook_sum = minhook_sum.saturating_add(record.present_minhook_us_sum());
+            refused_rows = refused_rows.saturating_add(record.present_refused_row_count());
+            let quality = record.quality();
+            if record.attempts_unrepresented_total() != 0 {
+                problems.push(format!(
+                    "sequence {sequence} leaves {} freeze attempt(s) without a carried row",
+                    record.attempts_unrepresented_total()
+                ));
+            }
+            if quality.census_overflowed_before_phase() {
+                problems.push(format!(
+                    "sequence {sequence} began after the process census had already overflowed"
+                ));
+            }
+            if quality.census_dropped_during_phase() {
+                problems.push(format!(
+                    "sequence {sequence} dropped census rows during the phase"
+                ));
+            }
+            if quality.encoder_bound_truncated() {
+                problems.push(format!(
+                    "sequence {sequence} was truncated by the H4FC row or label bound"
+                ));
+            }
+            if quality.counter_reconciliation_issue() {
+                problems.push(format!(
+                    "sequence {sequence} has a named census-counter reconciliation issue"
+                ));
+            }
+            if record.has_missing_non_refused_labels() {
+                problems.push(format!(
+                    "sequence {sequence} carries at least one non-refused row without a label"
+                ));
+            }
+            let rows = record
+                .rows()
+                .iter()
+                .map(|row| {
+                    json!({
+                        "ordinal": row.ordinal,
+                        "entry_point": row.entry_point.map(|entry| entry.canonical_name()),
+                        "entry_point_code": row.entry_point.map(|entry| entry as u8),
+                        "label": row.label.as_str(),
+                        "target_count": row.target_count,
+                        "window_us_upper_bound": row.window_us,
+                        "acquire_us": row.acquire_us,
+                        "minhook_us": row.minhook_us,
+                        "passes": row.passes,
+                        "refused": row.refused,
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "sequence": sequence,
+                "phase": record.phase().canonical_name(),
+                "quality": quality_json(quality),
+                "attempt_ordinal_start_exclusive": record.attempt_ordinal_start_exclusive(),
+                "attempt_ordinal_end_inclusive": record.attempt_ordinal_end_inclusive(),
+                "process_attempts_total": record.process_attempts_total(),
+                "producer_thread_attempts_total": record.producer_thread_attempts_total(),
+                "process_refusals_before": record.process_refusals_before(),
+                "process_refusals_after": record.process_refusals_after(),
+                "process_refusals_total": record.process_refusals_total(),
+                "census_recorded_before": record.census_recorded_before(),
+                "census_recorded_after": record.census_recorded_after(),
+                "census_dropped_before": record.census_dropped_before(),
+                "census_dropped_after": record.census_dropped_after(),
+                "census_dropped_delta": record.census_dropped_delta(),
+                "attempts_unrepresented_total": record.attempts_unrepresented_total(),
+                "present_window_us_upper_bound_sum": record.present_window_us_sum(),
+                "present_acquire_us_sum": record.present_acquire_us_sum(),
+                "present_minhook_us_sum": record.present_minhook_us_sum(),
+                "present_refused_rows": record.present_refused_row_count(),
+                "rows": rows,
+            })
+        })
+        .collect::<Vec<_>>();
+    if summary.freeze_census_records.is_empty() {
+        problems
+            .push("freeze census telemetry is absent from this sealed logical stream".to_string());
+    } else if install_records == 0 {
+        problems.push("no install-phase freeze census record is present".to_string());
+    } else if install_records > 1 {
+        problems.push(format!(
+            "{install_records} install-phase freeze census records are present; expected one"
+        ));
+    }
+    let status = if summary.freeze_census_records.is_empty() {
+        "absent"
+    } else if install_records == 1 && attempts_unrepresented == 0 {
+        "complete"
+    } else {
+        "partial"
+    };
+    json!({
+        "schema": "hoi4.freeze-census.v1",
+        "source": {
+            "kind": "sealed_h4cr",
+            "record_type": compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            "decoded_stream_sha256": decoded_sha256,
+        },
+        "status": status,
+        "recording_totals": {
+            "record_count": summary.freeze_census_records.len(),
+            "rows_present": rows_present,
+            "attempts_unrepresented": attempts_unrepresented,
+            "present_window_us_upper_bound_sum": window_sum,
+            "present_acquire_us_sum": acquire_sum,
+            "present_minhook_us_sum": minhook_sum,
+            "present_refused_rows": refused_rows,
+        },
+        "records": records,
+        "problems": problems,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6445,7 +6651,8 @@ fn scan_compact_stream_with_identity_mode(
     let mut pending_perf_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut gap_sequences = BTreeMap::<(u16, u16), GapSequenceAuthority>::new();
-    let mut final_record_is_clean_frame_end = false;
+    let mut final_record_is_clean_world_boundary = false;
+    let mut release_epilogue_seen = false;
     let mut framing_complete = true;
     let mut session_header_identity =
         recorder_host::campaign_identity::SessionHeaderIdentityObservation::default();
@@ -6493,7 +6700,8 @@ fn scan_compact_stream_with_identity_mode(
             }
             previous_sequence = Some(sequence);
         }
-        final_record_is_clean_frame_end = false;
+        let previous_physical_was_clean_world_boundary = final_record_is_clean_world_boundary;
+        final_record_is_clean_world_boundary = false;
         let payload = &raw[offset + RECORD_HEADER_LEN..offset + record_len];
         summary.framed_max_payload_len = summary.framed_max_payload_len.max(payload_len as u64);
         summary.framed_max_record_len = summary.framed_max_record_len.max(record_len as u64);
@@ -6519,11 +6727,15 @@ fn scan_compact_stream_with_identity_mode(
                 framing_complete = false;
                 break;
             }
-            // Once CID1 placement has been established, ordinary record
-            // defects remain localizable.  Preserve the independent scanner's
-            // complete-stream diagnostics/accounting behavior; the shared
-            // validator is terminal and is deliberately not consulted again.
-            Some(Err(_)) => {}
+            Some(Err(error)) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: stateful stream validation failed before dispatch: {error}"
+                ));
+                // Keep scanning for independent local diagnostics. The shared
+                // validator is now terminal and is not consulted again, but
+                // this first placement/sequence error is retained rather than
+                // silently discarded.
+            }
         }
         let envelope_ok = match compact_contract::validate_compact_record_semantics(
             domain_id,
@@ -6539,6 +6751,38 @@ fn scan_compact_stream_with_identity_mode(
                 false
             }
         };
+        if record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS {
+            summary.record_count += 1;
+            summary.total_payload_bytes = summary
+                .total_payload_bytes
+                .saturating_add(payload_len as u64);
+            summary.max_payload_len = summary.max_payload_len.max(payload_len as u64);
+            summary.max_record_len = summary.max_record_len.max(record_len as u64);
+            if envelope_ok {
+                match compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                {
+                    Ok(record) => {
+                        let phase = record.phase();
+                        let release = phase
+                            == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                        summary.freeze_census_records.push((sequence, record));
+                        final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(
+                            compact_contract::freeze_census_record::
+                                RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED,
+                            previous_physical_was_clean_world_boundary,
+                            phase,
+                            release_epilogue_seen,
+                        );
+                        release_epilogue_seen |= release;
+                    }
+                    Err(error) => summary.parse_errors.push(format!(
+                        "offset {offset}: FREEZE_CENSUS self-verification failed: {error}"
+                    )),
+                }
+            }
+            offset = offset.saturating_add(record_len);
+            continue;
+        }
         // Reserved probe domain (250): pure instrumentation records (lane-wall
         // lw_*, read A/B, bt_* bound trips, so_* status origins). The recorder
         // routes these BEFORE all record/domain accounting, so this
@@ -6558,8 +6802,19 @@ fn scan_compact_stream_with_identity_mode(
         summary.max_payload_len = summary.max_payload_len.max(payload_len as u64);
         summary.max_record_len = summary.max_record_len.max(record_len as u64);
         summary.domains_seen.insert(domain_id);
-        match record_type {
-            RECORD_TYPE_DOMAIN_GAP => {
+        let known_record_type = match compact_contract::KnownRecordType::try_from(record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                offset = offset.saturating_add(record_len);
+                continue;
+            }
+        };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainGap => {
                 summary.domain_gap_record_count += 1;
                 *summary
                     .per_hour_gap_domain_counts
@@ -6629,7 +6884,7 @@ fn scan_compact_stream_with_identity_mode(
                     None => open_frame_hour = Some(game_hour_raw),
                 }
             }
-            RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainPerf => {
                 summary.domain_perf_record_count += 1;
                 *summary
                     .per_hour_perf_domain_counts
@@ -6705,7 +6960,7 @@ fn scan_compact_stream_with_identity_mode(
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 summary.domain_data_record_count += 1;
                 *summary
                     .per_hour_data_domain_counts
@@ -6815,7 +7070,7 @@ fn scan_compact_stream_with_identity_mode(
                     }
                 }
             }
-            RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_record_count += 1;
                 *summary
                     .frame_end_hour_counts
@@ -6914,12 +7169,61 @@ fn scan_compact_stream_with_identity_mode(
                     open_frame_hour = None;
                     pending_perf_hour = None;
                     last_closed_hour = Some(game_hour_raw);
-                    final_record_is_clean_frame_end = true;
+                    final_record_is_clean_world_boundary = true;
                 }
             }
-            other => summary
-                .parse_errors
-                .push(format!("offset {offset}: unknown record type {other}")),
+            compact_contract::KnownRecordType::FrameRefused => {
+                let mut clean = envelope_ok;
+                match compact_contract::frame_refusal::FrameRefusalRecordV2::decode(payload) {
+                    Ok(record) if record.refused_hour == game_hour_raw => {}
+                    Ok(record) => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_REFUSED envelope hour {game_hour_raw} disagrees with payload hour {}",
+                            record.refused_hour
+                        ));
+                    }
+                    Err(error) => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_REFUSED failed independent decode: {error}"
+                        ));
+                    }
+                }
+                match open_frame_hour.or(pending_perf_hour) {
+                    Some(open) if open == game_hour_raw => {}
+                    Some(open) => {
+                        clean = false;
+                        summary.parse_errors.push(format!(
+                            "offset {offset}: FRAME_REFUSED hour {game_hour_raw} does not close open frame hour {open}"
+                        ));
+                    }
+                    None => {}
+                }
+                if last_closed_hour.is_some_and(|closed| game_hour_raw <= closed) {
+                    clean = false;
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: FRAME_REFUSED hour {game_hour_raw} does not strictly advance"
+                    ));
+                }
+                if clean {
+                    open_frame_hour = None;
+                    pending_perf_hour = None;
+                    last_closed_hour = Some(game_hour_raw);
+                    final_record_is_clean_world_boundary = true;
+                }
+            }
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: record type {} is outside the independent world-scan grammar",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset = offset.saturating_add(record_len);
     }
@@ -6928,10 +7232,11 @@ fn scan_compact_stream_with_identity_mode(
             .parse_errors
             .push(format!("stream ended with open terminal frame hour {open}"));
     }
-    if framing_complete && !raw.is_empty() && !final_record_is_clean_frame_end {
-        summary
-            .parse_errors
-            .push("stream is not closed by a final canonical FRAME_END record".to_string());
+    if framing_complete && !raw.is_empty() && !final_record_is_clean_world_boundary {
+        summary.parse_errors.push(
+            "stream is not closed by a final canonical FRAME_END or FRAME_REFUSED boundary"
+                .to_string(),
+        );
     }
     if identity_mode == StreamIdentityMode::IdentityV1 && summary.validated_cid1.is_none() {
         summary
@@ -7388,6 +7693,80 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// kills: hard-wiring the shipped false policy, or accepting an epilogue
+    /// without a clean preceding world boundary, breaks this both-state proof.
+    #[test]
+    fn release_epilogue_final_record_policy_compiles_both_owner_rulings() {
+        use compact_contract::freeze_census_record::{
+            release_epilogue_closes_stream_policy, FreezeCensusPhase,
+        };
+        assert!(!release_epilogue_closes_stream_policy(false, true, FreezeCensusPhase::Release, false));
+        assert!(release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Release, false));
+        assert!(!release_epilogue_closes_stream_policy(true, false, FreezeCensusPhase::Release, false));
+        assert!(!release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Install, false));
+        assert!(!release_epilogue_closes_stream_policy(true, true, FreezeCensusPhase::Release, true));
+    }
+
+    /// kills: trusting the mutable manifest instead of independently deriving
+    /// the section from sealed bytes lets the contradictory declaration pass.
+    #[test]
+    fn freeze_census_manifest_join_uses_independent_stream_authority() {
+        use compact_contract::campaign_identity::{
+            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
+            COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+        };
+        use compact_contract::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+        };
+        let hour = compact_contract::calendar::DATE_EPOCH_CONST + (1936 * 365 * 24);
+        let observation = Cid1Observation {
+            game_unique_id: "a4b17fed-ed12-4361-9064-fb6576638110".to_string(),
+            game_unique_seed: 7,
+            game_hour_raw: hour,
+        };
+        let fields = Cid1Fields::from_stable_observations(
+            observation.clone(),
+            observation,
+            "gate-test".to_string(),
+            Cid1Witnesses::default(),
+        )
+        .unwrap();
+        let cid1 = encode_cid1(&fields).unwrap();
+        let counters = FreezeCensusCounterSnapshot {
+            process_attempts: 4,
+            producer_thread_attempts: 4,
+            process_refusals: 0,
+            census_recorded: 4,
+            census_dropped: 0,
+        };
+        let census = FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Install,
+            counters,
+            counters,
+            &[],
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        append_record(&mut raw, 0, hour, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER, &cid1);
+        append_record(&mut raw, 1, 0, compact_contract::COMPACT_DOMAIN_FRAME, compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS, &census);
+        let summary = scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
+        assert_eq!(summary.freeze_census_records.len(), 1);
+        let mut hasher = Sha256::new();
+        hasher.update(&raw);
+        let hash = snapshot::sha256::to_hex(&hasher.finalize());
+        let declared = freeze_census_manifest_from_scan(&summary, &hash);
+        let manifest = json!({"freeze_census": declared});
+        let mut errors = Vec::new();
+        validate_freeze_census_stream_authority(&summary, &raw, &manifest, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let mut contradictory = manifest;
+        contradictory["freeze_census"]["status"] = json!("absent");
+        validate_freeze_census_stream_authority(&summary, &raw, &contradictory, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("independently decoded sealed H4CR"));
+    }
 
     /// Regression: the d53 production status word (`PARTIAL_DATA` plus badge
     /// bits 16/17/20/22 — 379 of 514 batch-3a hours) must not be reported as
@@ -9533,13 +9912,22 @@ mod tests {
         // The container carries the PROJECTION of the run-dir document, never
         // the document itself: the run-dir copy names the retained static
         // bundle evidence by absolute path and a shareable container must not.
-        assert_ne!(sealed, manifest, "the sealed copy is the portable projection");
+        assert_ne!(
+            sealed, manifest,
+            "the sealed copy is the portable projection"
+        );
         assert_eq!(
             sealed["static_bundle"]["manifest"]["path"],
             json!("static_bundle_manifest.json"),
             "the sealed evidence entry carries a basename"
         );
-        let authority = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap();
+        let authority = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .unwrap();
         assert_eq!(authority.manifest, sealed);
         assert_eq!(
             authority.details["static_artifacts"]["required_count"],
@@ -9558,7 +9946,12 @@ mod tests {
         let mut rewritten = manifest.clone();
         rewritten["duration_ms"] = json!(999_999);
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
-        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &rewritten,
+            &rewritten_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("mutable disk rewrite must fail");
         assert!(
             error.contains("contradicts the authoritative sealed recorder_manifest"),
@@ -9671,7 +10064,10 @@ mod tests {
             TEST_MAX_STREAM_BYTES,
         )
         .expect("a live-shaped recording must be admissible");
-        assert_eq!(authority.manifest, sealed_manifest, "the SEALED copy is authority");
+        assert_eq!(
+            authority.manifest, sealed_manifest,
+            "the SEALED copy is authority"
+        );
         assert_eq!(
             authority.details["external_manifest_bound_to_sealed_authority"],
             json!(true)
@@ -9754,7 +10150,10 @@ mod tests {
                 error.contains("contradicts the authoritative sealed recorder_manifest"),
                 "{error}"
             );
-            assert!(error.contains(expected), "refusal must name {expected}: {error}");
+            assert!(
+                error.contains(expected),
+                "refusal must name {expected}: {error}"
+            );
         }
     }
 
@@ -9906,8 +10305,12 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let authority =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let authority = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect("a --keep-spool-after-seal capture must be admissible");
         assert_eq!(
             authority.manifest, sealed_manifest,
@@ -9929,7 +10332,8 @@ mod tests {
         let mut unlisted = run_dir_manifest.clone();
         unlisted["spool_trim_extra"] = keep_spool();
         let bytes = serde_json::to_vec_pretty(&unlisted).unwrap();
-        let error = load_verified_replay_authority(&unlisted, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error =
+            load_verified_replay_authority(&unlisted, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("an unlisted root key must still contradict the sealed copy");
         assert!(
             error.contains("$.spool_trim_extra"),
@@ -9955,7 +10359,10 @@ mod tests {
             TEST_MAX_STREAM_BYTES,
         )
         .expect_err("a run-dir-only root field in the sealed copy must refuse");
-        assert!(error.contains(SPOOL_TRIM), "refusal must name the field: {error}");
+        assert!(
+            error.contains(SPOOL_TRIM),
+            "refusal must name the field: {error}"
+        );
         assert!(error.contains("directional"), "{error}");
 
         // Arm 4: a genuinely divergent pair still refuses BY NAME, with the
@@ -9972,8 +10379,12 @@ mod tests {
         run_dir_manifest[SPOOL_TRIM] = keep_spool();
         run_dir_manifest["host_finalize"]["stream_sha256"] = json!("0".repeat(64));
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("a contradicted bound field must refuse even on a keep-spool capture");
         assert!(
             error.contains("$.host_finalize.stream_sha256"),
@@ -10012,8 +10423,12 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("an absolute path in the sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
@@ -10035,8 +10450,12 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("an absolute key in the sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
@@ -10065,7 +10484,10 @@ mod tests {
         )
         .expect("a same-basename different-prefix pair must not bind");
         assert!(violation.contains("$.dll"), "{violation}");
-        assert_eq!(redactions, 0, "nothing was reduced, so nothing may be counted");
+        assert_eq!(
+            redactions, 0,
+            "nothing was reduced, so nothing may be counted"
+        );
 
         // The same for an object KEY.
         let violation = first_binding_violation(
@@ -10120,8 +10542,12 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("colliding run-dir keys must refuse");
         // Two refusals cover this, and the earlier one wins: the projection the
         // composition routing computes refuses a collision before the binding
@@ -10138,7 +10564,10 @@ mod tests {
             &mut redactions,
         )
         .expect("colliding run-dir keys must not bind");
-        assert!(violation.contains("collide onto one sealed key"), "{violation}");
+        assert!(
+            violation.contains("collide onto one sealed key"),
+            "{violation}"
+        );
     }
 
     /// Redaction binds in ONE direction: the run-dir copy may hold the absolute
@@ -10177,8 +10606,12 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("a sealed absolute path must refuse");
         assert!(error.contains("$.dll"), "{error}");
     }
@@ -10203,7 +10636,8 @@ mod tests {
         let mut stripped = run_dir_manifest;
         stripped.as_object_mut().unwrap().remove("host_finalize");
         let bytes = serde_json::to_vec_pretty(&stripped).unwrap();
-        let error = load_verified_replay_authority(&stripped, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error =
+            load_verified_replay_authority(&stripped, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("a deleted host_finalize block must refuse");
         assert!(error.contains("host_finalize"), "{error}");
         assert!(
@@ -10368,8 +10802,12 @@ mod tests {
             false,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("a container with no sealed recorder_manifest must refuse");
         assert!(error.contains("recorder_manifest entries"), "{error}");
     }
@@ -10454,7 +10892,10 @@ mod tests {
     /// admit a recording of some other session format.
     #[test]
     fn a_recorder_manifest_schema_from_the_wrong_vocabulary_still_refuses() {
-        for wrong in [REPLAY_CONTAINER_SCHEMA_VERSION, "native_collector_session_v2"] {
+        for wrong in [
+            REPLAY_CONTAINER_SCHEMA_VERSION,
+            "native_collector_session_v2",
+        ] {
             let error = cache_only_authority_error(
                 "manifest_schema_wrong",
                 CacheOnlyBreak {
@@ -10478,8 +10919,12 @@ mod tests {
         manifest.as_object_mut().unwrap().remove("schema");
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let error =
-            load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
                 .expect_err("a recorder manifest with no schema must refuse");
         assert!(
             error.contains("schema") && error.contains("None"),
@@ -10499,8 +10944,7 @@ mod tests {
     fn cache_only_capture_certifies_through_the_manifest_attested_chain() {
         let dir = TmpDir::new("cache_only_authority");
         let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
-        let authority =
-            load_verified_replay_authority(
+        let authority = load_verified_replay_authority(
             &recording.manifest,
             &recording.manifest_bytes,
             &dir.0,
@@ -10520,7 +10964,10 @@ mod tests {
             json!(snapshot::RawStreamPackaging::Omitted.as_str())
         );
         // The certification must never claim the byte comparison happened.
-        assert_eq!(authority.details["h4cr_stream_bytes_compared"], json!(false));
+        assert_eq!(
+            authority.details["h4cr_stream_bytes_compared"],
+            json!(false)
+        );
         assert_eq!(authority.details["h4cr_stream_digest_bound"], json!(false));
         assert_eq!(
             authority.details["h4cr_identity_is_manifest_attested"],
@@ -10549,8 +10996,13 @@ mod tests {
         let manifest = replay_test_manifest("g", &dir.0);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let authority =
-            load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap();
+        let authority = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .unwrap();
         let StreamCertification::ByteComparedAgainstPackagedStream {
             container_stream, ..
         } = &authority.stream_certification
@@ -10592,13 +11044,7 @@ mod tests {
         let dir = TmpDir::new("packaged_tampered");
         let manifest = replay_test_manifest("g", &dir.0);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-        write_replay_fixture_with_static_mutation(
-            &dir.0,
-            "g",
-            &manifest_bytes,
-            true,
-            |_, _| {},
-        );
+        write_replay_fixture_with_static_mutation(&dir.0, "g", &manifest_bytes, true, |_, _| {});
         let replay_path = dir.0.join("native_session.battleplan");
         let mut packed = fs::read(&replay_path).unwrap();
         // Flip the packaged stream's PAYLOAD in place — the literal b"stream",
@@ -10616,7 +11062,12 @@ mod tests {
             .expect("the fixture packages the literal stream payload");
         packed[position] ^= 0xff;
         fs::write(&replay_path, &packed).unwrap();
-        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("a tampered packaged stream must refuse");
         assert!(
             error.contains("verify_all failed")
@@ -10646,8 +11097,14 @@ mod tests {
                 ..CacheOnlyBreak::default()
             },
         );
-        assert!(error.contains(CACHE_ONLY_LINK_NO_PACKAGED_STREAM), "{error}");
-        assert!(error.contains("byte-compared, not manifest-attested"), "{error}");
+        assert!(
+            error.contains(CACHE_ONLY_LINK_NO_PACKAGED_STREAM),
+            "{error}"
+        );
+        assert!(
+            error.contains("byte-compared, not manifest-attested"),
+            "{error}"
+        );
     }
 
     /// Each link of the attestation chain refuses BY NAME when it is the one
@@ -10894,7 +11351,12 @@ mod tests {
         rewritten[snapshot::RAW_STREAM_PACKAGING_FIELD] =
             json!(snapshot::RawStreamPackaging::Packaged.as_str());
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
-        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &rewritten,
+            &rewritten_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("a rewritten composition must not certify");
         assert!(
             error.contains("replay_entries.stream is missing"),
@@ -10916,7 +11378,12 @@ mod tests {
             .unwrap()
             .remove("stream");
         let rewritten_bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
-        let error = load_verified_replay_authority(&rewritten, &rewritten_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &rewritten,
+            &rewritten_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("a packaged container must never take the weaker route");
         assert!(
             error.contains("contradicts the authoritative sealed recorder_manifest"),
@@ -10978,8 +11445,14 @@ mod tests {
             &mut errors,
         );
         assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(errors[0].contains("verified container entry digest"), "{errors:?}");
-        assert!(errors[1].contains("differs from decoded run stream"), "{errors:?}");
+        assert!(
+            errors[0].contains("verified container entry digest"),
+            "{errors:?}"
+        );
+        assert!(
+            errors[1].contains("differs from decoded run stream"),
+            "{errors:?}"
+        );
 
         // Manifest-attested, agreeing: silent.
         let mut errors = Vec::new();
@@ -11033,7 +11506,12 @@ mod tests {
         manifest[snapshot::RAW_STREAM_PACKAGING_FIELD] = json!("sometimes");
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("an unassigned composition must refuse");
         assert!(error.contains("unassigned"), "{error}");
     }
@@ -11370,7 +11848,11 @@ mod tests {
             "bindings.live_resolution_report",
         ] {
             let pointer = format!("/static_bundle/{}/path", label.replace('.', "/"));
-            let run_dir_path = run_dir_manifest.pointer(&pointer).unwrap().as_str().unwrap();
+            let run_dir_path = run_dir_manifest
+                .pointer(&pointer)
+                .unwrap()
+                .as_str()
+                .unwrap();
             let sealed_path = sealed_manifest.pointer(&pointer).unwrap().as_str().unwrap();
             assert!(
                 Path::new(run_dir_path).is_absolute(),
@@ -11417,10 +11899,15 @@ mod tests {
         let error = verify_static_manifest_authority(&sealed_manifest, &relative)
             .expect_err("a relative run-dir evidence path must refuse");
         assert!(
-            error.contains("static_bundle verifier.path must be the retained canonical absolute path"),
+            error.contains(
+                "static_bundle verifier.path must be the retained canonical absolute path"
+            ),
             "{error}"
         );
-        assert!(error.contains("run-dir native_session_manifest.json"), "{error}");
+        assert!(
+            error.contains("run-dir native_session_manifest.json"),
+            "{error}"
+        );
 
         // A DIFFERENT file, absolute and real, whose basename does not bind to
         // the sealed entry.
@@ -11432,8 +11919,14 @@ mod tests {
         let error = verify_static_manifest_authority(&sealed_manifest, &unbound)
             .expect_err("a run-dir evidence path that does not bind must refuse");
         assert!(error.contains("does not bind to the sealed"), "{error}");
-        assert!(error.contains("decoy_verifier.py"), "the refusal names the path: {error}");
-        assert!(error.contains("static_bundle.py"), "and the sealed entry: {error}");
+        assert!(
+            error.contains("decoy_verifier.py"),
+            "the refusal names the path: {error}"
+        );
+        assert!(
+            error.contains("static_bundle.py"),
+            "and the sealed entry: {error}"
+        );
 
         // The file the run-dir copy names is GONE. Same bytes claimed, nothing
         // to claim them about.
@@ -11525,7 +12018,8 @@ mod tests {
         // The old shape exactly: the run-dir document sealed verbatim, absolute
         // evidence paths and all.
         write_replay_fixture_sealed_verbatim(&dir.0, "g", &bytes, true);
-        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error =
+            load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
             .expect_err("an old-style sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
@@ -11558,7 +12052,12 @@ mod tests {
         manifest["static_bundle"]["manifest"]["sha256"] = json!(Sha256::hex(&forged_bytes));
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
-        let error = load_verified_replay_authority(&manifest, &manifest_bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+        let error = load_verified_replay_authority(
+            &manifest,
+            &manifest_bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
             .expect_err("internally shaped non-canonical bundle identity must fail");
         assert!(
             error.contains("canonical retained manifest identity"),
@@ -11689,11 +12188,15 @@ mod tests {
         let manifest = replay_test_manifest("expected", &dir.0);
         let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "foreign", &bytes, true);
-        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap_err();
+        let error =
+            load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .unwrap_err();
         assert!(error.contains("game_id"), "{error}");
 
         write_replay_fixture(&dir.0, "expected", &bytes, false);
-        let error = load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES).unwrap_err();
+        let error =
+            load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .unwrap_err();
         assert!(error.contains("recorder_manifest entries"), "{error}");
     }
 
@@ -11712,7 +12215,10 @@ mod tests {
             snapshot::RawStreamPackaging::Packaged,
             snapshot::RawStreamPackaging::Omitted,
         ] {
-            assert!(replay_layout(&manifest, packaging).is_err(), "{packaging:?}");
+            assert!(
+                replay_layout(&manifest, packaging).is_err(),
+                "{packaging:?}"
+            );
         }
     }
 
@@ -12724,12 +13230,11 @@ mod tests {
             "scheduled_domains".to_string(),
             json!([compact_contract::rail_replay::DOMAIN_NAME, "fuel_live"]),
         );
-        object["production_profile"]["missing_required_static_artifacts"] = json!(
-            compact_contract::REQUIRED_STATIC_ARTIFACTS
+        object["production_profile"]["missing_required_static_artifacts"] =
+            json!(compact_contract::REQUIRED_STATIC_ARTIFACTS
                 .iter()
                 .filter(|role| !packaged.contains(role))
-                .collect::<Vec<_>>()
-        );
+                .collect::<Vec<_>>());
         object["replay_packaging"]["static_artifacts"] = json!(packaged
             .iter()
             .map(|role| json!({
@@ -12963,7 +13468,8 @@ mod tests {
             (
                 "attach_unsettled_window",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["window_settled"] = json!(false);
                 }),
                 "unsettled attach window",
@@ -12973,7 +13479,8 @@ mod tests {
                 // with, or the layer stack is a claim nobody checked.
                 "attach_forged_stack_digest",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["layer_stack_sha256"] = json!("1".repeat(64));
                 }),
                 "is not the digest of the layer rows",
@@ -12998,7 +13505,8 @@ mod tests {
                 // nothing about the bytes this container ships.
                 "attach_receipt_for_other_build",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["artifact_joins"][0]["artifact_sha256"] = json!("2".repeat(64));
                 }),
                 "the receipt covers a different build of the artifact",
@@ -13010,7 +13518,8 @@ mod tests {
                         [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["artifact_joins"][0]["role"]
                         .clone();
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["refused_artifacts"] =
                         json!([{ "role": role, "reason": "fixture contradiction" }]);
                 }),
@@ -13029,11 +13538,10 @@ mod tests {
             (
                 "attach_role_in_both_lists",
                 Box::new(|manifest: &mut Value| {
-                    manifest["production_profile"]["missing_required_static_artifacts"] = json!(
-                        compact_contract::REQUIRED_STATIC_ARTIFACTS
+                    manifest["production_profile"]["missing_required_static_artifacts"] =
+                        json!(compact_contract::REQUIRED_STATIC_ARTIFACTS
                             .iter()
-                            .collect::<Vec<_>>()
-                    );
+                            .collect::<Vec<_>>());
                 }),
                 "declared both packaged and missing",
             ),
@@ -13042,7 +13550,8 @@ mod tests {
                 // through a packaged catalog.
                 "attach_required_content_refused",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["refused_required_content"] = json!([{
                         "purpose": "D81 province catalog",
                         "logical_path": "map/definition.csv",
@@ -13054,7 +13563,8 @@ mod tests {
             (
                 "attach_empty_join",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["artifact_joins"][0]["claimed_paths"] = json!(0);
                 }),
                 "joined no paths at all",
@@ -13062,7 +13572,8 @@ mod tests {
             (
                 "attach_no_proof_block",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] =
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] =
                         Value::Null;
                 }),
                 "declares the attach-time proof but carries no",
@@ -13090,11 +13601,10 @@ mod tests {
                 "attach_packages_nothing",
                 Box::new(|manifest: &mut Value| {
                     manifest["replay_packaging"]["static_artifacts"] = json!([]);
-                    manifest["production_profile"]["missing_required_static_artifacts"] = json!(
-                        compact_contract::REQUIRED_STATIC_ARTIFACTS
+                    manifest["production_profile"]["missing_required_static_artifacts"] =
+                        json!(compact_contract::REQUIRED_STATIC_ARTIFACTS
                             .iter()
-                            .collect::<Vec<_>>()
-                    );
+                            .collect::<Vec<_>>());
                 }),
                 "packages no static artifacts at all",
             ),
@@ -13105,7 +13615,8 @@ mod tests {
                 // even though it also refused nothing.
                 "attach_required_content_silently_absent",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["required_content"] = json!([]);
                 }),
                 "consumes playback-required content that the attach-time proof does not join",
@@ -13113,7 +13624,8 @@ mod tests {
             (
                 "attach_required_content_won_by_an_unstated_layer",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["required_content"][0]["winning_layer_id"] = json!("mod/ghost.mod");
                 }),
                 "is not in the layer stack the proof states",
@@ -13135,7 +13647,8 @@ mod tests {
                 // quantity in the verified result, not a caveat in a document.
                 "attach_no_process_start",
                 Box::new(|manifest: &mut Value| {
-                    manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
+                    manifest
+                        [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
                         ["game_process_start_unix"] = Value::Null;
                 }),
                 "game_process_start_unix is missing or not an integer",
@@ -13412,8 +13925,7 @@ mod tests {
 
         // An hour the map EXCLUDES, published anyway.
         let injured = fixture_hour_coverage(&[0, 2], &[(1, "framing damage at byte 421")]);
-        let error =
-            refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &injured, path)
+        let error = refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &injured, path)
                 .unwrap_err();
         assert!(
             error.contains("does not vouch for") && error.contains("framing damage at byte 421"),
@@ -13453,10 +13965,7 @@ mod tests {
             "g",
             CacheOnlyBreak {
                 index_hole_reason: Some(SEALED_REASON.to_string()),
-                sealed_coverage: Some((
-                    vec![0, 2],
-                    vec![(1, SEALED_REASON.to_string())],
-                )),
+                sealed_coverage: Some((vec![0, 2], vec![(1, SEALED_REASON.to_string())])),
                 ..CacheOnlyBreak::default()
             },
         );
@@ -13482,8 +13991,8 @@ mod tests {
             json!(SEALED_REASON),
             "the excluded hour is refused BY NAME, in the same words the seal used"
         );
-        let excluded = &authority.details
-            [recorder_host::hour_coverage::HOUR_COVERAGE_FIELD]["excluded_hours"];
+        let excluded =
+            &authority.details[recorder_host::hour_coverage::HOUR_COVERAGE_FIELD]["excluded_hours"];
         assert_eq!(excluded[0]["reason"], json!(SEALED_REASON));
 
         // A hole the recording did NOT seal in those words.
@@ -13584,7 +14093,10 @@ mod tests {
 
         // The SEALED index still serves every hour — the seal vouched for all
         // four, and that claim is not retracted by later rot.
-        assert_eq!(authority.details["indexed_hour_indexes"], json!([0, 1, 2, 3]));
+        assert_eq!(
+            authority.details["indexed_hour_indexes"],
+            json!([0, 1, 2, 3])
+        );
         assert_eq!(
             authority.details["checkpoint_cache_matches_seal_whole"],
             json!(false),
@@ -13619,8 +14131,7 @@ mod tests {
 
         // And the per-hour coverage map a replay consumer reads says the same
         // thing, in the same words, for those hours and no others.
-        let coverage = &authority.details
-            [recorder_host::hour_coverage::HOUR_COVERAGE_FIELD];
+        let coverage = &authority.details[recorder_host::hour_coverage::HOUR_COVERAGE_FIELD];
         assert_eq!(coverage["verified_hours"], json!(2));
         let excluded: Vec<i64> = coverage["excluded_hours"]
             .as_array()
@@ -13696,7 +14207,10 @@ mod tests {
                 ..CacheOnlyBreak::default()
             },
         );
-        assert!(header.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE), "{header}");
+        assert!(
+            header.contains(CACHE_ONLY_LINK_CHECKPOINT_CACHE),
+            "{header}"
+        );
         assert!(
             header.contains("header is not bound to source"),
             "the header refusal names the identity it broke: {header}"
@@ -14309,11 +14823,18 @@ mod tests {
                 let third = source_len / 3;
                 for hour in 0..3i64 {
                     let start = third * hour as u64;
-                    let end = if hour == 2 { source_len } else { third * (hour as u64 + 1) };
+                    let end = if hour == 2 {
+                        source_len
+                    } else {
+                        third * (hour as u64 + 1)
+                    };
                     if hour == 1 {
                         encoder
                             .exclude_hour(snapshot::ReplayExcludedHour::new(
-                                hour, start, end, reason.clone(),
+                                hour,
+                                start,
+                                end,
+                                reason.clone(),
                             ))
                             .unwrap();
                         continue;
@@ -14337,7 +14858,12 @@ mod tests {
             }
         }
         let (mut cache_bytes, replay_index) = encoder
-            .finish(game_id, "1", snapshot::CacheIdentityMode::Legacy, source_len)
+            .finish(
+                game_id,
+                "1",
+                snapshot::CacheIdentityMode::Legacy,
+                source_len,
+            )
             .unwrap();
         let mut index_bytes = replay_index.to_bytes().unwrap();
         if breakage.cache_header_digest_of.is_some() {
@@ -14517,7 +15043,11 @@ mod tests {
         let mut packed = packed;
         if let Some(position) = breakage.rot_cache_record {
             let (offset, len) = record_windows[position];
-            rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, (offset + len - 1) as usize);
+            rot_sealed_cache_byte(
+                &mut packed,
+                &sealed_cache_bytes,
+                (offset + len - 1) as usize,
+            );
         }
         if breakage.rot_cache_header {
             // Byte 8 is the first byte of the 32-byte H4CR source digest the

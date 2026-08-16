@@ -872,12 +872,16 @@ fn compare_summary_u64(summary: &Value, pointer: &str, expected: u64, errors: &m
 
 fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
     let mut errors = Vec::new();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+        errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut cursor = 0usize;
     let mut records_seen = 0u64;
     let mut previous_sequence: Option<u64> = None;
     let mut open = OpenFrame::default();
     let mut frames = Vec::new();
     let mut final_record_is_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut status_flags_or = 0u32;
     let mut units = BTreeMap::<String, u64>::new();
 
@@ -908,6 +912,7 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
             _ => {}
         }
         previous_sequence = Some(header.sequence);
+        let previous_record_closed_world = final_record_is_frame_end;
         final_record_is_frame_end = false;
         let payload_start = cursor.saturating_add(COMPACT_RECORD_HEADER_LEN);
         let Some(payload_end) = payload_start.checked_add(header.payload_len) else {
@@ -935,9 +940,27 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
             }
         };
         if semantics_ok {
+            let record_type = match compact_contract::KnownRecordType::try_from(header.record_type)
+            {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    errors.push(format!(
+                        "offset {record_offset}: unknown record type {}",
+                        unknown.0
+                    ));
+                    cursor = payload_end;
+                    continue;
+                }
+            };
+            if !matches!(
+                record_type,
+                compact_contract::KnownRecordType::FreezeCensus
+                    | compact_contract::KnownRecordType::StreamHeader
+            ) {
             observe_frame_hour(&mut errors, &mut open, header.game_hour_raw, record_offset);
-            match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+            }
+            match record_type {
+                compact_contract::KnownRecordType::DomainPerf => {
                     open.perf_records = open.perf_records.saturating_add(1);
                     let perf = decode_perf(payload);
                     open.perf_status_flags_or |= perf.status_flags;
@@ -956,7 +979,7 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                         }
                     }
                 }
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                compact_contract::KnownRecordType::DomainData => {
                     if header.domain_id == DOMAIN_ID {
                         let decoded = domain52_compact::decode_payload(payload_start, payload);
                         errors.extend(decoded.parse_errors);
@@ -1006,7 +1029,7 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                         }
                     }
                 }
-                COMPACT_RECORD_TYPE_FRAME_END => {
+                compact_contract::KnownRecordType::FrameEnd => {
                     let frame_status = read_u32_le(payload, 24);
                     validate_status(&mut errors, "FRAME_END", record_offset, frame_status);
                     status_flags_or |= frame_status;
@@ -1021,7 +1044,24 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                     open = OpenFrame::default();
                     final_record_is_frame_end = true;
                 }
-                _ => unreachable!("canonical semantics rejected unknown record type"),
+                compact_contract::KnownRecordType::FreezeCensus => {
+                    if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                        final_record_is_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                        release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    }
+                }
+                compact_contract::KnownRecordType::StreamHeader => {}
+                compact_contract::KnownRecordType::DomainGap
+                | compact_contract::KnownRecordType::FrameRefused
+                | compact_contract::KnownRecordType::FrameDegraded
+                | compact_contract::KnownRecordType::CaptureTerminated
+                | compact_contract::KnownRecordType::ClockUnreadableInterval
+                | compact_contract::KnownRecordType::UntrustedClockRecovery => errors.push(
+                    format!(
+                        "offset {record_offset}: record type {} is outside the occupation replay grammar",
+                        record_type.canonical_name()
+                    ),
+                ),
             }
         }
         cursor = payload_end;
@@ -1500,8 +1540,8 @@ mod tests {
                 0,
                 &vec![0u8; len],
             );
-            let errors = certify_stream(&stream)
-                .expect_err("a truncated d52 DATA payload cannot certify");
+            let errors =
+                certify_stream(&stream).expect_err("a truncated d52 DATA payload cannot certify");
             assert!(
                 errors.iter().any(|error| error.contains("too short")
                     || error.contains("expected at least")),

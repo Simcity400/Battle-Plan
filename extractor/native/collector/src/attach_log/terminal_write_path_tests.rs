@@ -93,6 +93,39 @@ fn code_only(source: &str) -> String {
         .join("\n")
 }
 
+/// A committed rollover can only be produced by the live IdentityV1/H4CT
+/// integration, which unit tests cannot launch. The behavioral tests drive the
+/// shared production decision with an injected current logical id; this
+/// structural half pins every production arm to that decision. It is an
+/// analytical count over named call sites, not a byte-mutation battery.
+///
+/// kills: deleting successor-census recovery from any clock, refusal,
+/// prepublication, terminal-D75, terminal-DATA, or terminal-H4DG rollover arm
+/// changes the first count; deleting it from the campaign reset changes the
+/// second. Definition and delegation account for the one non-call-site entry in
+/// each expected total.
+#[test]
+fn every_production_rollover_exit_routes_through_successor_census_recovery() {
+    let production = COLLECTOR_SOURCE
+        .split_once("#[cfg(test)]\nmod freeze_census_publication_tests")
+        .expect("freeze census publication test module")
+        .0;
+    assert_eq!(
+        production
+            .matches("require_successor_install_census_after_rollover(")
+            .count(),
+        8,
+        "seven terminal/boundary call sites plus the function definition are required"
+    );
+    assert_eq!(
+        production
+            .matches("publish_successor_install_census_after_rollover(")
+            .count(),
+        3,
+        "campaign reset, function definition, and required-wrapper delegation are required"
+    );
+}
+
 /// A write that every requested sink took.
 ///
 /// Sealed through the production mint, because that is now the only way a
@@ -370,8 +403,8 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
     );
     assert_eq!(
         gaps.matches("append_terminal_error(").count(),
-        5,
-        "and each one fails the run rather than ending it quietly"
+        6,
+        "and each one fails the run rather than ending it quietly, including a successor whose cached census cannot be published"
     );
     // The successor-stream guard. A rollover committed during the terminal DATA
     // publication opens a new logical stream; these ranges describe the closed
@@ -411,18 +444,20 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        5,
+        6,
         "every site that reaches teardown after a write committed a rollover sets it: the \
          scheduler DATA publication, the frame-refusal publication, the clock-unreadable \
-         interval publication, the untrusted clock-recovery publication, and the terminal \
-         DATA write"
+         interval publication, the untrusted clock-recovery publication, the ordinary terminal \
+         DATA write, and the D75-owned terminal DATA write"
     );
-    // FIVE, and the last two earned their places on the same argument. The
+    // SIX, and the last three earned their places on the same argument. The
     // `H4CU` clock-unreadable interval publication and the `H4CJ` untrusted
     // clock-recovery publication both sit at the top of the sweep and both call
     // `write_compact_frame` -- so each takes its own campaign-identity
     // observation and can commit a rollover exactly as the DATA and refusal
-    // writes can. A site that CAN commit one must set the flag; the whole point
+    // writes can. D75's owned writer reports its committed rollover back to the
+    // custody, so the caller sets the same flag before aborting that owner. A
+    // site that CAN commit one must set the flag; the whole point
     // of the flag is that the terminal sequence's stream-id latch cannot see a
     // rollover committed before that sequence began.
     //
@@ -742,7 +777,7 @@ fn the_d75_terminal_writer_refuses_an_uncertain_boundary_instead_of_claiming_a_w
         .expect("D75 custody publication terminator")
         .0;
     assert!(
-        custody_failure.contains("Err(error) => {")
+        custody_failure.contains("Err(mut error) => {")
             && custody_failure.contains("abort_terminal_d75_owner(")
             && custody_failure.contains("return Err("),
         "a D75 terminal publication failure aborts the custody and fails the worker"

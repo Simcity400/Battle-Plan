@@ -470,6 +470,11 @@ pub fn certify_canonical_stream(
         requested_game_hour_advancements: policy.requested_game_hour_advancements,
         actual_game_hour_advancements: None,
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+        report
+            .problems
+            .push(format!("stateful stream placement: {error}"));
+    }
     if !policy.expected_perf_roster.contains(&DOMAIN_PROJECTS_LIVE)
         || !policy.expected_data_roster.contains(&DOMAIN_PROJECTS_LIVE)
     {
@@ -545,8 +550,23 @@ pub fn certify_canonical_stream(
             break;
         }
         report.physical_records += 1;
+        let record_type = match compact_contract::KnownRecordType::try_from(header.record_type) {
+            Ok(record_type) => record_type,
+            Err(unknown) => {
+                report.problems.push(format!(
+                    "offset {offset}: unknown record type {}",
+                    unknown.0
+                ));
+                break;
+            }
+        };
 
-        if header.record_type != compact_contract::COMPACT_RECORD_TYPE_FRAME_END {
+        if !matches!(
+            record_type,
+            compact_contract::KnownRecordType::FrameEnd
+                | compact_contract::KnownRecordType::FreezeCensus
+                | compact_contract::KnownRecordType::StreamHeader
+        ) {
             match open_hour {
                 Some(hour) if hour != header.game_hour_raw => {
                     report.problems.push(format!(
@@ -571,8 +591,8 @@ pub fn certify_canonical_stream(
             }
         }
 
-        match header.record_type {
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+        match record_type {
+            compact_contract::KnownRecordType::DomainData => {
                 if header.domain_id == DOMAIN_CONTROL {
                     // Control/latch diagnostics are outside the scheduled roster.
                 } else if !policy.expected_data_roster.contains(&header.domain_id) {
@@ -601,7 +621,7 @@ pub fn certify_canonical_stream(
                     }
                 }
             }
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainPerf => {
                 if !policy.expected_perf_roster.contains(&header.domain_id) {
                     report.problems.push(format!(
                         "offset {offset}: unexpected PERF domain {}",
@@ -631,7 +651,7 @@ pub fn certify_canonical_stream(
                     }
                 }
             }
-            compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 let Some(hour) = open_hour else {
                     report
                         .problems
@@ -737,7 +757,20 @@ pub fn certify_canonical_stream(
                 perf.clear();
                 data_roster.clear();
             }
-            _ => unreachable!("shared semantics rejected unknown record type"),
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                report.problems.push(format!(
+                    "offset {offset}: record type {} is outside the scientist certification grammar",
+                    record_type.canonical_name()
+                ));
+                break;
+            }
         }
         offset = end;
     }

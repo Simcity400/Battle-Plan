@@ -29,7 +29,8 @@ pub const CID1_MAX_PAYLOAD_LEN: usize = CID1_FIXED_HEADER_LEN
     + CID1_MAX_ROSTER_BYTES_LEN
     + CID1_MAX_MODSET_IDENTITY_LEN;
 
-pub const COMPACT_RECORD_TYPE_STREAM_HEADER: u16 = 4;
+// Preserve this public path while the single record-type roster owns the value.
+pub use crate::record_semantics::COMPACT_RECORD_TYPE_STREAM_HEADER;
 pub const COMPACT_DOMAIN_STREAM_HEADER: u16 = 0;
 pub const CID1_SOURCE_LIVE_MEMORY: u16 = 1;
 

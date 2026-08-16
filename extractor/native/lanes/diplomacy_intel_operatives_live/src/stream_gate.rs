@@ -46,12 +46,16 @@ struct FrameRecordCounts {
 /// Fail-closed certification for a complete d53 collector stream.
 pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
     let mut out = Domain53StreamGateSummary::default();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+        out.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut cursor = 0usize;
     let mut previous_sequence = None;
     let mut pending_hour = None;
     let mut open_hour = None;
     let mut last_closed_hour = None;
     let mut final_record_is_clean_frame_end = false;
+    let mut last_record_is_enabled_release_epilogue = false;
     let mut owned = OwnedFrameAuthority::default();
     let mut frame_records = FrameRecordCounts::default();
 
@@ -98,6 +102,11 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
                 false
             }
         };
+        last_record_is_enabled_release_epilogue = semantics_ok
+            && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
+            && compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED
+            && compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                .is_ok_and(|record| record.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release);
 
         match header.record_type {
             COMPACT_RECORD_TYPE_DOMAIN_PERF if semantics_ok => {
@@ -209,7 +218,7 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
         out.parse_errors
             .push(format!("stream ended with open DATA frame hour {hour}"));
     }
-    if !final_record_is_clean_frame_end {
+    if !final_record_is_clean_frame_end && !last_record_is_enabled_release_epilogue {
         out.parse_errors
             .push("stream is not closed by a final canonical FRAME_END record".to_string());
     }

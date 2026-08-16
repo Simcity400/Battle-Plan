@@ -1,26 +1,78 @@
 //! Dependency-free canonical semantics for fully framed H4CR record envelopes.
 
-pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
-pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+macro_rules! compact_record_type_roster {
+    ($(
+        $(#[$attribute:meta])*
+        $variant:ident => $constant:ident = $value:literal, $canonical_name:literal;
+    )+) => {
+        $(
+            $(#[$attribute])*
+            pub const $constant: u16 = $value;
+        )+
+
+        /// Every assigned H4CR record type. This enum is deliberately exhaustive
+        /// so whole-stream consumers fail to compile when the wire vocabulary grows.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u16)]
+        pub enum KnownRecordType {
+            $(
+                $(#[$attribute])*
+                $variant = $value,
+            )+
+        }
+
+        impl KnownRecordType {
+            pub const fn code(self) -> u16 {
+                self as u16
+            }
+
+            pub const fn canonical_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $canonical_name,)+
+                }
+            }
+        }
+
+        impl TryFrom<u16> for KnownRecordType {
+            type Error = UnknownRecordType;
+
+            fn try_from(value: u16) -> Result<Self, Self::Error> {
+                match value {
+                    $($value => Ok(Self::$variant),)+
+                    _ => Err(UnknownRecordType(value)),
+                }
+            }
+        }
+    };
+}
+
+compact_record_type_roster! {
+/// Per-domain performance outcome. It closes one scheduled domain outcome.
+DomainPerf => COMPACT_RECORD_TYPE_DOMAIN_PERF = 1, "domain_perf";
+/// Canonical frame boundary. It closes one published game hour.
+FrameEnd => COMPACT_RECORD_TYPE_FRAME_END = 2, "frame_end";
+/// Subordinate per-domain world-state payload. It closes no outcome itself.
+DomainData => COMPACT_RECORD_TYPE_DOMAIN_DATA = 3, "domain_data";
+/// Sequence-zero campaign identity and logical-stream header.
+StreamHeader => COMPACT_RECORD_TYPE_STREAM_HEADER = 4, "stream_header";
 /// Ordinary control record reporting one acquisition outcome with no data.
-pub const COMPACT_RECORD_TYPE_DOMAIN_GAP: u16 = 5;
+DomainGap => COMPACT_RECORD_TYPE_DOMAIN_GAP = 5, "domain_gap";
 /// Frame-level record: this hour was assembled and REFUSED, naming the
 /// domains that forced it. Not a per-domain outcome -- a refused frame is one
 /// event with a list of offenders, which is why it is not a DOMAIN_GAP. Type 4
 /// is STREAM_HEADER (campaign_identity.rs), hence 6.
-pub const COMPACT_RECORD_TYPE_FRAME_REFUSED: u16 = 6;
+FrameRefused => COMPACT_RECORD_TYPE_FRAME_REFUSED = 6, "frame_refused";
 /// Frame-level record: this hour WAS published, and these named domains are
 /// UNKNOWN in it. The counterpart to `FRAME_REFUSED` -- that one closes an hour
 /// which published nothing, this one annotates an hour which published while
 /// some of its domains failed. It is deliberately NOT a boundary record: it
 /// rides inside the frame it describes, before that frame's `FRAME_END`, so a
 /// consumer reads the degradation as part of the same closed hour.
-pub const COMPACT_RECORD_TYPE_FRAME_DEGRADED: u16 = 7;
+FrameDegraded => COMPACT_RECORD_TYPE_FRAME_DEGRADED = 7, "frame_degraded";
 /// Frame-independent producer-abort notice. Unlike FRAME_REFUSED and
 /// FRAME_DEGRADED, this closes or qualifies no game hour and claims no domain
 /// coverage. Its H4CR envelope uses domain 1000 and game-hour sentinel zero.
-pub const COMPACT_RECORD_TYPE_CAPTURE_TERMINATED: u16 = 8;
+CaptureTerminated => COMPACT_RECORD_TYPE_CAPTURE_TERMINATED = 8, "capture_terminated";
 /// Frame-level record: these hours ELAPSED and were never observed, because the
 /// authenticated clock could not be read across them.
 ///
@@ -34,7 +86,7 @@ pub const COMPACT_RECORD_TYPE_CAPTURE_TERMINATED: u16 = 8;
 /// It CLOSES no hour and claims no coverage. Its envelope carries the RESUMED
 /// hour, which is a real hour the producer was observing when it wrote the
 /// record, and `crate::clock_unreadable_interval` requires the two to agree.
-pub const COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL: u16 = 9;
+ClockUnreadableInterval => COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL = 9, "clock_unreadable_interval";
 /// Frame-level record: the authenticated clock read again after an outage, and
 /// the value it returned is one this producer does not trust.
 ///
@@ -50,7 +102,21 @@ pub const COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL: u16 = 9;
 /// Like its counterpart it CLOSES no hour and publishes no `FRAME_END`. Its
 /// envelope carries the RESUMED hour, and `crate::untrusted_clock_recovery`
 /// requires the two to agree.
-pub const COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY: u16 = 10;
+UntrustedClockRecovery => COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY = 10, "untrusted_clock_recovery";
+/// Frame-independent freeze-census telemetry. It closes no game hour, claims
+/// no domain coverage, and uses domain 1000 with the game-hour sentinel zero.
+FreezeCensus => COMPACT_RECORD_TYPE_FREEZE_CENSUS = 11, "freeze_census";
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnknownRecordType(pub u16);
+
+impl core::fmt::Display for UnknownRecordType {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "unknown compact record type {}", self.0)
+    }
+}
+
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
@@ -201,9 +267,10 @@ pub fn validate_compact_record_semantics(
         ));
     }
 
-    match record_type {
-        COMPACT_RECORD_TYPE_DOMAIN_PERF => validate_domain_perf(record_flags, payload),
-        COMPACT_RECORD_TYPE_FRAME_END => {
+    let known = KnownRecordType::try_from(record_type).map_err(|error| error.to_string())?;
+    match known {
+        KnownRecordType::DomainPerf => validate_domain_perf(record_flags, payload),
+        KnownRecordType::FrameEnd => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "FRAME_END domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -217,8 +284,11 @@ pub fn validate_compact_record_semantics(
             }
             Ok(())
         }
-        COMPACT_RECORD_TYPE_DOMAIN_DATA => Ok(()),
-        COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+        KnownRecordType::DomainData => Ok(()),
+        KnownRecordType::StreamHeader => {
+            Err("STREAM_HEADER is valid only through the CID1 sequence-zero authority".to_string())
+        }
+        KnownRecordType::FrameRefused => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "FRAME_REFUSED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -226,7 +296,7 @@ pub fn validate_compact_record_semantics(
             }
             crate::frame_refusal::validate_frame_refusal_payload(payload)
         }
-        COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
+        KnownRecordType::FrameDegraded => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "FRAME_DEGRADED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -234,7 +304,7 @@ pub fn validate_compact_record_semantics(
             }
             crate::frame_degraded::validate_frame_degraded_payload(payload)
         }
-        COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => {
+        KnownRecordType::CaptureTerminated => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "CAPTURE_TERMINATED domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -242,7 +312,7 @@ pub fn validate_compact_record_semantics(
             }
             crate::capture_termination::CaptureTerminationRecordV1::decode(payload).map(|_| ())
         }
-        COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
+        KnownRecordType::ClockUnreadableInterval => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "CLOCK_UNREADABLE_INTERVAL domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -250,7 +320,7 @@ pub fn validate_compact_record_semantics(
             }
             crate::clock_unreadable_interval::validate_clock_unreadable_interval_payload(payload)
         }
-        COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
+        KnownRecordType::UntrustedClockRecovery => {
             if domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "UNTRUSTED_CLOCK_RECOVERY domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
@@ -258,7 +328,15 @@ pub fn validate_compact_record_semantics(
             }
             crate::untrusted_clock_recovery::validate_untrusted_clock_recovery_payload(payload)
         }
-        COMPACT_RECORD_TYPE_DOMAIN_GAP => {
+        KnownRecordType::FreezeCensus => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "FREEZE_CENSUS domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::freeze_census_record::FreezeCensusRecordV1::decode(payload).map(|_| ())
+        }
+        KnownRecordType::DomainGap => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "DOMAIN_GAP envelope affected domain {domain_id} is invalid"
@@ -266,7 +344,6 @@ pub fn validate_compact_record_semantics(
             }
             validate_domain_gap_payload(payload)
         }
-        other => Err(format!("unknown compact record type {other}")),
     }
 }
 
@@ -965,6 +1042,63 @@ mod tests {
         )
         .expect_err("FRAME_END flags must fail");
         assert!(wrong_flags.contains("rejected bits"), "{wrong_flags}");
+    }
+
+    /// kills: type 11 acquiring world-domain meaning, accepting H4CR flags, or
+    /// counting as a domain outcome/PERF record instead of pure telemetry.
+    #[test]
+    fn freeze_census_envelope_is_frame_domain_zero_flags_and_no_coverage() {
+        use crate::freeze_census_record::{
+            FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
+        };
+
+        let payload = FreezeCensusRecordV1::encode_bounded(
+            FreezeCensusPhase::Install,
+            FreezeCensusCounterSnapshot::default(),
+            FreezeCensusCounterSnapshot::default(),
+            &[],
+        )
+        .unwrap();
+        validate_compact_record_semantics(
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            0,
+            &payload,
+        )
+        .unwrap();
+        assert!(validate_compact_record_semantics(
+            18,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            0,
+            &payload,
+        )
+        .is_err());
+        assert!(validate_compact_record_semantics(
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            1,
+            &payload,
+        )
+        .is_err());
+        assert_eq!(
+            compact_record_allowed_flags(COMPACT_DOMAIN_FRAME, COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            0
+        );
+        assert!(!compact_record_counts_toward_terminal_outcome(
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS
+        ));
+        assert!(!compact_record_counts_toward_perf_cardinality(
+            COMPACT_RECORD_TYPE_FREEZE_CENSUS
+        ));
+    }
+
+    /// kills: treating the next unassigned raw wire value as an ignorable
+    /// record merely because the exhaustive enum has not learned it.
+    #[test]
+    fn raw_unknown_record_type_twelve_rejects() {
+        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 12, 0, &[])
+            .expect_err("raw type 12 is not assigned");
+        assert_eq!(error, "unknown compact record type 12");
     }
 
     #[test]

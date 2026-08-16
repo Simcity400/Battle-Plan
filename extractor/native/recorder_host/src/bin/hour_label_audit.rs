@@ -3,12 +3,12 @@ use compact_contract::diagnostic_channel::{decode_units, DiagUnit};
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, DomainGapReason,
     DomainGapRecordV1, DomainGapWitnessProvenance, COMPACT_DOMAIN_PERF_BASE_LEN,
-    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC,
-    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
-    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_DEGRADED,
-    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_TYPE_FRAME_REFUSED,
+    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
+    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN,
+    COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_DEGRADED, COMPACT_RECORD_TYPE_FRAME_END,
+    COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1052,9 +1052,7 @@ fn finalize_frame(state: &mut AuditState) {
         ) {
             (Some(age_us), Some(mismatched), Some(bracketed)) => {
                 state.lateness_frames = state.lateness_frames.saturating_add(1);
-                state
-                    .lateness_samples
-                    .push((age_us, mismatched, bracketed));
+                state.lateness_samples.push((age_us, mismatched, bracketed));
             }
             _ if probe.lw_hour_age_missing == Some(1) => {
                 state.lateness_missing_frames = state.lateness_missing_frames.saturating_add(1);
@@ -1108,11 +1106,13 @@ fn finalize_frame(state: &mut AuditState) {
         ) {
             (Some(domains), Some(bracketed), Some(unusable)) => {
                 state.exact_instrument_frames = state.exact_instrument_frames.saturating_add(1);
-                state.exact_mismatch_domains =
-                    state.exact_mismatch_domains.saturating_add(domains);
+                state.exact_mismatch_domains = state.exact_mismatch_domains.saturating_add(domains);
                 state.exact_bracketed_domains =
                     state.exact_bracketed_domains.saturating_add(bracketed);
-                *state.exact_mismatch_distribution.entry(domains).or_default() += 1;
+                *state
+                    .exact_mismatch_distribution
+                    .entry(domains)
+                    .or_default() += 1;
                 if domains > 0 {
                     state.exact_mismatch_frames = state.exact_mismatch_frames.saturating_add(1);
                     // WHOLLY means every bracketed domain, not "a lot". The
@@ -1487,7 +1487,11 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         )?;
     }
     writeln!(out, "  frames carrying it: {}", e.frames_carrying_it)?;
-    writeln!(out, "  frames with a mismatch: {}", e.frames_with_a_mismatch)?;
+    writeln!(
+        out,
+        "  frames with a mismatch: {}",
+        e.frames_with_a_mismatch
+    )?;
     writeln!(
         out,
         "  mismatched domain-hours: {} of {} bracketed",
@@ -1548,7 +1552,10 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         )?;
     }
     print_stats(&mut out, "  lw_hour_age_us", &l.lw_hour_age_us)?;
-    writeln!(out, "  hours the frontier ran ahead of the label -> frames:")?;
+    writeln!(
+        out,
+        "  hours the frontier ran ahead of the label -> frames:"
+    )?;
     if l.frontier_ahead_distribution.is_empty() {
         writeln!(out, "    (none)")?;
     }
@@ -1625,11 +1632,7 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         writeln!(
             out,
             "  ({}, {}, {:+}, {:+}) -> {}",
-            row.reason,
-            row.witness_provenance,
-            row.opening_delta,
-            row.closing_delta,
-            row.count
+            row.reason, row.witness_provenance, row.opening_delta, row.closing_delta, row.count
         )?;
     }
     writeln!(
@@ -1700,7 +1703,10 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
         "(mismatch is lw_hour_label_mismatch_domains > 0 -- the per-bracket \
          instrument, which needs no luck to fire)"
     )?;
-    writeln!(out, "                                      torn=no  torn=yes")?;
+    writeln!(
+        out,
+        "                                      torn=no  torn=yes"
+    )?;
     writeln!(
         out,
         "mismatch=no   label_skew=no   {:>12} {:>9}",
@@ -2028,7 +2034,14 @@ mod tests {
     const HOUR_A: i32 = 60_831_056;
     const HOUR_B: i32 = 60_831_057;
 
-    fn record(sequence: u64, hour: i32, domain: u16, rtype: u16, flags: u32, payload: &[u8]) -> Vec<u8> {
+    fn record(
+        sequence: u64,
+        hour: i32,
+        domain: u16,
+        rtype: u16,
+        flags: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(COMPACT_RECORD_MAGIC);
         out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
@@ -2060,7 +2073,10 @@ mod tests {
             DiagUnit::counter("lw_hour_label_skew_missing", 0),
         ];
         if let Some((mismatch, bracketed)) = exact {
-            units.push(DiagUnit::counter("lw_hour_label_mismatch_domains", mismatch));
+            units.push(DiagUnit::counter(
+                "lw_hour_label_mismatch_domains",
+                mismatch,
+            ));
             units.push(DiagUnit::counter("lw_bracketed_domains", bracketed));
             units.push(DiagUnit::counter("lw_hour_label_unusable", 0));
         }
@@ -2279,8 +2295,7 @@ mod tests {
         assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
         let b = &report.section_b_domain_gaps;
         assert!(
-            b.clock_witness_examples.is_empty()
-                && b.clock_witness_delta_counts.is_empty(),
+            b.clock_witness_examples.is_empty() && b.clock_witness_delta_counts.is_empty(),
             "an unstated row must stay excluded -- believing it is exactly the \
              corroboration the capture does not contain: {:?}",
             b.clock_witness_examples
@@ -2331,18 +2346,12 @@ mod tests {
                  tool asks for; the reason may not veto it"
             );
             assert!(
-                !witnesses_are_a_clock_observation(
-                    reason,
-                    DomainGapWitnessProvenance::Unobserved
-                ),
+                !witnesses_are_a_clock_observation(reason, DomainGapWitnessProvenance::Unobserved),
                 "{reason:?}: `Unobserved` is a statement that there is nothing \
                  to compare"
             );
             assert_eq!(
-                witnesses_are_a_clock_observation(
-                    reason,
-                    DomainGapWitnessProvenance::Unstated
-                ),
+                witnesses_are_a_clock_observation(reason, DomainGapWitnessProvenance::Unstated),
                 is_clock_derived(reason),
                 "{reason:?}: an unstated row must be judged EXACTLY as the \
                  pre-provenance tool judged it, or old captures change meaning"
@@ -2426,7 +2435,8 @@ mod tests {
         let mut sequence = 0u64;
         // 5 ms late and clean; 65 ms late and losing 67 of 68; 62 ms late with
         // NO mismatch counters at all; and one frame with no lateness unit.
-        let mut stream = frame_with_lateness(&mut sequence, HOUR_A, Some((0, 68)), Some((5_000, 0)));
+        let mut stream =
+            frame_with_lateness(&mut sequence, HOUR_A, Some((0, 68)), Some((5_000, 0)));
         stream.extend_from_slice(&frame_with_lateness(
             &mut sequence,
             HOUR_B,
@@ -2545,9 +2555,7 @@ mod tests {
     fn a_capture_predating_the_lateness_unit_reports_it_absent() {
         let mut sequence = 0u64;
         let stream = frame(&mut sequence, HOUR_A, Some((67, 68)), 0);
-        let lateness = &audit(&stream)
-            .section_a_frame_census
-            .build_start_lateness;
+        let lateness = &audit(&stream).section_a_frame_census.build_start_lateness;
         assert_eq!(lateness.frames_carrying_it, 0);
         assert_eq!(lateness.frames_in_joint_table, 0);
         assert_eq!(lateness.frames_missing_it, 0);
@@ -2755,6 +2763,23 @@ fn record_type_name(record_type: u16) -> &'static str {
         compact_contract::COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY => {
             "UNTRUSTED_CLOCK_RECOVERY"
         }
+        compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS => "FREEZE_CENSUS",
         _ => "UNKNOWN",
+    }
+}
+
+#[cfg(test)]
+mod freeze_census_name_tests {
+    use super::*;
+
+    /// kills: removing the type-11 label makes sealed attach telemetry look
+    /// like an unassigned wire value while type 12 must remain diagnostic.
+    #[test]
+    fn freeze_census_has_a_name_and_type_twelve_does_not() {
+        assert_eq!(
+            record_type_name(compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS),
+            "FREEZE_CENSUS"
+        );
+        assert_eq!(record_type_name(12), "UNKNOWN");
     }
 }

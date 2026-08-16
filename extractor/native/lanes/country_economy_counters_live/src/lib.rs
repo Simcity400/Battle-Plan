@@ -475,12 +475,16 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         total_bytes: raw.len(),
         ..CompactStreamSummary::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence = None::<u64>;
     let mut pending_perf_hour = None::<i32>;
     let mut open_frame_hour = None::<i32>;
     let mut last_closed_hour = None::<i32>;
     let mut final_record_is_clean_frame_end = false;
+    let mut last_record_is_enabled_release_epilogue = false;
 
     while offset < raw.len() {
         let header = match compact_contract::parse_compact_record_header(&raw[offset..]) {
@@ -549,6 +553,11 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                 false
             }
         };
+        last_record_is_enabled_release_epilogue = semantics_ok
+            && record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
+            && compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED
+            && compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                .is_ok_and(|record| record.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release);
         summary.record_count = summary.record_count.saturating_add(1);
 
         match record_type {
@@ -709,7 +718,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
             .parse_errors
             .push(format!("stream ended with open DATA frame hour {open}"));
     }
-    if !final_record_is_clean_frame_end {
+    if !final_record_is_clean_frame_end && !last_record_is_enabled_release_epilogue {
         summary
             .parse_errors
             .push("stream is not closed by a final canonical FRAME_END record".to_string());

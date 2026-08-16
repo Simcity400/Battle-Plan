@@ -239,6 +239,9 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
     let mut physical_record_count = 0usize;
     let mut frames = Vec::new();
     let mut parse_errors = Vec::new();
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut previous_sequence: Option<u64> = None;
     let mut open_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
@@ -249,9 +252,11 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
     let mut logical_breakthroughs: BTreeMap<(u32, u32), ProjectBreakthroughRow> = BTreeMap::new();
     let mut baseline_seen = false;
     let mut ends_at_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     while offset < raw.len() {
         // Physical EOF authority: any bytes after a clean FRAME_END invalidate
         // that boundary before the next header is even known to be parseable.
+        let previous_record_closed_world = ends_at_clean_frame_end;
         ends_at_clean_frame_end = false;
         let remaining = raw.len().saturating_sub(offset);
         let header = match compact_contract::parse_compact_record_header(&raw[offset..]) {
@@ -318,7 +323,23 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
             offset += record_len;
             continue;
         }
-        if header.record_type != compact_contract::COMPACT_RECORD_TYPE_FRAME_END {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    parse_errors.push(format!(
+                        "offset {offset}: unknown record type {}",
+                        unknown.0
+                    ));
+                    break;
+                }
+            };
+        if !matches!(
+            known_record_type,
+            compact_contract::KnownRecordType::FrameEnd
+                | compact_contract::KnownRecordType::FreezeCensus
+                | compact_contract::KnownRecordType::StreamHeader
+        ) {
             match open_hour {
                 Some(open) if open != header.game_hour_raw => {
                     parse_errors.push(format!(
@@ -351,8 +372,8 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                 Some(_) => {}
             }
         }
-        match header.record_type {
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainData => {
                 if header.domain_id == DOMAIN_PROJECTS_LIVE {
                     if project_perf.is_none() {
                         parse_errors.push(format!(
@@ -377,7 +398,7 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                     }
                 }
             }
-            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainPerf => {
                 if compact_contract::assigned_descriptor_by_id(header.domain_id).is_none() {
                     parse_errors.push(format!(
                         "offset {offset}: unassigned domain {} DOMAIN_PERF cannot contribute frame authority",
@@ -419,7 +440,7 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                     }
                 }
             }
-            compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 let Some(open) = open_hour else {
                     parse_errors.push(format!(
                         "offset {offset}: bare FRAME_END for hour {}",
@@ -495,8 +516,23 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                 owned_perf_statuses.clear();
                 ends_at_clean_frame_end = true;
             }
-            other => {
-                parse_errors.push(format!("offset {offset}: unknown record type {other}"));
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    ends_at_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                parse_errors.push(format!(
+                    "offset {offset}: record type {} is outside the project proof grammar",
+                    known_record_type.canonical_name()
+                ));
                 break;
             }
         }

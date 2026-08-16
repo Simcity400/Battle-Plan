@@ -1006,9 +1006,7 @@ pub fn residual_badge_rows(
                 "purchase_contract_delivery_route_progress"
                 | "purchase_contract_price_detail"
                 | "purchase_contract_speed_completed" => MARKET_TRADE_DETAIL_ROW_LEN as u32,
-                "market_stockpile_sellable_equipment" => {
-                    MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u32
-                }
+                "market_stockpile_sellable_equipment" => MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u32,
                 "lend_lease_market_contract_mapping" => MARKET_TRADE_LEND_LEASE_ROW_LEN as u32,
                 // The badge quotes the shipped seven-resource row width; a
                 // v3 row is `16 + 8 * resource_count` and has no one number.
@@ -1284,7 +1282,9 @@ pub fn encode_factory_header_trailer(rows: &[FactoryHeaderRow]) -> Vec<u8> {
 
 pub fn encode_activation_trailer(activation: MarketTradeActivation) -> Result<Vec<u8>, String> {
     if activation.active != activation.country_tag_db_id.is_some()
-        || activation.country_tag_db_id.is_some_and(|tag| tag == 0 || tag > MARKET_TRADE_MAX_TAG_DB_ID)
+        || activation
+            .country_tag_db_id
+            .is_some_and(|tag| tag == 0 || tag > MARKET_TRADE_MAX_TAG_DB_ID)
     {
         return Err("MTRA active/country identity is inconsistent".into());
     }
@@ -1576,16 +1576,16 @@ fn decode_activation_trailer(
     summary: &mut MarketTradePayloadSummary,
 ) -> Option<usize> {
     if summary.activation_trailer_present {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: duplicate MTRA activation trailer"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: duplicate MTRA activation trailer"
+        ));
         return None;
     }
     summary.activation_trailer_present = true;
     if payload.len().saturating_sub(trailer_offset) < MARKET_TRADE_ACTIVATION_HEADER_LEN {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: MTRA activation trailer is too short"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: MTRA activation trailer is too short"
+        ));
         return None;
     }
     let trailer = &payload[trailer_offset..trailer_offset + MARKET_TRADE_ACTIVATION_HEADER_LEN];
@@ -2237,8 +2237,7 @@ fn decode_classic_deal_trailer(
         };
         let legacy_identity_matches = wide_identity || {
             let packed = read_u64_le(trailer, cursor + 32);
-            packed >> 48 == 0
-                && ((packed >> 8) & 0xFF) as u32 == read_u32_le(trailer, cursor + 8)
+            packed >> 48 == 0 && ((packed >> 8) & 0xFF) as u32 == read_u32_le(trailer, cursor + 8)
         };
         let row = ClassicDealRow {
             owner_tag_db_id: read_u32_le(trailer, cursor),
@@ -3580,6 +3579,9 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         total_bytes: raw.len(),
         ..MarketTradeStreamSummary::default()
     };
+    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
+        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut pending_perf_hour: Option<i32> = None;
@@ -3588,12 +3590,14 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
     let mut clean_closed_hours = BTreeSet::new();
     let mut observed_closure_hours = BTreeSet::new();
     let mut final_record_is_clean_frame_end = false;
+    let mut release_epilogue_seen = false;
     let mut per_hour_perf = BTreeMap::<i32, u32>::new();
     let mut per_hour_data = BTreeMap::<i32, u32>::new();
 
     while offset < raw.len() {
         // Any byte after a clean closure means the physical EOF is no longer at
         // that FRAME_END, even when the trailing bytes cannot form a header.
+        let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
             Ok(header) => header,
@@ -3663,8 +3667,20 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         };
         summary.record_count = summary.record_count.saturating_add(1);
 
-        match header.record_type {
-            RECORD_TYPE_DOMAIN_PERF => {
+        let known_record_type =
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(record_type) => record_type,
+                Err(unknown) => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: unknown compact record type {}",
+                        unknown.0
+                    ));
+                    offset += record_len;
+                    continue;
+                }
+            };
+        match known_record_type {
+            compact_contract::KnownRecordType::DomainPerf => {
                 observe_perf_hour(
                     &mut summary,
                     &mut pending_perf_hour,
@@ -3681,7 +3697,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     }
                 }
             }
-            RECORD_TYPE_DOMAIN_DATA if header.domain_id == DOMAIN_ID => {
+            compact_contract::KnownRecordType::DomainData if header.domain_id == DOMAIN_ID => {
                 observe_data_hour(
                     &mut summary,
                     pending_perf_hour,
@@ -3819,24 +3835,22 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                                 if previous_active != activation.active {
                                     summary.activation_state_transitions =
                                         summary.activation_state_transitions.saturating_add(1);
-                                    if summary.activation_last_sequence
-                                        .is_some_and(|sequence| activation.observation_sequence <= sequence)
-                                    {
+                                    if summary.activation_last_sequence.is_some_and(|sequence| {
+                                        activation.observation_sequence <= sequence
+                                    }) {
                                         summary.activation_sequence_errors.push(format!(
                                             "offset {offset}: MTRA state changed without a strictly increasing lifecycle sequence"
                                         ));
                                     }
-                                } else if summary.activation_last_sequence
-                                    .is_some_and(|sequence| activation.observation_sequence < sequence)
-                                {
+                                } else if summary.activation_last_sequence.is_some_and(|sequence| {
+                                    activation.observation_sequence < sequence
+                                }) {
                                     summary.activation_sequence_errors.push(format!(
                                         "offset {offset}: MTRA lifecycle sequence regressed"
                                     ));
                                 }
                             }
-                            if !activation.active
-                                && !summary.activation_saw_active_after_closed
-                            {
+                            if !activation.active && !summary.activation_saw_active_after_closed {
                                 summary.activation_saw_closed_before_active = true;
                             } else if activation.active
                                 && summary.activation_saw_closed_before_active
@@ -3848,7 +3862,8 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                                 summary.activation_saw_closed_after_active = true;
                             }
                             summary.activation_last_active = Some(activation.active);
-                            summary.activation_last_sequence = Some(activation.observation_sequence);
+                            summary.activation_last_sequence =
+                                Some(activation.observation_sequence);
                             if activation.active {
                             summary.activation_active_records =
                                 summary.activation_active_records.saturating_add(1);
@@ -3865,7 +3880,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     .extend(payload_summary.parse_errors.iter().cloned());
                 summary.payloads.push(payload_summary);
             }
-            RECORD_TYPE_DOMAIN_DATA => {
+            compact_contract::KnownRecordType::DomainData => {
                 observe_data_hour(
                     &mut summary,
                     pending_perf_hour,
@@ -3875,7 +3890,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     offset,
                 );
             }
-            RECORD_TYPE_FRAME_END => {
+            compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_records = summary.frame_end_records.saturating_add(1);
                 let mut clean = record_semantics_ok;
                 if record_semantics_ok {
@@ -3928,9 +3943,24 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     final_record_is_clean_frame_end = true;
                 }
             }
-            other => summary.parse_errors.push(format!(
-                "offset {offset}: unknown compact record type {other}"
-            )),
+            compact_contract::KnownRecordType::FreezeCensus => {
+                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                    final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(compact_contract::freeze_census_record::RELEASE_FREEZE_CENSUS_EPILOGUE_ENABLED, previous_record_closed_world, census.phase(), release_epilogue_seen);
+                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                }
+            }
+            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::FrameRefused
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: record type {} is outside the market proof grammar",
+                    known_record_type.canonical_name()
+                ))
+            }
         }
         offset += record_len;
     }
@@ -4442,10 +4472,8 @@ mod tests {
             bytes[4..].copy_from_slice(&identity.1.to_le_bytes());
             (bytes, 1)
         } else {
-            let packed = (u64::from(identity.0) << 32)
-                | (u64::from(identity.1) << 16)
-                | (4u64 << 8)
-                | 1;
+            let packed =
+                (u64::from(identity.0) << 32) | (u64::from(identity.1) << 16) | (4u64 << 8) | 1;
             (packed.to_le_bytes(), 0)
         };
         for (index, owner, counterpart, direction) in [
@@ -4817,7 +4845,9 @@ mod tests {
             .any(|badge| badge.name == "country_resource_import_export_flows"
                 && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
                 && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
-        assert!(badges.iter().any(|badge| badge.name == "market_access_diplomatic_context"
+        assert!(badges
+            .iter()
+            .any(|badge| badge.name == "market_access_diplomatic_context"
             && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
             && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
         assert!(badges
@@ -4962,7 +4992,9 @@ mod tests {
             &[800_000, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000],
         );
         let mut payload = encode_payload_with_detail_rows(0, 0, 0, 0, &[], &[detail]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"));
+        payload.extend_from_slice(
+            &encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"),
+        );
 
         let decoded = decode_payload(0, &payload);
 
@@ -5031,7 +5063,9 @@ mod tests {
     fn resource_flow_trailer_preserves_complete_all_zero_country() {
         let resource_rows = six_kind_flow_rows(67, &[0; 7]);
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"));
+        payload.extend_from_slice(
+            &encode_resource_flow_trailer(&resource_rows, 7).expect("seven-wide rows encode"),
+        );
 
         let decoded = decode_payload(0, &payload);
 
@@ -5966,10 +6000,14 @@ mod tests {
     /// consumer would read.
     #[test]
     fn d43_mtrf_v3_round_trips_an_eight_resource_vector() {
-        let exported = [800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000, -4_250_000];
+        let exported = [
+            800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000, -4_250_000,
+        ];
         let rows = six_kind_flow_rows(67, &exported);
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&rows, 8).expect("eight-wide rows encode"));
+        payload.extend_from_slice(
+            &encode_resource_flow_trailer(&rows, 8).expect("eight-wide rows encode"),
+        );
 
         let decoded = decode_payload(0, &payload);
 
@@ -5994,7 +6032,9 @@ mod tests {
         let exported = [800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000];
         let rows = six_kind_flow_rows(67, &exported);
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
-        payload.extend_from_slice(&encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode"));
+        payload.extend_from_slice(
+            &encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode"),
+        );
 
         let decoded = decode_payload(0, &payload);
 
@@ -6135,9 +6175,8 @@ mod tests {
             "the single-oil-slot fixture is accepted"
         );
 
-        let rows_at = mtrr_at
-            + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
-            + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE;
+        let rows_at =
+            mtrr_at + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE;
         let second_oil = rows_at + 5 * MARKET_TRADE_RESOURCE_ROW_LEN;
         payload[second_oil + 12..second_oil + 16]
             .copy_from_slice(&MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX.to_le_bytes());
@@ -6337,8 +6376,7 @@ mod tests {
     #[test]
     fn d43_mtrf_v3_refuses_a_row_whose_count_disagrees_with_the_header() {
         let rows = six_kind_flow_rows(67, &[0; 7]);
-        let mut trailer =
-            encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode");
+        let mut trailer = encode_resource_flow_trailer(&rows, 7).expect("seven-wide rows encode");
         let row2 = MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN + 2 * resource_flow_row_len(7);
         trailer[row2 + 8..row2 + 12].copy_from_slice(&6u32.to_le_bytes());
         let mut payload = encode_payload(0, 0, 0, 0, &[]);

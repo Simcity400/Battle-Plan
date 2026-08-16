@@ -82,10 +82,6 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
     COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
-use recorder_host::stream_fold::{
-    strict_stream_certification_verdict, validate_domain_data_payload,
-    validate_excluded_domain_data_accounting, BoundaryTracker, FoldStreamStats,
-};
 /// The DOMAIN_DATA payload's own embedded status, from the single payload
 /// authority that already decodes every domain. Re-exported through this facade
 /// so a certifier reading the stream classifies the payload status with the
@@ -93,6 +89,10 @@ use recorder_host::stream_fold::{
 /// domain's status offset and drifting from `WorldFold`.
 pub use recorder_host::stream_fold::{
     domain_data_payload_status, excluded_domain_data_json, ExcludedDomainDataRecord,
+};
+use recorder_host::stream_fold::{
+    strict_stream_certification_verdict, validate_domain_data_payload,
+    validate_excluded_domain_data_accounting, BoundaryTracker, FoldStreamStats,
 };
 use recorder_host::world_fold::{schema_version, FoldedSnapshotFile, WorldFold};
 use snapshot::container::{Container, ExpectedIdentity};
@@ -134,7 +134,6 @@ const CERTIFIED_INDEX_SCHEMA: &str = "h4cr-certified-index-v3";
 
 /// Manifest role of the compact stream inside a `.battleplan` container.
 pub const STREAM_ROLE: &str = "collector_compact_stream";
-
 
 /// Default fold game id for a raw stream that carries no container manifest.
 /// (Containers use their manifest `game_id` unless [`OpenOptions::game_id`]
@@ -707,6 +706,7 @@ pub struct DecodeStats {
     pub excluded_domain_data_records: Vec<ExcludedDomainDataRecord>,
     pub frame_end_records: u64,
     pub perf_records: u64,
+    pub freeze_census_records: u64,
     pub other_records: u64,
     pub hours_emitted: u64,
     pub per_domain_data_records: BTreeMap<u16, u64>,
@@ -812,7 +812,10 @@ pub enum SeekError {
     /// this hour" and "the recording has this hour's records and does not
     /// vouch for them" are different answers, and only the second one can say
     /// why.
-    HourExcluded { hour_index: i64, reason: String },
+    HourExcluded {
+        hour_index: i64,
+        reason: String,
+    },
     /// The persisted index is structurally invalid or is not the certified
     /// index for the exact source/options being sought.
     InvalidIndex(String),
@@ -1682,8 +1685,12 @@ pub fn build_certified_replay_artifacts(
                     // hour's start whether or not that hour is emitted, so
                     // skipping one cannot silently widen its neighbour's byte
                     // range over the skipped hour's records.
-                    let job = match hole_for(cursor.live_hour_coverage(), &previous, previous_start, start_offset)
-                    {
+                    let job = match hole_for(
+                        cursor.live_hour_coverage(),
+                        &previous,
+                        previous_start,
+                        start_offset,
+                    ) {
                         // The hole travels down the same channel, in stream
                         // order, so the encoder's single H4CR cursor sees it
                         // between the hours it actually sits between.
@@ -2182,11 +2189,23 @@ fn fold_compact_stream_file_identity_aware(
             }
             stats.records_total += 1;
 
-            match header.record_type {
-                COMPACT_RECORD_TYPE_DOMAIN_DATA => stats.data_records += 1,
-                COMPACT_RECORD_TYPE_FRAME_END => stats.frame_end_records += 1,
-                COMPACT_RECORD_TYPE_DOMAIN_PERF => stats.perf_records += 1,
-                _ => stats.other_records += 1,
+            match compact_contract::KnownRecordType::try_from(header.record_type) {
+                Ok(compact_contract::KnownRecordType::DomainData) => stats.data_records += 1,
+                Ok(compact_contract::KnownRecordType::FrameEnd) => stats.frame_end_records += 1,
+                Ok(compact_contract::KnownRecordType::DomainPerf) => stats.perf_records += 1,
+                Ok(compact_contract::KnownRecordType::FreezeCensus) => {
+                    stats.freeze_census_records += 1
+                }
+                Ok(
+                    compact_contract::KnownRecordType::StreamHeader
+                    | compact_contract::KnownRecordType::DomainGap
+                    | compact_contract::KnownRecordType::FrameRefused
+                    | compact_contract::KnownRecordType::FrameDegraded
+                    | compact_contract::KnownRecordType::CaptureTerminated
+                    | compact_contract::KnownRecordType::ClockUnreadableInterval
+                    | compact_contract::KnownRecordType::UntrustedClockRecovery,
+                )
+                | Err(_) => stats.other_records += 1,
             }
             tracker.observe(&header, payload, record_at);
 
@@ -2195,7 +2214,9 @@ fn fold_compact_stream_file_identity_aware(
                     validate_domain_data_payload(header.domain_id, payload, header.record_flags)
                 {
                     stats.malformed_payload_records += 1;
-                    stats.excluded_domain_data_records.push(ExcludedDomainDataRecord {
+                    stats
+                        .excluded_domain_data_records
+                        .push(ExcludedDomainDataRecord {
                         stream_offset: record_at,
                         game_hour_raw: header.game_hour_raw,
                         domain_id: header.domain_id,
@@ -2602,10 +2623,7 @@ fn extract_container_stream(path: &Path) -> Result<(Vec<u8>, String), OpenError>
                         path.display(),
                         snapshot::raw_stream_unavailable_message("decode the raw H4CR stream"),
                     ),
-                    _ => format!(
-                        "{} has no entry with role {STREAM_ROLE:?}",
-                        path.display()
-                    ),
+                    _ => format!("{} has no entry with role {STREAM_ROLE:?}", path.display()),
                 },
             ))
         }
@@ -3163,8 +3181,7 @@ impl HourCursor {
                         } {
                             recorder_host::stream_fold::FramingResync::At(next) => {
                                 let skipped = (next - self.pos) as u64;
-                                let before =
-                                    recorder_host::stream_fold::FoldDamageWatch::before(
+                                let before = recorder_host::stream_fold::FoldDamageWatch::before(
                                         &self.boundary_tracker,
                                     );
                                 self.boundary_tracker.note_framing_damage(
@@ -3195,8 +3212,7 @@ impl HourCursor {
                                 if !self.compressed =>
                             {
                                 let keep = COMPACT_RECORD_HEADER_LEN.saturating_sub(1);
-                                let discard =
-                                    (self.carry.len() - self.pos).saturating_sub(keep);
+                                let discard = (self.carry.len() - self.pos).saturating_sub(keep);
                                 if discard > 0 {
                                     let before =
                                         recorder_host::stream_fold::FoldDamageWatch::before(
@@ -3264,8 +3280,7 @@ impl HourCursor {
                         // loss anywhere (Codex review round 9). Naming it as
                         // stream damage also latches `framing_damage_seen`, so
                         // nothing after it can be vouched for either.
-                        let before =
-                            recorder_host::stream_fold::FoldDamageWatch::before(
+                        let before = recorder_host::stream_fold::FoldDamageWatch::before(
                                 &self.boundary_tracker,
                             );
                         self.boundary_tracker.note_framing_damage(
@@ -3343,8 +3358,8 @@ impl HourCursor {
                     })
                     .flatten();
 
-                match header.record_type {
-                    COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                match compact_contract::KnownRecordType::try_from(header.record_type) {
+                    Ok(compact_contract::KnownRecordType::DomainData) => {
                         self.stats.data_records += 1;
                         *self
                             .stats
@@ -3353,9 +3368,25 @@ impl HourCursor {
                             .or_default() += 1;
                         *self.cur_counts.entry(header.domain_id).or_default() += 1;
                     }
-                    COMPACT_RECORD_TYPE_FRAME_END => self.stats.frame_end_records += 1,
-                    COMPACT_RECORD_TYPE_DOMAIN_PERF => self.stats.perf_records += 1,
-                    _ => self.stats.other_records += 1,
+                    Ok(compact_contract::KnownRecordType::FrameEnd) => {
+                        self.stats.frame_end_records += 1
+                    }
+                    Ok(compact_contract::KnownRecordType::DomainPerf) => {
+                        self.stats.perf_records += 1
+                    }
+                    Ok(compact_contract::KnownRecordType::FreezeCensus) => {
+                        self.stats.freeze_census_records += 1
+                    }
+                    Ok(
+                        compact_contract::KnownRecordType::StreamHeader
+                        | compact_contract::KnownRecordType::DomainGap
+                        | compact_contract::KnownRecordType::FrameRefused
+                        | compact_contract::KnownRecordType::FrameDegraded
+                        | compact_contract::KnownRecordType::CaptureTerminated
+                        | compact_contract::KnownRecordType::ClockUnreadableInterval
+                        | compact_contract::KnownRecordType::UntrustedClockRecovery,
+                    )
+                    | Err(_) => self.stats.other_records += 1,
                 }
                 let damage_before =
                     recorder_host::stream_fold::FoldDamageWatch::before(&self.boundary_tracker);
@@ -3377,14 +3408,14 @@ impl HourCursor {
                 if let Some(reason) = malformed_reason {
                     if exact_payload_error.is_some() {
                         self.stats.malformed_payload_records += 1;
-                        self.stats.excluded_domain_data_records.push(
-                            ExcludedDomainDataRecord {
+                        self.stats
+                            .excluded_domain_data_records
+                            .push(ExcludedDomainDataRecord {
                                 stream_offset: record_start_abs,
                                 game_hour_raw: header.game_hour_raw,
                                 domain_id: header.domain_id,
                                 validation_reason: reason.clone(),
-                            },
-                        );
+                            });
                     }
                     self.fold.record_malformed_domain_payload(
                         header.game_hour_raw,
@@ -3532,8 +3563,13 @@ impl HourCursor {
             strict_sequence_error(self.strict_previous_sequence, header.sequence, at);
         self.strict_previous_sequence = Some(header.sequence);
 
-        let boundary_error = match header.record_type {
-            COMPACT_RECORD_TYPE_DOMAIN_DATA => match self.strict_open_hour {
+        let boundary_error = match compact_contract::KnownRecordType::try_from(header.record_type) {
+            Err(unknown) => Some(format!(
+                "unknown compact record type {} at byte {at}",
+                unknown.0
+            )),
+            Ok(record_type) => match record_type {
+            compact_contract::KnownRecordType::DomainData => match self.strict_open_hour {
                 Some(open) if open != header.game_hour_raw => Some(format!(
                     "hour interleaving at byte {at}: DOMAIN_DATA for hour {} while hour {open} is open",
                     header.game_hour_raw
@@ -3557,7 +3593,8 @@ impl HourCursor {
             // observed hour is 68 DOMAIN_GAP records and a FRAME_END — the
             // ordinary settling shape of a late attach — so no such recording
             // could produce certified binary artifacts at all.
-            COMPACT_RECORD_TYPE_DOMAIN_GAP | COMPACT_RECORD_TYPE_DOMAIN_PERF => {
+            compact_contract::KnownRecordType::DomainGap
+            | compact_contract::KnownRecordType::DomainPerf => {
                 match self.strict_open_hour {
                     Some(open) if open != header.game_hour_raw => Some(format!(
                         "hour interleaving at byte {at}: terminal domain outcome for hour {} while hour {open} is open",
@@ -3570,7 +3607,7 @@ impl HourCursor {
                     Some(_) => None,
                 }
             }
-            COMPACT_RECORD_TYPE_FRAME_END => match self.strict_open_hour {
+            compact_contract::KnownRecordType::FrameEnd => match self.strict_open_hour {
                 Some(open) if open == header.game_hour_raw => {
                     self.strict_open_hour = None;
                     None
@@ -3597,11 +3634,17 @@ impl HourCursor {
             // the FIRST DOMAIN_DATA of the next hour was reported as "hour
             // interleaving", so a refusal followed by any further hour could
             // not certify at all.
-            COMPACT_RECORD_TYPE_FRAME_REFUSED => {
+            compact_contract::KnownRecordType::FrameRefused => {
                 self.strict_open_hour = None;
                 None
             }
-            _ => None,
+            compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::StreamHeader
+            | compact_contract::KnownRecordType::FrameDegraded
+            | compact_contract::KnownRecordType::CaptureTerminated
+            | compact_contract::KnownRecordType::ClockUnreadableInterval
+            | compact_contract::KnownRecordType::UntrustedClockRecovery => None,
+            },
         };
         if self.strict_validation_error.is_none() {
             self.strict_validation_error = sequence_error.or(boundary_error);
@@ -3681,9 +3724,8 @@ impl HourCursor {
         // that grows by 24 bytes per hour — stated here rather than papered
         // over, since every other charge in this module promises the opposite
         // order.
-        self.hour_index_charge.set(
-            (self.index_hours.capacity() * std::mem::size_of::<HourOffset>()) as u64,
-        );
+        self.hour_index_charge
+            .set((self.index_hours.capacity() * std::mem::size_of::<HourOffset>()) as u64);
         self.cur_hour_start = next_hour_start;
         // ONLY when an hour was really published. A `FRAME_END` that closed no
         // hour advances the assembly cursor but adds nothing to the cache, so
@@ -3926,7 +3968,8 @@ impl StreamIndex {
             Served,
             Hole { end: u64 },
         }
-        let mut merged: Vec<(i64, u64, Kind)> = Vec::with_capacity(self.hours.len() + self.excluded.len());
+        let mut merged: Vec<(i64, u64, Kind)> =
+            Vec::with_capacity(self.hours.len() + self.excluded.len());
         merged.extend(
             self.hours
                 .iter()
