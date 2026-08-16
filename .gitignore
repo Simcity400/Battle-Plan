@@ -167,3 +167,4 @@ extractor/native/runs/**/*.battleplan
 *.hoi4replay
 .t3-worktrees/
 .pnpm-store/
+.reference/
