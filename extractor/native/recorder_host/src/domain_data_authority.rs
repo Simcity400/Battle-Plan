@@ -20547,4 +20547,2472 @@ mod tests {
              so the unassigned-bit gate does not see it: {offenders:#?}"
         );
     }
+
+    // =====================================================================
+    // The d43 message oracle
+    // =====================================================================
+    //
+    // WHY IT EXISTS. A future lane is meant to rewire
+    // `decode_compact_market_trade_data_payload` and its seven helpers off
+    // their own byte arithmetic and onto `d43_grammar`'s cursors. **Lane LK
+    // did NOT do that** -- it found that this site cannot execute the leaf's
+    // walk without either changing shipped behaviour or bypassing a leaf rule,
+    // and left the question with the owner
+    // (`runs/lk_d43_one_site/authority_soft_structural_finding.md`). What it
+    // left behind is this test.
+    //
+    // The one thing that rewire must not do is change what this authority SAYS
+    // about a malformed capture: the operator reads these strings, and a
+    // renamed, reordered, dropped or invented diagnostic is a silent behaviour
+    // change that no other test in this file would catch.
+    //
+    // This test is written and committed BEFORE the rewire, so every expected
+    // line below is what the HAND-ROLLED walk produced. It is an oracle for
+    // the rewire, not a description of it.
+
+    fn oracle_put_u16(payload: &mut [u8], at: usize, value: u16) {
+        payload[at..at + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn oracle_put_u32(payload: &mut [u8], at: usize, value: u32) {
+        payload[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// A well-formed d43 payload carrying all seven families this authority
+    /// accepts, plus the offset each trailer starts at.
+    ///
+    /// ASSEMBLED BY `d43_grammar::encode`, deliberately: the layout is the
+    /// leaf's, so a fixture cannot drift from the grammar it is meant to
+    /// exercise.
+    ///
+    /// **These bytes are NOT the leaf's hand-written goldens, and this test
+    /// does not claim they are.** The leaf's
+    /// `the_encoder_reproduces_the_handwritten_*_bytes` tests prove the encoder
+    /// equals a hand-written vector FOR THEIR OWN SAMPLE -- one core row with
+    /// tags 11/12 and amount 5, an `MTRF` over three resources -- and this
+    /// fixture uses different inputs, so the equality does not transfer. This is
+    /// an independent, encoder-generated CHARACTERIZATION matrix. Driving the
+    /// hand-written vectors themselves needs the same public encoder calls with
+    /// the goldens' exact inputs, which is work this lane did not do
+    /// (`runs/lk_d43_one_site/NOTES.md`, section 2).
+    fn d43_oracle_payload() -> (Vec<u8>, BTreeMap<&'static str, usize>) {
+        use d43_grammar::encode;
+
+        let limits = d43_grammar::Limits::new(
+            COMPACT_MAX_STRATEGIC_RESOURCE_COUNT,
+            COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize,
+        );
+        let core_row = |contract_id: u32| d43_grammar::CoreRow {
+            contract_id,
+            contract_type: COMPACT_MARKET_TRADE_CONTRACT_TYPE,
+            flags: COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+                | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID,
+            seller_tag_db_id: 10,
+            buyer_tag_db_id: 20,
+            equipment_variant_id: 5,
+            amount_raw: 1_000,
+            equipment_subbuf_status: 1,
+            delivery_subbuf_status: 1,
+            buyer_ptr_status: 1,
+            reserved: 0,
+        };
+        let mut payload = encode::encode_core(
+            7,
+            encode::CoreCounts {
+                changed_rows: 2,
+                status_flags: 0,
+                observed_contract_rows: 2,
+                emitted_contract_rows: 2,
+                buyer_ptr_valid_rows: 2,
+                variant_valid_rows: 2,
+                amount_valid_rows: 2,
+                partial_field_rows: 0,
+            },
+            &[core_row(1), core_row(2)],
+        )
+        .expect("the core encodes");
+
+        let mut at: BTreeMap<&'static str, usize> = BTreeMap::new();
+
+        let detail_row = |contract_id: u32| d43_grammar::DetailRow {
+            contract_id,
+            flags: COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
+                | COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID,
+            price_raw: 100,
+            amount_raw: 1_000,
+            speed_raw: 0,
+            completed_raw: 0,
+            days: 0,
+            delivery_country_tag_db_id: 0,
+            convoys_assigned: 0,
+            convoys_total: 0,
+            efficiency_raw: 0,
+            factory_cic_progress_raw: 0,
+            equipment_transfer_progress_raw: 0,
+            reserved: 0,
+        };
+        at.insert("MTD1", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_detail(
+                &[detail_row(1), detail_row(2)],
+                encode::DetailCounts {
+                    price_valid_rows: 2,
+                    speed_valid_rows: 0,
+                    delivery_route_valid_rows: 0,
+                    progress_valid_rows: 0,
+                },
+            )
+            .expect("MTD1 encodes"),
+        );
+
+        let flow_values = [1i64, 2];
+        let flow_rows: Vec<encode::FlowRowInput<'_>> = (1..=6u32)
+            .map(|flow_kind| encode::FlowRowInput {
+                tag_db_id: 10,
+                flow_kind,
+                values_raw: &flow_values,
+            })
+            .collect();
+        at.insert("MTRF", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_resource_flow(
+                d43_grammar::FlowVersion::Variable,
+                2,
+                1,
+                &flow_rows,
+                limits,
+            )
+            .expect("MTRF encodes"),
+        );
+
+        at.insert("MTRH", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_factory_header(&[d43_grammar::FactoryRow {
+                tag_db_id: 10,
+                total: 4,
+                used: 1,
+                available: 3,
+            }])
+            .expect("MTRH encodes"),
+        );
+
+        let resource_row = |resource_index: u32| d43_grammar::ResourceRow {
+            tag_db_id: 10,
+            resource_index,
+            visible_order: resource_index,
+            needed_type: 0,
+            balance: 0,
+            produced: 0,
+            imported: 0,
+            exported: 0,
+            special_project: 0,
+            production_line: 0,
+            needed: 0,
+            needed_current: 0,
+            needed_max: 0,
+            flags: 0,
+            descriptor_db_index: resource_index,
+            reserved: 0,
+        };
+        at.insert("MTRR", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_resource_rows(
+                d43_grammar::ResourceRowVersion::Identity,
+                2,
+                1,
+                &[b"oil".as_slice(), b"steel".as_slice()],
+                &[resource_row(0), resource_row(1)],
+                limits,
+            )
+            .expect("MTRR encodes"),
+        );
+
+        at.insert("MTRD", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_classic_deals(d43_grammar::DealVersion::PerOwner, &[10, 20], &[10], &[])
+                .expect("MTRD encodes"),
+        );
+
+        at.insert("MTRA", payload.len());
+        payload.extend_from_slice(&encode::encode_activation(
+            COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE | d43_grammar::ACTIVATION_FLAG_ROOT_EXACT,
+            10,
+            7,
+            COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW,
+            COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA,
+        ));
+
+        at.insert("MTS1", payload.len());
+        payload.extend_from_slice(
+            &encode::encode_stockpile(
+                1,
+                &[d43_grammar::StockpileCountryRow {
+                    tag_db_id: 10,
+                    item_first: 0,
+                    item_count: 1,
+                    flags: COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE,
+                    reserved: 0,
+                }],
+                &[d43_grammar::StockpileItemRow {
+                    equipment_variant_id: 5,
+                    variant_type: COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE,
+                    ordinal: 0,
+                    reserved: 0,
+                    amount_raw: 100,
+                }],
+            )
+            .expect("MTS1 encodes"),
+        );
+
+        (payload, at)
+    }
+
+    /// The fixture table: a name, and what it does to the well-formed payload.
+    #[allow(clippy::type_complexity)]
+    fn d43_oracle_cases() -> Vec<(
+        &'static str,
+        Box<dyn Fn(&mut Vec<u8>, &BTreeMap<&'static str, usize>)>,
+    )> {
+        vec![
+            ("clean", Box::new(|_: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {})),
+            ("core header short", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(40))),
+            ("core rows short", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(96))),
+            ("core changed_rows exceeds row_count", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 12, 5))),
+            ("core emitted/observed disagree", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                oracle_put_u32(p, 24, 3);
+                oracle_put_u32(p, 20, 1);
+            })),
+            ("core scale_raw wrong", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 44, 7))),
+            ("core row contract_type wrong", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 4, 9))),
+            ("core row unknown flag bit", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 8, 0x8000_001F))),
+            ("core row duplicate contract_id", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 96, 1))),
+            ("core row reserved nonzero", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 44, 1))),
+            ("trailer magic truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTD1"] + 2))),
+            ("trailer magic unknown", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                let d = at["MTD1"];
+                p[d..d + 4].copy_from_slice(b"ZZZZ");
+            })),
+            ("MTD1 twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                let f = at["MTRF"];
+                p[f..f + 4].copy_from_slice(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+            })),
+            ("MTRA twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                let s = at["MTS1"];
+                p[s..s + 4].copy_from_slice(COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC);
+            })),
+            ("MTS1 twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                let again = p[at["MTS1"]..].to_vec();
+                p.extend_from_slice(&again);
+            })),
+            ("MTD1 header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTD1"] + 8))),
+            ("MTD1 version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 4, 9))),
+            ("MTD1 header_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 6, 40))),
+            ("MTD1 row_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 8, 40))),
+            ("MTD1 reserved0 nonzero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 10, 1))),
+            ("MTD1 row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 12, 1_000))),
+            ("MTD1 count claim disagrees", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 16, 1))),
+            ("MTD1 row names a missing contract", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 32, 99))),
+            ("MTD1 row flags unknown", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 36, 0x8000_0003))),
+            ("MTRF version unsupported", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRF"] + 4, 9))),
+            ("MTRF v3 resource_count zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 24, 0))),
+            ("MTRF header_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRF"] + 6, 40))),
+            ("MTRF country/kind shape wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 16, 3))),
+            ("MTRF scale_raw wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 20, 7))),
+            ("MTRF row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 12, 1_000))),
+            ("MTRF header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRF"] + 8))),
+            ("MTRH version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRH"] + 4, 9))),
+            ("MTRH country_count wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRH"] + 16, 3))),
+            ("MTRR resource_count out of range", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRR"] + 20, 0))),
+            ("MTRR identity stride word wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRR"] + 28, 7))),
+            ("MTRR identity token length zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRR"] + 32, 0))),
+            ("MTRR identity token too long", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRR"] + 32, 999))),
+            ("MTRR identity padding nonzero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 37] = 1)),
+            ("MTRR identity not a token", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 34] = b'!')),
+            ("MTRR identity not UTF-8", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 34] = 0xFF)),
+            ("MTRR identity repeats a token", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                let r = at["MTRR"];
+                let stride = COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize;
+                let slot0 = p[r + 32..r + 32 + stride].to_vec();
+                p[r + 32 + stride..r + 32 + 2 * stride].copy_from_slice(&slot0);
+            })),
+            ("MTRD version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRD"] + 4, 9))),
+            ("MTRD witness invalid", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 32, 0))),
+            ("MTRD witness duplicated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 36, 10))),
+            ("MTRD incomplete owner not a witness", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 40, 99))),
+            ("MTRD row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 12, 1_000))),
+            ("MTRD header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRD"] + 8))),
+            ("MTRA root kind wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRA"] + 24, 9))),
+            ("MTRA header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRA"] + 8))),
+            ("MTS1 scale_raw wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 28, 7))),
+            ("MTS1 country row tag zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 40, 0))),
+            ("MTS1 country ranges short", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 48, 0))),
+            ("MTS1 item type wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 64, 9))),
+            ("MTS1 header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTS1"] + 8))),
+            ("MTS1 country_row_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTS1"] + 8, 24))),
+            // Every other fixture leaves the core status word at zero, so the
+            // three status accumulators this report renders were all pinned at
+            // their identity value and a rewire that mishandled a SET flag
+            // would have stayed green.
+            ("core status flags set", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                oracle_put_u32(p, 16, compact_contract::COMPACT_STATUS_PARTIAL_DATA)
+            })),
+        ]
+    }
+
+    /// The stream offset every diagnostic is prefixed with. It is a PARAMETER,
+    /// not a constant: the matrix below is decoded once at zero and once here,
+    /// because every message this decoder writes opens with `offset {offset}:`
+    /// and a rewire that hardcoded a zero would pass a zero-only matrix.
+    const D43_ORACLE_SECOND_OFFSET: usize = 4_096;
+
+    fn d43_oracle_decode(offset: usize, payload: &[u8], report: &mut String) {
+        let mut summary = DomainDataDecodeSummary::default();
+        // `summarize_domain_data_payload` sets the domain id and creates the
+        // per-domain row before it dispatches, so both are set here. Without
+        // the row the decoder's `per_domain.get_mut(&43)` finds nothing and the
+        // published counts -- half of what this oracle pins -- are invisible;
+        // without the id, `add_decoder_status` would interpret the status word
+        // for domain ZERO.
+        summary.domain_id = 43;
+        summary.per_domain.entry(43).or_default();
+        decode_compact_market_trade_data_payload(offset, payload, &mut summary);
+        for error in &summary.parse_errors {
+            report.push_str("   ! ");
+            report.push_str(error);
+            report.push('\n');
+        }
+        // EVERY observable this decoder writes, not just the units. The first
+        // draft printed `data_units_total` alone, which would have let a rewire
+        // change a row total, a changed-row total or a status word with the
+        // oracle still green.
+        report.push_str(&format!(
+            "   $ raw_status_flags_or = {:?}\n   $ status_flags_or = {}\n",
+            summary.raw_status_flags_or, summary.status_flags_or
+        ));
+        if let Some(domain) = summary.per_domain.get(&43) {
+            report.push_str(&format!(
+                "   $ data_rows_total = {}\n   $ data_changed_rows_total = {}\n   \
+                 $ domain.status_flags_or = {}\n",
+                domain.data_rows_total, domain.data_changed_rows_total, domain.status_flags_or
+            ));
+            for (unit, count) in &domain.data_units_total {
+                report.push_str("   # ");
+                report.push_str(unit);
+                report.push_str(" = ");
+                report.push_str(&count.to_string());
+                report.push('\n');
+            }
+            for (problem, count) in &domain.problems {
+                report.push_str("   ? ");
+                report.push_str(problem);
+                report.push_str(" = ");
+                report.push_str(&count.to_string());
+                report.push('\n');
+            }
+        } else {
+            report.push_str("   $ no per-domain row\n");
+        }
+    }
+
+    fn d43_oracle_report() -> String {
+        let (clean, at) = d43_oracle_payload();
+        let mut report = String::new();
+        for (name, mutate) in d43_oracle_cases() {
+            let mut payload = clean.clone();
+            mutate(&mut payload, &at);
+            report.push_str("== ");
+            report.push_str(name);
+            report.push('\n');
+            d43_oracle_decode(0, &payload, &mut report);
+        }
+        // The WHOLE matrix again at a non-zero stream offset, so every
+        // `offset {offset}:` prefix is pinned to a number the decoder was
+        // given rather than to zero.
+        for (name, mutate) in d43_oracle_cases() {
+            let mut payload = clean.clone();
+            mutate(&mut payload, &at);
+            report.push_str("== @");
+            report.push_str(&D43_ORACLE_SECOND_OFFSET.to_string());
+            report.push(' ');
+            report.push_str(name);
+            report.push('\n');
+            d43_oracle_decode(D43_ORACLE_SECOND_OFFSET, &payload, &mut report);
+        }
+        report
+    }
+
+    /// Every diagnostic and every published observable that THIS FIXTURE
+    /// MATRIX reaches, pinned to the exact string the hand-rolled walk
+    /// produced.
+    ///
+    /// It is a characterization matrix, not a proof of total coverage. What it
+    /// does NOT reach is written down in `runs/lk_d43_one_site/NOTES.md`
+    /// section 2: no two-fields-malformed precedence case, `MTRF`/`MTRR`/`MTRD`
+    /// v3 only rather than their full version sets, no duplicate
+    /// `MTRF`/`MTRH`/`MTRR`/`MTRD` and no `MTRB`/`MTLL` rejection.
+    ///
+    /// kills: a rewire that renames a diagnostic, changes one of its operands,
+    /// emits two where one was emitted, stops emitting one, reorders two
+    /// diagnostics of the SAME payload, stops the outer trailer walk at a
+    /// different trailer, or changes a published unit count.
+    #[test]
+    fn d43_authority_message_spellings_and_units_are_unchanged() {
+        let actual = d43_oracle_report();
+        // This source file is checked out CRLF and the report is built with
+        // `'\n'`, so the constant below carries whatever line break the
+        // checkout has. Normalise rather than let the oracle depend on a
+        // `core.autocrlf` setting.
+        let expected = D43_ORACLE_EXPECTED.replace("\r\n", "\n");
+        if actual != expected {
+            panic!(
+                "the d43 authority's diagnostics changed.\n\
+                 ---------------- actual ----------------\n{actual}\
+                 --------------- expected ---------------\n{expected}\
+                 ----------------------------------------\n"
+            );
+        }
+    }
+
+    const D43_ORACLE_EXPECTED: &str = r#"== clean
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core header short
+   ! offset 0: market trade data payload is 40 byte(s), expected at least 48
+   $ raw_status_flags_or = None
+   $ status_flags_or = 0
+   $ data_rows_total = 0
+   $ data_changed_rows_total = 0
+   $ domain.status_flags_or = 0
+== core rows short
+   ! offset 0: market trade data payload is 96 byte(s), expected at least 144
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 0
+   $ data_changed_rows_total = 0
+   $ domain.status_flags_or = 0
+== core changed_rows exceeds row_count
+   ! offset 0: market trade changed_rows 5 > row_count 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 5
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core emitted/observed disagree
+   ! offset 0: market trade emitted_contract_rows 3 != row_count 2
+   ! offset 0: market trade observed_contract_rows 1 < row_count 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 1
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core scale_raw wrong
+   ! offset 0: market trade scale_raw 7 != 100000
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core row contract_type wrong
+   ! offset 0: market trade row 0 has contract_type 9, expected 81
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core row unknown flag bit
+   ! offset 0: market trade row 0 has unknown flags 2147483679
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core row duplicate contract_id
+   ! offset 0: market trade row 1 duplicates contract_id 1
+   ! offset 0: market trade MTD1 row 1 references missing contract_id 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== core row reserved nonzero
+   ! offset 0: market trade row 0 reserved field is nonzero
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== trailer magic truncated
+   ! offset 0: market trade trailer is too short to contain magic
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== trailer magic unknown
+   ! offset 0: market trade trailing bytes have unknown trailer magic
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 twice
+   ! offset 0: market trade has duplicate MTD1 trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRA twice
+   ! offset 0: market trade has duplicate MTRA trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 twice
+   ! offset 0: market trade has duplicate MTS1 trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTD1 header truncated
+   ! offset 0: market trade MTD1 trailer header overruns payload at cursor 144: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 version wrong
+   ! offset 0: market trade MTD1 version 9 != 1
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTD1 header_len wrong
+   ! offset 0: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 row_len wrong
+   ! offset 0: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 reserved0 nonzero
+   ! offset 0: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 row_count overruns
+   ! offset 0: market trade MTD1 end 64176 exceeds payload len 1016
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 1000
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTD1 count claim disagrees
+   ! offset 0: market trade MTD1 price_valid_rows 1 != computed 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTD1 row names a missing contract
+   ! offset 0: market trade MTD1 row 0 references missing contract_id 99
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTD1 row flags unknown
+   ! offset 0: market trade MTD1 row 0 has invalid flags 0x80000003
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRF version unsupported
+   ! offset 0: market trade MTRF version 9 is unsupported
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRF v3 resource_count zero
+   ! offset 0: market trade MTRF v3 resource_count 0 is outside 1..=64
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRF header_len wrong
+   ! offset 0: market trade MTRF header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRF country/kind shape wrong
+   ! offset 0: market trade MTRF country/kind shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRF scale_raw wrong
+   ! offset 0: market trade MTRF scale_raw 7 != 100000
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRF row_count overruns
+   ! offset 0: market trade MTRF country/kind shape is invalid
+   ! offset 0: market trade MTRF len 1016 < 32336
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRF header truncated
+   ! offset 0: market trade MTRF trailer header overruns payload at cursor 304: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRH version wrong
+   ! offset 0: market trade MTRH header shape is invalid (version 9)
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== MTRH country_count wrong
+   ! offset 0: market trade MTRH count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== MTRR resource_count out of range
+   ! offset 0: market trade MTRR count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== MTRR identity stride word wrong
+   ! offset 0: market trade MTRR count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== MTRR identity token length zero
+   ! offset 0: market trade MTRR identity 0 token length 0 is outside 1..=62
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRR identity token too long
+   ! offset 0: market trade MTRR identity 0 token length 999 is outside 1..=62
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRR identity padding nonzero
+   ! offset 0: market trade MTRR identity 0 has non-zero padding
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRR identity not a token
+   ! offset 0: market trade MTRR identity 0 is not a resource token
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRR identity not UTF-8
+   ! offset 0: market trade MTRR identity 0 is not UTF-8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRR identity repeats a token
+   ! offset 0: market trade MTRR identity 1 repeats token oil
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRD version wrong
+   ! offset 0: market trade MTRD header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRD witness invalid
+   ! offset 0: market trade MTRD witness 0 is invalid or duplicated
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRD witness duplicated
+   ! offset 0: market trade MTRD witness 1 is invalid or duplicated
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRD incomplete owner not a witness
+   ! offset 0: market trade MTRD incomplete owner 0 is not an ascending witness
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRD row_count overruns
+   ! offset 0: market trade MTRD len 1016 < 96900
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRD header truncated
+   ! offset 0: market trade MTRD trailer header overruns payload at cursor 856: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTRA root kind wrong
+   ! offset 0: market trade MTRA activation identity/shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== MTRA header truncated
+   ! offset 0: market trade MTRA activation header overruns payload at cursor 900: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 scale_raw wrong
+   ! offset 0: market trade MTS1 header/count/length is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 country row tag zero
+   ! offset 0: market trade MTS1 country row 0 has invalid tag/range/completeness
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 country ranges short
+   ! offset 0: market trade MTS1 country ranges cover 0 item(s), expected 1
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 item type wrong
+   ! offset 0: market trade MTS1 item 0 has invalid identity/order/amount
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 header truncated
+   ! offset 0: market trade MTS1 trailer header overruns payload at cursor 932: need 40, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== MTS1 country_row_len wrong
+   ! offset 0: market trade MTS1 header/count/length is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== core status flags set
+   $ raw_status_flags_or = Some(512)
+   $ status_flags_or = 512
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 512
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 clean
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core header short
+   ! offset 4096: market trade data payload is 40 byte(s), expected at least 48
+   $ raw_status_flags_or = None
+   $ status_flags_or = 0
+   $ data_rows_total = 0
+   $ data_changed_rows_total = 0
+   $ domain.status_flags_or = 0
+== @4096 core rows short
+   ! offset 4096: market trade data payload is 96 byte(s), expected at least 144
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 0
+   $ data_changed_rows_total = 0
+   $ domain.status_flags_or = 0
+== @4096 core changed_rows exceeds row_count
+   ! offset 4096: market trade changed_rows 5 > row_count 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 5
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core emitted/observed disagree
+   ! offset 4096: market trade emitted_contract_rows 3 != row_count 2
+   ! offset 4096: market trade observed_contract_rows 1 < row_count 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 1
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core scale_raw wrong
+   ! offset 4096: market trade scale_raw 7 != 100000
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core row contract_type wrong
+   ! offset 4096: market trade row 0 has contract_type 9, expected 81
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core row unknown flag bit
+   ! offset 4096: market trade row 0 has unknown flags 2147483679
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core row duplicate contract_id
+   ! offset 4096: market trade row 1 duplicates contract_id 1
+   ! offset 4096: market trade MTD1 row 1 references missing contract_id 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 core row reserved nonzero
+   ! offset 4096: market trade row 0 reserved field is nonzero
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 trailer magic truncated
+   ! offset 4096: market trade trailer is too short to contain magic
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 trailer magic unknown
+   ! offset 4096: market trade trailing bytes have unknown trailer magic
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 twice
+   ! offset 4096: market trade has duplicate MTD1 trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRA twice
+   ! offset 4096: market trade has duplicate MTRA trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 twice
+   ! offset 4096: market trade has duplicate MTS1 trailer
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 header truncated
+   ! offset 4096: market trade MTD1 trailer header overruns payload at cursor 144: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_omitted_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 version wrong
+   ! offset 4096: market trade MTD1 version 9 != 1
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 header_len wrong
+   ! offset 4096: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 row_len wrong
+   ! offset 4096: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 reserved0 nonzero
+   ! offset 4096: market trade MTD1 header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 row_count overruns
+   ! offset 4096: market trade MTD1 end 64176 exceeds payload len 1016
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_rows = 1000
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 count claim disagrees
+   ! offset 4096: market trade MTD1 price_valid_rows 1 != computed 2
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 row names a missing contract
+   ! offset 4096: market trade MTD1 row 0 references missing contract_id 99
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTD1 row flags unknown
+   ! offset 4096: market trade MTD1 row 0 has invalid flags 0x80000003
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF version unsupported
+   ! offset 4096: market trade MTRF version 9 is unsupported
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF v3 resource_count zero
+   ! offset 4096: market trade MTRF v3 resource_count 0 is outside 1..=64
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF header_len wrong
+   ! offset 4096: market trade MTRF header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF country/kind shape wrong
+   ! offset 4096: market trade MTRF country/kind shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF scale_raw wrong
+   ! offset 4096: market trade MTRF scale_raw 7 != 100000
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF row_count overruns
+   ! offset 4096: market trade MTRF country/kind shape is invalid
+   ! offset 4096: market trade MTRF len 1016 < 32336
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRF header truncated
+   ! offset 4096: market trade MTRF trailer header overruns payload at cursor 304: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRH version wrong
+   ! offset 4096: market trade MTRH header shape is invalid (version 9)
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRH country_count wrong
+   ! offset 4096: market trade MTRH count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR resource_count out of range
+   ! offset 4096: market trade MTRR count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity stride word wrong
+   ! offset 4096: market trade MTRR count/shape fields are invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity token length zero
+   ! offset 4096: market trade MTRR identity 0 token length 0 is outside 1..=62
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity token too long
+   ! offset 4096: market trade MTRR identity 0 token length 999 is outside 1..=62
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity padding nonzero
+   ! offset 4096: market trade MTRR identity 0 has non-zero padding
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity not a token
+   ! offset 4096: market trade MTRR identity 0 is not a resource token
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity not UTF-8
+   ! offset 4096: market trade MTRR identity 0 is not UTF-8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRR identity repeats a token
+   ! offset 4096: market trade MTRR identity 1 repeats token oil
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD version wrong
+   ! offset 4096: market trade MTRD header shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD witness invalid
+   ! offset 4096: market trade MTRD witness 0 is invalid or duplicated
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD witness duplicated
+   ! offset 4096: market trade MTRD witness 1 is invalid or duplicated
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD incomplete owner not a witness
+   ! offset 4096: market trade MTRD incomplete owner 0 is not an ascending witness
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD row_count overruns
+   ! offset 4096: market trade MTRD len 1016 < 96900
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRD header truncated
+   ! offset 4096: market trade MTRD trailer header overruns payload at cursor 856: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRA root kind wrong
+   ! offset 4096: market trade MTRA activation identity/shape is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+== @4096 MTRA header truncated
+   ! offset 4096: market trade MTRA activation header overruns payload at cursor 900: need 32, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 scale_raw wrong
+   ! offset 4096: market trade MTS1 header/count/length is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 country row tag zero
+   ! offset 4096: market trade MTS1 country row 0 has invalid tag/range/completeness
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 country ranges short
+   ! offset 4096: market trade MTS1 country ranges cover 0 item(s), expected 1
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 item type wrong
+   ! offset 4096: market trade MTS1 item 0 has invalid identity/order/amount
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 header truncated
+   ! offset 4096: market trade MTS1 trailer header overruns payload at cursor 932: need 40, remaining 8
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 MTS1 country_row_len wrong
+   ! offset 4096: market trade MTS1 header/count/length is invalid
+   $ raw_status_flags_or = Some(0)
+   $ status_flags_or = 0
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_variant_valid_rows = 2
+== @4096 core status flags set
+   $ raw_status_flags_or = Some(512)
+   $ status_flags_or = 512
+   $ data_rows_total = 2
+   $ data_changed_rows_total = 2
+   $ domain.status_flags_or = 512
+   # market_trade_activation_rows = 1
+   # market_trade_amount_valid_rows = 2
+   # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
+   # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
+   # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
+   # market_trade_variant_valid_rows = 2
+"#;
 }
