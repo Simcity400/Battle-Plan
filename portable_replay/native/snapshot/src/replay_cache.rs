@@ -95,7 +95,10 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// The H4CP header carries this same number, and deliberately so: an index and
 /// a cache from different format generations must never pair, and the per-hour
 /// digests only mean anything over records whose framing the index agrees with.
-const FORMAT_VERSION: u16 = 5;
+/// Version 6 adds [`PATCH_NUMBER_DELTA`]. Every version-5 recording stops
+/// opening, which is what pre-production means: the header carries this number
+/// and a reader refuses a cache that does not state it.
+const FORMAT_VERSION: u16 = 6;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -185,6 +188,31 @@ const PATCH_ARRAY: u8 = 3;
 const PATCH_REVIVE_SAME: u8 = 4;
 /// A revive that still needs a patch on top of the remembered value.
 const PATCH_REVIVE_PATCH: u8 = 5;
+/// A changed number spelled as the DIFFERENCE from the number it replaces:
+/// the new token's fraction-digit count, then a zigzag varint of the change.
+///
+/// THE MUST-SHIP DOMAINS CANNOT BE DERIVED AWAY, SO THE ONLY LEVER ON THEM IS
+/// HOW A CHANGE IS SPELLED. A division's organisation moving from 47.36551 to
+/// 47.4 costs a whole fresh decimal token today; what actually changed is 3449
+/// hundred-thousandths. Measured over 59 consecutive t53 hours, spelling every
+/// eligible number change this way took the sealed delta stream from 160,351 to
+/// 141,466 bytes per game hour -- 11.8% -- while moving the RAW stream by 1.0%.
+/// That inversion is the point: a fresh decimal token is seven or eight bytes of
+/// high-entropy digits that zstd cannot predict, and a small varint is one or
+/// two bytes it can. `divisions[]` and `supply.by_province.<id>.divisions[]`
+/// are 78% of the saving.
+///
+/// EXACT, NOT APPROXIMATE. The reconstruction is `old` rescaled to the wider of
+/// the two fraction widths, plus the delta, respelled with the NEW token's
+/// fraction width -- so 47.4 comes back as `47.4` and never as `47.40000`.
+/// Where that respelling is not byte-identical to the token the recording
+/// carried, [`number_delta_between`] refuses and the change stays a `Replace`.
+const PATCH_NUMBER_DELTA: u8 = 6;
+/// Fraction digits a number delta may carry, and the digit ceiling on the
+/// tokens it may join. Bounds the rescaling to `i128` and keeps a hostile
+/// `fraction_digits` from asking for a power of ten nobody can hold. The widest
+/// fraction the fold actually mints is five (`FIXED_SCALE` is 100,000).
+const MAX_NUMBER_DELTA_DIGITS: u32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheIdentityMode {
@@ -2333,6 +2361,12 @@ enum Patch {
         changes: Vec<(String, Patch)>,
     },
     Array(Vec<(u32, Patch)>),
+    /// The target is a number and becomes another number, spelled as the
+    /// difference. See [`PATCH_NUMBER_DELTA`] and [`number_delta_between`].
+    NumberDelta {
+        fraction_digits: u32,
+        delta: i64,
+    },
     /// The target is `null` and becomes exactly its own remembered value.
     ReviveSame,
     /// The target is `null` and becomes its remembered value with a patch on
@@ -2488,6 +2522,147 @@ fn revive_is_mandatory(base: &CanonValue, new: &CanonValue) -> bool {
     base == new || revive_base_fits(base, new)
 }
 
+/// A plain decimal token as (value scaled by `10^fraction_digits`, fraction
+/// digits), or `None` if the token is not one.
+///
+/// PLAIN means what the fold actually mints for a fixed-point measurement:
+/// an optional minus, decimal digits, and at most one decimal point. An
+/// exponent form (`3e-05`), a token wider than [`MAX_NUMBER_DELTA_DIGITS`]
+/// digits, or anything else is not eligible, and its change stays a `Replace`.
+fn plain_decimal(token: &str) -> Option<(i128, u32)> {
+    let (negative, body) = match token.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, token),
+    };
+    let (integer, fraction) = match body.split_once('.') {
+        Some((integer, fraction)) => (integer, fraction),
+        None => (body, ""),
+    };
+    if integer.is_empty() || !integer.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if body.contains('.') && (fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
+    let digits = integer.len() + fraction.len();
+    if digits > MAX_NUMBER_DELTA_DIGITS as usize {
+        return None;
+    }
+    let mut scaled: i128 = 0;
+    for byte in integer.bytes().chain(fraction.bytes()) {
+        scaled = scaled * 10 + i128::from(byte - b'0');
+    }
+    Some((
+        if negative { -scaled } else { scaled },
+        fraction.len() as u32,
+    ))
+}
+
+/// Spell `scaled / 10^fraction_digits` with exactly `fraction_digits` after the
+/// point, which is the one form a number delta ever reconstructs.
+fn spell_decimal(scaled: i128, fraction_digits: u32) -> String {
+    let negative = scaled < 0;
+    let digits = scaled.unsigned_abs().to_string();
+    let body = if fraction_digits == 0 {
+        digits
+    } else {
+        let width = fraction_digits as usize + 1;
+        let padded = if digits.len() < width {
+            format!("{}{digits}", "0".repeat(width - digits.len()))
+        } else {
+            digits
+        };
+        let split = padded.len() - fraction_digits as usize;
+        format!("{}.{}", &padded[..split], &padded[split..])
+    };
+    if negative {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
+fn zigzag(value: i64) -> u64 {
+    ((value << 1) ^ (value >> 63)) as u64
+}
+
+fn unzigzag(value: u64) -> i64 {
+    ((value >> 1) as i64) ^ -((value & 1) as i64)
+}
+
+/// THE ONE RULE BOTH SIDES READ: what a number delta from `old` to `new` is,
+/// and whether it is admissible at all.
+///
+/// `diff_value` calls it to choose the spelling and `apply_patch` calls it to
+/// refuse any other, so a delta series has exactly one encoding and therefore
+/// one cache SHA -- the same discipline [`revive_is_mandatory`] keeps for the
+/// revive. Three conditions, all of them checked here:
+///
+///   * both values are plain decimal tokens, and rescaling them to the wider
+///     fraction width does not overflow;
+///   * respelling the reconstruction with the NEW token's fraction width gives
+///     that token BYTE FOR BYTE -- which is what rejects `-0.0`, a leading-zero
+///     spelling, and anything else whose bytes the arithmetic cannot restore;
+///   * the delta is strictly SHORTER than the `Replace` it stands in for. A
+///     tie would leave two legal spellings of one change.
+fn number_delta_between(old: &CanonValue, new: &CanonValue) -> Option<(u32, i64)> {
+    let (CanonValue::Number(old_token), CanonValue::Number(new_token)) = (old, new) else {
+        return None;
+    };
+    let (old_scaled, old_fraction) = plain_decimal(old_token)?;
+    let (new_scaled, new_fraction) = plain_decimal(new_token)?;
+    if spell_decimal(new_scaled, new_fraction) != *new_token {
+        return None;
+    }
+    let wider = old_fraction.max(new_fraction);
+    let old_at_wider = rescale(old_scaled, wider - old_fraction)?;
+    let new_at_wider = rescale(new_scaled, wider - new_fraction)?;
+    let delta = i64::try_from(new_at_wider.checked_sub(old_at_wider)?).ok()?;
+    // A zero delta at the same width is `Keep`'s job, and `diff_value` never
+    // reaches here for equal values; refusing it keeps the decoder honest.
+    if delta == 0 && old_fraction == new_fraction {
+        return None;
+    }
+    let cost = 1 + varint_len(u64::from(new_fraction)) + varint_len(zigzag(delta));
+    let replace_cost = 1 + encoded_number_len(new_token)?;
+    (cost < replace_cost).then_some((new_fraction, delta))
+}
+
+/// Bytes [`encode_value_into`] spends on this number token, without building
+/// them. Called once per changed scalar on the encode path AND again on the
+/// apply path for every replacement, so it does not allocate; it mirrors that
+/// function's number arm exactly and drifting from it would let one side price
+/// a spelling the other does not.
+fn encoded_number_len(token: &str) -> Option<usize> {
+    Some(match canonical_integer(token) {
+        Some(CanonicalInteger::NonNegative(value)) if value <= INLINE_UINT_MAX => 1,
+        Some(CanonicalInteger::NonNegative(value)) => 1 + varint_len(value),
+        Some(CanonicalInteger::Negative(magnitude)) => 1 + varint_len(magnitude),
+        // `put_text` refuses a body past the per-string bound, so a token that
+        // long has no encoded length to report. Unreachable through
+        // `number_delta_between` -- `plain_decimal` stops at
+        // `MAX_NUMBER_DELTA_DIGITS` -- but the contract above says EVERY token,
+        // and a helper that is total only by luck stops being total the moment
+        // someone reuses it (Codex round 2, P3).
+        None if token.len() > MAX_STRING_BYTES => return None,
+        None => 1 + varint_len(u64::try_from(token.len()).ok()?) + token.len(),
+    })
+}
+
+fn rescale(value: i128, places: u32) -> Option<i128> {
+    value.checked_mul(10i128.checked_pow(places)?)
+}
+
+fn varint_len(mut value: u64) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
+}
+
 fn diff_value(
     old: &CanonValue,
     new: &CanonValue,
@@ -2513,6 +2688,15 @@ fn diff_value(
                 });
             }
         }
+    }
+    // A NUMBER CHANGING TO ANOTHER NUMBER IS SPELLED AS THE DIFFERENCE where
+    // that is shorter, and `apply_patch` refuses the `Replace` it displaces --
+    // one delta, one encoding, exactly as for the revive above.
+    if let Some((fraction_digits, delta)) = number_delta_between(old, new) {
+        return Ok(Patch::NumberDelta {
+            fraction_digits,
+            delta,
+        });
     }
     match (old, new) {
         (CanonValue::Object(old), CanonValue::Object(new)) => {
@@ -2594,6 +2778,49 @@ fn apply_patch(
     require_depth(depth)?;
     match patch {
         Patch::Keep => Ok(()),
+        Patch::NumberDelta {
+            fraction_digits,
+            delta,
+        } => {
+            let CanonValue::Number(old_token) = &*target else {
+                return Err(ReplayCacheError::new(
+                    "number delta patch targets a value that is not a number",
+                ));
+            };
+            let (old_scaled, old_fraction) = plain_decimal(old_token).ok_or_else(|| {
+                ReplayCacheError::new("number delta patch targets a number it cannot join")
+            })?;
+            let wider = old_fraction.max(*fraction_digits);
+            let reconstructed = rescale(old_scaled, wider - old_fraction)
+                .and_then(|old_at_wider| old_at_wider.checked_add(i128::from(*delta)))
+                .ok_or_else(|| ReplayCacheError::new("number delta patch overflows its target"))?;
+            let narrowing = 10i128
+                .checked_pow(wider - *fraction_digits)
+                .ok_or_else(|| ReplayCacheError::new("number delta patch fraction width is out of range"))?;
+            if reconstructed % narrowing != 0 {
+                return Err(ReplayCacheError::new(
+                    "number delta patch does not land on its stated fraction width",
+                ));
+            }
+            let value = CanonValue::Number(spell_decimal(reconstructed / narrowing, *fraction_digits));
+            // THE SINGLE-ENCODING LAW, checked at the target rather than
+            // assumed from the bytes: this must be exactly the delta the
+            // encoder would have chosen for this change, so no second spelling
+            // of one delta series can decode.
+            if number_delta_between(target, &value) != Some((*fraction_digits, *delta)) {
+                return Err(ReplayCacheError::new(
+                    "number delta patch is not the encoder's spelling of this change",
+                ));
+            }
+            *target = value;
+            // A number has no children and was not null, so nothing can be
+            // remembered under it; cleared for the same reason `Replace` clears
+            // rather than on evidence that anything is there.
+            shadow.remembered = None;
+            shadow.members.clear();
+            shadow.elements.clear();
+            Ok(())
+        }
         Patch::ReviveSame | Patch::Revive(_) => {
             if !matches!(target, CanonValue::Null) {
                 return Err(ReplayCacheError::new(
@@ -2613,7 +2840,13 @@ fn apply_patch(
                 // A revive whose inner patch is a keep is spelled
                 // `PATCH_REVIVE_SAME`, and one whose base does not fit is
                 // spelled as a plain replace; both would be second encodings.
-                if matches!(**inner, Patch::Keep | Patch::Replace(_)) {
+                // A NUMBER DELTA CANNOT BE AN INNER PATCH EITHER: a scalar
+                // memory is revivable only when it EQUALS the new value
+                // (`revive_is_mandatory`), and that case is `ReviveSame`.
+                if matches!(
+                    **inner,
+                    Patch::Keep | Patch::Replace(_) | Patch::NumberDelta { .. }
+                ) {
                     return Err(ReplayCacheError::new(
                         "revive patch restates a delta with a shorter spelling",
                     ));
@@ -2655,6 +2888,11 @@ fn apply_patch(
             if structural {
                 return Err(ReplayCacheError::new(
                     "replacement patch restates a value the encoder would have diffed",
+                ));
+            }
+            if number_delta_between(target, value).is_some() {
+                return Err(ReplayCacheError::new(
+                    "replacement patch restates a number change with a shorter spelling",
                 ));
             }
             // A REPLACE OVER A NULL WHOSE MEMORY FITS IS A MISSED SAVING, NOT
@@ -2831,6 +3069,14 @@ fn encode_patch_into(
             out.push(PATCH_REPLACE);
             encode_value_into(value, out, depth + 1)?;
         }
+        Patch::NumberDelta {
+            fraction_digits,
+            delta,
+        } => {
+            out.push(PATCH_NUMBER_DELTA);
+            put_varint(out, u64::from(*fraction_digits));
+            put_varint(out, zigzag(*delta));
+        }
         Patch::Object { removals, changes } => {
             out.push(PATCH_OBJECT);
             put_varint(out, removals.len() as u64);
@@ -2890,6 +3136,23 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             "nested keep patch must be omitted, not encoded",
         )),
         PATCH_REPLACE => Ok(Patch::Replace(decode_value(reader, depth + 1)?)),
+        // THE WORLD ROOT IS ALWAYS AN OBJECT, so a number delta can only ever
+        // be nested; one at depth 0 is a shape the encoder cannot produce.
+        PATCH_NUMBER_DELTA if depth == 0 => Err(ReplayCacheError::new(
+            "number delta patch at the world root, which is never a number",
+        )),
+        PATCH_NUMBER_DELTA => {
+            let fraction_digits = reader.varint()?;
+            if fraction_digits > u64::from(MAX_NUMBER_DELTA_DIGITS) {
+                return Err(ReplayCacheError::new(
+                    "number delta patch states more fraction digits than a number may carry",
+                ));
+            }
+            Ok(Patch::NumberDelta {
+                fraction_digits: fraction_digits as u32,
+                delta: unzigzag(reader.varint()?),
+            })
+        }
         // THE WORLD ROOT IS NEVER NULL, so a revive can only ever be nested;
         // one at depth 0 is a shape the encoder cannot produce.
         PATCH_REVIVE_SAME | PATCH_REVIVE_PATCH if depth == 0 => Err(ReplayCacheError::new(
@@ -2900,8 +3163,13 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             let inner = decode_patch(reader, depth + 1)?;
             // Spelled out here as well as in `apply_patch` so a patch that
             // never reaches a target is still rejected: a keep is
-            // `PATCH_REVIVE_SAME` and an unfitting base is a plain replace.
-            if matches!(inner, Patch::Keep | Patch::Replace(_)) {
+            // `PATCH_REVIVE_SAME`, an unfitting base is a plain replace, and a
+            // revivable scalar memory equals the new value and so is
+            // `PATCH_REVIVE_SAME` too.
+            if matches!(
+                inner,
+                Patch::Keep | Patch::Replace(_) | Patch::NumberDelta { .. }
+            ) {
                 return Err(ReplayCacheError::new(
                     "revive patch restates a delta with a shorter spelling",
                 ));
@@ -4815,6 +5083,334 @@ mod tests {
             serde_json::to_string(&value).unwrap(),
             r#"{"mod\"flag":2,"modXflag":4,"mod\\path":3}"#
         );
+    }
+
+    /// A NUMBER THAT MOVES A LITTLE COSTS A LITTLE. The measured lever: seven
+    /// or eight bytes of fresh decimal digits become a one- or two-byte varint,
+    /// and the hour still reconstructs byte for byte.
+    ///
+    /// kills: dropping the `NumberDelta` arm from `diff_value` (the delta hour
+    /// grows back to the replacement size and the first assertion fails);
+    /// spelling the reconstruction from the WIDER fraction width instead of the
+    /// new token's (`47.4` comes back as `47.40000` and the seek assertion
+    /// fails); adding the delta to the wrong side (the reconstruction is
+    /// `47.33102` and the seek assertion fails).
+    #[test]
+    fn a_number_that_moves_a_little_costs_a_little() {
+        let hours = [
+            (0, r#"{"d":{"exp":944.34752,"org":47.36551,"str":227.2}}"#),
+            (1, r#"{"d":{"exp":944.35001,"org":47.4,"str":227.19}}"#),
+        ];
+        let (cache, index, source_sha) = build(16, &hours);
+
+        // THE ENCODER REALLY CHOSE THE OP, read back out of the record it
+        // wrote: all three members are spelled as differences.
+        fn count_number_deltas(patch: &Patch) -> usize {
+            match patch {
+                Patch::NumberDelta { .. } => 1,
+                Patch::Revive(inner) => count_number_deltas(inner),
+                Patch::Object { changes, .. } => {
+                    changes.iter().map(|(_, p)| count_number_deltas(p)).sum()
+                }
+                Patch::Array(changes) => {
+                    changes.iter().map(|(_, p)| count_number_deltas(p)).sum()
+                }
+                _ => 0,
+            }
+        }
+        let row = &index.hours()[1];
+        let start = (row.cache_record_offset() + RECORD_HEADER_LEN) as usize;
+        let payload = &cache[start..start + (row.cache_record_len() - RECORD_HEADER_LEN) as usize];
+        assert_eq!(count_number_deltas(&decode_patch_exact(payload).unwrap()), 3);
+
+        // And each one is shorter than the replacement it stands in for.
+        for (from, to) in [
+            ("47.36551", "47.4"),
+            ("227.2", "227.19"),
+            ("944.34752", "944.35001"),
+        ] {
+            let (fraction_digits, delta) = number_delta_between(
+                &CanonValue::Number(from.into()),
+                &CanonValue::Number(to.into()),
+            )
+            .expect("eligible");
+            let as_delta = encode_patch(&Patch::NumberDelta {
+                fraction_digits,
+                delta,
+            })
+            .unwrap();
+            let as_replace =
+                encode_patch(&Patch::Replace(CanonValue::Number(to.into()))).unwrap();
+            assert!(
+                as_delta.len() < as_replace.len(),
+                "{from} -> {to}: {} vs {}",
+                as_delta.len(),
+                as_replace.len()
+            );
+        }
+
+        let index_bytes = index.to_bytes().unwrap();
+        let reader =
+            ReplayCacheReader::open(&index_bytes, cache.as_slice(), 200, &source_sha).unwrap();
+        for (hour, body) in &hours {
+            let (json, _) = reader.reconstruct_json(*hour).unwrap();
+            assert_eq!(json, world_json(*hour, body), "hour {hour} moved");
+        }
+    }
+
+    /// The spellings the op must REFUSE, each because the arithmetic cannot put
+    /// the recording's own bytes back.
+    ///
+    /// kills: dropping the exact-respell check in `number_delta_between` (the
+    /// exponent and negative-zero cases start returning `Some` and their
+    /// assertions fail); widening `plain_decimal` to accept an exponent form.
+    #[test]
+    fn a_number_whose_bytes_the_arithmetic_cannot_restore_stays_a_replace() {
+        let number = |token: &str| CanonValue::Number(token.to_string());
+        // An exponent form on either side.
+        assert_eq!(number_delta_between(&number("3e-05"), &number("0.5")), None);
+        assert_eq!(number_delta_between(&number("0.5"), &number("3e-05")), None);
+        // Negative zero: the value is zero and the spelling is not.
+        assert_eq!(number_delta_between(&number("1.0"), &number("-0.0")), None);
+        // A token too wide to rescale without losing it.
+        let wide = "1.".to_string() + &"1".repeat(40);
+        assert_eq!(number_delta_between(&number("1.0"), &number(&wide)), None);
+        // A change to a value that is not a number at all.
+        assert_eq!(
+            number_delta_between(&number("1.0"), &CanonValue::Null),
+            None
+        );
+        // And the ordinary case still works, narrowing the fraction width.
+        assert_eq!(
+            number_delta_between(&number("47.36551"), &number("47.4")),
+            Some((1, 3449))
+        );
+        assert_eq!(spell_decimal(474, 1), "47.4");
+        assert_eq!(spell_decimal(-5, 3), "-0.005");
+        assert_eq!(spell_decimal(0, 1), "0.0");
+        assert_eq!(plain_decimal("-0.005"), Some((-5, 3)));
+        assert_eq!(plain_decimal("108"), Some((108, 0)));
+        assert_eq!(plain_decimal("1e5"), None);
+
+        // The allocation-free price of a replacement is the price
+        // `encode_value_into` actually charges. Drift between them would let
+        // the encoder choose a spelling the applier prices differently, and
+        // then refuse its own output.
+        // The shapes chosen are the branch boundaries: the inline ceiling and
+        // the first value above it, both magnitude branches, an integer-looking
+        // token too wide for `u64` (which the 30-digit delta ceiling DOES
+        // admit), the 127/128-byte token-length varint boundary, and ordinary
+        // fallbacks.
+        let long_127 = "0.".to_string() + &"1".repeat(125);
+        let long_128 = "0.".to_string() + &"1".repeat(126);
+        for token in [
+            "0",
+            "127",
+            "128",
+            "-1",
+            "-300",
+            "47.4",
+            "944.35001",
+            "3e-05",
+            "18446744073709551616",
+            long_127.as_str(),
+            long_128.as_str(),
+        ] {
+            let value = CanonValue::Number(token.to_string());
+            assert_eq!(
+                encoded_number_len(token),
+                Some(encode_value(&value).unwrap().len()),
+                "{token}"
+            );
+        }
+        assert_eq!(long_127.len(), 127);
+        assert_eq!(long_128.len(), 128);
+        // And where the real encoder REFUSES, the twin reports no length at all
+        // rather than a length nothing would ever write.
+        let past_bound = "0.".to_string() + &"1".repeat(MAX_STRING_BYTES);
+        assert_eq!(encoded_number_len(&past_bound), None);
+        assert!(encode_value(&CanonValue::Number(past_bound)).is_err());
+    }
+
+    /// One delta, one encoding — for numbers too. A `Replace` where a delta was
+    /// available, and a delta that is not the one the encoder would have
+    /// written, are both second spellings of one change and both refused.
+    ///
+    /// kills: removing the `number_delta_between` refusal from the `Replace`
+    /// arm (the first assertion fails); removing the re-derivation check from
+    /// the `NumberDelta` arm (the not-shorter delta applies and its assertion
+    /// fails); accepting a number delta at the world root; widening the decoder
+    /// fraction ceiling. The padded varint below is refused by `ByteReader`
+    /// itself, not by anything this op added — it is here to pin that the new
+    /// tag inherits that refusal rather than parsing its own varints.
+    #[test]
+    fn a_number_change_has_exactly_one_spelling() {
+        let mut target = CanonValue::parse(br#"{"a":47.36551}"#).unwrap();
+        let replace = Patch::Object {
+            removals: Vec::new(),
+            changes: vec![(
+                "a".to_string(),
+                Patch::Replace(CanonValue::Number("47.4".into())),
+            )],
+        };
+        assert!(apply_patch(
+            &mut target,
+            &replace,
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            0
+        )
+        .unwrap_err()
+        .message()
+        .contains("shorter spelling"));
+
+        // A delta the encoder would NOT have chosen because it is not shorter:
+        // 1 -> 2 is one inline byte as a replacement and three as a delta, so
+        // the delta spelling of it is a second encoding and must not decode.
+        let not_shorter = Patch::Object {
+            removals: Vec::new(),
+            changes: vec![(
+                "a".to_string(),
+                Patch::NumberDelta {
+                    fraction_digits: 0,
+                    delta: 1,
+                },
+            )],
+        };
+        let mut target = CanonValue::parse(br#"{"a":1}"#).unwrap();
+        assert!(apply_patch(
+            &mut target,
+            &not_shorter,
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            0
+        )
+        .unwrap_err()
+        .message()
+        .contains("not the encoder's spelling"));
+
+        // A number delta at the world root, which is always an object.
+        assert!(decode_patch_exact(&[PATCH_NUMBER_DELTA, 1, 2])
+            .unwrap_err()
+            .message()
+            .contains("world root"));
+
+        // A fraction width no number may carry.
+        let mut absurd = vec![PATCH_OBJECT, 0, 1];
+        put_text(&mut absurd, "a").unwrap();
+        absurd.push(PATCH_NUMBER_DELTA);
+        put_varint(&mut absurd, 31);
+        put_varint(&mut absurd, 2);
+        assert!(decode_patch_exact(&absurd)
+            .unwrap_err()
+            .message()
+            .contains("more fraction digits"));
+
+        // A padded varint is a second spelling of the same delta and the reader
+        // must not admit it.
+        let mut padded = vec![PATCH_OBJECT, 0, 1];
+        put_text(&mut padded, "a").unwrap();
+        padded.extend_from_slice(&[PATCH_NUMBER_DELTA, 0x81, 0x00, 2]);
+        assert!(decode_patch_exact(&padded).is_err());
+    }
+
+    /// The edges of the op, each named by Codex round 1 as behaviour the first
+    /// three tests left uncovered.
+    ///
+    /// kills: canonicalising a fraction width (the trailing-zero pair stops
+    /// being expressible and its assertions fail); dropping the `i64` bound on
+    /// the difference; widening the digit ceiling without widening the
+    /// arithmetic (the rescale-overflow refusal turns into a panic under this
+    /// crate's release overflow checks); accepting a number delta where a
+    /// member is being ADDED rather than changed; accepting one as a revive's
+    /// inner patch.
+    #[test]
+    fn the_edges_of_the_number_delta() {
+        let number = |token: &str| CanonValue::Number(token.to_string());
+
+        // A CHANGE OF FRACTION WIDTH ALONE is a real change of bytes, and it
+        // goes both ways: the delta is zero and the width carries the content.
+        assert_eq!(number_delta_between(&number("1.0"), &number("1.00")), Some((2, 0)));
+        assert_eq!(number_delta_between(&number("1.00"), &number("1.0")), Some((1, 0)));
+        // The same width with a zero difference is `Keep`'s job.
+        assert_eq!(number_delta_between(&number("1.0"), &number("1.0")), None);
+
+        // An old `-0.0` may still be joined: only the NEW token has to come
+        // back, and it does.
+        assert_eq!(number_delta_between(&number("-0.0"), &number("0.5")), Some((1, 5)));
+
+        // The digit ceiling is admissible right up to its edge.
+        let wide = "9".repeat(30);
+        let wider = "9".repeat(29) + "8";
+        assert_eq!(number_delta_between(&number(&wide), &number(&wider)), Some((0, -1)));
+        assert_eq!(plain_decimal(&"9".repeat(31)), None);
+
+        // Spellings `plain_decimal` must not admit at all.
+        for token in ["-", "+1.0", "1.", ".5", "", "1.2.3", "0x1"] {
+            assert_eq!(plain_decimal(token), None, "{token}");
+        }
+        // ...and one it admits arithmetically but the respell check refuses.
+        assert_eq!(plain_decimal("01.0"), Some((10, 1)));
+        assert_eq!(number_delta_between(&number("1.0"), &number("01.0")), None);
+
+        // A HOSTILE WIDTH AGAINST A WIDE TARGET is refused, not panicked on,
+        // even though this crate keeps overflow checks on in release.
+        let mut target = number(&wide);
+        assert!(apply_patch(
+            &mut target,
+            &Patch::NumberDelta { fraction_digits: 30, delta: 0 },
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            1
+        )
+        .unwrap_err()
+        .message()
+        .contains("overflows its target"));
+        // And the widest zigzag varint decodes to `i64::MIN` rather than
+        // wrapping on the way in.
+        let mut widest = vec![PATCH_OBJECT, 0, 1];
+        put_text(&mut widest, "a").unwrap();
+        widest.push(PATCH_NUMBER_DELTA);
+        put_varint(&mut widest, 0);
+        put_varint(&mut widest, u64::MAX);
+        let Patch::Object { changes, .. } = decode_patch_exact(&widest).unwrap() else {
+            panic!("object patch");
+        };
+        assert!(matches!(
+            changes[0].1,
+            Patch::NumberDelta { fraction_digits: 0, delta: i64::MIN }
+        ));
+
+        // A NUMBER DELTA WHERE A MEMBER IS BEING ADDED has no old value to
+        // stand on, and the object arm spells an addition as a bare replace.
+        let mut absent = CanonValue::parse(br#"{"b":1}"#).unwrap();
+        assert!(apply_patch(
+            &mut absent,
+            &Patch::Object {
+                removals: Vec::new(),
+                changes: vec![(
+                    "a".to_string(),
+                    Patch::NumberDelta { fraction_digits: 1, delta: 5 },
+                )],
+            },
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            0
+        )
+        .is_err());
+
+        // A revive's inner patch is never a number delta: a revivable scalar
+        // memory EQUALS the new value, which is `PATCH_REVIVE_SAME`.
+        let mut revive = vec![PATCH_OBJECT, 0, 1];
+        put_text(&mut revive, "a").unwrap();
+        revive.push(PATCH_REVIVE_PATCH);
+        revive.push(PATCH_NUMBER_DELTA);
+        put_varint(&mut revive, 1);
+        put_varint(&mut revive, 4);
+        assert!(decode_patch_exact(&revive)
+            .unwrap_err()
+            .message()
+            .contains("shorter spelling"));
     }
 
     /// One delta series, one set of cache bytes. `diff_value` never emits a

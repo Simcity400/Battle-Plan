@@ -54,16 +54,38 @@ unsafe impl GlobalAlloc for Probe {
 #[global_allocator]
 static ALLOC: Probe = Probe;
 
-use portable_replay_format::replay_cache::{CertifiedReplayCache, ReplayHourIndex};
+use portable_replay_format::replay_cache::{
+    CacheBuildHour, CacheIdentityMode, CertifiedReplayCache, ReplayCacheEncoder, ReplayHourIndex,
+};
 use portable_replay_format::sha256::Sha256;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
-// The H4CP generation these hand-built hostile inputs must claim. It has to
-// track the real one -- a stale number is refused by the header check before a
-// single allocation bound is ever exercised, which is how the revive's 4 -> 5
-// bump silently disarmed all four of these tests.
-const FORMAT_VERSION: u16 = 5;
+
+/// The H4CP generation these hand-built hostile inputs must claim, READ OUT OF A
+/// CACHE THE REAL ENCODER JUST WROTE rather than copied here as a literal.
+///
+/// A stale literal is refused by the header check before a single allocation
+/// bound is ever exercised, which is how the revive's 4 -> 5 bump silently
+/// disarmed all four of these tests. It went stale again on the number delta's
+/// 5 -> 6 bump. Deriving it is what stops the next bump doing it a third time.
+fn format_version() -> u16 {
+    let mut encoder = ReplayCacheEncoder::new(Vec::new(), &hex32(0xab), 8).expect("encoder");
+    encoder
+        .push(CacheBuildHour {
+            hour_index: 0,
+            date: "1936.1.1.1".to_string(),
+            h4cr_start_offset: 0,
+            h4cr_end_offset: 100,
+            world_json: br#"{"date":"1936.1.1.1","game_id":"g","hour_index":0,"schema_version":"1","world":{}}"#
+                .to_vec(),
+        })
+        .expect("push");
+    let (cache, _) = encoder
+        .finish("g", "1", CacheIdentityMode::IdentityV1, 100)
+        .expect("finish");
+    u16::from_le_bytes([cache[4], cache[5]])
+}
 const CACHE_HEADER_LEN: u64 = 40;
 
 fn hex32(byte: u8) -> String {
@@ -113,7 +135,7 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
 
     let mut cache = Vec::new();
     cache.extend_from_slice(CACHE_MAGIC);
-    cache.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    cache.extend_from_slice(&format_version().to_le_bytes());
     cache.extend_from_slice(&0u16.to_le_bytes());
     cache.extend_from_slice(&digest_of(&source_sha));
     let record_offset = cache.len() as u64;
@@ -129,7 +151,7 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
 
     let mut index = Vec::new();
     index.extend_from_slice(INDEX_MAGIC);
-    index.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    index.extend_from_slice(&format_version().to_le_bytes());
     index.extend_from_slice(&0u16.to_le_bytes());
     index.push(1);
     index.extend_from_slice(&[0, 0, 0]);
@@ -169,7 +191,7 @@ fn truncated_hour_index(hour_count: u64) -> Vec<u8> {
     let source_sha = hex32(0xcd);
     let mut hostile = Vec::new();
     hostile.extend_from_slice(INDEX_MAGIC);
-    hostile.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    hostile.extend_from_slice(&format_version().to_le_bytes());
     hostile.extend_from_slice(&0u16.to_le_bytes());
     hostile.push(1);
     hostile.extend_from_slice(&[0, 0, 0]);

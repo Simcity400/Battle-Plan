@@ -157,6 +157,21 @@ fn run() -> Result<(), String> {
         .verify_every_hour()
         .map_err(|e| format!("ROUND-TRIP FAILED: {e}"))?;
 
+    // THIS INSTRUMENT DELIBERATELY OPENS NO PATH. Lane LV briefly added an
+    // `LV_DUMP_CACHE` block here that wrote the finished cache and index beside
+    // each other, so the per-path sealed decomposition could be taken over the
+    // format that would actually SHIP rather than over the format-4 records on
+    // disk. It works, and it is NOT kept: `replay_core`'s
+    // `production_sources_have_no_descendant_pathname_read` audits every module
+    // under this crate's `src/`, and a dev instrument is not a reason to teach a
+    // production capability gate four new classified write sites.
+    //
+    // To retake that decomposition, add the four write lines back temporarily,
+    // run, and remove them again; the run that produced
+    // `runs/lv_size_to_5gb/DECOMPOSE_t53_after_v6.txt` did exactly that. Do not
+    // name the standard filesystem module even in a comment while doing so: the
+    // audit's capability detector reads the whole source text, so a mention is
+    // enough to make this module claim a capability it then has no site for.
     let raw = cache.len() as u64;
     let sealed = seal(&cache).map_err(|e| format!("seal: {e}"))?;
 
