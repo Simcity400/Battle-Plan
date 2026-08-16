@@ -1,4 +1,4 @@
-# Source tests for the central battery's serial/parallel partition.
+﻿# Source tests for the central battery's serial/parallel partition.
 #
 # The partition decides which tests keep the machine-wide mutex and which run
 # without it. Every case is annotated with the production change it kills,
@@ -606,6 +606,278 @@ $none = Get-BatteryRootHalves `
     -RootPackages @('collector')
 Assert-Case 'a root with no serial package gets no filterset at all' (
     $null -eq $none.Serial -and $null -eq $none.Parallel)
+
+# ==========================================================================
+# GROUP 5: the affected-package side -- what an iteration run selects
+#
+# The failure this group exists to kill is the same one as everywhere else in
+# this file and it is silent: a selection that comes out too NARROW does not
+# error, it reports green having never compiled the code the lane changed.
+# ==========================================================================
+
+# kills: `--package X` without the dependents expansion, which is what the
+# runner did until this lane. Cargo builds X and X's DEPENDENCIES; the crates
+# that IMPORT X are never compiled. Measured on the real tree:
+# `-Package runtime_text_inputs_live_lane` compiled 3 repository packages while
+# 5 direct importers were not compiled at all.
+$tree = New-SyntheticTree -Packages @{
+    leaf          = 'pub fn f() -> u32 { 1 }'
+    imports_leaf  = 'pub fn g() -> u32 { leaf::f() }'
+    two_removes   = 'pub fn h() -> u32 { imports_leaf::g() }'
+    unrelated     = 'pub fn k() -> u32 { 2 }'
+}
+try {
+    $edges = New-Edges -Root $tree -Map @{
+        partition_test_anchor = @()
+        leaf                  = @()
+        imports_leaf          = @('leaf')
+        two_removes           = @('imports_leaf')
+        unrelated             = @()
+    }
+    $closure = Get-BatteryDependentClosure -RepoRoot $tree -SeedPackages @('leaf') -DependencyGraph $edges
+    Assert-Case 'the dependents closure contains the seed itself' ($closure -contains 'leaf')
+    Assert-Case 'a DIRECT importer of the seed is selected (the JX defect)' ($closure -contains 'imports_leaf')
+    # kills: a one-hop expansion. Cargo's own `--package` is zero-hop; a one-hop
+    # fix would still miss the crate two removes away.
+    Assert-Case 'an importer TWO removes away is selected (fixed point, not one hop)' (
+        $closure -contains 'two_removes')
+    # kills: expanding to the whole workspace, which would make the mode
+    # pointless and is the other way to be wrong here.
+    Assert-Case 'a package that imports nothing in the seed set is NOT selected' (
+        $closure -notcontains 'unrelated')
+
+    # kills: seeding the closure from a name that matches nothing and letting
+    # the run proceed with an empty selection. nextest exits 0 on a selection
+    # that matches nothing, so this refusal is the only thing between a typo and
+    # a green run that tested none of what was asked for.
+    Assert-Throws 'a seed package name that matches nothing is refused' `
+        { Get-BatteryDependentClosure -RepoRoot $tree -SeedPackages @('no_such_crate') -DependencyGraph $edges } `
+        'match no package'
+
+    # kills: computing a closure from an empty seed, which returns an empty
+    # selection rather than an error.
+    Assert-Throws 'a closure from no seed at all is refused' `
+        { Get-BatteryDependentClosure -RepoRoot $tree -DependencyGraph $edges } 'no seed at all'
+}
+finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: leaving the two closures as two copies of one fixed point. Both the
+# serial half and the affected set must come out of Get-BatteryDependentIdClosure,
+# and this pins the primitive itself against the shape a one-hop rule fails and
+# the shape a repository-pruned graph fails.
+$primitiveEdges = @{
+    a          = [System.Collections.Generic.HashSet[string]]::new([string[]]@('b'), [StringComparer]::Ordinal)
+    b          = [System.Collections.Generic.HashSet[string]]::new([string[]]@('external'), [StringComparer]::Ordinal)
+    external   = [System.Collections.Generic.HashSet[string]]::new([string[]]@('seed'), [StringComparer]::Ordinal)
+    seed       = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    untouched  = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+}
+$primitive = Get-BatteryDependentIdClosure -Edges $primitiveEdges -SeedIds @('seed')
+Assert-Case 'the closure primitive follows a path that leaves the graph''s local set and returns' (
+    $primitive.Contains('a') -and $primitive.Contains('b') -and $primitive.Contains('external'))
+Assert-Case 'the closure primitive leaves an unrelated node out' (-not $primitive.Contains('untouched'))
+Assert-Case 'the closure primitive keeps its seed' ($primitive.Contains('seed'))
+
+# kills: treating a change to a workspace-wide input as a change to one package
+# (or to none). `.cargo/config.toml` selects the target directory, the profiles
+# and incremental compilation for EVERY package; a diff touching only it maps to
+# no package, and an iteration run would have compiled nothing and reported green.
+Assert-Case 'the cargo config is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path '.cargo/config.toml')
+Assert-Case 'a workspace manifest is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/Cargo.toml')
+Assert-Case 'a package manifest is a workspace-wide input too (it can move targets and features)' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/collector/Cargo.toml')
+Assert-Case 'the lockfile is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'Cargo.lock')
+Assert-Case 'the toolchain pin is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'rust-toolchain.toml')
+Assert-Case 'the nextest config is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'replay_interface/native/.config/nextest.toml')
+# kills: a pattern loose enough to swallow ordinary source, which would widen
+# every iteration run to the whole battery and quietly retire the mode.
+Assert-Case 'an ordinary source file is not a workspace-wide input' (
+    -not (Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/collector/src/lib.rs'))
+Assert-Case 'a file merely NAMED like a manifest is not one' (
+    -not (Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/collector/src/Cargo.toml.rs'))
+# kills: reading the pattern against a Windows-separated path, which is what
+# arrives if a caller ever stops normalising.
+Assert-Case 'the workspace-wide test is separator-agnostic' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'extractor\native\Cargo.toml')
+# kills: anchoring the config patterns at the REPOSITORY ROOT. A nested
+# .cargo/config.toml overrides the root one for its cargo root alone (the
+# runner's target-dir guard says so), and a nested rust-toolchain.toml pins a
+# different compiler for its subtree. Root-anchored patterns called both of
+# those "unowned", and in a MIXED diff the one recognised package supplied a
+# positive census while the rest of that root compiled under changed
+# configuration and never ran.
+Assert-Case 'a NESTED cargo config is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/.cargo/config.toml')
+Assert-Case 'a NESTED toolchain pin is a workspace-wide input' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'portable_replay/native/snapshot/rust-toolchain.toml')
+Assert-Case 'the extensionless toolchain pin spelling is recognised too' (
+    Test-BatteryPathIsWorkspaceWideInput -Path 'rust-toolchain')
+# kills: a `.cargo` pattern loose enough to match a directory merely CONTAINING
+# those characters, which would widen every diff that touches build output.
+Assert-Case 'a directory that merely ends in cargo is not the cargo config dir' (
+    -not (Test-BatteryPathIsWorkspaceWideInput -Path 'extractor/native/.cargo-target/debug/x.rs'))
+
+# kills: attributing a spliced file to the package it SITS IN rather than the
+# package that COMPILES it. This repository does exactly this today:
+# map_viewer/tests/xmap00_map_authority.rs carries
+# include_str!("../../replay_app/src/validate.rs"), and the cargo dependency runs
+# the other way, so editing that file reaches map_viewer through no edge at all.
+$tree = New-SyntheticTree -Packages @{
+    provides_the_file = 'pub fn f() -> u32 { 1 }'
+    splices_it        = 'pub fn g() {}'
+}
+try {
+    Set-Content -LiteralPath (Join-Path $tree 'extractor\native\provides_the_file\src\pulled.rs') `
+        -Encoding utf8 -Value 'pub const X: u32 = 1;'
+    Set-Content -LiteralPath (Join-Path $tree 'extractor\native\provides_the_file\src\raw_pulled.rs') `
+        -Encoding utf8 -Value 'pub const Y: u32 = 2;'
+    # SEPARATE FILES for the two hashed spellings. Pointing both at one file
+    # makes a single assertion green while either branch is broken, because the
+    # other branch still contributes the key.
+    Set-Content -LiteralPath (Join-Path $tree 'extractor\native\provides_the_file\src\hash_path.rs') `
+        -Encoding utf8 -Value 'pub const Z: u32 = 3;'
+    Set-Content -LiteralPath (Join-Path $tree 'extractor\native\provides_the_file\src\hash_include.rs') `
+        -Encoding utf8 -Value 'pub const W: u32 = 4;'
+    Set-Content -LiteralPath (Join-Path $tree 'extractor\native\splices_it\src\lib.rs') -Encoding utf8 -Value @(
+        'pub fn g() {}',
+        'const TEXT: &str = include_str!("../../provides_the_file/src/pulled.rs");',
+        '#[path = "../../provides_the_file/src/pulled.rs"]',
+        'mod pulled_module;',
+        '// A RAW literal is ordinary Rust and is exactly what an author reaches',
+        '// for when the path has backslashes in it.',
+        'const RAW: &str = include_str!(r"../../provides_the_file/src/raw_pulled.rs");',
+        '// And the HASHED raw spelling, whose closing hashes a leading-hash-only',
+        '// pattern leaves sitting before the `]`.',
+        '#[path = r#"../../provides_the_file/src/hash_path.rs"#]',
+        'mod hash_path_module;',
+        'const HASHED: &str = include_str!(r##"../../provides_the_file/src/hash_include.rs"##);')
+    $splices = Get-BatterySourceSpliceOwners -RepoRoot $tree
+    $pulled = [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\provides_the_file\src\pulled.rs'))
+    $rawPulled = [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\provides_the_file\src\raw_pulled.rs'))
+    $hashPath = [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\provides_the_file\src\hash_path.rs'))
+    $hashInclude = [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\provides_the_file\src\hash_include.rs'))
+    # kills: a splice regex that only accepts ordinary quoted literals.
+    # `include_str!(r"...")` is legal Rust and was missed.
+    Assert-Case 'the splice scan reads a RAW string literal too' ($splices.ContainsKey($rawPulled))
+    # kills: consuming the OPENING hashes of a raw literal without matching the
+    # closing ones. `#[path = r#"child.rs"#]` then leaves a `#` before the `]`
+    # and the whole attribute falls out of the scan, silently.
+    Assert-Case 'the splice scan reads a hashed raw #[path] literal' (
+        $splices.ContainsKey($hashPath))
+    # kills: the include! branch's own hash back-reference. A SEPARATE target
+    # file, because pointing both hashed spellings at one file made a single
+    # assertion green while either branch was broken -- the other branch still
+    # contributed the key.
+    Assert-Case 'the splice scan reads a double-hashed raw include_str! literal' (
+        $splices.ContainsKey($hashInclude))
+    Assert-Case 'the splice scan finds the file a package pulls in from another package' (
+        $splices.ContainsKey($pulled))
+    Assert-Case 'the splicing package is named as an owner of that file' (
+        $splices.ContainsKey($pulled) -and
+        @($splices[$pulled]) -contains ([IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\splices_it\Cargo.toml'))))
+
+    # kills: dropping the nearest-ancestor answer once a splice owner exists.
+    # The file's OWN package still compiles it, and the map is a union.
+    $owned = Get-BatteryPackagesForPaths -RepoRoot $tree `
+        -Paths @('extractor/native/provides_the_file/src/pulled.rs') -SpliceOwners $splices
+    Assert-Case 'a spliced file maps to BOTH the package holding it and the package pulling it' (
+        ($owned.Packages -contains 'provides_the_file') -and ($owned.Packages -contains 'splices_it'))
+}
+finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: mapping a changed path to nothing and calling that "no packages
+# affected". A path under no package must be REPORTED as unowned, so the runner
+# can say what its cargo selection does not cover.
+$tree = New-SyntheticTree -Packages @{ only_package = 'pub fn f() {}' }
+try {
+    $owned = Get-BatteryPackagesForPaths -RepoRoot $tree -Paths @('documents/NOTES.md')
+    Assert-Case 'a path under no cargo package is reported unowned, not silently dropped' (
+        (@($owned.Unowned).Count -eq 1) -and (@($owned.Packages).Count -eq 0))
+    # kills: nearest-ancestor picking the PARENT of a nested package.
+    $owned = Get-BatteryPackagesForPaths -RepoRoot $tree -Paths @('extractor/native/only_package/src/lib.rs')
+    Assert-Case 'a source file maps to the package whose directory contains it' (
+        $owned.Packages -contains 'only_package')
+}
+finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: resolving a caller's -Package name outside the roots the run enters,
+# which lets `-Workspace Replay -Package <an extractor crate>` skip every root
+# and return green.
+$tree = New-SyntheticTree -Packages @{ in_scope = 'pub fn f() {}'; out_of_scope = 'pub fn g() {}' }
+try {
+    $edges = New-Edges -Root $tree -Map @{
+        partition_test_anchor = @()
+        in_scope              = @()
+        out_of_scope          = @()
+    }
+    $manifests = Resolve-BatteryPackageNames -RepoRoot $tree -Names @('in_scope') `
+        -ScopePackages @('in_scope') -DependencyGraph $edges
+    # kills: returning the WRONG manifest while still returning exactly one.
+    # Counting alone passes for any single answer, which is the weak form of
+    # this assertion.
+    Assert-Case 'a name inside the run''s scope resolves to its OWN manifest' (
+        (@($manifests).Count -eq 1) -and
+        ([IO.Path]::GetFullPath([string](@($manifests)[0])) -ieq
+            [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\in_scope\Cargo.toml'))))
+    Assert-Throws 'a -Package name outside the roots this run enters is refused' `
+        { Resolve-BatteryPackageNames -RepoRoot $tree -Names @('out_of_scope') `
+                -ScopePackages @('in_scope') -DependencyGraph $edges } 'no cargo root this run enters'
+    # kills: searching EVERY repository-local id for a name match regardless of
+    # which roots the run enters. A same-named package in an excluded root then
+    # makes an unambiguous caller fail as "ambiguous". -ScopeRoots is what
+    # narrows the candidates to the roots actually being driven.
+    $twinRoot = Join-Path $tree 'extractor\native\twin_elsewhere'
+    New-Item -ItemType Directory -Path (Join-Path $twinRoot 'src') -Force | Out-Null
+    $twinEdges = $edges
+    $twinEdges.IdToName['in_scope_twin'] = 'in_scope'
+    $twinEdges.IdToManifest['in_scope_twin'] = (Join-Path $twinRoot 'Cargo.toml')
+    $twinEdges.LocalIds = @($twinEdges.LocalIds) + @('in_scope_twin')
+    Assert-Throws 'two manifests sharing a name are ambiguous when both are in scope' `
+        { Resolve-BatteryPackageNames -RepoRoot $tree -Names @('in_scope') `
+                -ScopePackages @('in_scope') -DependencyGraph $twinEdges } 'more than'
+    $scoped = Resolve-BatteryPackageNames -RepoRoot $tree -Names @('in_scope') `
+        -ScopePackages @('in_scope') -DependencyGraph $twinEdges `
+        -ScopeRoots @((Join-Path $tree 'extractor\native\in_scope'))
+    Assert-Case 'the same name is unambiguous once the candidates are scoped to the entered roots' (
+        (@($scoped).Count -eq 1) -and
+        ([IO.Path]::GetFullPath([string](@($scoped)[0])) -ieq
+            [IO.Path]::GetFullPath((Join-Path $tree 'extractor\native\in_scope\Cargo.toml'))))
+}
+finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+
+# kills: exporting a fourth hand-kept list of cargo roots in the runner. The
+# roots the iteration mode drives must be the roots the partition classifies.
+$rootPaths = Get-BatteryCargoRootPaths -RepoRoot 'C:\somewhere'
+Assert-Case 'the exported cargo-root list is the partition''s own' (
+    @($rootPaths).Count -eq @($script:BatteryCargoRoots).Count -and
+    $rootPaths[0] -ceq (Join-Path 'C:\somewhere' $script:BatteryCargoRoots[0]))
+# kills: the case above being VACUOUS for the thing it is actually about. It
+# pins the helper's projection, and a runner that stopped calling the helper --
+# or grew a fourth hand-kept root list beside it -- left it green. The runner is
+# read as text because it cannot be dot-sourced (loading it runs a battery).
+$runnerText = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Invoke-CentralRustValidation.ps1') -Raw
+# TWO call sites, counted, and the count is the assertion. One occurrence was
+# vacuous for the thing this case is about: the runner asks the helper twice --
+# once for the root-membership census that decides which selected packages are
+# selectable at all, once for the loop that DRIVES the standalone roots -- and
+# an occurrence check stayed green when the driving loop was replaced by a
+# hand-kept list, because the census still matched.
+$rootHelperCalls = @([regex]::Matches($runnerText, 'Get-BatteryCargoRootPaths\s+-RepoRoot')).Count
+Assert-Case 'the runner drives BOTH the membership census and the iteration roots through the exported helper' (
+    $rootHelperCalls -ge 2)
+
+# kills: parsing a `-z` git listing with a newline splitter. The records are
+# NUL-terminated and PowerShell has already split the stream on newlines.
+$records = Split-BatteryNulSeparatedOutput -Raw @("a/b.rs`0c/d.rs`0")
+Assert-Case 'a NUL-separated listing splits into its records' (
+    @($records).Count -eq 2 -and $records[0] -ceq 'a/b.rs' -and $records[1] -ceq 'c/d.rs')
+Assert-Case 'an empty listing is no records, not one empty one' (
+    @(Split-BatteryNulSeparatedOutput -Raw $null).Count -eq 0)
 
 # ==========================================================================
 # verdict

@@ -1,12 +1,23 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("Check", "Build", "Fast", "Integration", "Test", "Final", "Soak", "Evidence", "Release", "Lock", "Stats")]
+    [ValidateSet("Check", "Build", "Fast", "Integration", "Test", "Final", "Soak", "Evidence", "Release", "Lock", "Stats", "Iterate")]
     [string]$Mode = "Final",
 
     [ValidateSet("All", "Extractor", "Replay")]
     [string]$Workspace = "All",
 
     [string[]]$Package = @(),
+
+    # The base this lane branched from, for -Mode Iterate. The diff against it,
+    # unioned with the working tree, is what the iteration selection is derived
+    # from. It is REQUIRED rather than defaulted: a wrong base is a silently
+    # narrower run, and this runner does not guess at what a lane's base was.
+    #
+    # THE OWNER'S RULING that funds this mode (2026-08-15): "lanes run only the
+    # tests their diff can break during iteration; the full battery stays at
+    # landings and nightly/CI". Iterate is therefore explicitly NOT a landing
+    # gate, and it says so on every run.
+    [string]$Since = "",
 
     [string]$FilterExpression = "",
 
@@ -155,8 +166,8 @@ try {
 # below, so a check down there would let `-Mode Stats -Features …` pass
 # quietly. A selector that is accepted in silence is the same defect as a gate
 # that validates the wrong tree.
-if ($Features.Count -gt 0 -and $Mode -notin @("Check", "Build", "Test")) {
-    throw "-Features is accepted by Check, Build and Test only; Final is one canonical configuration."
+if ($Features.Count -gt 0 -and $Mode -notin @("Check", "Build", "Test", "Iterate")) {
+    throw "-Features is accepted by Check, Build, Test and Iterate only; Final is one canonical configuration."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
@@ -345,6 +356,13 @@ $parallelSlotIndex = -1
 # Work that Final defers until it holds the machine-wide mutex, in the order it
 # was queued. Each entry is @{ Describe = <string>; Action = <scriptblock> }.
 $serialPhaseActions = [System.Collections.Generic.List[object]]::new()
+# What an iteration run actually executed. These exist so "this run tested
+# nothing" is a countable fact rather than an inference from a green exit code:
+# nextest exits 0 for a selection that matches nothing, in every half of every
+# root, and an iteration selection is DERIVED, so it is exactly the kind of
+# selection that can quietly come out empty.
+$script:iterationTestsRun = 0
+$script:iterationSerialHalvesQueued = 0
 $releaseInputDigestBefore = $null
 $releaseBuildEnvironmentBefore = $null
 $releaseArtifactFreshness = $null
@@ -1229,6 +1247,77 @@ function Invoke-WatchedProcess {
     }
 }
 
+# The modes whose job is to CERTIFY a tree rather than to shorten an edit loop.
+# They compile once, from cold, in a fresh worktree far more often than not, and
+# they never get a second edit to amortise an incremental cache against.
+$script:CentralValidationGateModes = @('Test', 'Final', 'Release')
+
+function Set-CargoIncrementalPolicy {
+    <#
+    .SYNOPSIS
+    Decide, once, whether this run compiles incrementally, and say so.
+
+    .DESCRIPTION
+    THE DISK. Lane JZ measured this tree both ways (runs/jz_debug_shrink):
+
+        incremental on   6.43 GiB target dir   72.4 s clean build   11.2 s edit rebuild
+        incremental off  2.73 GiB (-57.5%)     60.5 s (-16.4%)      33.2 s edit rebuild
+
+    So incremental compilation is a 3.7 GiB tax and a 12 s PENALTY on the builds
+    a gate does, and a 3x saving on the build an edit loop does. It is the right
+    setting for iteration and the wrong one for certification, which is why the
+    decision belongs to the MODE and not to a global.
+
+    THE SPELLING IS MEASURED, NOT ASSUMED, and the measurement changed the
+    answer. runs/kv_affected_tests/incremental_precedence.json pins cargo 1.96's
+    precedence on a crate carrying this repository's own profile block:
+
+        CARGO_INCREMENTAL=1 + CARGO_PROFILE_DEV_INCREMENTAL=false   -> incremental RAN
+        CARGO_INCREMENTAL=0 + CARGO_PROFILE_DEV_INCREMENTAL=true    -> incremental did NOT run
+
+    `CARGO_INCREMENTAL` DOMINATES the profile keys. Setting only the profile
+    keys - which is what this lane was originally asked to do - would have been
+    a silent no-op on every run that reaches the cache-free branch below, and
+    that branch is every CI run. Both spellings are therefore set: the env var
+    because it is the one that binds, the profile keys because they are what
+    binds if a later change stops setting the env var.
+
+    WHY THIS IS A FUNCTION AND NOT FOUR ASSIGNMENTS. `$env:CARGO_INCREMENTAL`
+    was written at four sites, two of them in the mid-run fallback that fires
+    when the compile cache stops answering. Any one of them could re-enable
+    incremental compilation INSIDE a gate run, hours after the decision was
+    made. Now the decision exists once and the fallbacks re-apply it rather than
+    overwrite it.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][bool]$CompileCacheInUse,
+        [switch]$Quiet
+    )
+
+    if ($Mode -in $script:CentralValidationGateModes) {
+        $env:CARGO_INCREMENTAL = '0'
+        $env:CARGO_PROFILE_DEV_INCREMENTAL = 'false'
+        $env:CARGO_PROFILE_TEST_INCREMENTAL = 'false'
+        if (-not $Quiet) {
+            Write-Host (
+                "Incremental compilation is OFF for -Mode $Mode (a gate compiles once, from cold): " +
+                'measured -57.5% target-dir bytes and -16.4% clean build time on this tree.'
+            )
+        }
+        return
+    }
+    # ITERATION MODES keep the committed configuration's incremental = true,
+    # which is worth 11.2 s against 33.2 s on the rebuild after an edit. The
+    # profile keys are REMOVED rather than set true, so an inherited value from
+    # whatever shell started this run cannot decide it either way.
+    Remove-Item Env:CARGO_PROFILE_DEV_INCREMENTAL -ErrorAction SilentlyContinue
+    Remove-Item Env:CARGO_PROFILE_TEST_INCREMENTAL -ErrorAction SilentlyContinue
+    # sccache cannot cache an incremental compilation: the two are alternatives,
+    # not additives. That is lane JM's rule and it is unchanged.
+    $env:CARGO_INCREMENTAL = if ($CompileCacheInUse) { '0' } else { '1' }
+}
+
 function Invoke-Checked {
     param(
         [Parameter(Mandatory = $true)]
@@ -1266,7 +1355,12 @@ function Invoke-Checked {
         # Drop the wrapper for the remainder of the run. Re-running the same
         # phase with the same broken cache would just stall again.
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-        $env:CARGO_INCREMENTAL = "1"
+        # RE-APPLY the run's policy rather than assert incremental=1. This is
+        # mid-run: a gate that lost its compile cache is still a gate, and the
+        # old assignment here could turn incremental compilation back ON hours
+        # after the mode decided it should be off - which is 3.7 GiB of disk
+        # arriving in the middle of a battery.
+        Set-CargoIncrementalPolicy -Mode $Mode -CompileCacheInUse $false -Quiet
 
         Write-Host ("> {0} {1}   (cache-free re-run)" -f $Program, ($Arguments -join " "))
         & $Program @Arguments
@@ -1448,19 +1542,21 @@ function Get-CompileCacheState {
     return [pscustomobject]@{ Usable = $true; Notice = $null; StatsText = $statsText }
 }
 
-function Invoke-CheckedNextestWithCensus {
+function Measure-NextestSelection {
     <#
     .SYNOPSIS
-    Run a `cargo nextest` selection, having first proved it selects tests.
+    How many tests a `cargo nextest` selection actually matches. Never runs any.
 
     .DESCRIPTION
-    Used for the SERIAL half only, and it exists for one defect: a serial
-    filterset that matches nothing. nextest exits ZERO for a filterset that
-    selects no tests -- correctly, there is nothing to fail -- so a partition
-    that stopped naming the machine-serial packages would produce a battery
-    that compiled them, ran them nowhere, and reported green. The parallel half
-    needs no such check: it is the complement, so if the serial half is
-    non-empty the parallel half was selected from a real set too.
+    THE COUNT, SEPARATED FROM THE VERDICT, because two callers need it for two
+    different reasons and neither may re-derive it:
+
+      * `Invoke-CheckedNextestWithCensus` REFUSES a selection of zero;
+      * `-Mode Iterate` SKIPS a half whose count is zero and refuses only when
+        every half of every root came back zero. An iteration selection may
+        legitimately put all of its packages on one side of the partition, and
+        running `not (<everything>)` against nothing is not a defect there --
+        running NOTHING AT ALL is, and that is asserted once, globally.
 
     The count comes from a `nextest list` of the SAME selection, whose JSON goes
     to stdout, rather than from parsing the run's own summary. That is not a
@@ -1473,9 +1569,12 @@ function Invoke-CheckedNextestWithCensus {
     file captures a cargo invocation, and now nothing does.
     #>
     param(
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string[]]$ListArguments,
-        [Parameter(Mandatory = $true)][string]$Context
+        [Parameter(Mandatory = $true)][string]$Context,
+        # Set only by a caller that passes `--run-ignored` to the RUN. Without
+        # it, an ignored test is matched by the filterset and then not executed,
+        # so counting it would certify a half that ran nothing.
+        [switch]$RunIgnored
     )
 
     # The list arguments are passed in rather than derived from the run's by
@@ -1503,7 +1602,7 @@ function Invoke-CheckedNextestWithCensus {
             Write-Host $notice
             Write-Warning $notice
             Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-            $env:CARGO_INCREMENTAL = "1"
+            Set-CargoIncrementalPolicy -Mode $Mode -CompileCacheInUse $false -Quiet
             $listJson = & cargo @ListArguments
             if ($LASTEXITCODE -ne 0) {
                 throw "$Context could not be listed: cargo exited with code $LASTEXITCODE"
@@ -1533,11 +1632,49 @@ function Invoke-CheckedNextestWithCensus {
             # prunes. Counting the properties alone reported 55 selected for a
             # filterset that then ran 0, which is precisely the reading this
             # check exists to refuse.
-            if ([string]$case.Value.'filter-match'.status -ceq 'matches') {
-                $count++
-            }
+            if ([string]$case.Value.'filter-match'.status -cne 'matches') { continue }
+            # AN IGNORED TEST IS MATCHED BUT NOT EXECUTED, and counting it is a
+            # false authority rather than an approximation. Nothing in this file
+            # except the Evidence tier passes `--run-ignored`, so a half whose
+            # matched cases are ALL ignored runs zero tests and exits zero -- and
+            # the count this function returns is the only thing standing between
+            # that and a green verdict. This repository has ignored tests
+            # (game_ui/tests/production_renderer.rs among them), so the case is
+            # reachable rather than theoretical.
+            #
+            # `-not $true` rather than `-eq $false`: a listing that stops
+            # emitting the field at all must read as "not ignored" for the
+            # count, which is the direction that keeps a real test counted.
+            if (-not $RunIgnored -and $case.Value.ignored -eq $true) { continue }
+            $count++
         }
     }
+    return $count
+}
+
+function Invoke-CheckedNextestWithCensus {
+    <#
+    .SYNOPSIS
+    Run a `cargo nextest` selection, having first proved it selects tests.
+
+    .DESCRIPTION
+    THE ZERO-SELECTION REFUSAL. nextest exits ZERO for a filterset that selects
+    no tests -- correctly, there is nothing to fail -- so a partition that
+    stopped naming the machine-serial packages would produce a battery that
+    compiled them, ran them nowhere, and reported green. The parallel half of a
+    Final needs no such check: it is the complement, so if the serial half is
+    non-empty the parallel half was selected from a real set too.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string[]]$ListArguments,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    # Derived from the RUN's own arguments rather than passed in, so the two can
+    # never disagree about whether ignored tests will execute.
+    $count = Measure-NextestSelection -ListArguments $ListArguments -Context $Context `
+        -RunIgnored:($Arguments -ccontains '--run-ignored')
     if ($count -le 0) {
         throw (
             "$Context selected ZERO tests. That is not a pass: the battery " +
@@ -2311,15 +2448,113 @@ try {
     # gain -- a narrowed Final is short anyway. Every other mode keeps the whole
     # run under the mutex, unchanged, so the mutex remains the one gate that
     # anything serial passes through.
-    $splitBattery = ($Mode -eq 'Final' -and
-        $Package.Count -eq 0 -and
+    #
+    # ITERATE SPLITS FOR THE SAME REASON AND WITH THE SAME PARTITION. It has to:
+    # an iteration run that took the machine-wide mutex would be refused
+    # INSTANTLY whenever any other lane held it, which is most of the time on
+    # this machine, and a mode lanes cannot run is not a mode. Its
+    # parallel-classified affected packages run under a slot; its
+    # machine-serial ones are queued to the same serial phase everything else
+    # uses. Nothing about the mutex's meaning changes.
+    $splitBattery = ((($Mode -eq 'Final' -and $Package.Count -eq 0) -or $Mode -eq 'Iterate') -and
         [string]::IsNullOrWhiteSpace($FilterExpression))
     $batteryPartition = $null
+    $iterationSelection = $null
+
+    # -Since belongs to Iterate and to nothing else. Accepting it elsewhere and
+    # ignoring it would be the same silent skip the -RunPackageSelfTest guards
+    # below refuse: the caller named a base and would be told nothing.
+    if ($Mode -eq 'Iterate') {
+        if ([string]::IsNullOrWhiteSpace($Since)) {
+            throw (
+                '-Mode Iterate requires -Since <base-commit>: the commit this lane ' +
+                'branched from. The selection is derived from the diff against it, ' +
+                'and guessing a base would produce a silently narrower run. ' +
+                'Typically: -Since (git merge-base HEAD master).'
+            )
+        }
+        if ($Package.Count -gt 0) {
+            throw (
+                '-Mode Iterate derives its own package selection from the diff; ' +
+                '-Package would be a second, conflicting answer to the same question. ' +
+                'Use -Mode Test -Package <name> for a hand-picked selection.'
+            )
+        }
+        # -FilterExpression is refused for the same reason, and for a second one:
+        # a filter turns the split off, so Iterate would take the machine-wide
+        # mutex outright and then dereference a partition it never computed.
+        if (-not [string]::IsNullOrWhiteSpace($FilterExpression)) {
+            throw (
+                '-Mode Iterate derives its own selection from the diff; -FilterExpression ' +
+                'would narrow it a second time and would also disable the parallel-slot ' +
+                'split this mode depends on. Use -Mode Test -FilterExpression for a ' +
+                'hand-picked selection.'
+            )
+        }
+        # -Workspace is a THIRD narrowing, and the one that silently breaks the
+        # promise this mode's own summary makes. The non-cargo gates are
+        # workspace-conditional: with -Workspace Extractor, a changed Replay
+        # python gate does not run, its path is merely "unowned", and nothing
+        # reconciles it. Iterate derives its scope from the diff, across every
+        # cargo root, or it does not run.
+        if ($Workspace -ne 'All') {
+            throw (
+                "-Mode Iterate derives its scope from the diff and drives every cargo " +
+                "root; -Workspace $Workspace would narrow it again AND would skip the " +
+                'non-cargo gates of the other workspace, whose inputs the diff may have ' +
+                'changed. Run -Mode Iterate with -Workspace All.'
+            )
+        }
+        if ($Features.Count -eq 0) {
+            # NAMED, because it is the failure this file's own -Features
+            # documentation describes: a module behind an off-by-default feature
+            # is not compiled, its tests do not exist, and the package's ordinary
+            # tests supply a perfectly positive census.
+            Write-Host (
+                'Iteration run uses DEFAULT FEATURES. Code behind an off-by-default feature is ' +
+                'not compiled and its tests do not run; pass -Features <package>/<feature> if ' +
+                'your diff is inside one.'
+            )
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Since)) {
+        throw "-Since is only meaningful for -Mode Iterate; mode '$Mode' derives no selection from a diff."
+    }
+
+    # ONE graph read for everything that needs one. The partition, the iteration
+    # selection and the -Package expansion all ask cargo the same question, and
+    # asking it three times is three chances to be answered differently.
+    # HOISTED from the selector-validation block far below, because the graph
+    # decision needs it. $Lib/$Bin/$TestTarget are PARAMETERS and are never
+    # reassigned anywhere in this file, so computing it here and computing it
+    # there could only ever have produced the same answer; there is now one
+    # definition rather than two.
+    $hasSpecificTarget = $Lib -or $Bin.Count -gt 0 -or $TestTarget.Count -gt 0
+
+    # Read only when something will actually USE it. Reading the graph walks
+    # `cargo metadata` in all nine cargo roots, so building it for a -Package
+    # run whose expansion is then suppressed would make a previously
+    # single-root invocation (a targeted -Bin, the Evidence tier) fail on an
+    # unrelated root's metadata -- a caller that worked before this change.
+    $packageExpansionWanted = ($Package.Count -gt 0 -and -not $hasSpecificTarget -and $Mode -ne 'Evidence')
+    $batteryDependencyGraph = $null
+    if ($splitBattery -or $packageExpansionWanted) {
+        $batteryDependencyGraph = Get-BatteryWorkspaceDependencyEdges -RepoRoot $repoRoot
+    }
+
+    if ($Mode -eq 'Iterate') {
+        # Derived BEFORE any slot is taken, like the partition: a selection that
+        # cannot be derived is a refusal, never a run that tests a subset it
+        # could not name.
+        $iterationSelection = Get-BatteryAffectedSelection -RepoRoot $repoRoot -Since $Since `
+            -DependencyGraph $batteryDependencyGraph
+        Write-BatteryAffectedSelectionSummary -Selection $iterationSelection
+    }
 
     if ($splitBattery) {
         # Computed BEFORE any slot is taken: a partition that cannot be derived
         # is a refusal, not a battery that runs everything in one half.
-        $batteryPartition = Get-BatteryPartition -RepoRoot $repoRoot
+        $batteryPartition = Get-BatteryPartition -RepoRoot $repoRoot -DependencyGraph $batteryDependencyGraph
         Write-BatteryPartitionSummary -Partition $batteryPartition
         $slotCount = Get-CentralValidationParallelSlotCount
         $parallelSlotMutexes = @(0..($slotCount - 1) | ForEach-Object {
@@ -2391,7 +2626,7 @@ try {
     # it does the most good, since it is exactly the kind of long run nobody
     # should be holding the machine for.
     if ($Workspace -in @("All", "Extractor") -and
-        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Iterate", "Final", "Release")) {
         # These source checks run before Cargo and, for Release, before stale
         # promotion authority is removed. A changed shipping fold must first
         # force an explicit review of every wire-format transcription it backs.
@@ -2422,7 +2657,16 @@ try {
             # Pinned for the same reason every other case count here is: cases
             # quietly ceasing to run is the failure this whole file guards
             # against, and it looks exactly like a pass.
-            [int]$partitionTestResult.cases -ne 57) {
+            # 57 until lane KV, which added the affected-package side of the
+            # same core (the dependents closure, the changed-path map, the
+            # workspace-wide inputs, the splice scan and the root-scoped name
+            # resolution) and its 38 killing cases -- 28 with the first
+            # implementation, 10 more closing what three adversarial review
+            # rounds found in it (nested cargo configs, raw string literals and
+            # both HASHED spellings, name resolution scoped to the entered
+            # roots, and the runner actually calling the exported root list at
+            # both of its sites).
+            [int]$partitionTestResult.cases -ne 95) {
             throw "battery partition source tests returned no authority"
         }
 
@@ -2469,7 +2713,7 @@ try {
     # source, which is the whole criterion: the run that can break this gate is
     # the run that must catch it. Lock and Stats are out because they do not.
     if ($Workspace -in @("All", "Replay") -and
-        $Mode -in @("Check", "Build", "Fast", "Integration", "Test",
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Iterate",
                     "Final", "Release", "Evidence", "Soak")) {
         # The suites first: they are what proves the two gates below still fail
         # when they should, rather than passing because they stopped looking.
@@ -2504,7 +2748,7 @@ try {
     # condition already excludes it, and Lock and Stats are lockfile/cache
     # utility modes that compile no collector source.
     if ($Workspace -in @("All", "Extractor") -and
-        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Evidence", "Final", "Release")) {
+        $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Iterate", "Evidence", "Final", "Release")) {
         $passivePolicyEveryMode = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $passiveCapturePolicyTest)
         if ($LASTEXITCODE -ne 0) {
             throw "passive capture-policy source tests exited with code $LASTEXITCODE"
@@ -2542,7 +2786,7 @@ try {
         }
     }
 
-    if ($Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Final", "Release")) {
+    if ($Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Iterate", "Final", "Release")) {
         # The three C07 tree-library artifacts under
         # portable_replay\native\render_stream\src are generated whole from the
         # hash-pinned shipped installed content and compiled straight into the crate,
@@ -2689,8 +2933,9 @@ try {
     if ($compileCache.Usable) {
         $env:RUSTC_WRAPPER = "sccache"
         # sccache cannot cache an incremental compilation: the two are
-        # alternatives, not additives.
-        $env:CARGO_INCREMENTAL = "0"
+        # alternatives, not additives. That, and the MODE's own decision about
+        # incremental compilation, are both made in one place now.
+        Set-CargoIncrementalPolicy -Mode $Mode -CompileCacheInUse $true
         # THE PROBE ABOVE ONLY PROVES THE SERVER WAS ALIVE AT PREFLIGHT.
         # RUSTC_WRAPPER makes sccache the driver for every rustc call for the
         # rest of the run, so a server that dies mid-battery would otherwise
@@ -2712,7 +2957,7 @@ try {
             Write-Warning $compileCache.Notice
         }
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-        $env:CARGO_INCREMENTAL = "1"
+        Set-CargoIncrementalPolicy -Mode $Mode -CompileCacheInUse $false
     }
 
     # CROSS-WORKTREE REUSE: drop CARGO_TARGET_DIR from the environment, but only
@@ -2932,7 +3177,6 @@ try {
         $releaseInputDigestBefore = Get-ProductionRustInputDigest -RepoRoot $repoRoot
     }
 
-    $hasSpecificTarget = $Lib -or $Bin.Count -gt 0 -or $TestTarget.Count -gt 0
     if ($Mode -eq "Lock" -and
         ($Package.Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($FilterExpression) -or
          $AllTargets -or $hasSpecificTarget -or $Timings)) {
@@ -2941,7 +3185,10 @@ try {
     if ($AllTargets -and $hasSpecificTarget) {
         throw "-AllTargets cannot be combined with -Lib, -Bin, or -TestTarget."
     }
-    if ($Mode -in @("Final", "Soak", "Release") -and ($AllTargets -or $hasSpecificTarget)) {
+    # Iterate joins the tiers that own their own target selection: it always
+    # passes `--all-targets`, so a caller's target selector would either be
+    # redundant or would silently narrow a selection this mode derived.
+    if ($Mode -in @("Final", "Soak", "Release", "Iterate") -and ($AllTargets -or $hasSpecificTarget)) {
         throw "Final, Soak, and Release own their target sets; target selectors are supported by Check, Build, Fast, Integration, Test, and Evidence."
     }
     if ($Mode -eq "Soak" -and $Workspace -ne "Replay") {
@@ -3012,6 +3259,134 @@ try {
         }
     }
 
+    # ======================= THE SELECTED PACKAGE SET =========================
+    #
+    # `--package X` builds X and X's DEPENDENCIES. It does NOT build anything
+    # that IMPORTS X, so a gate narrowed to a leaf crate never compiles the
+    # crates that use it: `-Package runtime_text_inputs_live_lane` compiled 3
+    # repository packages while 5 direct importers - collector,
+    # character_presentation_live_lane, decision_panel_live_lane,
+    # production_render_submit_live_lane, scripted_state_flags_variables_live_lane -
+    # were not compiled at all. Three lanes did that expansion by hand before it
+    # became the runner's job.
+    #
+    # THE RAW `$Package` LIST IS NEVER REASSIGNED. Every policy guard in this
+    # file asks `$Package.Count -eq 0` to tell a narrowed run from a full one -
+    # the Final split, the full-Release authority, the Evidence isolation, the
+    # detour gate, the standalone roots - and an expanded list would tell some of
+    # them a different story. The expansion lives in its own variable and only
+    # the cargo SELECTION reads it.
+    $selectedPackageNames = @()
+    $expansionSuppressed = $false
+    if ($Package.Count -gt 0) {
+        if ($hasSpecificTarget) {
+            # -Lib / -Bin / -TestTarget select TARGETS BY NAME across every
+            # selected package, so adding a dependent that has no target of that
+            # name either fails the run or silently contributes nothing. The
+            # caller asked for one target; expansion is skipped and SAID, never
+            # done quietly and never done wrong.
+            $expansionSuppressed = $true
+            $selectedPackageNames = @($Package)
+            $notice = (
+                'PACKAGE EXPANSION SKIPPED: -Lib/-Bin/-TestTarget name targets across every ' +
+                'selected package, so the dependents of ' + ($Package -join ', ') + ' were NOT ' +
+                'compiled by this run. Re-run without a target selector to compile them.'
+            )
+            Write-Host $notice
+            Write-Warning $notice
+        }
+        elseif ($Mode -eq 'Evidence') {
+            # The Evidence tier is isolated to one package with one feature by
+            # the guard above; widening it would change what that feature
+            # unifies over.
+            $selectedPackageNames = @($Package)
+        }
+        else {
+            $scopePackages = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+            foreach ($root in $workspaceRoots) {
+                foreach ($name in (Get-CargoRootPackages -CargoRoot $root)) { [void]$scopePackages.Add([string]$name) }
+            }
+            # Names -> manifests, scoped to the roots THIS RUN ENTERS, so
+            # `-Workspace Replay -Package <an extractor crate>` is a refusal here
+            # rather than a run that skips every root and reports green.
+            $seedManifests = Resolve-BatteryPackageNames -RepoRoot $repoRoot -Names $Package `
+                -ScopePackages @($scopePackages) -DependencyGraph $batteryDependencyGraph `
+                -ScopeRoots @($workspaceRoots)
+            $selectedPackageNames = @(Get-BatteryDependentClosure -RepoRoot $repoRoot `
+                    -SeedManifests $seedManifests -DependencyGraph $batteryDependencyGraph)
+            $added = @($selectedPackageNames | Where-Object { $Package -notcontains $_ })
+            Write-Host (
+                '-Package expanded to its dependents: {0} requested -> {1} selected ({2} importer(s) added).' -f `
+                    $Package.Count, $selectedPackageNames.Count, $added.Count
+            )
+            if ($added.Count -gt 0) { Write-Host ('  added: {0}' -f ($added -join ', ')) }
+        }
+    }
+    elseif ($Mode -eq 'Iterate') {
+        $selectedPackageNames = @($iterationSelection.AffectedPackages)
+        if ($selectedPackageNames.Count -eq 0) {
+            # REFUSED RATHER THAN RUN AS A NO-OP, and the reason is not
+            # bookkeeping. A diff that touches only scripts, gates, documents or
+            # evidence still has Rust tests that can break: this repository has
+            # tests that SCAN THE TREE at run time - the script status
+            # vocabulary sweep, the inline-detour source bans, citation
+            # integrity - and those are exactly the tests no dependency graph
+            # can attribute to a changed file. "No package affected" therefore
+            # means "this derivation cannot tell you what broke", not "nothing
+            # broke", and the honest answer is the full battery.
+            throw (
+                'the iteration selection names no cargo package: every changed path ' +
+                'belongs to no cargo package. That is NOT the same as "no test is ' +
+                'affected" -- this repository has tests that scan the source tree at ' +
+                'run time, and no dependency graph can attribute a script or document ' +
+                'change to them. Run -Mode Final -Workspace All.'
+            )
+        }
+    }
+
+    # A PACKAGE NO CARGO ROOT HAS AS A MEMBER CANNOT BE SELECTED AT ALL, and
+    # asking for it is worse than useless: `cargo check -p portable_terrain_fixture`
+    # from the Replay root, where it is a path DEPENDENCY of map_viewer but not
+    # a workspace member, makes cargo PANIC (exit 101, "did not find features
+    # for (PackageId ...) within activated_features").
+    #
+    # This repository has exactly one such package today. `--workspace` never
+    # selects it either, so the full battery does not run its tests and this
+    # mode excluding it changes no coverage - but it is NAMED rather than
+    # dropped, because "the battery runs no test of this package" is a fact an
+    # operator should hear from the tool rather than discover.
+    if ($selectedPackageNames.Count -gt 0) {
+        $allRootMembers = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($root in (Get-BatteryCargoRootPaths -RepoRoot $repoRoot)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root 'Cargo.toml') -PathType Leaf)) { continue }
+            foreach ($name in (Get-CargoRootPackages -CargoRoot $root)) { [void]$allRootMembers.Add([string]$name) }
+        }
+        $unselectable = @($selectedPackageNames | Where-Object { -not $allRootMembers.Contains([string]$_) } | Sort-Object)
+        if ($unselectable.Count -gt 0) {
+            $notice = (
+                ('{0} affected package(s) are a member of NO cargo root and cannot be selected by any ' +
+                 'battery, this one included: {1}. No cargo root builds them with --workspace either, ' +
+                 'so no test of theirs runs anywhere in this repository.') -f $unselectable.Count, ($unselectable -join ', ')
+            )
+            Write-Host $notice
+            Write-Warning $notice
+            $selectedPackageNames = @($selectedPackageNames | Where-Object { $allRootMembers.Contains([string]$_) })
+            if ($selectedPackageNames.Count -eq 0) {
+                throw (
+                    'every package this run selected is a member of no cargo root, so there is ' +
+                    'nothing any battery can compile or run for this change: ' + ($unselectable -join ', ') + '.'
+                )
+            }
+        }
+    }
+
+    # THE GLOBAL NON-EMPTY INVARIANT. A per-root selection that is empty is
+    # correctly skipped, but if EVERY root skips, the run compiled nothing, ran
+    # nothing, and would return 0. Counted across the whole loop and asserted
+    # after it.
+    $cargoRootsEntered = 0
+    $selectedPackagesCovered = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+
     foreach ($workspaceRoot in $workspaceRoots) {
         $workspaceName = if ($workspaceRoot -like "*\extractor\native") { "Extractor" } else { "Replay" }
         $nextestConfigSelection = if ($workspaceName -eq "Replay") { @("--config-file", $nextestConfig) } else { @() }
@@ -3024,12 +3399,33 @@ try {
             }
 
             $selection = @("--locked")
-            foreach ($name in $Package) {
-                $selection += @("--package", $name)
+            if ($selectedPackageNames.Count -gt 0) {
+                # SCOPED TO THIS ROOT. `--package` naming a package the current
+                # cargo root cannot see is a hard cargo error, and the expansion
+                # deliberately spans roots.
+                $rootMembers = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                foreach ($name in (Get-CargoRootPackages -CargoRoot $workspaceRoot)) { [void]$rootMembers.Add([string]$name) }
+                $scopedNames = @($selectedPackageNames | Where-Object { $rootMembers.Contains([string]$_) } | Sort-Object)
+                if ($scopedNames.Count -eq 0) {
+                    # This root holds none of the selection. It is SKIPPED, and
+                    # it must never fall through to `--workspace`, which would
+                    # run the whole root the caller narrowed away from. The
+                    # invariant after the loop is what refuses the case where
+                    # EVERY root skipped.
+                    Write-Host (
+                        '{0}: no selected package lives in this cargo root; skipping it.' -f $workspaceName
+                    )
+                    continue
+                }
+                foreach ($name in $scopedNames) {
+                    $selection += @("--package", $name)
+                    [void]$selectedPackagesCovered.Add([string]$name)
+                }
             }
-            if ($Package.Count -eq 0) {
+            else {
                 $selection += "--workspace"
             }
+            $cargoRootsEntered++
 
             switch ($Mode) {
                 "Check" {
@@ -3048,6 +3444,79 @@ try {
                     }
                     Invoke-Checked -Program "cargo" -Arguments $arguments
                     Save-CargoTimingReport -WorkspaceName $workspaceName -Label "test"
+                }
+                "Iterate" {
+                    # THE ITERATION RUN. The cargo SELECTION is the affected
+                    # packages scoped to this root; the partition then decides
+                    # only WHICH SIDE OF THE MUTEX each of their tests runs on,
+                    # exactly as it does for Final. Two things are deliberately
+                    # not reinvented here: the halves come from
+                    # Get-BatteryRootHalves, and the machine-serial half is
+                    # queued through Add-SerialPhaseAction into the same serial
+                    # phase every other mode uses.
+                    # THE SAME fail-closed reconciliation Final does. A selected
+                    # package the partition classified as neither serial nor
+                    # parallel would fall out of `Get-BatteryRootHalves` into
+                    # the complement -- that is, silently into the half with no
+                    # mutex. It refuses instead.
+                    Assert-BatteryPartitionCoversPackages `
+                        -ObservedPackages $scopedNames `
+                        -SerialPackages $batteryPartition.Serial `
+                        -ParallelPackages $batteryPartition.Parallel
+                    $rootHalves = Get-BatteryRootHalves -Partition $batteryPartition -RootPackages $scopedNames
+                    $baseArguments = @("nextest", "run", "--all-targets", "--no-fail-fast") +
+                        $nextestConfigSelection + $nextestCiProfileSelection +
+                        $timingSelection + $requestedFeatureSelection + $selection
+                    $baseListArguments = @("nextest", "list", "--all-targets") +
+                        $nextestConfigSelection + $nextestCiProfileSelection +
+                        $requestedFeatureSelection + $selection
+
+                    $parallelArguments = $baseArguments
+                    $parallelListArguments = $baseListArguments + @("--message-format", "json")
+                    if ($null -ne $rootHalves.Parallel) {
+                        $parallelArguments = $baseArguments + @("-E", $rootHalves.Parallel)
+                        $parallelListArguments = $baseListArguments + @("-E", $rootHalves.Parallel, "--message-format", "json")
+                    }
+                    # MEASURED, then run. A half of an iteration selection may
+                    # legitimately be empty -- every affected package can sit on
+                    # one side of the partition -- and running an empty half
+                    # costs a compile for nothing. The global invariant below is
+                    # what refuses "every half was empty".
+                    $parallelCount = Measure-NextestSelection -ListArguments $parallelListArguments `
+                        -Context ("{0} iteration parallel-safe tests" -f $workspaceName)
+                    if ($parallelCount -gt 0) {
+                        Write-Host ("{0}: {1} parallel-safe test(s) selected." -f $workspaceName, $parallelCount)
+                        Invoke-Checked -Program "cargo" -Arguments $parallelArguments
+                        $script:iterationTestsRun += $parallelCount
+                        Save-CargoTimingReport -WorkspaceName $workspaceName -Label "iterate-nextest"
+                    }
+                    else {
+                        Write-Host ("{0}: no parallel-safe test in the affected packages; the whole selection is machine-serial." -f $workspaceName)
+                    }
+
+                    if ($null -ne $rootHalves.Serial) {
+                        $serialState = [pscustomobject]@{
+                            Root          = $workspaceRoot
+                            Name          = $workspaceName
+                            RunArguments  = $baseArguments + @("-E", $rootHalves.Serial)
+                            ListArguments = $baseListArguments + @("-E", $rootHalves.Serial, "--message-format", "json")
+                        }
+                        Add-SerialPhaseAction -Describe (
+                            "$workspaceName iteration machine-serial tests ({0})" -f ($rootHalves.SerialPackages -join ', ')
+                        ) -State $serialState -Action {
+                            param($State)
+                            Push-Location $State.Root
+                            try {
+                                Invoke-CheckedNextestWithCensus `
+                                    -Arguments $State.RunArguments `
+                                    -ListArguments $State.ListArguments `
+                                    -Context ("{0} iteration machine-serial tests" -f $State.Name)
+                                Save-CargoTimingReport -WorkspaceName $State.Name -Label "iterate-nextest-serial"
+                            }
+                            finally { Pop-Location }
+                        }
+                        $script:iterationSerialHalvesQueued++
+                    }
                 }
                 "Fast" {
                     $tierFilter = "kind(lib) | kind(bin)"
@@ -3355,6 +3824,118 @@ try {
         }
     }
 
+    # THE STANDALONE ROOTS, FOR ITERATE. Seven of this repository's nine cargo
+    # roots are not members of either workspace, so the loop above never enters
+    # them. An affected package living in one of them would otherwise be
+    # selected, counted, and never run - which is the exact shape of "reported
+    # green having tested nothing" this file exists to refuse. The root
+    # inventory comes from BatteryPartition.ps1 rather than a fourth hand-kept
+    # list in this file.
+    if ($Mode -eq 'Iterate') {
+        foreach ($standaloneRoot in (Get-BatteryCargoRootPaths -RepoRoot $repoRoot)) {
+            # The two workspaces were driven above.
+            if (@($workspaceRoots | Where-Object {
+                        [IO.Path]::GetFullPath($_) -ieq [IO.Path]::GetFullPath($standaloneRoot)
+                    }).Count -gt 0) { continue }
+            if ([IO.Path]::GetFullPath($standaloneRoot) -ieq [IO.Path]::GetFullPath((Join-Path $repoRoot 'extractor\native')) -or
+                [IO.Path]::GetFullPath($standaloneRoot) -ieq [IO.Path]::GetFullPath((Join-Path $repoRoot 'replay_interface\native'))) {
+                # A workspace this run's -Workspace excluded. It stays excluded.
+                continue
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $standaloneRoot 'Cargo.toml') -PathType Leaf)) { continue }
+            $standalonePackages = @(Get-CargoRootPackages -CargoRoot $standaloneRoot)
+            $scopedStandalone = @($standalonePackages | Where-Object { $selectedPackageNames -contains $_ })
+            if ($scopedStandalone.Count -eq 0) { continue }
+            foreach ($name in $scopedStandalone) { [void]$selectedPackagesCovered.Add([string]$name) }
+            $cargoRootsEntered++
+            # Classified WHOLE, like Final does: these roots hold one or two
+            # crates each, and "any serial package makes the root serial" is the
+            # fail-closed reading.
+            $standaloneSerial = @($scopedStandalone | Where-Object { $batteryPartition.Serial -contains $_ }).Count -gt 0
+            # -Features REACHES THESE ROOTS TOO. Omitting it here was a
+            # false-green path: a caller passing -Features because the diff is
+            # inside an off-by-default module would get default features
+            # compiled in a standalone root, the root's ordinary tests would
+            # supply a positive census, and the run would report having covered
+            # code it never built. If the feature names a package this root
+            # cannot see, cargo says so and the run fails -- which is the right
+            # direction for a selector the caller asked for by name.
+            $standaloneRunArguments = @("nextest", "run", "--locked", "--all-targets", "--no-fail-fast") +
+                $requestedFeatureSelection
+            $standaloneListArguments = @("nextest", "list", "--locked", "--all-targets") +
+                $requestedFeatureSelection + @("--message-format", "json")
+            $standaloneState = [pscustomobject]@{
+                Root          = $standaloneRoot
+                Name          = (Split-Path -Leaf $standaloneRoot)
+                RunArguments  = $standaloneRunArguments
+                ListArguments = $standaloneListArguments
+            }
+            if ($standaloneSerial) {
+                Add-SerialPhaseAction -Describe (
+                    "iteration standalone root {0} ({1})" -f (Split-Path -Leaf $standaloneRoot), ($scopedStandalone -join ', ')
+                ) -State $standaloneState -Action {
+                    param($State)
+                    Push-Location $State.Root
+                    try {
+                        Invoke-CheckedNextestWithCensus `
+                            -Arguments $State.RunArguments `
+                            -ListArguments $State.ListArguments `
+                            -Context ("iteration standalone root {0}" -f $State.Name)
+                    }
+                    finally { Pop-Location }
+                }
+                $script:iterationSerialHalvesQueued++
+            }
+            else {
+                Push-Location $standaloneRoot
+                try {
+                    $standaloneCount = Measure-NextestSelection `
+                        -ListArguments $standaloneListArguments `
+                        -Context ("iteration standalone root {0}" -f (Split-Path -Leaf $standaloneRoot))
+                    if ($standaloneCount -gt 0) {
+                        Invoke-Checked -Program "cargo" -Arguments $standaloneRunArguments
+                        $script:iterationTestsRun += $standaloneCount
+                    }
+                }
+                finally { Pop-Location }
+            }
+        }
+    }
+
+    # ================= THE GLOBAL NON-EMPTY-EXECUTION INVARIANT ================
+    #
+    # Per-root skipping is correct and per-half skipping is correct, but a run in
+    # which EVERY root and EVERY half was skipped has compiled nothing, run
+    # nothing, and would return 0 to a lane that asked it for a verdict. Asserted
+    # once, here, against counters the loops above incremented.
+    if ($selectedPackageNames.Count -gt 0) {
+        if ($cargoRootsEntered -eq 0) {
+            throw (
+                'this run selected ' + $selectedPackageNames.Count + ' package(s) and then ' +
+                'entered NO cargo root at all. Nothing was compiled and nothing was run, ' +
+                'so there is no verdict to report. Check -Workspace against the packages ' +
+                'named.'
+            )
+        }
+        $uncovered = @($selectedPackageNames | Where-Object { -not $selectedPackagesCovered.Contains([string]$_) } | Sort-Object)
+        if ($uncovered.Count -gt 0) {
+            throw (
+                'this run selected ' + $uncovered.Count + ' package(s) that no cargo root it ' +
+                'entered contains: ' + ($uncovered -join ', ') + '. They were selected and ' +
+                'never compiled, which is a narrower run than the one reported. Widen ' +
+                '-Workspace, or add the missing cargo root to $script:BatteryCargoRoots in ' +
+                'BatteryPartition.ps1.'
+            )
+        }
+    }
+    if ($Mode -eq 'Iterate' -and $script:iterationTestsRun -eq 0 -and $script:iterationSerialHalvesQueued -eq 0) {
+        throw (
+            'the iteration run selected packages but matched ZERO tests in every half of ' +
+            'every root. nextest exits 0 for a selection that matches nothing, so this ' +
+            'would have been a green run that executed no test at all.'
+        )
+    }
+
     if ($Package.Count -eq 0 -and $Mode -in @("Final", "Release")) {
         $standaloneRoots = @()
         if ($Workspace -in @("All", "Extractor")) {
@@ -3441,14 +4022,28 @@ try {
             $parallelSlotMutexes[$parallelSlotIndex].ReleaseMutex()
             $parallelSlotIndex = -1
         }
+        # ITERATE IS THE ONE MODE ALLOWED AN EMPTY SERIAL QUEUE, and the reason
+        # is not leniency. A Final compiles the whole workspace, so a partition
+        # that named nothing machine-serial has certainly gone wrong. An
+        # iteration selection is a handful of packages that the partition may
+        # legitimately classify entirely parallel-safe -- and when it does, the
+        # invariant that matters has already been asserted above: this run
+        # matched a nonzero number of tests SOMEWHERE. An empty queue here with
+        # zero tests run cannot reach this line.
         if ($serialPhaseActions.Count -eq 0) {
-            throw (
-                'the battery split queued NO machine-serial work. That is not a ' +
-                'pass: this run compiled the packages the partition calls ' +
-                'machine-serial and then ran none of them under the mutex, so ' +
-                'its verdict covers only the parallel half.'
+            if ($Mode -ne 'Iterate') {
+                throw (
+                    'the battery split queued NO machine-serial work. That is not a ' +
+                    'pass: this run compiled the packages the partition calls ' +
+                    'machine-serial and then ran none of them under the mutex, so ' +
+                    'its verdict covers only the parallel half.'
+                )
+            }
+            Write-Host (
+                'Iteration run: every affected package is parallel-safe, so nothing needed the machine-wide mutex.'
             )
         }
+        if ($serialPhaseActions.Count -gt 0) {
         Write-Host (
             'Battery serial half: {0} queued step(s); waiting for the central validation mutex.' -f `
                 $serialPhaseActions.Count
@@ -3465,10 +4060,24 @@ try {
             & $queued.Action $queued.State
         }
         $serialPhaseSeconds = ((Get-Date) - $serialPhaseStart).TotalSeconds
-        $sealTemplate =
-            'Battery seal: BOTH halves passed ({0} machine-serial step(s) after the ' +
-            'parallel half); central validation mutex held for {1:N1} s.'
-        Write-Host ($sealTemplate -f $serialPhaseActions.Count, $serialPhaseSeconds)
+        if ($Mode -eq 'Iterate') {
+            # NOT A SEAL, and it does not say "seal". An iteration run has
+            # certified the tests its diff was computed to reach and nothing
+            # else, and the word this file uses for a complete verdict is not
+            # available to it.
+            Write-Host (
+                ('Iteration run complete: {0} machine-serial step(s); central validation mutex held for {1:N1} s. ' +
+                 'THIS IS NOT A LANDING GATE - run -Mode Final -Workspace All before landing.') -f `
+                    $serialPhaseActions.Count, $serialPhaseSeconds
+            )
+        }
+        else {
+            $sealTemplate =
+                'Battery seal: BOTH halves passed ({0} machine-serial step(s) after the ' +
+                'parallel half); central validation mutex held for {1:N1} s.'
+            Write-Host ($sealTemplate -f $serialPhaseActions.Count, $serialPhaseSeconds)
+        }
+        }
     }
 
     if ($fullExtractorRelease) {
