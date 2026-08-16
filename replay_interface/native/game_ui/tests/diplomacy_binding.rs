@@ -270,7 +270,7 @@ fn non_nonempty_roster_status_suppresses_country_faction_rows() {
     }
 
     drop(timeline);
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -392,5 +392,5 @@ fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
     assert!(unrelated.subject_autonomy.is_empty());
     drop(frame);
     drop(timeline);
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }

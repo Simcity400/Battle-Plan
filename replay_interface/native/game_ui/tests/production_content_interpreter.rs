@@ -295,7 +295,7 @@ fn interpreters_consume_mod_winners_and_record_complete_provenance() {
         String::from_utf8(interpreter.read(&map_key).unwrap().value).unwrap(),
         "9 2 20 21\n"
     );
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn replace_path_missing_content_and_changed_dlc_fail_closed() {
     assert!(resolver
         .resolve_required_with_provenance("interface/missing.gui", "required UI")
         .is_err());
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn decode_texture_uses_immutable_admitted_bytes_after_source_mutation() {
         decoded_after_mutation.value.image.pixels,
         decoded.value.image.pixels
     );
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -454,5 +454,5 @@ fn portable_manifest_rebinds_after_game_profile_and_replay_relocation() {
         interpreter.parse_gui(&key).unwrap().value[0].name,
         "mod_panel"
     );
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }

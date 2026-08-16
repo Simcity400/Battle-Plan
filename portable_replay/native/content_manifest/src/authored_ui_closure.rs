@@ -671,7 +671,7 @@ mod tests {
         ] {
             assert!(paths.contains(&expected), "missing {expected:?}");
         }
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -735,7 +735,7 @@ mod tests {
             selected_panel.content.layer_id,
             "dlc/dlc_selected/dlc_selected.dlc"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -791,7 +791,7 @@ mod tests {
             row.consumer == DEPENDENCY_CLOSURE_CONSUMER
                 && row.content.normalized_game_relative_path == "gfx/interface/complete.dds"
         }));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -849,7 +849,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(dependency_paths.contains("gfx/interface/winner.dds"));
         assert!(!dependency_paths.contains("gfx/interface/losing.dds"));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -893,7 +893,7 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]

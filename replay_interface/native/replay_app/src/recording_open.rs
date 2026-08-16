@@ -1632,7 +1632,7 @@ mod tests {
         );
 
         fs::remove_dir(&candidate).unwrap();
-        fs::remove_file(&displaced).unwrap();
+        portable_test_fs_retry::remove_file(&displaced).unwrap();
         fs::remove_dir(&root).unwrap();
     }
 
@@ -1669,12 +1669,12 @@ mod tests {
         drop(source);
 
         #[cfg(windows)]
-        fs::remove_file(&source_path).unwrap();
+        portable_test_fs_retry::remove_file(&source_path).unwrap();
         #[cfg(not(windows))]
         {
             assert_eq!(portable_test_fs_retry::read(&source_path).unwrap(), replacement);
-            fs::remove_file(&source_path).unwrap();
-            fs::remove_file(&displaced).unwrap();
+            portable_test_fs_retry::remove_file(&source_path).unwrap();
+            portable_test_fs_retry::remove_file(&displaced).unwrap();
         }
         fs::remove_dir(&root).unwrap();
     }
@@ -1687,7 +1687,7 @@ mod tests {
         fs::write(root_path.join("unexpected-residue"), b"preserve").unwrap();
         drop(root);
         assert!(root_path.exists(), "stable product root must be preserved");
-        fs::remove_file(root_path.join("unexpected-residue")).unwrap();
+        portable_test_fs_retry::remove_file(root_path.join("unexpected-residue")).unwrap();
         fs::remove_dir(&root_path).unwrap();
         fs::remove_dir(&parent).unwrap();
     }
@@ -1930,6 +1930,6 @@ mod tests {
             "per-source authenticated child must be cleaned"
         );
         fs::remove_dir(&spool_path).unwrap();
-        fs::remove_dir_all(parent).unwrap();
+        portable_test_fs_retry::remove_dir_all(parent).unwrap();
     }
 }

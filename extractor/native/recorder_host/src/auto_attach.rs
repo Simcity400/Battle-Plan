@@ -1124,7 +1124,7 @@ mod live {
                 find_verified_replay(&dir).as_deref(),
                 Some(package_set.to_string_lossy().as_ref())
             );
-            std::fs::remove_dir_all(dir).unwrap();
+            portable_test_fs_retry::remove_dir_all(dir).unwrap();
         }
 
         #[test]
@@ -1194,7 +1194,7 @@ mod live {
             assert!(validate_complete_proof_transcript(&path, session).is_ok());
             std::fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
             assert!(validate_complete_proof_transcript(&path, session).is_err());
-            std::fs::remove_file(path).unwrap();
+            portable_test_fs_retry::remove_file(path).unwrap();
         }
 
     }

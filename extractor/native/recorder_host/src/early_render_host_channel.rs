@@ -1829,6 +1829,6 @@ mod tests {
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
         drop(host);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }

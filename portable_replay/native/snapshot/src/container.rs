@@ -4561,7 +4561,7 @@ mod tests {
         drop(retained);
         // Once the handle is released the same pathname is ordinary again --
         // the denial is the retained handle's, not the filesystem's.
-        fs::remove_file(&temp).expect("the released pathname is removable");
+        portable_test_fs_retry::remove_file(&temp).expect("the released pathname is removable");
     }
 
     /// Post-publication rollback never unlinks a destination it cannot bind to
@@ -4596,7 +4596,7 @@ mod tests {
                     ))
                 },
                 |_temp, published| {
-                    fs::remove_file(published).expect("the released name is unlinkable");
+                    portable_test_fs_retry::remove_file(published).expect("the released name is unlinkable");
                     fs::write(published, FOREIGN).expect("the released name is rebindable");
                     hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);
                 },
@@ -4691,7 +4691,7 @@ mod tests {
 
         // Release the blocker so the scratch directory can be cleaned up.
         held.lock().unwrap().take();
-        fs::remove_file(&destination).expect("the released destination is removable");
+        portable_test_fs_retry::remove_file(&destination).expect("the released destination is removable");
     }
 
     /// The temporary's own cleanup is identity-gated too, and its refusal arm
@@ -4727,7 +4727,7 @@ mod tests {
                     // The retained handle is already dropped here, so this
                     // unlink succeeds even on Windows: the temporary's cleanup
                     // window is unpinned on every platform.
-                    fs::remove_file(temp).expect("the released temporary is unlinkable");
+                    portable_test_fs_retry::remove_file(temp).expect("the released temporary is unlinkable");
                     fs::write(temp, FOREIGN).expect("the released name is rebindable");
                     *hook_temp.lock().unwrap() = temp.to_path_buf();
                     hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);

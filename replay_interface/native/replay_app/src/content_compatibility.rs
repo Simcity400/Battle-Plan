@@ -786,7 +786,7 @@ mod tests {
             "required-dlc",
             "unused enabled mod and DLC must be invisible"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -795,7 +795,7 @@ mod tests {
         let error = resolver_for_manifest(&paths, &required_dlc_manifest()).unwrap_err();
         assert!(error.contains("dlc/dlc002/dlc002.dlc"), "{error}");
         assert!(error.contains("not active locally"), "{error}");
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -926,6 +926,6 @@ graphics={
             "common/replay/non_ui.txt"
         );
         assert_eq!(authority.authority_sha256.len(), 64);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }

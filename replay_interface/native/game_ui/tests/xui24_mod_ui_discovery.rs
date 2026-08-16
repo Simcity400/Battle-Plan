@@ -158,7 +158,7 @@ fn replace_path_removes_only_the_exact_lower_parent_before_mod_readds() {
         "interface/nested/base.gui",
         "guiTypes={ containerWindowType={ name=nested_base } }",
     );
-    fs::remove_file(user.join("content/mod_a/interface/base.gui")).unwrap();
+    portable_test_fs_retry::remove_file(user.join("content/mod_a/interface/base.gui")).unwrap();
     let resolver = AssetResolver::from_runtime_userdir(&game, &user).unwrap();
     let files = resolver
         .list_files_recursive("interface", Some("gui"))

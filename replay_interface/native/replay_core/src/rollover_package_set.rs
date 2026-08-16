@@ -1063,20 +1063,74 @@ mod tests {
         manifest.with_computed_digest().unwrap()
     }
 
-    /// Returns the tree's scanner guards as its third element; bind them
-    /// (`let (root, descriptor, _guards) = fixture(..)`) so they live for the
-    /// length of the test.
-    fn fixture(tag: &str) -> (PathBuf, PathBuf, Vec<std::fs::File>) {
+    /// A written-out rollover package tree, with the scanner guards that hold
+    /// it open CARRIED AS A FIELD.
+    ///
+    /// This used to be a `(PathBuf, PathBuf, Vec<File>)` tuple, and that was the
+    /// weakest of the three retention shapes in use in this repository:
+    /// `#[must_use]` does not reach through a destructuring pattern, so
+    /// `let (root, descriptor, _) = fixture(..)` dropped the guards at that
+    /// semicolon and compiled silently. Every call site happened to bind them,
+    /// by convention and by the doc comment asking for it -- which is not an
+    /// enforcement, and a new test written the obvious way would not have.
+    ///
+    /// As a field there is nothing for a caller to remember: the binding a test
+    /// needs anyway is what holds the tree open, and a test added later is
+    /// covered by construction. `#[must_use]` now also catches the one
+    /// remaining way to get it wrong, calling `fixture(..)` for its side effect
+    /// and discarding the value.
+    /// The fields are PRIVATE TO THIS MODULE and reached only through the two
+    /// borrowed accessors, which is the difference between a convention and an
+    /// enforcement. A plain public-field struct is not "covered by
+    /// construction": `let RolloverFixture { root, descriptor, .. } =
+    /// fixture(..)` consumes the `#[must_use]` value and drops the guards at
+    /// that statement, reproducing the exact tuple defect this replaced. A
+    /// reviewer pointed that out, and it was right. With the fields private,
+    /// that pattern does not compile outside this module.
+    mod fixture_guard {
+        use std::path::{Path, PathBuf};
+
+        #[must_use]
+        pub(super) struct RolloverFixture {
+            root: PathBuf,
+            descriptor: PathBuf,
+            /// Held for the lifetime of the fixture; see the parent docs.
+            _scanner_guards: Vec<std::fs::File>,
+        }
+
+        impl RolloverFixture {
+            pub(super) fn new(
+                root: PathBuf,
+                descriptor: PathBuf,
+                scanner_guards: Vec<std::fs::File>,
+            ) -> Self {
+                Self {
+                    root,
+                    descriptor,
+                    _scanner_guards: scanner_guards,
+                }
+            }
+
+            pub(super) fn root(&self) -> &Path {
+                &self.root
+            }
+
+            pub(super) fn descriptor(&self) -> &Path {
+                &self.descriptor
+            }
+        }
+    }
+
+    use fixture_guard::RolloverFixture;
+
+    fn fixture(tag: &str) -> RolloverFixture {
         fixture_with_storage(tag, None)
     }
 
     /// `storage` overrides the member's STORAGE identity (bytes, digest) so it
     /// differs from the decoded identity, which is what a compressed member
     /// looks like. `None` keeps them equal, which is what a raw member is.
-    fn fixture_with_storage(
-        tag: &str,
-        storage: Option<(u64, String)>,
-    ) -> (PathBuf, PathBuf, Vec<std::fs::File>) {
+    fn fixture_with_storage(tag: &str, storage: Option<(u64, String)>) -> RolloverFixture {
         let root = std::env::temp_dir().join(format!(
             "replay_core_rollover_set_{tag}_{}_{}",
             std::process::id(),
@@ -1254,24 +1308,26 @@ mod tests {
         // lifetime would accumulate across all of them.
         let guards = portable_test_fs_retry::tree_read_guards(&root)
             .expect("hold the package tree open across the scanner's window");
-        (root, descriptor, guards)
+        RolloverFixture::new(root, descriptor, guards)
     }
 
     #[test]
     fn explicit_selection_authenticates_one_independent_package() {
-        let (root, descriptor, _scanner_guards) = fixture("select");
+        let fixture = fixture("select");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         assert_eq!(set.ordered_streams()[0].logical_stream_id, 0);
         let selected = set.select(0).unwrap();
         assert_eq!(selected.path(), fs::canonicalize(root.join("native_session.battleplan")).unwrap());
         drop(selected);
         drop(set);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn pathname_replacement_after_selection_cannot_change_replay_source() {
-        let (root, descriptor, _scanner_guards) = fixture("replace_after_admission");
+        let fixture = fixture("replace_after_admission");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let selected = RolloverPackageSet::open(&descriptor).unwrap().select(0).unwrap();
         let selected_path = selected.path().to_path_buf();
         #[cfg(windows)]
@@ -1298,7 +1354,7 @@ mod tests {
             Some("RETAINED_OBJECT")
         );
         drop(source);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// The packaged container holds DECODED H4CR, so admission joins on the
@@ -1311,10 +1367,11 @@ mod tests {
     /// than as the wrong field being compared.
     #[test]
     fn admission_joins_the_container_entry_to_the_decoded_member_identity() {
-        let (root, descriptor, _scanner_guards) = fixture_with_storage(
+        let fixture = fixture_with_storage(
             "compressed_storage",
             Some((11, "5c".repeat(32))),
         );
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         let segment = &set.ordered_streams()[0];
         assert_ne!(
@@ -1323,14 +1380,15 @@ mod tests {
         );
         set.select(0)
             .expect("a member whose storage identity differs from its decoded identity");
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// And the decoded pair is still checked: a package set that misstates it
     /// is refused rather than accepted because some other field matched.
     #[test]
     fn a_misstated_decoded_identity_is_still_refused() {
-        let (root, descriptor, _scanner_guards) = fixture("decoded_tamper");
+        let fixture = fixture("decoded_tamper");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let mut value: serde_json::Value =
             serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["ordered_streams"][0]["raw_decoded_sha256"] = json!("6d".repeat(32));
@@ -1348,24 +1406,26 @@ mod tests {
                 .contains("compact-stream entry disagrees"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn descriptor_never_defaults_to_segment_zero() {
-        let (root, descriptor, _scanner_guards) = fixture("explicit");
+        let fixture = fixture("explicit");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let error = authenticate_rollover_segment(&descriptor, None).unwrap_err();
         assert!(
             matches!(error, RolloverAuthenticationError::Unsupported(_)),
             "missing explicit selection is a usage refusal, not an integrity failure: {error:?}"
         );
         assert!(error.to_string().contains("select one explicitly"), "{error}");
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn selected_package_hash_is_checked_before_replay_open() {
-        let (root, descriptor, _scanner_guards) = fixture("package_tamper");
+        let fixture = fixture("package_tamper");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let set = RolloverPackageSet::open(&descriptor).unwrap();
         let replacement_game = "valid-but-unselected-package";
         let replacement = pack(
@@ -1402,12 +1462,13 @@ mod tests {
                 .contains("selected replay package retained-handle receipt disagrees"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn post_pack_external_manifest_mutation_cannot_become_rollover_authority() {
-        let (root, descriptor, _scanner_guards) = fixture("external_manifest_mutation");
+        let fixture = fixture("external_manifest_mutation");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let manifest_path = root.join("native_session_manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&portable_test_fs_retry::read(&manifest_path).unwrap()).unwrap();
@@ -1437,12 +1498,13 @@ mod tests {
             error.to_string().contains("recorder_manifest metadata disagrees"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn recovery_member_is_never_admitted_to_product_playback() {
-        let (root, descriptor, _scanner_guards) = fixture("recovery");
+        let fixture = fixture("recovery");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let mut value: serde_json::Value = serde_json::from_slice(&portable_test_fs_retry::read(
             &descriptor
         ).unwrap()).unwrap();
@@ -1457,12 +1519,13 @@ mod tests {
             "a recovery-only set is a selection refusal, not a broken recording: {error:?}"
         );
         assert!(error.to_string().contains("recovery-only artifact"), "{error}");
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn unknown_fields_and_non_contiguous_ids_fail_closed() {
-        let (root, descriptor, _scanner_guards) = fixture("strict");
+        let fixture = fixture("strict");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let mut value: serde_json::Value = serde_json::from_slice(&portable_test_fs_retry::read(
             &descriptor
         ).unwrap()).unwrap();
@@ -1471,7 +1534,7 @@ mod tests {
         assert!(portable_test_fs_retry::with_read_guard(&descriptor, || RolloverPackageSet::open(&descriptor))
             .expect("hold the rewritten descriptor open across the scanner's window")
             .is_err());
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1493,7 +1556,8 @@ mod tests {
     /// product boundary would headline "recording not playable by this build".
     #[test]
     fn tampered_manifest_member_classifies_as_integrity() {
-        let (root, descriptor, _scanner_guards) = fixture("manifest_tamper");
+        let fixture = fixture("manifest_tamper");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let manifest_path = root.join("native_session_manifest.json");
         let mut bytes = portable_test_fs_retry::read(&manifest_path).unwrap();
         let last = bytes.len() - 1;
@@ -1510,14 +1574,15 @@ mod tests {
                 .contains("selected recorder manifest SHA-256 differs"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// R7 F1 regression: a tampered durable source descriptor (its SHA-256 is
     /// pinned by the package-set descriptor) is likewise an integrity failure.
     #[test]
     fn tampered_source_descriptor_classifies_as_integrity() {
-        let (root, descriptor, _scanner_guards) = fixture("source_tamper");
+        let fixture = fixture("source_tamper");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let source_path = root.join("logical-streams/logical-stream-set.json");
         let mut bytes = portable_test_fs_retry::read(&source_path).unwrap();
         let last = bytes.len() - 1;
@@ -1532,7 +1597,7 @@ mod tests {
             error.to_string().contains("source descriptor SHA-256 differs"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// Codex round-1 catch: a well-formed descriptor naming a schema this
@@ -1541,7 +1606,8 @@ mod tests {
     /// never a malformed-descriptor Structure error.
     #[test]
     fn unknown_package_set_schema_classifies_as_unsupported() {
-        let (root, descriptor, _scanner_guards) = fixture("future_schema");
+        let fixture = fixture("future_schema");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         let mut value: serde_json::Value =
             serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["schema"] = json!("cid1-rollover-package-set-v2");
@@ -1557,7 +1623,7 @@ mod tests {
                 .contains("unsupported rollover package-set schema"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// Codex round-1 catch: a package member tampered so badly its ZIP no
@@ -1567,7 +1633,8 @@ mod tests {
     /// Integrity, not Structure.
     #[test]
     fn unparseable_tampered_package_member_classifies_as_integrity() {
-        let (root, descriptor, _scanner_guards) = fixture("zip_structure_tamper");
+        let fixture = fixture("zip_structure_tamper");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         fs::write(
             root.join("native_session.battleplan"),
             b"these bytes are not a zip container at all",
@@ -1585,21 +1652,22 @@ mod tests {
                 .contains("bytes disagree with the package-set SHA-256"),
             "{error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// A malformed package-set descriptor stays in the container/schema class:
     /// integrity is reserved for bytes that lost against a declared digest.
     #[test]
     fn malformed_descriptor_classifies_as_structure() {
-        let (root, descriptor, _scanner_guards) = fixture("malformed_descriptor");
+        let fixture = fixture("malformed_descriptor");
+        let (root, descriptor) = (fixture.root(), fixture.descriptor());
         fs::write(&descriptor, b"{ not json").unwrap();
         let error = authenticate_rollover_segment(&descriptor, Some(0)).unwrap_err();
         assert!(
             matches!(error, RolloverAuthenticationError::Structure(_)),
             "malformed descriptor must classify as Structure: {error:?}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]

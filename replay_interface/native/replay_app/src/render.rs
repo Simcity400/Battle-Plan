@@ -3776,7 +3776,7 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
 
         drop(frame);
         drop(timeline);
-        std::fs::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
+        portable_test_fs_retry::remove_dir_all(relocated_dir).expect("clean relocated replay fixture");
     }
 
     #[test]

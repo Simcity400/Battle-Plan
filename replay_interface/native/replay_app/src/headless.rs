@@ -922,7 +922,7 @@ mod tests {
         assert!(write_create_new_or_equal(&path, b"different\n", "test receipt").is_err());
         assert_eq!(portable_test_fs_retry::read(&path).unwrap(), b"complete receipt bytes\n");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
-        std::fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(typed.sink(), "occupation secondary H2 evidence");
         assert!(typed.to_string().contains("already published"), "{typed}");
 
-        std::fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1068,7 +1068,7 @@ mod tests {
         let mut altered = receipt.clone();
         altered.replaced_binding_count += 1;
         assert!(write_snow_mud_h2_evidence(&out, &altered, &bytes).is_err());
-        std::fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     fn packed_political_keying_recording() -> std::path::PathBuf {

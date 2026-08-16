@@ -1317,7 +1317,7 @@ mod tests {
         )
         .unwrap();
         let committed = fs::read(&config).unwrap();
-        fs::remove_file(user.join("settings.txt")).unwrap();
+        portable_test_fs_retry::remove_file(user.join("settings.txt")).unwrap();
 
         let mut input = std::io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
@@ -1354,7 +1354,7 @@ mod tests {
         let root = root("unreadable-optional-profile-file");
         let (game, user) = valid_roots(&root);
         add_runtime_metadata(&game, &user);
-        fs::remove_file(user.join("pdx_settings.txt")).unwrap();
+        portable_test_fs_retry::remove_file(user.join("pdx_settings.txt")).unwrap();
         fs::create_dir(user.join("pdx_settings.txt")).unwrap();
         let resolver = map_viewer::GameFileResolver::from_dlc_load(&game, user.clone()).unwrap();
 

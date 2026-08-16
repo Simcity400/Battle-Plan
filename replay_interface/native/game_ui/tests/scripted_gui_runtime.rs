@@ -15,7 +15,7 @@ fn temp_root(label: &str) -> PathBuf {
         std::thread::current().name().unwrap_or("test")
     ));
     if path.exists() {
-        fs::remove_dir_all(&path).unwrap();
+        portable_test_fs_retry::remove_dir_all(&path).unwrap();
     }
     fs::create_dir_all(path.join("common/scripted_guis")).unwrap();
     path
@@ -180,8 +180,8 @@ scripted_gui = {
     let registry =
         load_scripted_gui_registry(&AssetResolver::new(vec![overlay.clone(), vanilla.clone()]))
             .unwrap();
-    fs::remove_dir_all(&overlay).unwrap();
-    fs::remove_dir_all(&vanilla).unwrap();
+    portable_test_fs_retry::remove_dir_all(&overlay).unwrap();
+    portable_test_fs_retry::remove_dir_all(&vanilla).unwrap();
     assert!(
         registry.production_admitted(),
         "{:?}",
@@ -335,7 +335,7 @@ scripted_gui = {
     )
     .unwrap();
     let registry = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
-    fs::remove_dir_all(&root).unwrap();
+    portable_test_fs_retry::remove_dir_all(&root).unwrap();
     assert!(!registry.production_admitted());
     assert!(registry
         .source_issues
@@ -361,7 +361,7 @@ fn only_one_outer_eof_closure_is_engine_tolerated() {
     )
     .unwrap();
     let truncated = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
-    fs::remove_dir_all(&root).unwrap();
+    portable_test_fs_retry::remove_dir_all(&root).unwrap();
     assert!(!truncated.production_admitted());
     assert!(truncated.engine_tolerated_eof_closures.is_empty());
     assert!(truncated.source_issues.len() >= 2);
@@ -395,7 +395,7 @@ scripted_gui = {
     )
     .unwrap();
     let registry = load_scripted_gui_registry(&AssetResolver::new(vec![root.clone()])).unwrap();
-    fs::remove_dir_all(&root).unwrap();
+    portable_test_fs_retry::remove_dir_all(&root).unwrap();
     assert!(!registry.production_admitted());
     assert_eq!(
         registry.source_issues.len(),

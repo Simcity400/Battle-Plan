@@ -2405,7 +2405,7 @@ mod tests {
 
         // Every installed path remains present when its descriptor becomes
         // unreadable; the value is null and the failure note is explicit.
-        fs::remove_file(root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc")).unwrap();
+        portable_test_fs_retry::remove_file(root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc")).unwrap();
         let (after_remove, after_remove_evidence, errors) =
             resolve_dlc_display_names(&root, &installed, Some(launch));
         assert!(after_remove["dlc/dlc013_sabaton/dlc013.dlc"].is_none());
@@ -2451,7 +2451,7 @@ mod tests {
                 .is_err()
         );
         assert!(read_launch_settings(&dir, std::time::UNIX_EPOCH).is_err());
-        fs::remove_file(dir.join("settings.txt")).unwrap();
+        portable_test_fs_retry::remove_file(dir.join("settings.txt")).unwrap();
         assert!(
             read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60),)
                 .is_err()

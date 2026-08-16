@@ -497,7 +497,7 @@ mod tests {
         );
         let resources = BTreeMap::from([(selected.content_key.clone(), selected)]);
         let result = materialize_geometry(PASS, &decoded, &resources);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
         assert!(result.is_ok());
     }
 

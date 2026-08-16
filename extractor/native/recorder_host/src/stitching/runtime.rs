@@ -758,7 +758,7 @@ mod tests {
             .allocate(b"campaign-b", "session-a", "proc-a")
             .unwrap();
         assert_eq!(other.play_order, 0);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -789,6 +789,6 @@ mod tests {
         bytes.pop();
         fs::write(&path, bytes).unwrap();
         assert!(ledger.allocate(b"campaign", "next", "next-proc").is_err());
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }

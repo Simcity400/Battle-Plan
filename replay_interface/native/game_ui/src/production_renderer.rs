@@ -7763,7 +7763,7 @@ mod tests {
         );
         assert_refused("cross-hour", cross_hour);
 
-        std::fs::remove_dir_all(authored_root).expect("remove authored XUI10 fixture root");
+        portable_test_fs_retry::remove_dir_all(authored_root).expect("remove authored XUI10 fixture root");
     }
 
     #[test]

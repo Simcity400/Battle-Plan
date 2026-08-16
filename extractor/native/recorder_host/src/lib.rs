@@ -11,11 +11,19 @@ pub mod compact_domain_registry;
 pub mod control_transport;
 pub mod domain_data_authority;
 pub mod duplex_session;
+/// Publishing a written temporary at its final name. See the module header for
+/// why a failed publication now KEEPS the document instead of deleting it, and
+/// for the difference between replacing and create-new publication.
+pub mod durable_publish;
 #[cfg(windows)]
 pub mod early_render_host_channel;
 pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod finalize_progress;
+/// Waiting out a Windows real-time scanner on the FINALIZE path only. See the
+/// module header for the two preconditions a call site has to satisfy and for
+/// why the hourly, attach and suspended-launch paths may never use it.
+pub mod fs_sharing_retry;
 pub mod gap_ledger;
 /// What a sealed recording asserts, per game hour. See the module header for
 /// the whole-stream verdict it replaced (owner ruling 2026-08-11, task #188).

@@ -1225,7 +1225,7 @@ fn relocated_portable_replay_file_ingests_without_extractor_tree() {
     assert_eq!(display.display_mode, "borderless_fullscreen");
 
     drop(timeline);
-    fs::remove_dir_all(unrelated_root.parent().unwrap()).unwrap();
+    portable_test_fs_retry::remove_dir_all(unrelated_root.parent().unwrap()).unwrap();
 }
 
 #[test]
@@ -1275,7 +1275,7 @@ fn incompatible_replay_index_schema_version_fails_clearly() {
         }
         other => panic!("expected Unsupported, got {other:?}"),
     }
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -3496,7 +3496,7 @@ fn directory_reference_gate_rejects_missing_and_explicit_invalid_manifest() {
         br#"{"session_manifest":"recorder/native_session_manifest.json"}"#,
         &serde_json::to_vec(&resolved_recorder_manifest()).unwrap(),
     );
-    fs::remove_file(
+    portable_test_fs_retry::remove_file(
         missing
             .join("missing_manifest")
             .join("recorder")

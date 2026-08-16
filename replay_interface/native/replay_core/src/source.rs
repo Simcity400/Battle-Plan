@@ -6774,8 +6774,8 @@ mod tests {
             preserved_root.exists(),
             "identity mismatch must preserve evidence instead of recursive deletion"
         );
-        fs::remove_dir_all(&preserved_root).unwrap();
-        fs::remove_dir_all(&base).unwrap();
+        portable_test_fs_retry::remove_dir_all(&preserved_root).unwrap();
+        portable_test_fs_retry::remove_dir_all(&base).unwrap();
     }
 
     fn write_playable_store(root: &Path, game: &str, recorder: bool, label: &str) {
@@ -7229,7 +7229,7 @@ mod tests {
         assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.55));
         assert!(source.frame(12).is_err());
         drop(source);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// A cache-only recording replays. The raw stream is not in the container
@@ -7281,7 +7281,7 @@ mod tests {
         assert_eq!(frame.rest["countries"]["FRA"]["stability"], json!(0.55));
         assert!(source.frame(12).is_err());
         drop(source);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// A decoder that must never be reached. The packaged-cache route consumes
@@ -7361,7 +7361,7 @@ mod tests {
             "dropping the source must remove its private spool"
         );
         drop(resident);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// Flip one byte of the STORED H4CP entry inside an already-packed
@@ -7486,7 +7486,7 @@ mod tests {
 
         drop(spooled);
         drop(resident);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// The composition is authority in both directions. A recording that
@@ -7535,7 +7535,7 @@ mod tests {
             text.contains("omitted") && text.contains(snapshot::COMPACT_STREAM_ROLE),
             "the refusal must name the contradiction, got {text}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// An unassigned composition spelling rejects at the decoder instead of
@@ -7571,7 +7571,7 @@ mod tests {
             text.contains("unassigned") && text.contains("maybe"),
             "the rejection must name the unassigned value, got {text}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// `index.json` is the third document that states the composition, and it
@@ -7611,7 +7611,7 @@ mod tests {
             text.contains("index descriptor") && text.contains("omitted"),
             "the refusal must name the disagreeing document, got {text}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     /// Re-pack a fixture recording with its recorder manifest mutated, keeping
@@ -7691,7 +7691,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains(snapshot::CHECKPOINT_CACHE_ROLE));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     fn known_campaign_identity_value() -> Value {
@@ -7908,7 +7908,7 @@ mod tests {
             error.to_string().contains("stream_storage"),
             "the refusal must name the disagreeing authority, got {error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]

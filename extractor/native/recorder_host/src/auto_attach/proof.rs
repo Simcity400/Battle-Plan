@@ -1256,7 +1256,7 @@ mod tests {
         assert_eq!(&observed, b"durable-status");
         assert_eq!(tail.read(&mut [0u8; 1]).unwrap(), 0);
         drop(tail);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     fn expectation() -> ProofExpectation {

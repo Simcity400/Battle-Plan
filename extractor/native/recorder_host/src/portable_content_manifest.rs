@@ -3317,7 +3317,7 @@ mod tests {
         )
         .unwrap_err()
         .contains("legacy fixed-role"));
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -3654,7 +3654,7 @@ mod tests {
             .consumers
             .iter()
             .any(|consumer| { consumer.starts_with("hud_role/v1/theatre_selector/") })));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4092,7 +4092,7 @@ mod tests {
             bound.descriptor_sha256,
             semantic_descriptor_sha256(&latin1_bytes_to_string(bytes))
         );
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -4179,7 +4179,7 @@ mod tests {
             .remove("engine_runtime_artifacts");
         fs::write(&path, serde_json::to_vec(&undeclared).unwrap()).unwrap();
         let refused = verify_live_resolution_report(&path, &manifest, &launch);
-        fs::remove_file(&path).unwrap();
+        portable_test_fs_retry::remove_file(&path).unwrap();
         assert!(refused
             .unwrap_err()
             .contains("engine runtime artifact domain"));

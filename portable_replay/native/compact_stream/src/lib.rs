@@ -1498,7 +1498,7 @@ mod tests {
         assert!(error.to_string().contains("released-prefix sidecar"), "{error}");
 
         // Retire the sidecar and the same call succeeds.
-        fs::remove_file(released_prefix_sidecar(&path)).unwrap();
+        portable_test_fs_retry::remove_file(released_prefix_sidecar(&path)).unwrap();
         let mut writer =
             StreamWriter::create_with_frames(&path, StreamCompression::Zstd, Some(1 << 20))
                 .unwrap();

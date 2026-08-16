@@ -725,7 +725,7 @@ fn artifact_meter_ignores_files_outside_the_watched_roots() {
 
     // A missing root is zero, not an error: the fold's spill directory is
     // removed at the end of finalize.
-    fs::remove_dir_all(&watched).unwrap();
+    portable_test_fs_retry::remove_dir_all(&watched).unwrap();
     assert_eq!(meter.observe(), 100);
 }
 
@@ -765,7 +765,7 @@ fn run_directory_meter_tracks_the_temporary_names_finalize_actually_writes() {
 
     // Container phase: the snapshot spill is removed and the container exists
     // only under its temporary name. The meter must still move.
-    fs::remove_dir_all(&spill).unwrap();
+    portable_test_fs_retry::remove_dir_all(&spill).unwrap();
     let container_temp = dir.path().join("native_session.battleplan.tmp-abc123-0");
     fs::write(&container_temp, vec![0u8; 5_000]).unwrap();
     let with_temp = meter.observe();

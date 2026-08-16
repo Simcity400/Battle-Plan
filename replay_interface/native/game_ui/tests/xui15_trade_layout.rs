@@ -131,7 +131,7 @@ fn effective_gui_controls_every_xui15_grid_and_scissor() {
         (-3, 205, 117, 60)
     );
 
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn malformed_hierarchy_fails_closed_instead_of_falling_back_to_vanilla_geometry(
     assert!(error
         .message
         .contains("expected exactly one direct trade_grid"));
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn viewer_click_sort_filter_and_wheel_state_are_replay_owned_and_clamped() {
     assert!(layout.release_active_scrollbar(&mut viewer));
     assert!(viewer.active_scrollbar_drag.is_none());
 
-    fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]

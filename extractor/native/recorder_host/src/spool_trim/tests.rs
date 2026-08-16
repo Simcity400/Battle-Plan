@@ -376,7 +376,7 @@ fn nothing_is_released_when_no_frame_boundary_is_durable_yet() {
 #[test]
 fn a_receipt_whose_cache_is_not_on_disk_cannot_release_anything() {
     let fixture = fixture("missing_cache", 4 << 20, 1 << 20);
-    fs::remove_file(&fixture.receipt.checkpoint_cache_path).unwrap();
+    portable_test_fs_retry::remove_file(&fixture.receipt.checkpoint_cache_path).unwrap();
     let error = trim_spool_prefix(&fixture.stream_path, &fixture.frames, &fixture.receipt)
         .expect_err("a missing checkpoint cache must never authorise a release");
     assert!(error.contains("checkpoints.h4cp"), "{error}");
@@ -830,7 +830,7 @@ fn a_tampered_coverage_receipt_cannot_release_anything() {
     assert!(error.contains("unsupported schema"), "{error}");
 
     // Missing entirely.
-    fs::remove_file(path).unwrap();
+    portable_test_fs_retry::remove_file(path).unwrap();
     let error = trim_spool_prefix(&fixture.stream_path, &frames, &fixture.receipt)
         .expect_err("a missing coverage receipt must be refused");
     assert!(error.contains("read published coverage"), "{error}");

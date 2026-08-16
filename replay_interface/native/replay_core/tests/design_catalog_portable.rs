@@ -166,7 +166,7 @@ fn portable_artifact_roundtrips_and_d78_is_the_only_display_order() {
     drop(current);
     drop(frame);
     drop(timeline);
-    fs::remove_file(path).unwrap();
+    portable_test_fs_retry::remove_file(path).unwrap();
 }
 
 #[test]
@@ -179,14 +179,14 @@ fn portable_artifact_and_d78_join_fail_closed() {
         Err(DesignCatalogJoinError::UnknownContextId(999))
     );
     drop(timeline);
-    fs::remove_file(unknown).unwrap();
+    portable_test_fs_retry::remove_file(unknown).unwrap();
 
     let partial = temp_file("design_catalog_partial");
     let mut value: serde_json::Value = serde_json::from_slice(&catalog()).unwrap();
     value["completeness"]["owner"] = false.into();
     write_replay(&partial, &[7], serde_json::to_vec(&value).unwrap());
     assert!(open_recording(&partial).is_err());
-    fs::remove_file(partial).unwrap();
+    portable_test_fs_retry::remove_file(partial).unwrap();
 
     let wrong_hour = temp_file("design_catalog_wrong_hour");
     let mut value: serde_json::Value = serde_json::from_slice(&catalog()).unwrap();
@@ -198,5 +198,5 @@ fn portable_artifact_and_d78_join_fail_closed() {
         serde_json::to_vec(&value).unwrap(),
     );
     assert!(open_recording(&wrong_hour).is_err());
-    fs::remove_file(wrong_hour).unwrap();
+    portable_test_fs_retry::remove_file(wrong_hour).unwrap();
 }

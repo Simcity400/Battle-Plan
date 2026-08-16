@@ -3244,7 +3244,7 @@ mod tests {
             ),
             "unexpected close release after scrollbar drag: {close_release:?}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3410,7 +3410,7 @@ mod tests {
             .stack
             .iter()
             .all(|panel| panel.window_id != reopened.window_id));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3486,7 +3486,7 @@ mod tests {
                 .surface_id()
                 .eq_ignore_ascii_case(game_ui::production_lines::COUNTRY_PRODUCTION_LINE_ROOT)
         }));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3572,7 +3572,7 @@ mod tests {
             .pixels
             .chunks_exact(4)
             .any(|pixel| pixel[3] != 0));
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3632,7 +3632,7 @@ mod tests {
         assert_eq!(rejection, None);
         assert_eq!(authored.production_lines_scroll_offset().unwrap(), Some(0));
         authored.confirm_presented_frame().unwrap();
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4004,7 +4004,7 @@ mod tests {
             sealed.manifest_digest_sha256(),
             admission.manifest_digest_sha256()
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]

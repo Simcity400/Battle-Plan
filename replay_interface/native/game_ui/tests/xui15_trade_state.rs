@@ -569,7 +569,7 @@ fn production_license_options_bind_real_authored_scene_children() {
         .iter()
         .all(|rect| rect.name != "xui15_license_0_country_flag"));
 
-    fs::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
+    portable_test_fs_retry::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
 }
 
 #[test]
@@ -588,7 +588,7 @@ fn unavailable_production_licenses_render_only_fail_closed_notice() {
     assert!(descendant(&scene.root, "xui15_licenses_unavailable").is_some());
     assert!(descendant(&scene.root, "xui15_license_0_partner").is_none());
 
-    fs::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
+    portable_test_fs_retry::remove_dir_all(root).expect("remove deterministic XUI15 fixture root");
 }
 
 #[test]

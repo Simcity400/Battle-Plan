@@ -498,7 +498,7 @@ mod tests {
         // process-identity commitment remains durable so a recorder-only
         // restart can retire the proven-unloaded generation without depending
         // on deleted payload bytes.
-        std::fs::remove_dir_all(&first.staging_dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(&first.staging_dir).unwrap();
         assert!(!first.dll_path.exists());
         stager
             .rearm_after_proven_unload(key, &first.dll_path)

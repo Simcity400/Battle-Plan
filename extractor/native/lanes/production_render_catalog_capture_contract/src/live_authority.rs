@@ -1355,7 +1355,7 @@ mod tests {
         let mut stale = creation;
         stale.originating_open_sequence = 2;
         assert!(correlate_content_creation(&open, &stale).is_err());
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1579,7 +1579,7 @@ mod tests {
                 RawReflectedResourceKind::Other(2),
             ]
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1629,6 +1629,6 @@ mod tests {
         assert!(
             RawEffectiveVfsWinnerIndexBinding::canonical_rows_sha256(&[row.clone(), row,]).is_err()
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }

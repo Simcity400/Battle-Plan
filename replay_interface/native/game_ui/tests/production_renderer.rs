@@ -383,7 +383,7 @@ fn minimal_hud_route_admission(
         )
         .unwrap();
     let admission = manifest.admit_playback(&inventory).unwrap();
-    std::fs::remove_dir_all(root).unwrap();
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
     admission
 }
 

@@ -2689,7 +2689,7 @@ mod tests {
         let first = root.join("first/location");
         let second = root.join("relocated/recordings");
         if root.exists() {
-            fs::remove_dir_all(&root).expect("remove stale fixture test root");
+            portable_test_fs_retry::remove_dir_all(&root).expect("remove stale fixture test root");
         }
 
         let result = (|| -> Result<()> {

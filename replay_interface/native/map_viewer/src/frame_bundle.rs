@@ -6375,7 +6375,7 @@ mod tests {
         let root = temp_test_dir("map_frame_bundle_missing_session");
         fs::create_dir_all(&root).expect("create temp bundle dir");
         let path = write_valid_map_frame_bundle(&root, |frame| frame);
-        fs::remove_file(root.join(MAP_CAPTURE_SESSION_FILE)).expect("remove session manifest");
+        portable_test_fs_retry::remove_file(root.join(MAP_CAPTURE_SESSION_FILE)).expect("remove session manifest");
 
         let err = validate_map_frame_runtime_bundle(&path)
             .expect_err("standalone terrain bundle without session manifest must fail closed");
@@ -6388,7 +6388,7 @@ mod tests {
         let root = temp_test_dir("map_frame_blocked_session_without_bundle");
         fs::create_dir_all(&root).expect("create temp bundle dir");
         let path = write_valid_map_frame_bundle(&root, |frame| frame);
-        fs::remove_file(&path).expect("remove map-frame bundle");
+        portable_test_fs_retry::remove_file(&path).expect("remove map-frame bundle");
         let session_path = root.join(MAP_CAPTURE_SESSION_FILE);
         let mut session: MapCaptureSession =
             serde_json::from_slice(&fs::read(&session_path).expect("read session manifest"))
@@ -6411,7 +6411,7 @@ mod tests {
         let root = temp_test_dir("map_frame_corrupt_session_without_bundle");
         fs::create_dir_all(&root).expect("create temp bundle dir");
         let path = write_valid_map_frame_bundle(&root, |frame| frame);
-        fs::remove_file(&path).expect("remove map-frame bundle");
+        portable_test_fs_retry::remove_file(&path).expect("remove map-frame bundle");
         let session_path = root.join(MAP_CAPTURE_SESSION_FILE);
         fs::write(&session_path, b"{not-json").expect("corrupt session manifest");
 

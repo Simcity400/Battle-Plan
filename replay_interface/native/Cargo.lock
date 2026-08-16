@@ -380,6 +380,7 @@ version = "0.1.0"
 dependencies = [
  "portable_content_manifest",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "serde_json",
 ]
 

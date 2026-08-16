@@ -11539,7 +11539,7 @@ mod tests {
         let dir = TmpDir::new("cache_only_source_is_a_dir");
         let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
         let stream_path = dir.0.join("collector_stream.bin");
-        fs::remove_file(&stream_path).unwrap();
+        portable_test_fs_retry::remove_file(&stream_path).unwrap();
         fs::create_dir(&stream_path).unwrap();
         let error = load_verified_replay_authority(
             &recording.manifest,
@@ -12226,7 +12226,7 @@ mod tests {
                 .as_str()
                 .unwrap(),
         );
-        fs::remove_file(&verifier_path).unwrap();
+        portable_test_fs_retry::remove_file(&verifier_path).unwrap();
         let error = verify_static_manifest_authority(&sealed_manifest, &base_run_dir)
             .expect_err("missing retained evidence must refuse");
         assert!(

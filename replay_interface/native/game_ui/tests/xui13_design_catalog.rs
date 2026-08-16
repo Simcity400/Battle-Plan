@@ -522,6 +522,6 @@ fn observer_catalogue_is_independent_of_d78_filter_state_and_rows() {
     drop(second_frame);
     drop(first_timeline);
     drop(second_timeline);
-    fs::remove_file(first).unwrap();
-    fs::remove_file(second).unwrap();
+    portable_test_fs_retry::remove_file(first).unwrap();
+    portable_test_fs_retry::remove_file(second).unwrap();
 }

@@ -983,7 +983,7 @@ mod tests {
                 b"retained"
             );
             resolved.push(vfs.list_recursive("gfx", Some("shader")).unwrap());
-            fs::remove_dir_all(root).unwrap();
+            portable_test_fs_retry::remove_dir_all(root).unwrap();
         }
         assert_eq!(resolved[0], resolved[1]);
     }
@@ -1011,7 +1011,7 @@ mod tests {
                 error.contains("invalid or repeated replace_path"),
                 "{alias:?}: {error}"
             );
-            fs::remove_dir_all(root).unwrap();
+            portable_test_fs_retry::remove_dir_all(root).unwrap();
         }
         // ... while two genuinely different directories still mount.
         let root = temp("distinct-replace");
@@ -1020,7 +1020,7 @@ mod tests {
         let mut mounts = mounts(&root);
         mounts[1].replace_paths = vec!["gfx/replace".into(), "gfx/other".into()];
         EffectiveVfs::new("a".repeat(64), mounts).unwrap();
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1079,7 +1079,7 @@ mod tests {
         assert_eq!(winner.content.winning_layer_ordinal, 4);
         assert_eq!(winner.content.layer_kind, ContentLayerKind::Dlc);
         drop(selected);
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1126,7 +1126,7 @@ mod tests {
             error.contains("repeats a case-insensitive path"),
             "unexpected mount error: {error}"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1173,7 +1173,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("empty"), "unexpected mount error: {error}");
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }
 

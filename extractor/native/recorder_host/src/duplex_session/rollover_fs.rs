@@ -1860,7 +1860,7 @@ mod tests {
         assert!(sealed_path(&root.0, 0).is_file());
         assert!(!open_path(&root.0, 0).exists());
 
-        fs::remove_file(root.0.join(SET_DESCRIPTOR_FILE)).unwrap();
+        portable_test_fs_retry::remove_file(root.0.join(SET_DESCRIPTOR_FILE)).unwrap();
         let recovered =
             FilesystemRolloverStore::recover_publication_descriptor(&root.0).unwrap();
         assert_eq!(recovered, published);

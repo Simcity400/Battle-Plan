@@ -468,7 +468,7 @@ mod tests {
         drop(guard);
         open_directory_for_delete(&snapshots).unwrap();
         std::fs::rename(&snapshots, &moved).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }
 

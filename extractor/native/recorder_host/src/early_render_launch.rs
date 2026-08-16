@@ -306,10 +306,21 @@ pub fn validate_g2_capture_artifacts(
     {
         return Err("G2 output does not contain exactly the BMP and raw witness".into());
     }
-    let bmp = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
-        .map_err(|error| format!("read G2 BMP failed: {error}"))?;
-    let witness_bytes = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
-        .map_err(|error| format!("read G2 witness failed: {error}"))?;
+    // Both reads wait out a Windows real-time scanner (`crate::fs_sharing_retry`
+    // — read its header for why this path may and the capture path may not).
+    // The collector wrote this pair and signalled it complete before the
+    // recorder was allowed to look at it, and everything below re-derives the
+    // digests from what is read, so waiting can only recover the same admitted
+    // bytes: a truncated or mutated file does not raise a sharing violation, it
+    // fails the comparisons that follow.
+    let bmp = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_BMP_FILE),
+    )
+    .map_err(|error| format!("read G2 BMP failed: {error}"))?;
+    let witness_bytes = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_WITNESS_FILE),
+    )
+    .map_err(|error| format!("read G2 witness failed: {error}"))?;
     let witness_value = snapshot::parse_json_strict(&witness_bytes)
         .map_err(|error| format!("strict parse G2 witness failed: {error}"))?;
     let witness: G2EngineWitness = serde_json::from_value(witness_value)
@@ -453,10 +464,23 @@ pub fn seal_g2_capture_artifacts(
         receipt,
         content_manifest_digest_sha256,
     )?;
-    let witness = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
-        .map_err(|error| format!("re-read sealed G2 witness failed: {error}"))?;
-    let bmp = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
-        .map_err(|error| format!("re-read sealed G2 BMP failed: {error}"))?;
+    // Every read from here on waits out a Windows real-time scanner. These are
+    // re-reads of a pair `validate_g2_capture_artifacts` has just proven
+    // complete, on the post-capture finalize path — which the game is NOT
+    // synchronised with; the collector's stream has reached EOF and the hook
+    // lease is released before finalization starts, so the recorder holds
+    // nothing the engine can block on. It does NOT mean the game has exited:
+    // the recorder is an observer and the humans are usually still playing.
+    // Those are the two preconditions `crate::fs_sharing_retry` states.
+    // Losing the wait costs the G2 capture of a run that cannot be repeated.
+    let witness = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_WITNESS_FILE),
+    )
+    .map_err(|error| format!("re-read sealed G2 witness failed: {error}"))?;
+    let bmp = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_BMP_FILE),
+    )
+    .map_err(|error| format!("re-read sealed G2 BMP failed: {error}"))?;
     // Re-run the admission after the reads so a concurrent replacement cannot
     // make the returned seal describe bytes other than the admitted pair.
     validate_g2_capture_artifacts(
@@ -466,10 +490,14 @@ pub fn seal_g2_capture_artifacts(
         receipt,
         content_manifest_digest_sha256,
     )?;
-    let witness_after = fs::read(output_directory.join(G2_ENGINE_WITNESS_FILE))
-        .map_err(|error| format!("final read of sealed G2 witness failed: {error}"))?;
-    let bmp_after = fs::read(output_directory.join(G2_ENGINE_BMP_FILE))
-        .map_err(|error| format!("final read of sealed G2 BMP failed: {error}"))?;
+    let witness_after = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_WITNESS_FILE),
+    )
+    .map_err(|error| format!("final read of sealed G2 witness failed: {error}"))?;
+    let bmp_after = crate::fs_sharing_retry::read_proven_finalize_artifact(
+        &output_directory.join(G2_ENGINE_BMP_FILE),
+    )
+    .map_err(|error| format!("final read of sealed G2 BMP failed: {error}"))?;
     if witness != witness_after || bmp != bmp_after {
         return Err("G2 artifacts changed while their replay seal was created".into());
     }
@@ -3904,9 +3932,20 @@ mod tests {
         assert!(valid_g2_pointer("0x000A"));
     }
 
-    #[test]
-    fn recorder_g2_artifact_admission_recomputes_authority_and_bmp_bytes() {
-        let root = temp_root("g2_artifacts");
+    /// A G2 output directory holding a witness/BMP pair that
+    /// `validate_g2_capture_artifacts` admits, plus everything needed to call
+    /// it. Extracted from the admission test so the seal tests below can reach
+    /// the same admitted pair without a second copy of these ~120 lines.
+    struct G2Fixture {
+        intent: G2CaptureIntent,
+        output: PathBuf,
+        manifest: EarlyRenderLaunchManifest,
+        receipt: EarlyRenderCaptureReceipt,
+        content_digest: String,
+        witness: serde_json::Value,
+    }
+
+    fn g2_admitted_fixture(root: &Path) -> G2Fixture {
         let output = root.join("g2_engine");
         fs::create_dir_all(&output).unwrap();
         let context_path = root.join("capture_context.json");
@@ -4040,25 +4079,145 @@ mod tests {
             serde_json::to_vec_pretty(&witness).unwrap(),
         )
         .unwrap();
-        validate_g2_capture_artifacts(&intent, &output, &manifest, &receipt, &content_digest)
-            .unwrap();
+        G2Fixture {
+            intent,
+            output,
+            manifest,
+            receipt,
+            content_digest,
+            witness,
+        }
+    }
 
-        let mut drift = witness;
+    #[test]
+    fn recorder_g2_artifact_admission_recomputes_authority_and_bmp_bytes() {
+        let root = temp_root("g2_artifacts");
+        let fixture = g2_admitted_fixture(&root);
+        validate_g2_capture_artifacts(
+            &fixture.intent,
+            &fixture.output,
+            &fixture.manifest,
+            &fixture.receipt,
+            &fixture.content_digest,
+        )
+        .unwrap();
+
+        let mut drift = fixture.witness.clone();
         drift["unexpected"] = serde_json::json!(true);
         fs::write(
-            output.join(G2_ENGINE_WITNESS_FILE),
+            fixture.output.join(G2_ENGINE_WITNESS_FILE),
             serde_json::to_vec_pretty(&drift).unwrap(),
         )
         .unwrap();
         assert!(validate_g2_capture_artifacts(
-            &intent,
-            &output,
-            &manifest,
-            &receipt,
-            &content_digest,
+            &fixture.intent,
+            &fixture.output,
+            &fixture.manifest,
+            &fixture.receipt,
+            &fixture.content_digest,
         )
         .is_err());
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    /// The load-bearing proof for class A.
+    ///
+    /// A real `share_mode(0)` handle — the antimalware scanner's exact shape —
+    /// is held on the G2 witness across the first read attempt, and released
+    /// from INSIDE the retry loop's own transient callback. So the recovery is
+    /// caused by the retry and by nothing else: with the retry deleted the
+    /// handle is never released, the read fails, and the run loses a G2 capture
+    /// it cannot produce again.
+    ///
+    /// Releasing it from a timer thread instead would produce a test that can
+    /// pass with the retry deleted whenever the main thread is descheduled;
+    /// that is the vacuity this shape removes.
+    ///
+    /// Releasing the handle proves ONE read waits, and only one — so on its own
+    /// this test would still pass with any LATER read reverted to a plain
+    /// `fs::read` (a reviewer raised exactly that). The read COUNTER closes the
+    /// rest: a read that stops going through `fs_sharing_retry` stops being
+    /// counted, and the count of a whole seal is pinned below.
+    ///
+    /// kills: turning any of the G2 reads in `validate_g2_capture_artifacts` or
+    /// `seal_g2_capture_artifacts` back into a plain `fs::read`.
+    #[cfg(windows)]
+    #[test]
+    fn a_scanner_holding_the_g2_witness_does_not_cost_the_seal() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = temp_root("g2_seal_under_scanner");
+        let fixture = g2_admitted_fixture(&root);
+        let witness_path = fixture.output.join(G2_ENGINE_WITNESS_FILE);
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&witness_path)
+            .unwrap();
+        // The premise, asserted rather than assumed: while that handle is alive
+        // an ordinary read really is refused with os error 32.
+        assert_eq!(
+            fs::read(&witness_path).unwrap_err().raw_os_error(),
+            Some(32),
+            "the exclusive holder must actually exclude an ordinary read"
+        );
+
+        let mut holder = Some(holder);
+        let armed = crate::fs_sharing_retry::transient_hook::install(move || {
+            drop(holder.take());
+        });
+        let _ = crate::fs_sharing_retry::take_proven_read_count();
+        let seal = seal_g2_capture_artifacts(
+            &fixture.intent,
+            &fixture.output,
+            &fixture.manifest,
+            &fixture.receipt,
+            &fixture.content_digest,
+        )
+        .unwrap();
+        drop(armed);
+        assert_eq!(
+            seal.witness_sha256,
+            hash(&fs::read(&witness_path).unwrap()),
+            "the seal must describe the bytes that were actually on disk"
+        );
+        // EVERY read of the pair goes through the waiting reader, not just the
+        // one the released handle happened to block. A seal is two admissions
+        // of two reads each, plus two intervening pairs: eight. This is the
+        // number `fs_sharing_retry`'s whole-thread allowance is documented
+        // against, so the two cannot drift apart silently either.
+        assert_eq!(
+            crate::fs_sharing_retry::take_proven_read_count(),
+            8,
+            "a G2 seal must perform exactly eight waiting reads"
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    /// kills: retrying an error class that is not the transient one. A G2
+    /// artifact the collector never produced must fail immediately and loudly,
+    /// not after a wait — waiting cannot make a missing capture appear, and a
+    /// finalize that stalls on every absent optional file is a finalize that
+    /// has stopped failing fast.
+    #[test]
+    fn an_absent_g2_artifact_is_refused_without_any_wait() {
+        let root = temp_root("g2_absent");
+        let fixture = g2_admitted_fixture(&root);
+        portable_test_fs_retry::remove_file(fixture.output.join(G2_ENGINE_WITNESS_FILE)).unwrap();
+        let started = std::time::Instant::now();
+        let error = seal_g2_capture_artifacts(
+            &fixture.intent,
+            &fixture.output,
+            &fixture.manifest,
+            &fixture.receipt,
+            &fixture.content_digest,
+        )
+        .unwrap_err();
+        assert!(
+            started.elapsed() < crate::fs_sharing_retry::FINALIZE_RETRY_BUDGET,
+            "an absent artifact must not spend the retry budget: {error}"
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4119,8 +4278,8 @@ mod tests {
         assert_eq!(receipt.sha256().unwrap(), relocated.sha256().unwrap());
         relocated.hook_epoch_nonce += 1;
         assert!(relocated.validate().is_err());
-        fs::remove_dir_all(first).unwrap();
-        fs::remove_dir_all(second).unwrap();
+        portable_test_fs_retry::remove_dir_all(first).unwrap();
+        portable_test_fs_retry::remove_dir_all(second).unwrap();
     }
 
     #[test]

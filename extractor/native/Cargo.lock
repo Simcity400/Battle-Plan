@@ -174,6 +174,7 @@ dependencies = [
  "occupation_resistance_compliance_live_lane",
  "portable_content_manifest",
  "portable_render_stream",
+ "portable_test_fs_retry",
  "postfx_exposure",
  "power_balance_presentation_live_lane",
  "production_hook_receipt",
@@ -855,6 +856,7 @@ name = "production_render_catalog_capture_contract"
 version = "0.1.0"
 dependencies = [
  "portable_content_manifest",
+ "portable_test_fs_retry",
  "sha2",
 ]
 
@@ -879,6 +881,7 @@ dependencies = [
  "png",
  "portable_content_manifest",
  "portable_render_stream",
+ "portable_test_fs_retry",
  "production_render_catalog_capture_contract",
  "runtime_text_inputs_live_lane",
  "serde",

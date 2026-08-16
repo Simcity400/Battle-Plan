@@ -119,5 +119,5 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
     );
 
     drop(timeline);
-    std::fs::remove_dir_all(&root).expect("remove demo gate fixture");
+    portable_test_fs_retry::remove_dir_all(&root).expect("remove demo gate fixture");
 }

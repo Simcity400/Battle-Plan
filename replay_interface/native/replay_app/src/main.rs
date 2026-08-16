@@ -1728,8 +1728,8 @@ mod tests {
 
         // Strip the compact evidence: the same empty index now opens as plain
         // Unsupported, which the preflight must propagate, not waive.
-        std::fs::remove_file(game.join("timeline.json")).unwrap();
-        std::fs::remove_file(game.join("collector_stream.bin")).unwrap();
+        portable_test_fs_retry::remove_file(game.join("timeline.json")).unwrap();
+        portable_test_fs_retry::remove_file(game.join("collector_stream.bin")).unwrap();
         let err = preflight_snapshot_recording_dump_request(&options)
             .expect_err("a bare empty snapshot index is not the waivable subclass");
         assert!(err.to_string().contains("empty snapshot index"), "{err}");

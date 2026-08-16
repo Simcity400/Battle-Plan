@@ -119,6 +119,9 @@ range-tracer = []
 # retired feature names or the retired lane feature names literally here.
 
 [dev-dependencies]
+# Waits out the Windows sharing violation a real-time scanner causes on a
+# freshly written file (lane KY). Test-only: nothing this package ships calls it.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 # `test-support` enables the lane's lifecycle-claiming helper for tests only.
 # A production `cargo build -p collector` does not carry it.
 division_combat_stats_live_lane = { package = "division_combat_stats_live", path = "../lanes/division_combat_stats_live", features = ["test-support"] }

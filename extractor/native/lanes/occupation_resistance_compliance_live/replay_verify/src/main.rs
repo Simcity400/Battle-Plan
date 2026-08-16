@@ -1693,7 +1693,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(portable_test_fs_retry::read(&output).unwrap(), b"last-good");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1706,7 +1706,7 @@ mod tests {
 
         assert_eq!(portable_test_fs_retry::read(&output).unwrap(), b"replacement");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1811,7 +1811,7 @@ mod tests {
         assert!(dir.join(CERTIFICATE_FILE).is_file());
         assert!(dir.join(REPLAY_FILE).is_file());
         assert!(!dir.join("native_session_manifest.json").exists());
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1830,7 +1830,7 @@ mod tests {
         assert!(error.contains("collector_stream_bytes"), "{error}");
         assert!(!dir.join(CERTIFICATE_FILE).exists());
         assert!(!dir.join(REPLAY_FILE).exists());
-        fs::remove_dir_all(dir).unwrap();
+        portable_test_fs_retry::remove_dir_all(dir).unwrap();
     }
 
     fn valid_summary(stream: &[u8]) -> Value {

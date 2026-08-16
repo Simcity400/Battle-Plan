@@ -943,7 +943,7 @@ mod tests {
             to_hex(&Sha256::digest(&selected_index_bytes))
         );
         drop(store);
-        fs::remove_file(path).unwrap();
+        portable_test_fs_retry::remove_file(path).unwrap();
     }
 
     #[test]
@@ -967,7 +967,7 @@ mod tests {
                 .expect("finalized portable content manifest")
         );
         drop(source);
-        fs::remove_file(path).unwrap();
+        portable_test_fs_retry::remove_file(path).unwrap();
     }
 
     #[test]
@@ -981,7 +981,7 @@ mod tests {
         let error = admit_from_store(&store, "g", Some(&authority)).unwrap_err();
         assert!(error.contains("exactly one"), "{error}");
         drop(store);
-        fs::remove_file(path).unwrap();
+        portable_test_fs_retry::remove_file(path).unwrap();
     }
 
     #[test]
@@ -996,7 +996,7 @@ mod tests {
         let error = admit_from_store(&store, "g", Some(&authority)).unwrap_err();
         assert!(error.contains("differs"), "{error}");
         drop(store);
-        fs::remove_file(path).unwrap();
+        portable_test_fs_retry::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1039,7 +1039,7 @@ mod tests {
         let manifest = json!({"replay_packaging": {"g2_engine_capture": null}});
         assert!(admit_from_store(&store, "g", manifest.as_object()).unwrap().is_none());
         drop(store);
-        fs::remove_file(path).unwrap();
+        portable_test_fs_retry::remove_file(path).unwrap();
     }
 
     #[test]

@@ -591,7 +591,7 @@ mod tests {
             localisation.entries.len(),
             localisation.source_by_key.len() + localisation.ambiguous_sources_by_key.len()
         );
-        fs::remove_dir_all(root).expect("remove localisation fixture");
+        portable_test_fs_retry::remove_dir_all(root).expect("remove localisation fixture");
     }
 
     #[test]
@@ -639,6 +639,6 @@ mod tests {
             None,
             "production lookup must still refuse an unproven duplicate winner"
         );
-        fs::remove_dir_all(root).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 }
