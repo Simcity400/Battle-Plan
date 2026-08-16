@@ -443,8 +443,8 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
     }
     assert_eq!(
         local_of_field.len(),
-        7,
-        "the country bundle destructures seven trackers, parsed {local_of_field:?}"
+        8,
+        "the country bundle destructures eight trackers, parsed {local_of_field:?}"
     );
 
     let mut tag_of_local: BTreeMap<String, String> = BTreeMap::new();
@@ -474,30 +474,20 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
                 .lines()
                 .any(|line| line.trim().trim_end_matches(',') == local.as_str());
             if hit {
-                // ONE INDIRECTION IS RESOLVED, and only this one. The focus+tech
-                // child's tag depends on its roster
+                // NO INDIRECTION LEFT TO RESOLVE. There used to be exactly one:
+                // the focus+tech child's tag was a function of its roster
                 // (`country_focus_tech_bracket_tag`: 12 alone, 13 alone, or the
-                // pair), so its call site passes a LOCAL rather than a constant.
-                // The retention question is about the FULL roster -- the only
-                // one on which both members can be rejected together -- so the
-                // local resolves to that arm's constant, and the assertion below
-                // is what keeps the resolution honest rather than assumed.
-                let tag = if tag == "focus_tech_tag" {
-                    assert!(
-                        source.contains("_ => LW_TAG_COUNTRY_FOCUS_TECH,"),
-                        "`country_focus_tech_bracket_tag`'s both-scheduled arm must still be                          LW_TAG_COUNTRY_FOCUS_TECH for the retention table to describe it"
-                    );
-                    "LW_TAG_COUNTRY_FOCUS_TECH"
-                } else {
-                    tag
-                };
+                // pair), so its call site passed a LOCAL rather than a constant
+                // and this had to resolve it. Lane LE split that child in two,
+                // and each half names its own domain id as a constant, so every
+                // one of the eight call sites now passes a constant directly.
                 tag_of_local.insert(local.clone(), tag.to_string());
             }
         }
     }
     assert_eq!(
-        calls, 7,
-        "each of the seven country children holds its own bracket, found {calls}"
+        calls, 8,
+        "each of the eight country children holds its own bracket, found {calls}"
     );
 
     local_of_field
@@ -1301,6 +1291,64 @@ fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
         covered,
         vec![COMPACT_DOMAIN_FUEL, COMPACT_DOMAIN_DECISIONS],
         "no domain may be covered twice, and none the frame never scheduled at all"
+    );
+}
+
+/// The same bound, on the two children whose bracket tag IS a bare domain id.
+///
+/// Focus and tech are the only country children not tagged with a 20x constant:
+/// lane LE split them and gave each its own domain id, 12 and 13, which
+/// `for_each_bracket_covered_domain` resolves through its DEFAULT arm rather
+/// than a named one. Before that split those values were reachable only on a
+/// one-spec roster; on the production roster the child was tag 203 and covered
+/// both. So this is the first time a real capture can synthesize a panic
+/// bracket over a bare domain id, and it is the case the roster in the test
+/// above cannot reach.
+///
+/// The claim under test is that d13 tearing tells you nothing about d12: a
+/// parent panic after focus has closed its own bracket synthesizes for tech
+/// ALONE, and the covered set is exactly {12, 13} with neither doubled.
+///
+/// What production change makes this fail:
+///  * Recombining focus and tech under one 203 tag, i.e. taking 12 and 13 out
+///    of `COUNTRY_CHILD_BRACKET_TAGS`. The synthesized list goes EMPTY, not to
+///    `[203]` — this fixture's scheduled set is `{12, 13}`, and the synthesiser
+///    only ever brackets a tag that set contains, so 203 is skipped rather than
+///    emitted.
+///  * Breaking the `own => visit(own)` default arm, so d12 is no longer seen as
+///    covered by the bracket it recorded: BOTH 12 and 13 are then synthesized.
+///  * Dropping the already-covered check: focus is bracketed twice, and a
+///    fabricated WorkerPanic outranks the clean bracket it recorded.
+#[test]
+fn a_parent_panic_over_the_split_focus_and_tech_children_brackets_tech_alone() {
+    let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
+    let scheduled: BTreeSet<u16> = [COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH]
+        .into_iter()
+        .collect();
+    // Focus closed cleanly; the technology census is the child that did not.
+    lanes.record_clock_bracket(COMPACT_DOMAIN_FOCUS, None, None, false);
+    lanes.record_worker_panicked_country_brackets(&scheduled);
+
+    let brackets = lanes.take_clock_brackets();
+    let synthesized: Vec<u16> = brackets
+        .iter()
+        .filter(|bracket| bracket.worker_panicked)
+        .map(|bracket| bracket.tag)
+        .collect();
+    assert_eq!(
+        synthesized,
+        vec![COMPACT_DOMAIN_TECH],
+        "d12 recorded its own bracket, so only d13 may be synthesized -- the whole          point of splitting them is that one cannot speak for the other"
+    );
+    let mut covered = Vec::new();
+    for bracket in &brackets {
+        for_each_bracket_covered_domain(bracket.tag, |domain| covered.push(domain));
+    }
+    covered.sort_unstable();
+    assert_eq!(
+        covered,
+        vec![COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH],
+        "a bare domain id must cover exactly itself through the default arm"
     );
 }
 

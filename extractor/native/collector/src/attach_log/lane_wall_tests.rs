@@ -248,8 +248,17 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
 /// the parent's span, so counting them there would push a lane's busy time past
 /// its wall), and they must still reach the probe record.
 ///
+/// THE MULTI-SPEC READ BELOW IS NO LONGER A PRODUCTION SHAPE, and is kept
+/// deliberately. Until lane LE split them, focus and tech were one sub-read
+/// carrying two specs; every country sub-read now carries exactly one, so on a
+/// live roster `lw_cb{tag}_us` and "domain `tag` alone cost this" coincide. The
+/// two-spec case stays in this fixture because `country_lane_attribution`'s
+/// first-spec keying rule is still the contract — a future companion pairing
+/// would reach it — and a fixture that only ever passed single-spec reads could
+/// not tell first-keying from last-keying at all.
+///
 /// kills: `country_lane_attribution` keying on `specs.last()` instead of
-/// `specs.first()` -> the focus+tech read reports as `lw_cb13_us` and the
+/// `specs.first()` -> the two-spec read reports as `lw_cb13_us` and the
 /// vector equality fails; dropping any returned read -> that tag's entry
 /// disappears; last-write-wins instead of summing -> the repeated tag reports
 /// 30 rather than 130; recording the sub-reads as lane spans instead ->
@@ -261,8 +270,9 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
 #[test]
 fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
     // The shape `read_compact_country_domain_bundles_parallel` returns: one
-    // read per sub-lane, each carrying the specs THAT LANE read. The focus+tech
-    // lane carries two specs and is identified by the first.
+    // read per sub-lane, each carrying the specs THAT LANE read — one spec each
+    // since lane LE split focus from tech. A two-spec read is exercised anyway,
+    // to keep the first-spec keying rule under test.
     let specs = compact_country_domain_specs();
     let spec_of = |id: u16| {
         *specs
@@ -282,9 +292,11 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
     let country_lanes = country_lane_attribution(&[
         read(&[COMPACT_DOMAIN_FUEL], 4_100),
         read(&[COMPACT_DOMAIN_POLITICS], 100),
-        // Focus+tech is ONE sub-read over two specs, published under the first.
+        // A sub-read over two specs, published under the FIRST. Production no
+        // longer emits this for 12+13 -- they are separate children now -- so
+        // this stands for the rule, not for a shape a capture will contain.
         read(&[COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH], 91_000),
-        // A second read under one tag, as the serial arm's shape allows.
+        // Two reads under the SAME tag must SUM, not last-write-win.
         read(&[COMPACT_DOMAIN_POLITICS], 30),
         // A read naming no spec names no sub-lane and must not invent one.
         read(&[], 500_000),

@@ -234,31 +234,38 @@ fn the_policy_switch_changes_the_refusal_and_not_the_measurement() {
 /// The instrument is priced in DOMAIN-HOURS, which is what the capture loses,
 /// and not in brackets, which is not.
 ///
-/// One bracket does not cover one domain. The country focus+tech child reads
-/// domains 12 AND 13 in a single pass under `LW_TAG_COUNTRY_FOCUS_TECH`, so ONE
-/// mismatched bracket there costs EIGHT domain-hours -- and the reserved probe
-/// domain is never refused at all, so a bracket held for it costs none. A
-/// bracket count would have understated the first and overstated the second,
-/// and both errors are invisible in a capture: they are just a smaller or
-/// larger number with nothing to compare it to.
+/// One bracket does not cover one domain. d49's worker builds d50's member
+/// payload out of the same walk that produced its own rows, so ONE mismatched
+/// bracket there costs TWO domain-hours -- and the reserved probe domain is
+/// never refused at all, so a bracket held for it costs none. A bracket count
+/// would have understated the first and overstated the second, and both errors
+/// are invisible in a capture: they are just a smaller or larger number with
+/// nothing to compare it to.
+///
+/// This used to be written on the country focus+tech child, which walked
+/// domains 12 AND 13 under one tag. Lane LE split that child in two, so every
+/// country bracket now covers exactly one domain and d49/d50 is the surviving
+/// two-domain bracket. The rule under test is unchanged.
 ///
 /// MUTATION RUN: revert the instrument to counting brackets --
 ///   `brackets.iter().filter(|b| bracket_hour_verdict(b, hour) ==
 ///    BracketHourVerdict::LabelMismatch).count()`, with `brackets.len()` as the
 ///   denominator.
-/// OBSERVED: `one focus+tech bracket costs two domain-hours, not one` — left
-/// `(1, 2)`, right `(2, 3)`. Both errors show at once: the child's two
+/// OBSERVED: `one d49 bracket costs two domain-hours, not one` — left
+/// `(1, 2)`, right `(2, 3)`. Both errors show at once: the walk's two
 /// domain-hours collapse to one, and the probe bracket is priced as a refusal
 /// that will never happen. Every other test in this file stays green, because
 /// every other bracket in them covers exactly its own domain.
 #[test]
 fn the_instrument_prices_a_mismatch_in_domain_hours_not_in_brackets() {
     let brackets = [
-        // Covers domains 12 AND 13: two domain-hours behind one bracket. Since
-        // lane KS this is the widest country bracket there is -- the other six
-        // children cover exactly one domain each -- and it is the honest case
-        // for that price, because that child really does read both in one walk.
-        bracket(LW_TAG_COUNTRY_FOCUS_TECH, LABEL_HOUR + 1, LABEL_HOUR + 1),
+        // Covers d49 AND d50: two domain-hours behind one bracket, and the
+        // honest price, because that worker really does read both in one walk.
+        bracket(
+            COMPACT_DOMAIN_NAVAL_COMBAT_LIFECYCLE_LIVE,
+            LABEL_HOUR + 1,
+            LABEL_HOUR + 1,
+        ),
         // Never refused, so it must never be priced.
         bracket(RC_PROBE_DOMAIN_ID, LABEL_HOUR + 1, LABEL_HOUR + 1),
         bracket(DOMAIN_ID, LABEL_HOUR, LABEL_HOUR),
@@ -266,7 +273,7 @@ fn the_instrument_prices_a_mismatch_in_domain_hours_not_in_brackets() {
     assert_eq!(
         hour_label_mismatched_bracket_count(&brackets, LABEL_HOUR, &BTreeSet::new()),
         (2, 3),
-        "one focus+tech bracket costs two domain-hours, not one; and the probe \
+        "one d49 bracket costs two domain-hours, not one; and the probe \
          domain costs none"
     );
     assert_eq!(

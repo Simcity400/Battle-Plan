@@ -249,9 +249,13 @@ fn gate_open() -> bool {
     INSTALLED.load(Ordering::Acquire) && !TEARDOWN_ACTIVE.load(Ordering::Acquire)
 }
 
-pub fn installed() -> bool {
-    gate_open()
-}
+// `pub fn installed() -> bool` USED TO SIT HERE and is deleted, not left for a
+// future caller (lane LE). Its one consumer was d13's read cache, which took an
+// uncached read whenever this hook was installed so a synchronously observed
+// producer receipt could never be hidden behind a cached row. That cache is
+// gone -- its fingerprint carried the frame's game hour against a
+// once-per-game-hour sweep and so could never hit -- and with no cache there is
+// nothing left to bypass. `gate_open` stays: the hook's own paths use it.
 
 /// Registers the one additional exact-a729 localization observer which shares
 /// this detour. The formatter trampoline remains owned and called exactly once
