@@ -1632,11 +1632,6 @@
       "attach_log.rs:85351": 1,
       "attach_log.rs:85364": 3,
       "d26.rs:226-239": 1,
-      "deployment_queue.rs:11-25": 1,
-      "deployment_queue.rs:267-579": 2,
-      "deployment_queue.rs:278": 1,
-      "deployment_queue.rs:5": 1,
-      "deployment_queue.rs:611": 1,
       "lanes/country_economy_production_stockpile_live/src/deployment_queue.rs:58": 1,
       "replay_core/src/world.rs:19841": 1,
       "world_fold.rs:12541": 1,
@@ -1657,7 +1652,6 @@
       "world_fold.rs:27732-27738": 1,
       "world_fold.rs:27835": 1,
       "world_fold.rs:27899": 1,
-      "world_fold.rs:28240": 1,
       "world_fold.rs:28371": 1
     },
     "extractor/native/wire_format/src/d13.rs": {
