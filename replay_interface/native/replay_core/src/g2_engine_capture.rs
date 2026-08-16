@@ -470,7 +470,21 @@ fn validate_recorder_authority(
     let launch_language = string(launch, "localisation_language")?;
     let settings = object(launch.get("required_settings"), "early launch required_settings")?;
     let settings_sha = string(settings, "settings_file_sha256")?;
-    let display = object(modset.get("display_variant"), "recorder display_variant")?;
+    // v2 KEEPS THE LAUNCH SETTINGS IN THEIR OWN BINDING. A resolved content
+    // chain no longer implies the settings were proven, so the language, the
+    // display values and the digest they were parsed from all hang off
+    // `settings_binding` together with the authority that proved them --
+    // reading them off `modset` directly is reading the v1 vocabulary.
+    let settings_binding = object(
+        modset.get("settings_binding"),
+        "recorder modset settings_binding",
+    )?;
+    let display = object(
+        settings_binding.get("display_variant"),
+        "recorder display_variant",
+    )?;
+    let recorder_settings_sha = string(settings_binding, "attach_settings_sha256")?;
+    let recorder_language = string(settings_binding, "language")?;
     let content_digest = string(content, "manifest_digest_sha256")?;
     if witness.capture_receipt_sha256 != receipt_sha
         || witness.authority_exe_sha256 != launch_exe
@@ -482,9 +496,9 @@ fn validate_recorder_authority(
             != declaration.capture_content_manifest_digest_sha256
         || content_digest != declaration.replay_content_manifest_digest_sha256
         || witness.settings_file_sha256 != settings_sha
-        || witness.settings_file_sha256 != string(display, "settings_file_sha256")?
+        || witness.settings_file_sha256 != recorder_settings_sha
         || witness.localisation_language != launch_language
-        || witness.localisation_language != string(modset, "localisation_language")?
+        || witness.localisation_language != recorder_language
     {
         return Err("packaged G2 witness does not join recorder early-render authority".into());
     }
@@ -644,6 +658,10 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "44".repeat(32)),
+                // The authority that proved these settings travels in the
+                // same map, so a replay cannot reproduce them without knowing
+                // how well they were proven.
+                ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
@@ -695,20 +713,27 @@ mod tests {
                 "game": {"exe_sha256": content_manifest.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
-                "localisation_language": "l_english",
-                "display_variant": {
-                    "physical_width": 1920,
-                    "physical_height": 1080,
-                    "min_gui_width": 1280,
-                    "min_gui_height": 720,
-                    "gui_scale_f32_bits": 1.0f32.to_bits(),
-                    "refresh_rate_hz": 60,
-                    "max_refresh_rate_hz": 60,
-                    "fullscreen": false,
-                    "borderless": true,
-                    "display_mode": "borderless_fullscreen",
-                    "settings_file_sha256": "44".repeat(32)
-                }
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": "l_english",
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1280,
+                        "min_gui_height": 720,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": 60,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "44".repeat(32),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
+                },
             },
             "test_launch_epoch": launch_epoch
         })

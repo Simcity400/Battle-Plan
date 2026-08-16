@@ -4330,6 +4330,14 @@ struct SealedManifestBinding {
     /// never inside the container, so it was never bound and this verifier does
     /// not claim it was.
     path_redaction_applied: bool,
+    /// The sealed manifest carries a `portability_exclusions` ledger: at least
+    /// one value could not be made portable and was REMOVED before packing.
+    ///
+    /// Carried out of the binding so no caller can hand this container onward
+    /// as a complete recorder manifest without having been told. A reader that
+    /// finds `PORTABILITY_EXCLUDED_VALUE` where it expected a claim has read a
+    /// hole, and `is_portability_excluded_value` is how it says so.
+    portability_degraded: bool,
 }
 
 /// Bind the run directory's mutable `native_session_manifest.json` to the
@@ -4427,6 +4435,22 @@ fn bind_run_dir_manifest_to_sealed_authority(
         })?;
 
     let mut sealed = embedded_manifest.clone();
+    // THE EXCLUSION PASS, applied to the run-dir copy only.
+    //
+    // A degraded sealed manifest carries the reserved stand-in where a value
+    // could not be made portable, plus a top-level `portability_exclusions`
+    // ledger. The run-dir copy keeps the original text — it is the local
+    // recovery copy and is allowed to. Binding them therefore needs the run-dir
+    // side put through the same removal, and it must be the SEALER'S OWN
+    // function: a second implementation here would agree until the first time
+    // either end learned a new shape, and would then refuse exactly the
+    // containers the recorder writes.
+    //
+    // Only the exclusion pass is applied, never the whole projection. The
+    // absolute-path redaction stays where it is — inside the binding below —
+    // because the run-dir copy's absolute paths are what
+    // `verify_retained_file_evidence` resolves, and the directional
+    // "run-dir absolute, sealed basename" rule is the thing being checked.
     let mut run_dir = external_manifest.clone();
 
     let sealed_host_finalize_is_object = sealed.get("host_finalize").is_some_and(Value::is_object);
@@ -4476,6 +4500,71 @@ fn bind_run_dir_manifest_to_sealed_authority(
         "sealed",
     )?;
 
+    // THE EXCLUSION PASS, applied to the run-dir copy only, AND ONLY ONCE THE
+    // POST-SEAL FIELDS ARE GONE.
+    //
+    // A degraded sealed manifest carries the reserved stand-in where a value
+    // could not be made portable, plus a top-level `portability_exclusions`
+    // ledger. The run-dir copy keeps the original text -- it is the local
+    // recovery copy and is allowed to -- so binding the two needs the run-dir
+    // side put through the same removal, using the SEALER'S OWN function: a
+    // second implementation here would agree until the first time either end
+    // learned a new shape, and would then refuse exactly the containers the
+    // recorder writes.
+    //
+    // ORDER IS LOAD-BEARING. The run-dir copy also carries fields written AFTER
+    // the seal -- `spool_trim.reason` and `host_finalize.verify` among them --
+    // and a post-seal failure reason routinely quotes an absolute path. Running
+    // the pass before those were removed produced an exclusion the sealed
+    // ledger could not possibly contain, and refused a perfectly good container
+    // for a string the container never saw.
+    //
+    // Only the exclusion pass is applied, never the whole projection: the
+    // run-dir copy's absolute paths are what `verify_retained_file_evidence`
+    // resolves, and the directional "run-dir absolute, sealed basename" rule is
+    // the thing the binding below is checking.
+    let (excluded_run_dir, _) =
+        recorder_host::portable_manifest::apply_portability_exclusions(&run_dir);
+    run_dir = excluded_run_dir;
+    let sealed_ledger = sealed
+        .get(recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD)
+        .cloned();
+    // The ledger is a CLAIM, so it binds like any other: the run-dir copy must
+    // produce the same one. A container whose ledger does not follow from its
+    // own run-dir document is either describing a different recording or was
+    // written by something other than the sealer.
+    let expected_ledger = run_dir
+        .get(recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD)
+        .cloned();
+    if sealed_ledger != expected_ledger {
+        // Name what the two sides disagree about. "The ledgers differ" is
+        // unactionable in a 4.7 MB manifest, and the commonest cause is a
+        // run-dir copy edited since the seal: an added absolute key, or an
+        // added diagnostic, produces an exclusion the container never made.
+        let describe = |ledger: Option<&Value>| {
+            ledger
+                .and_then(|ledger| ledger.get("excluded"))
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .map(truncate_for_refusal)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "none".to_string())
+        };
+        return Err(format!(
+            "authoritative sealed recorder_manifest accounts for portability \
+             exclusion(s) [{}] but its run-dir native_session_manifest.json \
+             produces [{}]; the ledger is what accounts for every value the seal \
+             had to remove, so a ledger that does not follow from the recording \
+             is not that accounting",
+            describe(sealed_ledger.as_ref()),
+            describe(expected_ledger.as_ref()),
+        ));
+    }
+    let portability_degraded = sealed_ledger.is_some();
+
     let mut redactions = 0usize;
     if let Some(violation) = first_binding_violation(&sealed, &run_dir, "$", &mut redactions) {
         return Err(format!(
@@ -4488,6 +4577,7 @@ fn bind_run_dir_manifest_to_sealed_authority(
     }
     Ok(SealedManifestBinding {
         path_redaction_applied: redactions > 0,
+        portability_degraded,
     })
 }
 
@@ -5262,6 +5352,10 @@ fn load_verified_replay_authority(
         "external_manifest_bound_to_sealed_authority": true,
         "external_manifest_binding": "portable_projection_with_named_post_seal_allowlist",
         "external_manifest_path_redaction_applied": manifest_binding.path_redaction_applied,
+        // Stated on the authority itself, not only inside the sealed document,
+        // so a consumer reading this gate's verdict cannot miss that the
+        // recorder manifest it just certified is missing values by design.
+        "recorder_manifest_portability_degraded": manifest_binding.portability_degraded,
         "run_dir_only_post_seal_host_finalize_fields": RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
         "sealed_only_pre_pack_host_finalize_fields": SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
         "run_dir_only_post_seal_top_level_fields": RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS,
@@ -10258,6 +10352,18 @@ mod tests {
     /// run-dir copy keeps the absolute paths and gets the post-pack telemetry
     /// written back into it after the container was sealed.
     fn live_shaped_manifest_pair(dir: &Path, game_id: &str) -> (Value, Value) {
+        live_shaped_manifest_pair_with(dir, game_id, |_| {})
+    }
+
+    /// The same pair, with the run-dir BASE adjusted before the sealed copy is
+    /// derived from it. The sealed side is always the recorder's own
+    /// projection of the base, never hand-listed, so a fixture cannot claim a
+    /// sealed shape the recorder would not write.
+    fn live_shaped_manifest_pair_with(
+        dir: &Path,
+        game_id: &str,
+        adjust_base: impl FnOnce(&mut Value),
+    ) -> (Value, Value) {
         let mut base = replay_test_manifest(game_id, dir);
         // t31's three redacted fields, run-dir form: the absolute originals.
         // They are set on the BASE so the sealed copy below can be derived from
@@ -10269,6 +10375,7 @@ mod tests {
             },
             "pdx_user_dir": r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV",
         });
+        adjust_base(&mut base);
         let shared_host_finalize = base["host_finalize"].clone();
 
         // The sealed copy is the PROJECTION of the run-dir copy — every
@@ -10753,6 +10860,100 @@ mod tests {
         );
     }
 
+    /// A DEGRADED container must verify, and must say it is degraded.
+    ///
+    /// Capture t55 (2026-08-15) recorded 91 game hours and never sealed: one
+    /// modset diagnostic had spelled out the absolute path of `settings.txt`,
+    /// and the seal-time rejector refused the whole container over it. The
+    /// exclusion pass costs that field instead, which means this gate must bind
+    /// a sealed copy carrying the reserved stand-in against a run-dir copy that
+    /// still carries the original text, and must reach the caller with the
+    /// degradation stated rather than buried.
+    ///
+    /// Production change that would make this fail: dropping the exclusion pass
+    /// from the run-dir side of `bind_run_dir_manifest_to_sealed_authority`
+    /// (the two copies then contradict each other at exactly the excluded
+    /// field), or dropping `portability_degraded` from the authority details.
+    #[test]
+    fn a_degraded_sealed_manifest_binds_and_reports_its_exclusions() {
+        let dir = TmpDir::new("degraded_portability");
+        // The exact shape t55 could not seal: an absolute path EMBEDDED in
+        // prose, which the whole-string redaction cannot reduce.
+        let poisoned = concat!(
+            r"settings.txt launch settings unresolved: ",
+            r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV\settings.txt",
+            r" mtime is at/after game process start",
+        );
+        let (run_dir_manifest, sealed_manifest) =
+            live_shaped_manifest_pair_with(&dir.0, "g", |base| {
+                base["modset"] = json!({
+                    "schema": "hoi4_modset_binding_v2",
+                    "resolved": false,
+                    "errors": [poisoned],
+                });
+            });
+        assert_eq!(
+            sealed_manifest["modset"]["errors"][0],
+            json!(recorder_host::portable_manifest::PORTABILITY_EXCLUDED_VALUE),
+            "the recorder's own projection must cost the field, not the seal"
+        );
+        assert_eq!(
+            sealed_manifest[recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD]
+                ["excluded"][0]["location"],
+            json!(["modset", "errors", 0])
+        );
+        write_replay_fixture_sealed_verbatim(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let authority =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect("a degraded container must still verify");
+        assert_eq!(
+            authority.details["recorder_manifest_portability_degraded"],
+            json!(true)
+        );
+    }
+
+    /// The ledger is a claim like any other, so it binds like any other: a
+    /// container whose accounting does not follow from its own run-directory
+    /// document is not that recording's accounting, and a reader must not be
+    /// able to add exclusions a recording never had.
+    ///
+    /// Production change that would make this fail: removing the ledger
+    /// comparison from `bind_run_dir_manifest_to_sealed_authority`.
+    #[test]
+    fn a_ledger_the_recording_does_not_produce_refuses() {
+        let dir = TmpDir::new("forged_portability_ledger");
+        let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
+        sealed_manifest[recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD] = json!({
+            "schema": recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_SCHEMA,
+            "status": "degraded",
+            "excluded": [{
+                "location": ["modset"],
+                "kind": "value",
+                "reason": "absolute_path_fragment",
+            }],
+        });
+        write_replay_fixture_sealed_verbatim(
+            &dir.0,
+            "g",
+            &serde_json::to_vec_pretty(&sealed_manifest).unwrap(),
+            true,
+        );
+        let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
+        let error =
+            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
+                .expect_err("a ledger the recording does not produce must refuse");
+        assert!(
+            error.contains("portability exclusion"),
+            "the refusal must name the ledger: {error}"
+        );
+    }
+
     /// The BINDING rule itself — a sealed absolute path is never reduced away —
     /// exercised where it lives, because the portability assertion above now
     /// refuses that container before the binding is reached. The rule must stay
@@ -10838,10 +11039,13 @@ mod tests {
             TEST_MAX_STREAM_BYTES,
         )
                 .expect_err("colliding run-dir keys must refuse");
-        // Two refusals cover this, and the earlier one wins: the projection the
-        // composition routing computes refuses a collision before the binding
-        // is reached. Both name it.
-        assert!(error.contains("collision"), "{error}");
+        // The collision now costs the offending MEMBER rather than refusing
+        // the projection outright (the sealer must never lose a recording to
+        // one), so what catches this run-dir copy is the ledger: dropping the
+        // added key produces an accounting the sealed container never made,
+        // and the refusal names the row.
+        assert!(error.contains("key_collision"), "{error}");
+        assert!(error.contains("does not follow from the recording"), "{error}");
 
         // The binding's own collision refusal, exercised directly, so it is not
         // dead weight behind the routing projection.

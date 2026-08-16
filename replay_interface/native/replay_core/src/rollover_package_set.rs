@@ -1054,6 +1054,10 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "aa".repeat(32)),
+                // The authority that proved these settings travels in the
+                // same map, so a replay cannot reproduce them without knowing
+                // how well they were proven.
+                ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
@@ -1189,20 +1193,27 @@ mod tests {
                 "game": {"exe_sha256": content_manifest.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
-                "localisation_language": "l_english",
-                "display_variant": {
-                    "physical_width": 1920,
-                    "physical_height": 1080,
-                    "min_gui_width": 1280,
-                    "min_gui_height": 720,
-                    "gui_scale_f32_bits": 1.0f32.to_bits(),
-                    "refresh_rate_hz": 60,
-                    "max_refresh_rate_hz": 60,
-                    "fullscreen": false,
-                    "borderless": true,
-                    "display_mode": "borderless_fullscreen",
-                    "settings_file_sha256": "aa".repeat(32)
-                }
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": "l_english",
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1280,
+                        "min_gui_height": 720,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": 60,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "aa".repeat(32),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
+                },
             },
             "raw_stream": "logical-streams/logical-stream-0.sealed.h4cr",
             "replay_file": "native_session.battleplan",

@@ -90,6 +90,9 @@ pub const ROLLOVER_LOGICAL_STREAMS_DIR: &str = "logical-streams";
 /// left behind by an earlier attempt in a reused output directory.
 #[derive(Clone, Debug)]
 pub struct FinalizeProgressBinding {
+    /// The TARGET GAME's process id. Identity only — the publisher's own pid
+    /// is written beside it as `publisher_pid`, and that is the one that
+    /// answers "is a finalizer still working here".
     pub pid: u32,
     pub session_id: String,
     pub capture_id: String,
@@ -342,6 +345,23 @@ fn publish_sample(
 ) -> Result<(), String> {
     let value = serde_json::json!({
         "schema": SCHEMA,
+        // THE PROCESS THAT IS DOING THE WORK, taken from this process rather
+        // than from the caller so it cannot be got wrong. `pid` below is the
+        // TARGET GAME, which is identity, not ownership: a recovery asking
+        // "does a finalizer still own this directory" needs the finalizer.
+        // Reading the game's pid as the answer refused recovery for as long as
+        // the player stayed in the game, and admitted it the moment the player
+        // quit — including while a real finalizer was still working.
+        "publisher_pid": std::process::id(),
+        // The other half of the publisher's IDENTITY. A pid alone is a number
+        // the OS reuses; a recovery that refused on a stale pid reused by an
+        // unrelated recorder would strand the run it exists to rescue. `null`
+        // when this platform will not report it — the reader then has a pid and
+        // an image name and no more, and says so.
+        "publisher_creation_filetime": crate::modset::query_process_creation_filetime(
+            std::process::id(),
+        )
+        .ok(),
         "pid": binding.pid,
         "session_id": binding.session_id,
         "capture_id": binding.capture_id,

@@ -25,6 +25,39 @@ The neutral schema is owned by
 `portable_replay/native/content_manifest`. The extractor adapter is
 `extractor/native/recorder_host/src/portable_content_manifest.rs`.
 
+### Launch settings carry their own authority
+
+The recorder manifest's modset binding speaks `hoi4_modset_binding_v2`. The
+launch settings — localisation language and display variant — live in
+`modset.settings_binding` together with the `authority` that proved them, not
+beside the content chain. A resolved CONTENT chain no longer implies the running
+game was proven to have read the recorded settings; `settings_binding.authority`
+says which of the three proofs was obtained, and it travels into the portable
+manifest's `required_settings` as `settings_authority` so a replay reproducing
+the settings cannot miss how well they were proven. The two endpoint digests
+(`attach_settings_sha256`, `seal_settings_sha256`) stay separate: the settings
+file can be reformatted between the attach read and the closing read while
+meaning the same thing, and one digest would have to misdescribe one of the two.
+
+Every settings field is independently optional. A settings file that could not
+be read produces a null language, display variant, or attach digest — and that
+recording still seals, still republishes, and still opens. Refusing it would
+discard the recorded hours over a field that was honestly reported as unknown.
+
+### A value that cannot travel is excluded and accounted, never fatal
+
+A recorder manifest picks up local absolute paths in places nobody chooses: a
+failure reason quotes the file it could not open, a DLC display name is whatever
+its author typed. The seal removes each such value, puts a reserved stand-in in
+its place, and records it in a top-level `portability_exclusions` ledger naming
+the location, the kind, and the reason; the operator gets one stderr line per
+exclusion and the container marks itself `degraded`. The recording still seals.
+
+The projection is idempotent, which is what lets the verifier apply it to the
+run-directory copy and compare against the sealed copy without knowing which
+came first. Consumers must refuse the stand-in wherever they would otherwise
+read it as authority — an excluded DLC display name is a hole, not a name.
+
 ### Symbol-assignment companion
 
 The same neutral crate owns `symbol_manifest::SymbolManifest`

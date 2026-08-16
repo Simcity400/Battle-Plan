@@ -47,7 +47,9 @@ pub struct D49BaseOnlyStrategicRegionAuthority {
 pub fn d49_base_only_authority_from_resolved_zero_mod_launch(
     report: &ModsetReport,
 ) -> Result<D49BaseOnlyStrategicRegionAuthority, String> {
-    if !report.resolved || !report.enabled_mods.is_empty() {
+    // CONTENT resolution: the strategic-region authority is derived from the
+    // executable and the (empty) mod set, not from the display settings.
+    if !report.content_resolved || !report.enabled_mods.is_empty() {
         return Err("D49 base-only authority requires a resolved zero-mod launch".into());
     }
     let exact_exe_sha256 = report
@@ -220,7 +222,12 @@ struct D98OrderedLayer {
 pub fn d98_theatre_selector_content_identity_from_resolved_launch(
     report: &ModsetReport,
 ) -> Result<D98TheatreSelectorContentIdentityAuthority, String> {
-    if !report.resolved {
+    // CONTENT resolution plus a readable language, which is required in its
+    // own right below. The collector binds the other half: it reads the
+    // engine's own active language token and refuses the whole frame unless it
+    // matches this one, so a language taken from a post-launch disk
+    // observation is still corroborated against the running engine.
+    if !report.content_resolved {
         return Err("D98 content identity requires a resolved launch binding".into());
     }
     let exact_exe_sha256 = report
@@ -233,8 +240,8 @@ pub fn d98_theatre_selector_content_identity_from_resolved_launch(
     // Never defaulted. An absent language must fail, not silently become
     // English, because the digest below only means anything relative to it.
     let language = report
-        .localisation_language
-        .as_deref()
+        .localisation_language()
+        .map(String::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or("D98 content identity omitted the launch-bound localisation language")?
@@ -1064,8 +1071,29 @@ mod tests {
 
         fn report_started_at(&self, language: Option<&str>, started_unix: i64) -> ModsetReport {
             ModsetReport {
-                resolved: true,
+                content_resolved: true,
                 errors: Vec::new(),
+                settings: crate::modset::SettingsBinding {
+                    authority: Some(crate::modset::SettingsAuthority::PreLaunchBracketed),
+                    errors: Vec::new(),
+                    language: language.map(Into::into),
+                    display: Some(DisplayVariantSettings {
+                        physical_width: 1920,
+                        physical_height: 1080,
+                        min_gui_width: 1920,
+                        min_gui_height: 1080,
+                        gui_scale_f32_bits: 1_065_353_216,
+                        refresh_rate_hz: 60,
+                        max_refresh_rate_hz: Some(60),
+                        fullscreen: false,
+                        borderless: false,
+                        display_mode: "windowed".into(),
+                        settings_file_sha256: "b".repeat(64),
+                    }),
+                    attach_sha256: Some("b".repeat(64)),
+                    seal_sha256: None,
+                    endpoint_semantics_equal: None,
+                },
                 exe_path: Some(self.install.join("hoi4.exe")),
                 exe_size_bytes: None,
                 exe_sha256: Some(A729_EXE_SHA256.into()),
@@ -1074,26 +1102,13 @@ mod tests {
                 dlc_load_mtime_unix: None,
                 dlc_load_sha256: None,
                 process_start_unix: Some(started_unix),
+                process_start_filetime: None,
                 enabled_mods: Vec::new(),
                 installed_dlcs: Vec::new(),
                 disabled_dlcs: Vec::new(),
                 enabled_dlcs: Vec::new(),
                 dlc_display_names: BTreeMap::new(),
                 dlc_descriptor_evidence: BTreeMap::new(),
-                localisation_language: language.map(Into::into),
-                display_variant: Some(DisplayVariantSettings {
-                    physical_width: 1920,
-                    physical_height: 1080,
-                    min_gui_width: 1920,
-                    min_gui_height: 1080,
-                    gui_scale_f32_bits: 1_065_353_216,
-                    refresh_rate_hz: 60,
-                    max_refresh_rate_hz: Some(60),
-                    fullscreen: false,
-                    borderless: false,
-                    display_mode: "windowed".into(),
-                    settings_file_sha256: "b".repeat(64),
-                }),
             }
         }
     }

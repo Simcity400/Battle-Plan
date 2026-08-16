@@ -1327,16 +1327,23 @@ fn compact_stream_container_fails_closed() {
                     "errors": [],
                     "dlc": { "enabled": [] },
                     "dlc_display_names": {},
-                    "localisation_language": "l_english",
-                    "display_variant": {
-                        "physical_width": 2752, "physical_height": 1152,
-                        "min_gui_width": 1280, "min_gui_height": 720,
-                        "gui_scale_f32_bits": 1.0f32.to_bits(),
-                        "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
-                        "fullscreen": false, "borderless": true,
-                        "display_mode": "borderless_fullscreen",
-                        "settings_file_sha256": "aa".repeat(32)
-                    }
+                    "settings_binding": {
+                        "authority": "pre_launch_bracketed",
+                        "launch_proven": true,
+                        "errors": [],
+                        "language": "l_english",
+                        "display_variant": {
+                            "physical_width": 2752, "physical_height": 1152,
+                            "min_gui_width": 1280, "min_gui_height": 720,
+                            "gui_scale_f32_bits": 1.0f32.to_bits(),
+                            "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                            "fullscreen": false, "borderless": true,
+                            "display_mode": "borderless_fullscreen",
+                        },
+                        "attach_settings_sha256": "aa".repeat(32),
+                        "seal_settings_sha256": null,
+                        "endpoint_semantics_equal": null
+                    },
                 }
             }))
             .unwrap(),
@@ -1590,16 +1597,23 @@ fn resolved_recorder_manifest() -> Value {
                 "dlc/a.dlc": "DLC A",
                 "dlc/b.dlc": "DLC B"
             },
-            "localisation_language": "l_english",
-            "display_variant": {
-                "physical_width": 2752, "physical_height": 1152,
-                "min_gui_width": 1280, "min_gui_height": 720,
-                "gui_scale_f32_bits": 1.0f32.to_bits(),
-                "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
-                "fullscreen": false, "borderless": true,
-                "display_mode": "borderless_fullscreen",
-                "settings_file_sha256": "aa".repeat(32)
-            }
+            "settings_binding": {
+                "authority": "pre_launch_bracketed",
+                "launch_proven": true,
+                "errors": [],
+                "language": "l_english",
+                "display_variant": {
+                    "physical_width": 2752, "physical_height": 1152,
+                    "min_gui_width": 1280, "min_gui_height": 720,
+                    "gui_scale_f32_bits": 1.0f32.to_bits(),
+                    "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                    "fullscreen": false, "borderless": true,
+                    "display_mode": "borderless_fullscreen",
+                },
+                "attach_settings_sha256": "aa".repeat(32),
+                "seal_settings_sha256": null,
+                "endpoint_semantics_equal": null
+            },
         }
     })
 }
@@ -1661,6 +1675,10 @@ fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
             ("borderless".into(), "true".into()),
             ("display_mode".into(), "borderless_fullscreen".into()),
             ("settings_file_sha256".into(), "aa".repeat(32)),
+            // The authority that proved these settings travels in the same map,
+            // so a replay cannot reproduce them without knowing how well they
+            // were proven.
+            ("settings_authority".into(), "pre_launch_bracketed".into()),
         ]),
         required_content: Vec::new(),
         manifest_digest_sha256: None,

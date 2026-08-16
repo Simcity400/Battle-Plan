@@ -59,7 +59,7 @@ pub struct EffectiveRuntimeDlc {
 pub fn requested_profile_selection_from_modset(
     report: &ModsetReport,
 ) -> Result<RequestedProfileSelection, String> {
-    if !report.resolved {
+    if !report.content_resolved {
         return Err("requested profile selection requires a resolved modset".into());
     }
     let dlc_load_sha256 = report
@@ -108,7 +108,7 @@ pub fn requested_profile_selection_from_modset(
 pub fn authenticated_dlc_descriptors_from_modset(
     report: &ModsetReport,
 ) -> Result<Vec<AuthenticatedDlcDescriptor>, String> {
-    if !report.resolved {
+    if !report.content_resolved {
         return Err("authenticated DLC descriptors require a resolved modset".into());
     }
     let installed = report
@@ -374,8 +374,9 @@ mod tests {
 
     fn requested_report() -> ModsetReport {
         ModsetReport {
-            resolved: true,
+            content_resolved: true,
             errors: Vec::new(),
+            settings: crate::modset::SettingsBinding::default(),
             exe_path: None,
             exe_size_bytes: None,
             exe_sha256: None,
@@ -384,14 +385,13 @@ mod tests {
             dlc_load_mtime_unix: Some(1),
             dlc_load_sha256: Some("b".repeat(64)),
             process_start_unix: Some(2),
+            process_start_filetime: None,
             enabled_mods: Vec::new(),
             installed_dlcs: vec!["dlc/dlc_a/a.dlc".into(), "dlc/dlc_b/b.dlc".into()],
             disabled_dlcs: vec!["dlc/dlc_b/b.dlc".into()],
             enabled_dlcs: vec!["dlc/dlc_a/a.dlc".into()],
             dlc_display_names: BTreeMap::new(),
             dlc_descriptor_evidence: BTreeMap::new(),
-            localisation_language: None,
-            display_variant: None,
         }
     }
 

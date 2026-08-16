@@ -26,7 +26,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::early_render_launch::{EarlyRenderCaptureReceipt, EarlyRenderLaunchManifest};
-use crate::modset::ModsetReport;
+use crate::modset::{ModsetError, ModsetReport};
 use crate::production_content_vfs::effective_vfs_from_launch;
 use crate::production_map_content_index::{
     resolve_authenticated_o05_building_content, resolve_authenticated_static_program_content,
@@ -219,7 +219,11 @@ pub struct RuntimeContentRoots {
 
 impl RuntimeContentRoots {
     pub fn from_modset(report: &ModsetReport) -> Result<Self, String> {
-        if !report.resolved {
+        // CONTENT resolution only. The roots are the install directory and the
+        // Paradox user directory; the localisation language and display
+        // settings say nothing about either, and requiring them here is what
+        // made a settings failure refuse the content proof outright.
+        if !report.content_resolved {
             return Err("runtime content roots require a resolved modset".into());
         }
         let install_root = report
@@ -257,24 +261,37 @@ pub struct BoundDlcLayer {
 
 impl PortableLaunchBinding {
     pub fn from_modset(report: &ModsetReport) -> Result<Self, String> {
-        if !report.resolved {
+        if !report.content_resolved {
             return Err(format!(
                 "portable content manifest requires a resolved launch binding: {}",
-                report.errors.join("; ")
+                report
+                    .errors
+                    .iter()
+                    .map(ModsetError::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ));
         }
         let executable_sha256 = report
             .exe_sha256
             .clone()
             .ok_or("resolved launch binding omitted executable SHA-256")?;
+        // The settings must be READABLE, and how well they are proven travels
+        // WITH them as `settings_authority` below. A binding that published
+        // the numbers and dropped the provenance would let a consumer read a
+        // post-launch disk observation as a launch proof, which is exactly the
+        // silent-vanilla shape this module exists to prevent.
+        let settings_authority = report
+            .settings
+            .authority
+            .ok_or("launch binding omitted the settings authority")?;
         let localisation_language = report
-            .localisation_language
-            .clone()
+            .localisation_language()
+            .cloned()
             .filter(|value| !value.trim().is_empty())
             .ok_or("resolved launch binding omitted localisation language")?;
         let display = report
-            .display_variant
-            .as_ref()
+            .display_variant()
             .ok_or("resolved launch binding omitted display settings")?;
         let required_settings = BTreeMap::from([
             ("physical_width".into(), display.physical_width.to_string()),
@@ -305,6 +322,14 @@ impl PortableLaunchBinding {
             (
                 "settings_file_sha256".into(),
                 display.settings_file_sha256.clone(),
+            ),
+            // How well the values above are proven, in the same map that
+            // carries them. A replay that reproduces these settings is
+            // entitled to know whether the recording PROVED the game read
+            // them or merely observed the disk while the game was running.
+            (
+                "settings_authority".into(),
+                settings_authority.as_str().to_string(),
             ),
         ]);
         let ordered_mods = report
@@ -3895,8 +3920,29 @@ mod tests {
         )
         .unwrap();
         let report = ModsetReport {
-            resolved: true,
+            content_resolved: true,
             errors: vec![],
+            settings: crate::modset::SettingsBinding {
+                authority: Some(crate::modset::SettingsAuthority::PreLaunchBracketed),
+                errors: Vec::new(),
+                language: Some("english".into()),
+                display: Some(DisplayVariantSettings {
+                    physical_width: 1920,
+                    physical_height: 1080,
+                    min_gui_width: 1280,
+                    min_gui_height: 720,
+                    gui_scale_f32_bits: 1.0f32.to_bits(),
+                    refresh_rate_hz: 60,
+                    max_refresh_rate_hz: Some(144),
+                    fullscreen: false,
+                    borderless: true,
+                    display_mode: "borderless".into(),
+                    settings_file_sha256: sha('7'),
+                }),
+                attach_sha256: Some(sha('7')),
+                seal_sha256: None,
+                endpoint_semantics_equal: None,
+            },
             exe_path: Some(game.join("hoi4.exe")),
             exe_size_bytes: Some(1),
             exe_sha256: Some(sha('9')),
@@ -3905,6 +3951,7 @@ mod tests {
             dlc_load_mtime_unix: Some(1),
             dlc_load_sha256: Some(sha('8')),
             process_start_unix: Some(2),
+            process_start_filetime: None,
             enabled_mods: vec![ResolvedMod {
                 descriptor_entry: "mod/archive.mod".into(),
                 descriptor_path: Some(descriptor.clone()),
@@ -3946,20 +3993,6 @@ mod tests {
                     }),
                 ),
             ]),
-            localisation_language: Some("english".into()),
-            display_variant: Some(DisplayVariantSettings {
-                physical_width: 1920,
-                physical_height: 1080,
-                min_gui_width: 1280,
-                min_gui_height: 720,
-                gui_scale_f32_bits: 1.0f32.to_bits(),
-                refresh_rate_hz: 60,
-                max_refresh_rate_hz: Some(144),
-                fullscreen: false,
-                borderless: true,
-                display_mode: "borderless".into(),
-                settings_file_sha256: sha('7'),
-            }),
         };
         let portable = PortableLaunchBinding::from_modset(&report).unwrap();
         let serialized = format!("{portable:?}");

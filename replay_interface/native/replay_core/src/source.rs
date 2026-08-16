@@ -407,6 +407,34 @@ impl PackagedStaticArtifact {
     }
 }
 
+/// The recorder's reserved stand-in for a manifest value the seal could not
+/// make portable (`recorder_host::portable_manifest::PORTABILITY_EXCLUDED_VALUE`).
+///
+/// Spelled again here rather than imported: the extractor's crates are not
+/// dependencies of replay, and what actually binds the two sides is the
+/// container format, not a shared symbol. A container carrying this where
+/// replay expects a claim has a HOLE there, accounted in the container's own
+/// `portability_exclusions` ledger, and replay must refuse it rather than read
+/// the stand-in as data.
+const PORTABILITY_EXCLUDED_VALUE: &str = "__portability_excluded__";
+
+/// The launch display variant, assembled from the settings binding.
+///
+/// The binding carries the display fields and the settings-file digest
+/// SEPARATELY, because a recording holds two endpoint digests (attach and
+/// capture close) and neither may be published as "the" settings hash. The
+/// digest the display values were parsed from is the attach-time one, so that
+/// is the one reassembled here.
+fn recorder_display_variant_value(settings_binding: &Value) -> Option<Value> {
+    let mut display = settings_binding.get("display_variant")?.as_object()?.clone();
+    let attach = settings_binding.get("attach_settings_sha256")?.as_str()?;
+    display.insert(
+        "settings_file_sha256".to_string(),
+        Value::String(attach.to_string()),
+    );
+    Some(Value::Object(display))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecorderDisplayVariant {
@@ -3633,8 +3661,16 @@ fn validate_recorder_content_manifest_join(
                         .into(),
                 ));
             }
-            let recorder_language = modset
-                .get("localisation_language")
+            // The launch settings live in their own binding: a resolved
+            // CONTENT chain no longer implies the settings were proven, and
+            // `settings_binding.authority` states which it is.
+            let settings_binding = modset.get("settings_binding").ok_or_else(|| {
+                SourceError::Open(
+                    "recorder portable content has no modset settings binding".into(),
+                )
+            })?;
+            let recorder_language = settings_binding
+                .get("language")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     SourceError::Open(
@@ -3648,14 +3684,11 @@ fn validate_recorder_content_manifest_join(
                 ));
             }
             let display: RecorderDisplayVariant = serde_json::from_value(
-                modset
-                    .get("display_variant")
-                    .cloned()
-                    .ok_or_else(|| {
-                        SourceError::Open(
-                            "recorder portable content has no launch-bound display variant".into(),
-                        )
-                    })?,
+                recorder_display_variant_value(settings_binding).ok_or_else(|| {
+                    SourceError::Open(
+                        "recorder portable content has no launch-bound display variant".into(),
+                    )
+                })?,
             )
             .map_err(|error| {
                 SourceError::Open(format!(
@@ -3688,6 +3721,22 @@ fn validate_recorder_content_manifest_join(
                 (
                     "settings_file_sha256".into(),
                     display.settings_file_sha256,
+                ),
+                // HOW WELL the settings above are proven travels in the same
+                // map that carries them, so a replay reproducing them cannot
+                // miss that a recording only OBSERVED the disk while the game
+                // was running rather than proving the game read it.
+                (
+                    "settings_authority".into(),
+                    settings_binding
+                        .get("authority")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            SourceError::Open(
+                                "recorder portable content states no settings authority".into(),
+                            )
+                        })?
+                        .to_string(),
                 ),
             ]);
             if container_manifest.required_settings != expected_settings {
@@ -4610,24 +4659,48 @@ fn recorder_manifest_binding_value(
                     "recorder metadata binding check: enabled DLC path {path:?} has no exactly-mapped nonblank display name"
                 ))
             })?;
+        // A HOLE IS NOT A NAME. The seal removes any value it could not make
+        // portable and leaves a reserved stand-in in its place, accounted in
+        // the container's `portability_exclusions` ledger. A DLC display name
+        // is AUTHORED content, so one can carry an absolute path and be
+        // removed; reading the stand-in as the name would publish a recording
+        // whose active-DLC list is fiction.
+        if display == PORTABILITY_EXCLUDED_VALUE {
+            return Err(SourceError::Open(format!(
+                "recorder metadata binding check: enabled DLC path {path:?} has no display \
+                 name in this container -- the seal excluded it as non-portable, and the \
+                 portability_exclusions ledger names it"
+            )));
+        }
         active_dlcs.push(display.to_string());
     }
-    let localisation_language = modset
-        .get("localisation_language")
+    let settings_binding = modset.get("settings_binding").ok_or_else(|| {
+        SourceError::Open(format!(
+            "recorder manifest {reference:?} modset.settings_binding is missing"
+        ))
+    })?;
+    let localisation_language = settings_binding
+        .get("language")
         .and_then(Value::as_str)
-        .filter(|language| !language.trim().is_empty())
+        .filter(|language| {
+            !language.trim().is_empty() && *language != PORTABILITY_EXCLUDED_VALUE
+        })
         .ok_or_else(|| {
             SourceError::Open(format!(
-                "recorder manifest {reference:?} modset.localisation_language is missing or blank"
+                "recorder manifest {reference:?} modset.settings_binding.language is missing, \
+                 blank, or excluded as non-portable"
             ))
         })?
         .to_string();
     let display_variant: RecorderDisplayVariant =
-        serde_json::from_value(modset.get("display_variant").cloned().ok_or_else(|| {
-            SourceError::Open(format!(
-                "recorder manifest {reference:?} modset.display_variant is missing"
-            ))
-        })?)
+        serde_json::from_value(recorder_display_variant_value(settings_binding).ok_or_else(
+            || {
+                SourceError::Open(format!(
+                    "recorder manifest {reference:?} modset.settings_binding.display_variant \
+                     is missing"
+                ))
+            },
+        )?)
         .map_err(|error| {
             SourceError::Open(format!(
                 "recorder manifest {reference:?} modset.display_variant has invalid shape: {error}"
@@ -6683,6 +6756,11 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "e".repeat(64)),
+                // How well the settings are proven travels in the same map
+                // that carries them, so a replay reproducing them cannot miss
+                // that a recording only OBSERVED the settings on disk rather
+                // than proving the game read them.
+                ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
@@ -6699,19 +6777,26 @@ mod tests {
             "portable_content_manifest": serde_json::to_value(&container).unwrap(),
             "modset": {
                 "game": {"exe_sha256": container.source_game.executable_sha256.clone()},
-                "localisation_language": container.localisation_language.clone(),
-                "display_variant": {
-                    "physical_width": 1920,
-                    "physical_height": 1080,
-                    "min_gui_width": 1920,
-                    "min_gui_height": 1080,
-                    "gui_scale_f32_bits": 1.0f32.to_bits(),
-                    "refresh_rate_hz": 60,
-                    "max_refresh_rate_hz": null,
-                    "fullscreen": false,
-                    "borderless": true,
-                    "display_mode": "borderless_fullscreen",
-                    "settings_file_sha256": "e".repeat(64),
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": container.localisation_language.clone(),
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1920,
+                        "min_gui_height": 1080,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": null,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "e".repeat(64),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
                 },
             }
         })
@@ -6733,6 +6818,8 @@ mod tests {
         let mut wrong_display = recorder.clone();
         wrong_display
             .get_mut("modset")
+            .unwrap()
+            .get_mut("settings_binding")
             .unwrap()
             .get_mut("display_variant")
             .unwrap()["physical_width"] = json!(2560);
@@ -6816,16 +6903,23 @@ mod tests {
                         "errors": [],
                         "dlc": {"enabled": ["dlc/a.dlc"]},
                         "dlc_display_names": {"dlc/a.dlc": "DLC A"},
-                        "localisation_language": "l_english",
-                        "display_variant": {
-                            "physical_width": 2752, "physical_height": 1152,
-                            "min_gui_width": 1280, "min_gui_height": 720,
-                            "gui_scale_f32_bits": 1.0f32.to_bits(),
-                            "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
-                            "fullscreen": false, "borderless": true,
-                            "display_mode": "borderless_fullscreen",
-                            "settings_file_sha256": "aa".repeat(32)
-                        }
+                        "settings_binding": {
+                            "authority": "pre_launch_bracketed",
+                            "launch_proven": true,
+                            "errors": [],
+                            "language": "l_english",
+                            "display_variant": {
+                                "physical_width": 2752, "physical_height": 1152,
+                                "min_gui_width": 1280, "min_gui_height": 720,
+                                "gui_scale_f32_bits": 1.0f32.to_bits(),
+                                "refresh_rate_hz": 60, "max_refresh_rate_hz": 75,
+                                "fullscreen": false, "borderless": true,
+                                "display_mode": "borderless_fullscreen",
+                            },
+                            "attach_settings_sha256": "aa".repeat(32),
+                            "seal_settings_sha256": null,
+                            "endpoint_semantics_equal": null
+                        },
                     }
                 }))
                 .unwrap(),
@@ -6867,19 +6961,26 @@ mod tests {
                 "game": {"exe_sha256": content.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
-                "localisation_language": content.localisation_language.clone(),
-                "display_variant": {
-                    "physical_width": 1920,
-                    "physical_height": 1080,
-                    "min_gui_width": 1920,
-                    "min_gui_height": 1080,
-                    "gui_scale_f32_bits": 1.0f32.to_bits(),
-                    "refresh_rate_hz": 60,
-                    "max_refresh_rate_hz": null,
-                    "fullscreen": false,
-                    "borderless": true,
-                    "display_mode": "borderless_fullscreen",
-                    "settings_file_sha256": "e".repeat(64),
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": content.localisation_language.clone(),
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1920,
+                        "min_gui_height": 1080,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": null,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "e".repeat(64),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
                 },
             },
         });
@@ -7111,19 +7212,26 @@ mod tests {
                 "game": {"exe_sha256": content.source_game.executable_sha256.clone()},
                 "dlc": {"enabled": []},
                 "dlc_display_names": {},
-                "localisation_language": content.localisation_language.clone(),
-                "display_variant": {
-                    "physical_width": 1920,
-                    "physical_height": 1080,
-                    "min_gui_width": 1920,
-                    "min_gui_height": 1080,
-                    "gui_scale_f32_bits": 1.0f32.to_bits(),
-                    "refresh_rate_hz": 60,
-                    "max_refresh_rate_hz": null,
-                    "fullscreen": false,
-                    "borderless": true,
-                    "display_mode": "borderless_fullscreen",
-                    "settings_file_sha256": "e".repeat(64),
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": content.localisation_language.clone(),
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1920,
+                        "min_gui_height": 1080,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": null,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "e".repeat(64),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
                 },
             },
         }))
@@ -8142,7 +8250,7 @@ mod tests {
                 "timeline.json" => {
                     br#"{"session_manifest":"recorder/native_session_manifest.json"}"#.as_slice()
                 }
-                "recorder/native_session_manifest.json" => br#"{"modset":{"resolved":true,"errors":[],"dlc":{"enabled":["dlc/a.dlc"]},"dlc_display_names":{"dlc/a.dlc":"DLC A"},"localisation_language":"l_english","display_variant":{"physical_width":2752,"physical_height":1152,"min_gui_width":1280,"min_gui_height":720,"gui_scale_f32_bits":1065353216,"refresh_rate_hz":60,"max_refresh_rate_hz":75,"fullscreen":false,"borderless":true,"display_mode":"borderless_fullscreen","settings_file_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"#,
+                "recorder/native_session_manifest.json" => br#"{"modset":{"resolved":true,"errors":[],"dlc":{"enabled":["dlc/a.dlc"]},"dlc_display_names":{"dlc/a.dlc":"DLC A"},"settings_binding":{"authority":"pre_launch_bracketed","launch_proven":true,"errors":[],"language":"l_english","display_variant":{"physical_width":2752,"physical_height":1152,"min_gui_width":1280,"min_gui_height":720,"gui_scale_f32_bits":1065353216,"refresh_rate_hz":60,"max_refresh_rate_hz":75,"fullscreen":false,"borderless":true,"display_mode":"borderless_fullscreen"},"attach_settings_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","seal_settings_sha256":null,"endpoint_semantics_equal":null}}}"#,
                 other => panic!("unexpected metadata read {other:?}"),
             };
             Ok(Some(bytes.to_vec()))

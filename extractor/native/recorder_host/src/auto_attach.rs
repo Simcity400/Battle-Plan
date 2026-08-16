@@ -236,10 +236,13 @@ mod live {
                 before.key.pid,
                 before.key.creation_filetime.0,
             ) {
-                report.resolved = false;
-                report.errors.push(format!(
-                    "same-process settings authority unavailable: {error}"
-                ));
+                // The authority is the SETTINGS half; a failure to publish or
+                // recover it degrades the settings binding, and says nothing
+                // about the executable, mods or DLC.
+                report.settings.fail_public(
+                    crate::modset::codes::SETTINGS_UNREADABLE,
+                    format!("same-process settings authority unavailable: {error}"),
+                );
             }
             match probe.identify(before.key.pid) {
                 Ok(after) if after == before => {}
@@ -261,8 +264,16 @@ mod live {
                 }
             }
             ModsetResolution {
-                resolved: report.resolved,
-                reasons: report.errors,
+                // Auto-attach arms a capture against a game it did not launch,
+                // so it asks the question it can act on: is the CONTENT bound.
+                // The settings binding travels in the manifest with its own
+                // authority; it is not a reason to refuse an attach.
+                resolved: report.content_resolved,
+                reasons: report
+                    .errors
+                    .iter()
+                    .map(crate::modset::ModsetError::to_string)
+                    .collect(),
             }
         }
     }
