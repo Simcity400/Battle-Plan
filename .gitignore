@@ -157,3 +157,7 @@ __pycache__/
 # lane that needs to quote its own numbers cites the commit, not a path here.
 lane_*_analysis/
 /.lane_be/
+
+# Regenerable decoder checkpoints from captures - never evidence, exceed GitHub 100 MB (lane KS incident 2026-08-16)
+extractor/native/runs/**/.replay_decoder_artifacts-*/
+**/*.h4cp
