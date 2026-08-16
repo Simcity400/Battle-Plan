@@ -1,9 +1,10 @@
 //! d11 `production_live` — per-country stockpiles, production lines, the civil
 //! construction queue, production licences and the convoy bank.
 //!
-//! Derived from `world_fold.rs:16742`-`:17383`
-//! (`fold_production`), its trailer chain parser at `:27419`-`:27524` and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=16742-17383 sha256=038ef1164017e78b3493c03fea9fefd8bb78eafc64e6859348b18ed38d8dd0eb closure=e7ff87844b709b1fbf1d412d281686264cc9c5609f3fe3efe1829a0ef8dbadd0
+//! Derived from `world_fold.rs:16742`-`:17378`
+//! (`fold_production`), its `parse_production_trailers` chain parser and the ten
+// @world-fold-authority domain=11 functions=fold_production lines=16742-17378 sha256=40a03cdacdce9cbce29954118c4f64ca6d807580caa8a1c0aca916f50a8836e3 closure=01e1f16c296a3a1d21af40c1f176318612416fd9f174ac363267ae5860917c3c
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=2b63a23c6f69d9b69c92f7ae67a2817d6902fbe515079f76a27dbc2f82984065
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
 //! `extractor/documents/domains/d11_production_live.md` supplies the native
@@ -343,10 +344,10 @@ pub mod field {
 // --- Payload constants, from `world_fold.rs::fold_production` -------------------
 
 /// `world_fold.rs::fold_production` — `need(payload, 40, "production header")`.
-pub const HEADER_LEN: usize = 40;
-pub const STOCKPILE_ROW_LEN: usize = 16;
-pub const LINE_ROW_LEN: usize = 32;
-pub const CONSTRUCTION_ROW_LEN: usize = 32;
+pub const HEADER_LEN: usize = d11_grammar::BASE_HEADER_LEN;
+pub const STOCKPILE_ROW_LEN: usize = d11_grammar::STOCKPILE_ROW_LEN;
+pub const LINE_ROW_LEN: usize = d11_grammar::LINE_ROW_LEN;
+pub const CONSTRUCTION_ROW_LEN: usize = d11_grammar::CONSTRUCTION_ROW_LEN;
 
 /// `PRODUCTION_SCALE`, applied to the stockpile amount (`:12553`), the line
 /// cost/speed/produced (`:12576`-`:12578`) and the construction cost/produced
@@ -403,14 +404,17 @@ pub const MAX_LICENSE_VARIANT_ID: u32 = 1 << 24;
 /// because d11 is not admitted to the production-codec dependency surface.
 pub const MAX_PRODUCTION_LICENSE_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 
-/// `deployment_queue.rs:5`, `:3`.
-const PDQ1_CODEC_HEADER_LEN: usize = 40;
-const PDQ1_CODEC_MIN_VERSION: u32 = 1;
-const PDQ1_CODEC_VERSION: u32 = 2;
-const PDQ1_CONVEYOR_ID_TYPE: u32 = 64;
-const PDQ1_LINE_ID_TYPE: u32 = 63;
-const PDQ1_TEMPLATE_ID_TYPE: u32 = 52;
-const PDQ1_EQUIPMENT_ID_TYPE: u32 = 70;
+/// Test-visible aliases retained while the nested layout lives in the leaf.
+#[cfg(test)]
+const PDQ1_CODEC_VERSION: u32 = d11_grammar::deployment::SchemaVersion::V2.wire();
+#[cfg(test)]
+const PDQ1_CONVEYOR_ID_TYPE: u32 = d11_grammar::deployment::CONVEYOR_ID_TYPE;
+#[cfg(test)]
+const PDQ1_LINE_ID_TYPE: u32 = d11_grammar::deployment::LINE_ID_TYPE;
+#[cfg(test)]
+const PDQ1_TEMPLATE_ID_TYPE: u32 = d11_grammar::deployment::TEMPLATE_ID_TYPE;
+#[cfg(test)]
+const PDQ1_EQUIPMENT_ID_TYPE: u32 = d11_grammar::deployment::EQUIPMENT_ID_TYPE;
 const PDQ1_MAX_STRING_BYTES: usize = 16 * 1024;
 
 /// The `line_subtype` codes of the `PLS1` join (`world_fold.rs::parse_production_line_subtype_segment`).
@@ -680,7 +684,7 @@ pub fn schema() -> Schema {
                     Field::new(f::RESERVATION_PRIORITY, Kind::Signed),
                     // Production rejects `count < 0` before the row reaches the
                     // fold (`world_fold.rs::parse_country_convoy_bank_segment`; mirrored by this
-                    // module's `parse_convoy_bank_segment`), so the complete
+                    // module's `parse_convoy_bank_segment_leaf`), so the complete
                     // accepted range is exactly `0..=i32::MAX`.
                     Field::new(f::RESERVATION_COUNT, Kind::Unsigned),
                 ],
@@ -803,22 +807,18 @@ pub struct Tables<'a> {
 /// refuse a malformed failure-status record the recorder accepts and skips — a
 /// stream the recorder reads and this arm does not.
 pub fn split_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
-    if payload.len() < HEADER_LEN {
-        return Err(format!(
-            "production payload {} shorter than the {HEADER_LEN}-byte header",
-            payload.len()
-        ));
-    }
+    let header = d11_grammar::read_base_header(payload)
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
     Ok(PayloadHeader {
-        elapsed_wall_ms: u64_at(payload, 0),
-        country_count: u32_at(payload, 8),
-        changed_country_count: u32_at(payload, 12),
-        status_flags: u32_at(payload, 16),
-        scale_raw: u32_at(payload, 20),
-        stockpile_count: u32_at(payload, 24),
-        military_count: u32_at(payload, 28),
-        naval_count: u32_at(payload, 32),
-        construction_count: u32_at(payload, 36),
+        elapsed_wall_ms: header.elapsed_wall_ms,
+        country_count: header.country_count,
+        changed_country_count: header.changed_rows,
+        status_flags: header.status_flags,
+        scale_raw: header.scale_raw,
+        stockpile_count: header.stockpile_count,
+        military_count: header.military_count,
+        naval_count: header.naval_count,
+        construction_count: header.construction_count,
     })
 }
 
@@ -832,41 +832,17 @@ pub fn split_header(payload: &[u8]) -> core::result::Result<PayloadHeader, Strin
 /// `world_fold.rs::fold_production` requires only `payload.len() >= base_len`.
 pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Tables<'_>), String> {
     let header = split_header(payload)?;
-    // Checked throughout: the counts are u32 words off a file on disk and their
-    // byte lengths overflow `usize` on a 32-bit target and can overflow the sum
-    // on any target.
-    let stockpile_bytes = (header.stockpile_count as usize)
-        .checked_mul(STOCKPILE_ROW_LEN)
-        .ok_or("production stockpile_count overflows")?;
-    let line_rows = (header.military_count as usize)
-        .checked_add(header.naval_count as usize)
-        .ok_or("production line counts overflow")?;
-    let line_bytes = line_rows
-        .checked_mul(LINE_ROW_LEN)
-        .ok_or("production line_count overflows")?;
-    let construction_bytes = (header.construction_count as usize)
-        .checked_mul(CONSTRUCTION_ROW_LEN)
-        .ok_or("production construction_count overflows")?;
-    let base_len = HEADER_LEN
-        .checked_add(stockpile_bytes)
-        .and_then(|v| v.checked_add(line_bytes))
-        .and_then(|v| v.checked_add(construction_bytes))
-        .ok_or("production base length overflows")?;
-    if payload.len() < base_len {
-        return Err(format!(
-            "production len {} < base {base_len}",
-            payload.len()
-        ));
-    }
-    let stockpile_end = HEADER_LEN + stockpile_bytes;
-    let lines_end = stockpile_end + line_bytes;
+    let grammar_header = d11_grammar::read_base_header(payload)
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+    let layout = d11_grammar::base_layout(payload, &grammar_header)
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
     Ok((
         header,
         Tables {
-            stockpile: &payload[HEADER_LEN..stockpile_end],
-            lines: &payload[stockpile_end..lines_end],
-            construction: &payload[lines_end..base_len],
-            trailers: &payload[base_len..],
+            stockpile: &payload[layout.stockpiles.start..layout.stockpiles.end],
+            lines: &payload[layout.lines.start..layout.lines.end],
+            construction: &payload[layout.construction.start..layout.construction.end],
+            trailers: &payload[layout.base_len..],
         },
     ))
 }
@@ -1010,385 +986,585 @@ pub fn parse_trailers(
     status: StatusPredicates,
 ) -> core::result::Result<Trailers, String> {
     let mut out = Trailers::default();
-    let mut offset = 0usize;
-    while offset < trailers.len() {
-        if offset + 4 > trailers.len() {
-            return Err("production trailer magic".into());
-        }
-        let magic: [u8; 4] = trailers[offset..offset + 4].try_into().expect("4 bytes");
-        let next = match &magic {
-            b"PLIC" => {
-                duplicate(out.licenses_by_tag.is_some(), "PLIC")?;
-                let (rows, next) = parse_license_segment(trailers, offset)?;
+    let mut cursor = d11_grammar::TrailerCursor::for_trailer_slice();
+    loop {
+        let step = cursor
+            .next(trailers)
+            .map_err(|violation| format_grammar_violation(trailers, violation, None))?;
+        let d11_grammar::TrailerStep::Magic { trailer, .. } = step else {
+            return Ok(out);
+        };
+        let preview = cursor.peek_header(trailers).ok();
+        match trailer {
+            d11_grammar::Trailer::Plic => {
+                let body = cursor
+                    .read_body_recoverable(trailers)
+                    .map_err(|violation| format_grammar_violation(trailers, violation, preview))?;
+                let d11_grammar::TrailerBody::Plic(body) = body else {
+                    unreachable!()
+                };
+                let (rows, resume) = parse_license_segment_leaf(trailers, body)?;
                 out.licenses_by_tag = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PVJ1" => {
-                duplicate(out.variant_by_line.is_some(), "PVJ1")?;
-                let (rows, next) = parse_line_u32_segment(trailers, offset, "PVJ1", |row_index, value| {
-                    if value == 0 || value > i32::MAX as u32 {
-                        return Err(format!(
-                            "PVJ1 row {row_index} has invalid equipment_variant_id {value}"
-                        ));
-                    }
-                    Ok(value)
-                })?;
+            d11_grammar::Trailer::Pvj1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pvj1)?;
+                let (rows, resume) = parse_pvj1_segment_leaf(trailers, body)?;
                 out.variant_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PFR1" => {
-                duplicate(out.requested_factories_by_line.is_some(), "PFR1")?;
-                let (rows, next) = parse_line_u32_segment(trailers, offset, "PFR1", |row_index, value| {
-                    let value = value as i32;
-                    if !(0..=MAX_REQUESTED_FACTORIES).contains(&value) {
-                        return Err(format!(
-                            "PFR1 row {row_index} has invalid requested_factories {value}"
-                        ));
-                    }
-                    Ok(value)
-                })?;
+            d11_grammar::Trailer::Pfr1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pfr1)?;
+                let (rows, resume) = parse_pfr1_segment_leaf(trailers, body)?;
                 out.requested_factories_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PPR1" => {
-                duplicate(out.priority_by_line.is_some(), "PPR1")?;
-                let (rows, next) = parse_line_u32_segment(trailers, offset, "PPR1", |row_index, value| {
-                    let value = value as i32;
-                    if !(0..=MAX_LINE_PRIORITY).contains(&value) {
-                        return Err(format!("PPR1 row {row_index} has invalid priority {value}"));
-                    }
-                    Ok(value)
-                })?;
+            d11_grammar::Trailer::Ppr1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Ppr1)?;
+                let (rows, resume) = parse_ppr1_segment_leaf(trailers, body)?;
                 out.priority_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PLS1" => {
-                duplicate(out.subtype_by_line.is_some(), "PLS1")?;
-                let (rows, next) = parse_subtype_segment(trailers, offset)?;
+            d11_grammar::Trailer::Pls1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pls1)?;
+                let (rows, resume) = parse_pls1_segment_leaf(trailers, body)?;
                 out.subtype_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PEF1" => {
-                duplicate(out.efficiency_by_line.is_some(), "PEF1")?;
-                let (rows, next) = parse_efficiency_segment(trailers, offset)?;
+            d11_grammar::Trailer::Pef1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pef1)?;
+                let (rows, resume) = parse_pef1_segment_leaf(trailers, body)?;
                 out.efficiency_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PMI1" => {
-                duplicate(out.mio_by_line.is_some(), "PMI1")?;
-                // `world_fold.rs::parse_production_mio_join_segment` checks tag/kind but puts NO range check
-                // on `mio_id`: zero is the proven-null CID and every other value
-                // is an id.
-                let (rows, next) =
-                    parse_line_u32_segment(trailers, offset, "PMI1", |_, value| Ok(value))?;
+            d11_grammar::Trailer::Pmi1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pmi1)?;
+                let (rows, resume) = parse_pmi1_segment_leaf(trailers, body)?;
                 out.mio_by_line = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PCP1" => {
-                duplicate(out.completeness_by_tag.is_some(), "PCP1")?;
-                let (rows, next) = parse_completeness_segment(trailers, offset)?;
+            d11_grammar::Trailer::Pcp1 => {
+                let body = read_fixed_body(trailers, cursor, preview, d11_grammar::Trailer::Pcp1)?;
+                let (rows, resume) = parse_pcp1_segment_leaf(trailers, body)?;
                 out.completeness_by_tag = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PCV1" => {
-                duplicate(out.convoy_bank_by_tag.is_some(), "PCV1")?;
-                let (rows, next) = parse_convoy_bank_segment(trailers, offset)?;
+            d11_grammar::Trailer::Pcv1 => {
+                let body = cursor
+                    .read_body(trailers)
+                    .map_err(|violation| format_grammar_violation(trailers, violation, preview))?;
+                let d11_grammar::TrailerBody::Pcv1(body) = body else {
+                    unreachable!()
+                };
+                let (rows, resume) = parse_convoy_bank_segment_leaf(trailers, body)?;
                 out.convoy_bank_by_tag = Some(rows);
-                next
+                cursor = resume.resume();
             }
-            b"PDQ1" => {
-                duplicate(out.deployment.is_some(), "PDQ1")?;
-                let (shape, next) = parse_deployment_segment(trailers, offset, status)?;
+            d11_grammar::Trailer::Pdq1 => {
+                let body = cursor
+                    .read_body(trailers)
+                    .map_err(|violation| format_grammar_violation(trailers, violation, preview))?;
+                let d11_grammar::TrailerBody::Pdq1(body) = body else {
+                    unreachable!()
+                };
+                let (shape, resume) = parse_deployment_segment_leaf(trailers, body, status)?;
                 // `world_fold.rs::parse_production_trailers`.
-                if next != trailers.len() {
+                if resume.end() != trailers.len() {
                     return Err("PDQ1 must be the final D11 trailer".into());
                 }
                 out.deployment = Some(shape);
-                next
+                cursor = resume.resume();
             }
-            _ => return Err("production trailing bytes are not a known D11 trailer".into()),
-        };
-        // Every parser returns a strictly greater offset (each enforces a
-        // non-zero header length), but a zero-length segment would spin forever
-        // if one ever did not.
-        if next <= offset {
-            return Err("production trailer chain does not advance".into());
         }
-        offset = next;
-    }
-    Ok(out)
-}
-
-fn duplicate(seen: bool, magic: &str) -> core::result::Result<(), String> {
-    if seen {
-        Err(format!("production has duplicate {magic} trailer"))
-    } else {
-        Ok(())
     }
 }
 
-/// The 20-byte self-sized header nine of the ten segments share.
-struct SegmentHeader {
-    row_count: usize,
-    segment_len: usize,
-    body: usize,
+fn format_header_shape(payload: &[u8], preview: d11_grammar::HeaderPreview) -> String {
+    let available = payload.len().saturating_sub(preview.at);
+    match preview.trailer {
+        d11_grammar::Trailer::Plic => format!(
+            "production license trailer header shape invalid (version {}, header_len {}, reserved {})",
+            preview.version,
+            preview.header_len,
+            preview.reserved()
+        ),
+        d11_grammar::Trailer::Pdq1 => format!(
+            "PDQ1 header shape invalid (version {}, header_len {}, segment_len {}, codec_payload_len {}, reserved {}, available {available})",
+            preview.version,
+            preview.header_len,
+            preview.words[0],
+            preview.words[1],
+            preview.reserved()
+        ),
+        trailer => format!(
+            "{} header shape invalid (version {}, header_len {}, segment_len {}, expected {}, reserved {}, available {available})",
+            trailer.label(),
+            preview.version,
+            preview.header_len,
+            preview.words[0],
+            preview.computed_len(),
+            preview.reserved()
+        ),
+    }
 }
 
-fn parse_segment_header(
-    trailers: &[u8],
-    offset: usize,
-    magic: &str,
-    row_len: usize,
-) -> core::result::Result<SegmentHeader, String> {
-    const HEADER: usize = 20;
-    let trailer = trailers
-        .get(offset..)
-        .ok_or_else(|| format!("{magic} offset beyond payload"))?;
-    if trailer.len() < HEADER {
-        return Err(format!(
-            "{magic} trailer is {} byte(s), expected at least {HEADER}",
-            trailer.len()
-        ));
+fn format_grammar_violation(
+    payload: &[u8],
+    violation: d11_grammar::Violation,
+    preview: Option<d11_grammar::HeaderPreview>,
+) -> String {
+    use d11_grammar::{ArithmeticOp, CallerDefect, Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section,
+            needed,
+            available,
+        } => match section {
+            Section::BaseHeader => format!(
+                "production payload {} shorter than the {HEADER_LEN}-byte header",
+                payload.len()
+            ),
+            Section::BaseStockpiles | Section::BaseLines | Section::BaseConstruction => {
+                let base_len = d11_grammar::read_base_header(payload)
+                    .ok()
+                    .and_then(|header| d11_grammar::derive_base_layout(&header).ok())
+                    .map_or(needed, |layout| layout.base_len);
+                format!("production len {available} < base {base_len}")
+            }
+            Section::TrailerMagic => "production trailer magic".to_string(),
+            Section::TrailerHeader(trailer) => {
+                let available = payload.len().saturating_sub(violation.at);
+                match trailer {
+                    d11_grammar::Trailer::Plic => format!(
+                        "production license trailer is {available} byte(s), expected at least {}",
+                        trailer.header_len()
+                    ),
+                    d11_grammar::Trailer::Pvj1
+                    | d11_grammar::Trailer::Pfr1
+                    | d11_grammar::Trailer::Ppr1
+                    | d11_grammar::Trailer::Pls1
+                    | d11_grammar::Trailer::Pef1
+                    | d11_grammar::Trailer::Pmi1
+                    | d11_grammar::Trailer::Pcp1
+                    | d11_grammar::Trailer::Pcv1
+                    | d11_grammar::Trailer::Pdq1 => format!(
+                        "{} trailer is {available} byte(s), expected at least {}",
+                        trailer.label(),
+                        trailer.header_len()
+                    ),
+                }
+            }
+            Section::TrailerBody(d11_grammar::Trailer::Plic) => {
+                let expected = preview.map_or(needed.saturating_sub(violation.at), |value| {
+                    value.computed_len()
+                });
+                format!(
+                    "production license trailer len {} < {expected}",
+                    payload.len().saturating_sub(violation.at)
+                )
+            }
+            Section::TrailerBody(_) => preview
+                .map(|value| format_header_shape(payload, value))
+                .unwrap_or_else(|| format!("production len {available} < base {needed}")),
+        },
+        ViolationKind::UnknownTrailerMagic { .. } => {
+            "production trailing bytes are not a known D11 trailer".to_string()
+        }
+        ViolationKind::DuplicateTrailer { trailer, .. } => {
+            format!("production has duplicate {} trailer", trailer.label())
+        }
+        ViolationKind::UnknownVersion { .. }
+        | ViolationKind::HeaderLen { .. }
+        | ViolationKind::ReservedWord { .. }
+        | ViolationKind::DeclaredExtent { .. } => preview
+            .map(|value| format_header_shape(payload, value))
+            .unwrap_or_else(|| "production trailer header shape invalid".to_string()),
+        ViolationKind::PlicItemCount {
+            declared_items,
+            summed_items,
+        } => format!(
+            "production license id total {summed_items} != id_rows {declared_items}"
+        ),
+        ViolationKind::ArithmeticOverflow {
+            section,
+            operation,
+            right,
+            ..
+        } => match (section, operation, right) {
+            (Section::BaseStockpiles, ArithmeticOp::Multiply, _) => {
+                "production stockpile_count overflows".to_string()
+            }
+            (Section::BaseLines, ArithmeticOp::Add, _) => {
+                "production line counts overflow".to_string()
+            }
+            (Section::BaseLines, ArithmeticOp::Multiply, _) => {
+                "production line_count overflows".to_string()
+            }
+            (Section::BaseConstruction, ArithmeticOp::Multiply, _) => {
+                "production construction_count overflows".to_string()
+            }
+            (Section::BaseStockpiles | Section::BaseLines | Section::BaseConstruction, _, _) => {
+                "production base length overflows".to_string()
+            }
+            (Section::TrailerBody(d11_grammar::Trailer::Plic), _, _) => {
+                "production license trailer size overflow".to_string()
+            }
+            (Section::TrailerBody(d11_grammar::Trailer::Pcv1), _, _)
+            | (Section::TrailerBody(d11_grammar::Trailer::Pdq1), _, _) => {
+                let trailer = match section {
+                    Section::TrailerBody(value) => value,
+                    _ => unreachable!(),
+                };
+                format!("{} segment size overflow", trailer.label())
+            }
+            (Section::TrailerBody(_), _, _) | (Section::TrailerMagic, _, _)
+            | (Section::TrailerHeader(_), _, _) | (Section::BaseHeader, _, _) => {
+                "production segment size overflow".to_string()
+            }
+        },
+        ViolationKind::CallerDefect(defect) => match defect {
+            CallerDefect::BodyNotDelimited => {
+                "production trailer body was not delimited".to_string()
+            }
+            CallerDefect::BlockNotConsumed {
+                owner,
+                block,
+                remaining,
+            } => format!(
+                "production caller did not consume {remaining} row(s) from {owner:?} {}",
+                block.name()
+            ),
+        },
     }
-    let version = u16_at(trailer, 4);
-    let header_len = u16_at(trailer, 6) as usize;
-    let segment_len = u32_at(trailer, 8) as usize;
-    let row_count = u32_at(trailer, 12) as usize;
-    let reserved = u32_at(trailer, 16);
-    let expected = row_count
-        .checked_mul(row_len)
-        .and_then(|v| v.checked_add(HEADER))
-        .ok_or_else(|| format!("{magic} segment size overflow"))?;
-    if version != 1
-        || header_len != HEADER
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        return Err(format!(
-            "{magic} header shape invalid (version {version}, header_len {header_len}, \
-             segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-    }
-    Ok(SegmentHeader {
-        row_count,
-        segment_len,
-        body: offset + HEADER,
-    })
 }
 
-/// The five 16-byte line joins whose payload word is one `u32`: `PVJ1`, `PFR1`,
-/// `PPR1`, `PMI1` (and `PLS1`, which needs the kind too and has its own parser).
-/// `world_fold.rs:28240`, `:28301`, `:28365`, `:27776` are byte-identical apart
-/// from the value check, which is the closure.
-fn parse_line_u32_segment<T>(
-    trailers: &[u8],
-    offset: usize,
-    magic: &str,
-    check: impl Fn(usize, u32) -> core::result::Result<T, String>,
-) -> core::result::Result<(BTreeMap<LineKey, T>, usize), String> {
-    let header = parse_segment_header(trailers, offset, magic, 16)?;
+fn read_fixed_body(
+    payload: &[u8],
+    cursor: d11_grammar::TrailerCursor,
+    preview: Option<d11_grammar::HeaderPreview>,
+    expected: d11_grammar::Trailer,
+) -> core::result::Result<d11_grammar::FixedCursor, String> {
+    let body = cursor
+        .read_body(payload)
+        .map_err(|violation| format_grammar_violation(payload, violation, preview))?;
+    let (actual, body) = match body {
+        d11_grammar::TrailerBody::Pvj1(body) => (d11_grammar::Trailer::Pvj1, body),
+        d11_grammar::TrailerBody::Pfr1(body) => (d11_grammar::Trailer::Pfr1, body),
+        d11_grammar::TrailerBody::Ppr1(body) => (d11_grammar::Trailer::Ppr1, body),
+        d11_grammar::TrailerBody::Pls1(body) => (d11_grammar::Trailer::Pls1, body),
+        d11_grammar::TrailerBody::Pef1(body) => (d11_grammar::Trailer::Pef1, body),
+        d11_grammar::TrailerBody::Pmi1(body) => (d11_grammar::Trailer::Pmi1, body),
+        d11_grammar::TrailerBody::Pcp1(body) => (d11_grammar::Trailer::Pcp1, body),
+        d11_grammar::TrailerBody::Plic(_)
+        | d11_grammar::TrailerBody::Pcv1(_)
+        | d11_grammar::TrailerBody::Pdq1(_) => unreachable!(),
+    };
+    debug_assert_eq!(actual, expected);
+    Ok(body)
+}
+
+fn parse_line_value_segment_leaf<T>(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+    read: impl Fn(&[u8], usize) -> core::result::Result<(d11_grammar::LineKey, T), d11_grammar::Violation>,
+    check: impl Fn(usize, T) -> core::result::Result<T, String>,
+) -> core::result::Result<(BTreeMap<LineKey, T>, d11_grammar::TrailerResume), String> {
+    let magic = body.header().trailer.label();
     let mut out = BTreeMap::new();
-    for row_index in 0..header.row_count {
-        let cursor = header.body + row_index * 16;
-        let tag_db_id = u32_at(trailers, cursor);
-        let kind = u32_at(trailers, cursor + 4);
-        let line_id = i32_at(trailers, cursor + 8);
-        let value = u32_at(trailers, cursor + 12);
-        if tag_db_id == 0 {
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let (key, value) = read(payload, at)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        if key.tag_db_id == 0 {
             return Err(format!("{magic} row {row_index} has zero tag_db_id"));
         }
-        if kind != KIND_MILITARY && kind != KIND_NAVAL {
-            return Err(format!("{magic} row {row_index} has invalid kind {kind}"));
+        if key.kind != KIND_MILITARY && key.kind != KIND_NAVAL {
+            return Err(format!("{magic} row {row_index} has invalid kind {}", key.kind));
         }
         let value = check(row_index, value)?;
-        if out.insert((tag_db_id, kind, line_id), value).is_some() {
+        if out
+            .insert((key.tag_db_id, key.kind, key.line_id), value)
+            .is_some()
+        {
             return Err(format!(
-                "{magic} duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+                "{magic} duplicates tag {} kind {} line_id {}",
+                key.tag_db_id, key.kind, key.line_id
             ));
         }
     }
-    Ok((out, offset + header.segment_len))
+    let resume = rows
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        .next;
+    Ok((out, resume))
 }
 
-/// `world_fold.rs::parse_production_line_subtype_segment`. The kind/subtype pair is checked jointly, so a valid
-/// subtype under the wrong kind refuses the segment.
-fn parse_subtype_segment(
-    trailers: &[u8],
-    offset: usize,
-) -> core::result::Result<(BTreeMap<LineKey, LineSubtype>, usize), String> {
-    let header = parse_segment_header(trailers, offset, "PLS1", 16)?;
+fn parse_pvj1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<(BTreeMap<LineKey, u32>, d11_grammar::TrailerResume), String> {
+    parse_line_value_segment_leaf(
+        payload,
+        body,
+        |payload, at| d11_grammar::pvj_row_at(payload, at).map(|row| (row.key, row.equipment_variant_id)),
+        |row_index, value| {
+            if value == 0 || value > i32::MAX as u32 {
+                return Err(format!(
+                    "PVJ1 row {row_index} has invalid equipment_variant_id {value}"
+                ));
+            }
+            Ok(value)
+        },
+    )
+}
+
+fn parse_pfr1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<(BTreeMap<LineKey, i32>, d11_grammar::TrailerResume), String> {
+    parse_line_value_segment_leaf(
+        payload,
+        body,
+        |payload, at| d11_grammar::pfr_row_at(payload, at).map(|row| (row.key, row.requested_factories)),
+        |row_index, value| {
+            if !(0..=MAX_REQUESTED_FACTORIES).contains(&value) {
+                return Err(format!(
+                    "PFR1 row {row_index} has invalid requested_factories {value}"
+                ));
+            }
+            Ok(value)
+        },
+    )
+}
+
+fn parse_ppr1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<(BTreeMap<LineKey, i32>, d11_grammar::TrailerResume), String> {
+    parse_line_value_segment_leaf(
+        payload,
+        body,
+        |payload, at| d11_grammar::ppr_row_at(payload, at).map(|row| (row.key, row.priority)),
+        |row_index, value| {
+            if !(0..=MAX_LINE_PRIORITY).contains(&value) {
+                return Err(format!("PPR1 row {row_index} has invalid priority {value}"));
+            }
+            Ok(value)
+        },
+    )
+}
+
+fn parse_pmi1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<(BTreeMap<LineKey, u32>, d11_grammar::TrailerResume), String> {
+    parse_line_value_segment_leaf(
+        payload,
+        body,
+        |payload, at| d11_grammar::pmi_row_at(payload, at).map(|row| (row.key, row.mio_id)),
+        |_, value| Ok(value),
+    )
+}
+
+fn parse_pls1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<
+    (BTreeMap<LineKey, LineSubtype>, d11_grammar::TrailerResume),
+    String,
+> {
     let mut out = BTreeMap::new();
-    for row_index in 0..header.row_count {
-        let cursor = header.body + row_index * 16;
-        let tag_db_id = u32_at(trailers, cursor);
-        let kind = u32_at(trailers, cursor + 4);
-        let line_id = i32_at(trailers, cursor + 8);
-        let subtype = u32_at(trailers, cursor + 12);
-        if tag_db_id == 0 {
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = d11_grammar::pls_row_at(payload, at)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        let key = row.key;
+        if key.tag_db_id == 0 {
             return Err(format!("PLS1 row {row_index} has zero tag_db_id"));
         }
-        let subtype = LineSubtype::from_wire(kind, subtype).ok_or_else(|| {
-            format!("PLS1 row {row_index} has incoherent kind/subtype ({kind}, {subtype})")
+        let subtype = LineSubtype::from_wire(key.kind, row.subtype).ok_or_else(|| {
+            format!(
+                "PLS1 row {row_index} has incoherent kind/subtype ({}, {})",
+                key.kind, row.subtype
+            )
         })?;
-        if out.insert((tag_db_id, kind, line_id), subtype).is_some() {
+        if out
+            .insert((key.tag_db_id, key.kind, key.line_id), subtype)
+            .is_some()
+        {
             return Err(format!(
-                "PLS1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+                "PLS1 duplicates tag {} kind {} line_id {}",
+                key.tag_db_id, key.kind, key.line_id
             ));
         }
     }
-    Ok((out, offset + header.segment_len))
+    let resume = rows
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        .next;
+    Ok((out, resume))
 }
 
-/// `world_fold.rs::parse_production_efficiency_segment`. 36-byte rows, three i64 channels, all non-negative.
-fn parse_efficiency_segment(
-    trailers: &[u8],
-    offset: usize,
-) -> core::result::Result<(BTreeMap<LineKey, Efficiency>, usize), String> {
-    let header = parse_segment_header(trailers, offset, "PEF1", 36)?;
+fn parse_pef1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<
+    (BTreeMap<LineKey, Efficiency>, d11_grammar::TrailerResume),
+    String,
+> {
     let mut out = BTreeMap::new();
-    for row_index in 0..header.row_count {
-        let cursor = header.body + row_index * 36;
-        let tag_db_id = u32_at(trailers, cursor);
-        let kind = u32_at(trailers, cursor + 4);
-        let line_id = i32_at(trailers, cursor + 8);
-        let efficiency_raw = i64_at(trailers, cursor + 12);
-        let efficiency_cap_raw = i64_at(trailers, cursor + 20);
-        let efficiency_growth_raw = i64_at(trailers, cursor + 28);
-        if tag_db_id == 0 || (kind != KIND_MILITARY && kind != KIND_NAVAL) {
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = d11_grammar::pef_row_at(payload, at)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        let key = row.key;
+        if key.tag_db_id == 0 || (key.kind != KIND_MILITARY && key.kind != KIND_NAVAL) {
             return Err(format!(
-                "PEF1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
+                "PEF1 row {row_index} has invalid tag/kind ({}, {})",
+                key.tag_db_id, key.kind
             ));
         }
-        if efficiency_raw < 0 || efficiency_cap_raw < 0 || efficiency_growth_raw < 0 {
+        if row.efficiency_raw < 0
+            || row.efficiency_cap_raw < 0
+            || row.efficiency_growth_raw < 0
+        {
             return Err(format!(
-                "PEF1 row {row_index} has negative efficiency values \
-                 ({efficiency_raw}, {efficiency_cap_raw}, {efficiency_growth_raw})"
+                "PEF1 row {row_index} has negative efficiency values ({}, {}, {})",
+                row.efficiency_raw, row.efficiency_cap_raw, row.efficiency_growth_raw
             ));
         }
         let values = Efficiency {
-            efficiency_raw,
-            efficiency_cap_raw,
-            efficiency_growth_raw,
+            efficiency_raw: row.efficiency_raw,
+            efficiency_cap_raw: row.efficiency_cap_raw,
+            efficiency_growth_raw: row.efficiency_growth_raw,
         };
-        if out.insert((tag_db_id, kind, line_id), values).is_some() {
+        if out
+            .insert((key.tag_db_id, key.kind, key.line_id), values)
+            .is_some()
+        {
             return Err(format!(
-                "PEF1 duplicates tag {tag_db_id} kind {kind} line_id {line_id}"
+                "PEF1 duplicates tag {} kind {} line_id {}",
+                key.tag_db_id, key.kind, key.line_id
             ));
         }
     }
-    Ok((out, offset + header.segment_len))
+    let resume = rows
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        .next;
+    Ok((out, resume))
 }
 
-/// `world_fold.rs::parse_production_completeness_segment`. 8-byte rows of `(tag_db_id, flags)`.
-fn parse_completeness_segment(
-    trailers: &[u8],
-    offset: usize,
-) -> core::result::Result<(BTreeMap<u32, u32>, usize), String> {
-    let header = parse_segment_header(trailers, offset, "PCP1", 8)?;
+fn parse_pcp1_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::FixedCursor,
+) -> core::result::Result<(BTreeMap<u32, u32>, d11_grammar::TrailerResume), String> {
     let mut out = BTreeMap::new();
-    for row_index in 0..header.row_count {
-        let cursor = header.body + row_index * 8;
-        let tag_db_id = u32_at(trailers, cursor);
-        let flags = u32_at(trailers, cursor + 4);
-        if tag_db_id == 0 {
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = d11_grammar::pcp_row_at(payload, at)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        if row.tag_db_id == 0 {
             return Err(format!("PCP1 row {row_index} has zero tag_db_id"));
         }
-        if flags & !PCP1_KNOWN_FLAGS != 0 {
-            return Err(format!("PCP1 row {row_index} has unknown flags {flags:#x}"));
-        }
-        if out.insert(tag_db_id, flags).is_some() {
-            return Err(format!("PCP1 duplicates tag_db_id {tag_db_id}"));
-        }
-    }
-    Ok((out, offset + header.segment_len))
-}
-
-/// `world_fold.rs::parse_production_license_segment`. The one segment with no `segment_len` word: v1 has
-/// 4-byte items, v2 16-byte items, and the length is computed from two counts.
-fn parse_license_segment(
-    trailers: &[u8],
-    offset: usize,
-) -> core::result::Result<(BTreeMap<u32, LicenseSet>, usize), String> {
-    const HEADER: usize = 20;
-    let trailer = trailers
-        .get(offset..)
-        .ok_or_else(|| "production license trailer offset beyond payload".to_string())?;
-    if trailer.len() < HEADER {
-        return Err(format!(
-            "production license trailer is {} byte(s), expected at least {HEADER}",
-            trailer.len()
-        ));
-    }
-    let version = u16_at(trailer, 4);
-    let header_len = u16_at(trailer, 6) as usize;
-    let country_rows = u32_at(trailer, 8) as usize;
-    let id_rows = u32_at(trailer, 12) as usize;
-    let reserved = u32_at(trailer, 16);
-    if (version != 1 && version != 2) || header_len != HEADER || reserved != 0 {
-        return Err(format!(
-            "production license trailer header shape invalid \
-             (version {version}, header_len {header_len}, reserved {reserved})"
-        ));
-    }
-    let item_len = if version == 1 { 4 } else { 16 };
-    let detail = if version == 1 {
-        LicenseDetail::IdsOnly
-    } else {
-        LicenseDetail::IdsAndVariants
-    };
-    let expected = country_rows
-        .checked_mul(8)
-        .and_then(|v| v.checked_add(id_rows.checked_mul(item_len)?))
-        .and_then(|v| v.checked_add(HEADER))
-        .ok_or_else(|| "production license trailer size overflow".to_string())?;
-    if trailer.len() < expected {
-        return Err(format!(
-            "production license trailer len {} < {expected}",
-            trailer.len()
-        ));
-    }
-    let mut cursor = HEADER;
-    let mut counts: Vec<(u32, usize)> = Vec::with_capacity(country_rows);
-    let mut seen_country = BTreeSet::new();
-    let mut total_ids = 0usize;
-    for _ in 0..country_rows {
-        let tag_db_id = u32_at(trailer, cursor);
-        let count = u32_at(trailer, cursor + 4) as usize;
-        cursor += 8;
-        if tag_db_id == 0 {
-            return Err("production license country row has zero tag_db_id".into());
-        }
-        if !seen_country.insert(tag_db_id) {
+        if row.flags & !PCP1_KNOWN_FLAGS != 0 {
             return Err(format!(
-                "production license trailer duplicates tag_db_id {tag_db_id}"
+                "PCP1 row {row_index} has unknown flags {:#x}",
+                row.flags
             ));
         }
-        total_ids = total_ids.saturating_add(count);
-        counts.push((tag_db_id, count));
+        if out.insert(row.tag_db_id, row.flags).is_some() {
+            return Err(format!("PCP1 duplicates tag_db_id {}", row.tag_db_id));
+        }
     }
-    if total_ids != id_rows {
+    let resume = rows
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        .next;
+    Ok((out, resume))
+}
+
+fn parse_license_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::PlicCursor,
+) -> core::result::Result<
+    (BTreeMap<u32, LicenseSet>, d11_grammar::TrailerResume),
+    String,
+> {
+    let header = *body.header();
+    let version = header.version;
+    let detail = match version {
+        d11_grammar::PlicVersion::V1 => LicenseDetail::IdsOnly,
+        d11_grammar::PlicVersion::V2 => LicenseDetail::IdsAndVariants,
+    };
+    let mut counts = Vec::with_capacity(header.country_count);
+    let mut seen_country = BTreeSet::new();
+    let mut countries = body.countries();
+    while let d11_grammar::RowStep::Row { at, .. } = countries.next() {
+        let row = d11_grammar::plic_country_row_at(payload, at)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        if row.tag_db_id == 0 {
+            return Err("production license country row has zero tag_db_id".into());
+        }
+        if !seen_country.insert(row.tag_db_id) {
+            return Err(format!(
+                "production license trailer duplicates tag_db_id {}",
+                row.tag_db_id
+            ));
+        }
+        counts.push((row.tag_db_id, row.count as usize));
+    }
+    let countries_end = countries
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+    if header.summed_item_count != header.item_count {
         return Err(format!(
-            "production license id total {total_ids} != id_rows {id_rows}"
+            "production license id total {} != id_rows {}",
+            header.summed_item_count, header.item_count
         ));
     }
-    let mut out: BTreeMap<u32, LicenseSet> = BTreeMap::new();
+    let mut items = countries_end.next.items();
+    let mut out = BTreeMap::new();
     for (tag_db_id, count) in counts {
-        let mut items = Vec::with_capacity(count);
+        let mut license_items = Vec::with_capacity(count);
         let mut seen_ids = BTreeSet::new();
         for expected_order in 0..count {
-            let variant_id = u32_at(trailer, cursor);
-            let (visible_order, creator, origin) = if version == 2 {
-                (
-                    Some(u32_at(trailer, cursor + 4)),
-                    Some(u32_at(trailer, cursor + 8)),
-                    Some(u32_at(trailer, cursor + 12)),
-                )
-            } else {
-                (None, None, None)
+            let d11_grammar::RowStep::Row { at, .. } = items.next() else {
+                unreachable!()
             };
-            cursor += item_len;
+            let (variant_id, visible_order, creator, origin) = match version {
+                d11_grammar::PlicVersion::V1 => {
+                    let row = d11_grammar::plic_v1_item_at(payload, at)
+                        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+                    (row.variant_id, None, None, None)
+                }
+                d11_grammar::PlicVersion::V2 => {
+                    let row = d11_grammar::plic_v2_item_at(payload, at)
+                        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+                    (
+                        row.variant_id,
+                        Some(row.visible_order),
+                        Some(row.creator_tag_db_id),
+                        Some(row.origin_tag_db_id),
+                    )
+                }
+            };
             if variant_id == 0 || variant_id >= MAX_LICENSE_VARIANT_ID {
                 return Err(format!(
                     "production license id {variant_id} for tag {tag_db_id} out of range"
@@ -1399,163 +1575,120 @@ fn parse_license_segment(
                     "production license tag {tag_db_id} duplicates variant_id {variant_id}"
                 ));
             }
-            if version == 2 {
-                let (order, creator, origin) = (
-                    visible_order.expect("v2"),
-                    creator.expect("v2"),
-                    origin.expect("v2"),
-                );
-                // `> i32::MAX` is one short of the id rule: it admits
-                // `i32::MAX`, the size ceiling, which no database can index.
+            if let (Some(order), Some(creator), Some(origin)) =
+                (visible_order, creator, origin)
+            {
                 if order != expected_order as u32
                     || creator == 0
                     || creator > MAX_PRODUCTION_LICENSE_TAG_DB_ID
                     || origin > MAX_PRODUCTION_LICENSE_TAG_DB_ID
                 {
                     return Err(format!(
-                        "production license v2 tag {tag_db_id} row {expected_order} has invalid \
-                         order/creator/origin ({order}, {creator}, {origin})"
+                        "production license v2 tag {tag_db_id} row {expected_order} has invalid order/creator/origin ({order}, {creator}, {origin})"
                     ));
                 }
             }
-            items.push(LicenseItem {
+            license_items.push(LicenseItem {
                 variant_id,
                 visible_order,
                 creator_tag_db_id: creator,
                 origin_tag_db_id: origin,
             });
         }
-        // `world_fold.rs::parse_production_license_segment`: v1 sorts its ids, so a v1 country's
-        // fold order is ascending `variant_id` — which is the keyed set's own
-        // order. v2 keeps manager order and carries `visible_order` for it.
-        if version == 1 {
-            items.sort_unstable_by_key(|item| item.variant_id);
+        if version == d11_grammar::PlicVersion::V1 {
+            license_items.sort_unstable_by_key(|item| item.variant_id);
         }
-        out.insert(tag_db_id, LicenseSet { detail, items });
+        out.insert(
+            tag_db_id,
+            LicenseSet {
+                detail,
+                items: license_items,
+            },
+        );
     }
-    Ok((out, offset + expected))
+    let resume = items
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        .next;
+    Ok((out, resume))
 }
 
-/// `world_fold.rs::parse_country_convoy_bank_segment`. A 28-byte header, three parallel row runs and canonical
-/// (start, len) ranges into them.
-fn parse_convoy_bank_segment(
-    trailers: &[u8],
-    offset: usize,
-) -> core::result::Result<(BTreeMap<u32, ConvoyBank>, usize), String> {
-    const HEADER: usize = 28;
-    const COUNTRY_ROW: usize = 40;
-    const VARIANT_ROW: usize = 16;
-    const RESERVATION_ROW: usize = 8;
-    let trailer = trailers
-        .get(offset..)
-        .ok_or_else(|| "PCV1 offset beyond payload".to_string())?;
-    if trailer.len() < HEADER {
-        return Err(format!(
-            "PCV1 trailer is {} byte(s), expected at least {HEADER}",
-            trailer.len()
-        ));
-    }
-    let version = u16_at(trailer, 4);
-    let header_len = u16_at(trailer, 6) as usize;
-    let segment_len = u32_at(trailer, 8) as usize;
-    let country_count = u32_at(trailer, 12) as usize;
-    let variant_count = u32_at(trailer, 16) as usize;
-    let reservation_count = u32_at(trailer, 20) as usize;
-    let reserved = u32_at(trailer, 24);
-    let expected = country_count
-        .checked_mul(COUNTRY_ROW)
-        .and_then(|v| v.checked_add(variant_count.checked_mul(VARIANT_ROW)?))
-        .and_then(|v| v.checked_add(reservation_count.checked_mul(RESERVATION_ROW)?))
-        .and_then(|v| v.checked_add(HEADER))
-        .ok_or_else(|| "PCV1 segment size overflow".to_string())?;
-    if version != 1
-        || header_len != HEADER
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        return Err(format!(
-            "PCV1 header shape invalid (version {version}, header_len {header_len}, \
-             segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-    }
-    let country_base = HEADER;
-    let variant_base = country_base + country_count * COUNTRY_ROW;
-    let reservation_base = variant_base + variant_count * VARIANT_ROW;
-
-    let mut all_variants = Vec::with_capacity(variant_count);
-    for row_index in 0..variant_count {
-        let cursor = variant_base + row_index * VARIANT_ROW;
-        let variant_id = u32_at(trailer, cursor);
-        let equip_type = u32_at(trailer, cursor + 4);
-        let amount_raw = i64_at(trailer, cursor + 8);
-        if variant_id == 0 || equip_type != PCV1_EQUIP_TYPE || amount_raw < 0 {
+fn parse_convoy_bank_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::PcvCursor,
+) -> core::result::Result<
+    (BTreeMap<u32, ConvoyBank>, d11_grammar::TrailerResume),
+    String,
+> {
+    let header = *body.header();
+    let mut all_variants = Vec::with_capacity(header.variant_count);
+    for row in header.variant_rows(payload) {
+        let (row_index, row) =
+            row.map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        if row.variant_id == 0 || row.equip_type != PCV1_EQUIP_TYPE || row.amount_raw < 0 {
             return Err(format!(
-                "PCV1 variant row {row_index} invalid id/type/amount \
-                 ({variant_id}/{equip_type}/{amount_raw})"
+                "PCV1 variant row {row_index} invalid id/type/amount ({}/{}/{})",
+                row.variant_id, row.equip_type, row.amount_raw
             ));
         }
         all_variants.push(ConvoyVariant {
-            variant_id,
-            amount_raw,
+            variant_id: row.variant_id,
+            amount_raw: row.amount_raw,
         });
     }
-    let mut all_reservations = Vec::with_capacity(reservation_count);
-    for row_index in 0..reservation_count {
-        let cursor = reservation_base + row_index * RESERVATION_ROW;
-        let priority = i32_at(trailer, cursor);
-        let count = i32_at(trailer, cursor + 4);
-        if count < 0 {
+    let mut all_reservations = Vec::with_capacity(header.reservation_count);
+    for row in header.reservation_rows(payload) {
+        let (row_index, row) =
+            row.map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        if row.count < 0 {
             return Err(format!(
                 "PCV1 reservation row {row_index} has negative count"
             ));
         }
-        all_reservations.push(ConvoyReservation { priority, count });
+        all_reservations.push(ConvoyReservation {
+            priority: row.priority,
+            count: row.count,
+        });
     }
 
-    let mut rows: BTreeMap<u32, ConvoyBank> = BTreeMap::new();
-    let mut expected_variant_start = 0usize;
-    let mut expected_reservation_start = 0usize;
-    for row_index in 0..country_count {
-        let cursor = country_base + row_index * COUNTRY_ROW;
-        let tag_db_id = u32_at(trailer, cursor);
-        let flags = u32_at(trailer, cursor + 4);
-        let owned_raw = i64_at(trailer, cursor + 8);
-        let assigned = i32_at(trailer, cursor + 16);
-        let available = i32_at(trailer, cursor + 20);
-        let variant_start = u32_at(trailer, cursor + 24) as usize;
-        let variant_len = u32_at(trailer, cursor + 28) as usize;
-        let reservation_start = u32_at(trailer, cursor + 32) as usize;
-        let reservation_len = u32_at(trailer, cursor + 36) as usize;
-        if tag_db_id == 0 || flags & !PCV1_KNOWN_FLAGS != 0 {
+    let mut rows_by_tag = BTreeMap::new();
+    let mut countries = body.countries();
+    loop {
+        let (row_index, row, noncanonical_ranges) = match countries
+            .next(payload)
+            .map_err(|violation| format_grammar_violation(payload, violation, None))?
+        {
+            d11_grammar::PcvCountryStep::Row { index, row, .. } => (index, row, false),
+            d11_grammar::PcvCountryStep::RecoverableRow { index, row, .. } => {
+                (index, row, true)
+            }
+            d11_grammar::PcvCountryStep::RecoverableFinal { .. } => {
+                return Err("PCV1 ranges do not cover all rows".into());
+            }
+            d11_grammar::PcvCountryStep::End(_) => break,
+        };
+        if row.tag_db_id == 0 || row.flags & !PCV1_KNOWN_FLAGS != 0 {
             return Err(format!("PCV1 country row {row_index} invalid tag/flags"));
         }
-        if variant_start != expected_variant_start
-            || reservation_start != expected_reservation_start
-            || variant_start
-                .checked_add(variant_len)
-                .is_none_or(|end| end > variant_count)
-            || reservation_start
-                .checked_add(reservation_len)
-                .is_none_or(|end| end > reservation_count)
-        {
+        if noncanonical_ranges {
             return Err(format!(
                 "PCV1 country row {row_index} has noncanonical ranges"
             ));
         }
-        expected_variant_start += variant_len;
-        expected_reservation_start += reservation_len;
-        let complete = flags & PCV1_COMPLETE != 0;
-        let reservations_complete = flags & PCV1_RESERVATIONS_COMPLETE != 0;
-        let cache_valid = flags & PCV1_CACHE_VALID != 0;
-        let cache_verified = flags & PCV1_CACHE_VERIFIED != 0;
-        let classifier_exact = flags & PCV1_CLASSIFIER_EXACT != 0;
+        let variant_start = row.variant_start as usize;
+        let variant_len = row.variant_len as usize;
+        let reservation_start = row.reservation_start as usize;
+        let reservation_len = row.reservation_len as usize;
+        let complete = row.flags & PCV1_COMPLETE != 0;
+        let reservations_complete = row.flags & PCV1_RESERVATIONS_COMPLETE != 0;
+        let cache_valid = row.flags & PCV1_CACHE_VALID != 0;
+        let cache_verified = row.flags & PCV1_CACHE_VERIFIED != 0;
+        let classifier_exact = row.flags & PCV1_CLASSIFIER_EXACT != 0;
         if !complete {
-            if flags != 0
-                || owned_raw != 0
-                || assigned != 0
-                || available != 0
+            if row.flags != 0
+                || row.owned_raw != 0
+                || row.assigned != 0
+                || row.available != 0
                 || variant_len != 0
                 || reservation_len != 0
             {
@@ -1575,99 +1708,81 @@ fn parse_convoy_bank_segment(
         let reservations =
             all_reservations[reservation_start..reservation_start + reservation_len].to_vec();
         if complete {
-            // `world_fold.rs::parse_country_convoy_bank_segment`. This is what makes `owned_raw`,
-            // `convoys_count` and `available` functions of carried state.
             let mut seen = BTreeSet::new();
-            let sum_raw = variants.iter().try_fold(0i64, |sum, row| {
-                if !seen.insert(row.variant_id) {
+            let sum_raw = variants.iter().try_fold(0i64, |sum, variant| {
+                if !seen.insert(variant.variant_id) {
                     return None;
                 }
-                Some(sum.saturating_add(row.amount_raw).min(PCV1_OWNED_RAW_CAP))
+                Some(
+                    sum.saturating_add(variant.amount_raw)
+                        .min(PCV1_OWNED_RAW_CAP),
+                )
             });
-            if sum_raw != Some(owned_raw)
-                || assigned < 0
-                || i64::from(assigned) > owned_raw / PCV1_SCALE
-                || i64::from(available) != owned_raw / PCV1_SCALE - i64::from(assigned)
+            if sum_raw != Some(row.owned_raw)
+                || row.assigned < 0
+                || i64::from(row.assigned) > row.owned_raw / PCV1_SCALE
+                || i64::from(row.available)
+                    != row.owned_raw / PCV1_SCALE - i64::from(row.assigned)
                 || reservations
                     .iter()
-                    .any(|row| i64::from(row.count) > owned_raw / PCV1_SCALE)
+                    .any(|reservation| i64::from(reservation.count) > row.owned_raw / PCV1_SCALE)
             {
                 return Err(format!(
                     "PCV1 country row {row_index} fails exact total law"
                 ));
             }
         }
-        if rows
+        if rows_by_tag
             .insert(
-                tag_db_id,
+                row.tag_db_id,
                 ConvoyBank {
                     complete,
                     reservations_complete,
                     cache_valid,
-                    assigned,
+                    assigned: row.assigned,
                     variants,
                     reservations,
                 },
             )
             .is_some()
         {
-            return Err(format!("PCV1 duplicates tag_db_id {tag_db_id}"));
+            return Err(format!("PCV1 duplicates tag_db_id {}", row.tag_db_id));
         }
     }
-    if expected_variant_start != variant_count || expected_reservation_start != reservation_count {
-        return Err("PCV1 ranges do not cover all rows".into());
-    }
-    Ok((rows, offset + segment_len))
+    let countries_end = match countries
+        .into_end()
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?
+    {
+        d11_grammar::PcvCountryEnd::Complete(end) => end,
+        d11_grammar::PcvCountryEnd::Recoverable { .. } => {
+            return Err("PCV1 ranges do not cover all rows".into());
+        }
+    };
+    // Values were read through header views; discard both owned blocks so omission stays a CallerDefect.
+    let variants_end = countries_end.next.variants().discard_all();
+    let reservations_end = variants_end.next.reservations().discard_all();
+    Ok((rows_by_tag, reservations_end.next))
 }
 
-/// The `PDQ1` segment header (`world_fold.rs::parse_production_deployment_queue_segment`) and a **structural**
-/// walk of the nested codec payload (`deployment_queue.rs:267`-`:579`).
-///
-/// Every identity, count, ordering and flag gate the decoder enforces is enforced
-/// here, because a payload the recorder refuses must not be measured as data.
-/// What is deliberately not built is the row content — see the module docs'
-/// stop-report.
-fn parse_deployment_segment(
-    trailers: &[u8],
-    offset: usize,
+fn parse_deployment_segment_leaf(
+    payload: &[u8],
+    body: d11_grammar::PdqCursor,
     status: StatusPredicates,
-) -> core::result::Result<(DeploymentShape, usize), String> {
-    const HEADER: usize = 20;
-    let trailer = trailers
-        .get(offset..)
-        .ok_or_else(|| "PDQ1 offset beyond payload".to_string())?;
-    if trailer.len() < HEADER {
+) -> core::result::Result<(DeploymentShape, d11_grammar::TrailerResume), String> {
+    let span = body.inner_payload_span();
+    let codec_payload = &payload[span.start..span.end];
+    let codec_preview = d11_grammar::deployment::read_header_preview(codec_payload)
+        .map_err(format_deployment_violation)?;
+    let required = d11_grammar::deployment::SchemaVersion::V2.wire();
+    let floor = d11_grammar::deployment::SchemaVersion::V1.wire();
+    if codec_preview.schema_version != required {
         return Err(format!(
-            "PDQ1 trailer is {} byte(s), expected at least {HEADER}",
-            trailer.len()
+            "PDQ1 requires deployment codec v{required}, got v{} (codec floor v{floor})",
+            codec_preview.schema_version
         ));
     }
-    let version = u16_at(trailer, 4);
-    let header_len = u16_at(trailer, 6) as usize;
-    let segment_len = u32_at(trailer, 8) as usize;
-    let codec_payload_len = u32_at(trailer, 12) as usize;
-    let reserved = u32_at(trailer, 16);
-    let expected = HEADER
-        .checked_add(codec_payload_len)
-        .ok_or_else(|| "PDQ1 segment size overflow".to_string())?;
-    if version != 1
-        || header_len != HEADER
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        return Err(format!(
-            "PDQ1 header shape invalid (version {version}, header_len {header_len}, \
-             segment_len {segment_len}, codec_payload_len {codec_payload_len}, \
-             reserved {reserved}, available {})",
-            trailer.len()
-        ));
-    }
-    let codec = &trailer[HEADER..segment_len];
-    let mut shape = scan_deployment_codec(codec)?;
-    shape.segment_len = segment_len;
-
-    // `world_fold.rs::parse_production_deployment_queue_segment`.
+    let mut shape = scan_deployment_codec_leaf(codec_payload)?;
+    shape.segment_len = body.header().extent.declared_len;
     let unknown = (status.unknown_flags)(shape.status_flags);
     if unknown != 0 {
         return Err(format!(
@@ -1677,228 +1792,323 @@ fn parse_deployment_segment(
     if (status.is_failure)(shape.status_flags) && shape.complete_countries > 0 {
         return Err("PDQ1 failed deployment carrier contains a complete country queue".into());
     }
-    Ok((shape, offset + segment_len))
+    // The nested leaf consumed the carrier; discard the outer block so omission stays a CallerDefect.
+    let resume = body.inner_payload().discard_all().next;
+    Ok((shape, resume))
 }
 
-/// Walk the deployment codec payload without materialising any row.
-/// `deployment_queue.rs:267`-`:579`, gate for gate.
-fn scan_deployment_codec(payload: &[u8]) -> core::result::Result<DeploymentShape, String> {
-    // Flag masks, `deployment_queue.rs:11`-`:25`.
-    const COUNTRY_FLAG_QUEUE_COMPLETE: u32 = 1;
-    const CONVEYOR_FLAG_CLOSED: u32 = 1;
-    const LINE_FLAG_TRAINING: u32 = 1;
-    const LINE_FLAG_MAX_TRAINING: u32 = 1 << 1;
-    const LINE_FLAG_MANPOWER_HAVE: u32 = 1 << 2;
-    const LINE_FLAG_MANPOWER_NEED: u32 = 1 << 3;
-    const LINE_FLAG_MAX_MANPOWER: u32 = 1 << 4;
-    const LINE_FLAG_NAME_ORDER: u32 = 1 << 5;
-    const LINE_KNOWN_FLAGS: u32 = LINE_FLAG_TRAINING
-        | LINE_FLAG_MAX_TRAINING
-        | LINE_FLAG_MANPOWER_HAVE
-        | LINE_FLAG_MANPOWER_NEED
-        | LINE_FLAG_MAX_MANPOWER
-        | LINE_FLAG_NAME_ORDER;
-    const EQUIPMENT_FLAG_ARCHETYPE: u32 = 1;
-
-    if payload.len() < PDQ1_CODEC_HEADER_LEN {
-        return Err("deployment header".into());
+fn format_deployment_violation(violation: d11_grammar::deployment::Violation) -> String {
+    use d11_grammar::deployment::{Block, DqCallerDefect as CallerDefect, DqSection as Section, DqViolationKind as ViolationKind};
+    match violation.kind {
+        ViolationKind::Need {
+            section,
+            needed,
+            available,
+        } => {
+            let label = match section {
+                Section::Header => "deployment header",
+                Section::Country => "deployment country row",
+                Section::Conveyor => "deployment conveyor row",
+                Section::ConveyorName => "deployment conveyor name",
+                Section::ConveyorRole => "deployment conveyor role",
+                Section::Line => "deployment line row",
+                Section::Equipment => "deployment equipment row",
+                Section::Archetype => "deployment archetype",
+            };
+            if matches!(
+                section,
+                Section::ConveyorName | Section::ConveyorRole | Section::Archetype
+            ) {
+                let declared_len = needed
+                    .saturating_sub(violation.at)
+                    .saturating_sub(d11_grammar::deployment::STRING_PREFIX_LEN);
+                if declared_len > PDQ1_MAX_STRING_BYTES {
+                    return format!(
+                        "{label} length {declared_len} exceeds {PDQ1_MAX_STRING_BYTES}"
+                    );
+                }
+            }
+            if section == Section::Header {
+                "deployment header".to_string()
+            } else {
+                format!("{label}: need {needed} bytes, have {available}")
+            }
+        }
+        ViolationKind::UnknownSchema { version, .. } => format!(
+            "PDQ1 requires deployment codec v{}, got v{version} (codec floor v{})",
+            d11_grammar::deployment::SchemaVersion::V2.wire(),
+            d11_grammar::deployment::SchemaVersion::V1.wire()
+        ),
+        ViolationKind::HeaderReserved { value, .. } => {
+            format!("deployment invalid reserved {value}")
+        }
+        ViolationKind::CountCannotFit {
+            block,
+            remaining,
+            minimum_row_len,
+            ..
+        } => {
+            let label = match block {
+                Block::Countries => "deployment country row",
+                Block::Conveyors => "deployment conveyor row",
+                Block::Lines => "deployment line row",
+                Block::Equipment => "deployment equipment row",
+            };
+            format!(
+                "{label}: need {} bytes, have {}",
+                violation.at.saturating_add(minimum_row_len),
+                violation.at.saturating_add(remaining)
+            )
+        }
+        ViolationKind::TrailingBytes {
+            consumed,
+            available,
+        } => format!("deployment trailing bytes: consumed {consumed} of {available}"),
+        ViolationKind::ArithmeticOverflow { .. } => "deployment count overflow".to_string(),
+        ViolationKind::CallerDefect(CallerDefect::BlockNotConsumed { block, remaining }) => {
+            format!("deployment caller did not consume {remaining} {block:?} row(s)")
+        }
     }
-    let mut shape = DeploymentShape {
-        elapsed_wall_ms: u64_at(payload, 0),
-        changed_country_rows: u32_at(payload, 12),
-        status_flags: u32_at(payload, 16),
-        ..DeploymentShape::default()
-    };
-    let country_count = u32_at(payload, 8);
-    let schema_version = u32_at(payload, 20);
-    let declared_conveyors = u32_at(payload, 24);
-    let declared_lines = u32_at(payload, 28);
-    let declared_equipment = u32_at(payload, 32);
-    let reserved = u32_at(payload, 36);
-    // `world_fold.rs::parse_production_deployment_queue_segment` requires the CURRENT codec version, which is
-    // stricter than the codec's own `MIN..=CURRENT` range (`world_fold.rs::domain71_carrier`). The fold is
-    // the authority for what the recorder accepts, so the tighter check wins.
-    if schema_version != PDQ1_CODEC_VERSION {
-        // The codec itself accepts `PDQ1_CODEC_MIN_VERSION..=PDQ1_CODEC_VERSION`
-        // (`deployment_queue.rs:278`); the fold is stricter and the fold is what
-        // the recorder runs.
+}
+
+fn deployment_string_len(
+    payload: &[u8],
+    span: d11_grammar::Span,
+    label: &str,
+) -> core::result::Result<usize, String> {
+    if span.len > PDQ1_MAX_STRING_BYTES {
         return Err(format!(
-            "PDQ1 requires deployment codec v{PDQ1_CODEC_VERSION}, got v{schema_version} \
-             (codec floor v{PDQ1_CODEC_MIN_VERSION})"
+            "{label} length {} exceeds {PDQ1_MAX_STRING_BYTES}",
+            span.len
         ));
     }
-    if reserved != 0 {
-        return Err(format!("deployment invalid reserved {reserved}"));
-    }
-    if shape.changed_country_rows > country_count {
+    core::str::from_utf8(&payload[span.start..span.end])
+        .map_err(|_| format!("{label} is not UTF-8"))?;
+    Ok(span.len)
+}
+
+fn scan_deployment_codec_leaf(
+    payload: &[u8],
+) -> core::result::Result<DeploymentShape, String> {
+    use d11_grammar::deployment::{CountryFlag, EquipmentFlag, LineFlag};
+
+    let country_cursor = d11_grammar::deployment::walk(payload)
+        .map_err(format_deployment_violation)?;
+    let header = *country_cursor.header();
+    if header.changed_country_rows > header.country_count {
         return Err("deployment changed country count exceeds country count".into());
     }
-
-    let mut cursor = PDQ1_CODEC_HEADER_LEN;
+    let mut country_cursor = country_cursor
+        .precheck_declared_counts(payload)
+        .map_err(format_deployment_violation)?;
+    let mut shape = DeploymentShape {
+        elapsed_wall_ms: header.elapsed_wall_ms,
+        changed_country_rows: header.changed_country_rows,
+        status_flags: header.status_flags,
+        ..DeploymentShape::default()
+    };
     let mut tags = BTreeSet::new();
     let mut conveyor_ids = BTreeSet::new();
     let mut line_ids = BTreeSet::new();
-    for country_index in 0..country_count {
-        need(payload, cursor + 16, "deployment country row")?;
-        let tag_db_id = u32_at(payload, cursor);
-        let flags = u32_at(payload, cursor + 4);
-        let conveyor_count = u32_at(payload, cursor + 8);
-        let country_reserved = u32_at(payload, cursor + 12);
-        cursor += 16;
-        if tag_db_id == 0 || !tags.insert(tag_db_id) {
+    loop {
+        let (country_index, row, conveyors_block) = match country_cursor
+            .next(payload)
+            .map_err(format_deployment_violation)?
+        {
+            d11_grammar::deployment::CountryStep::Country {
+                index,
+                row,
+                conveyors,
+            } => (index, row, conveyors),
+            d11_grammar::deployment::CountryStep::End(end) => {
+                shape.conveyor_rows = end.totals.conveyors;
+                shape.line_rows = end.totals.lines;
+                shape.equipment_rows = end.totals.equipment;
+                break;
+            }
+        };
+        if row.tag_db_id == 0 || !tags.insert(row.tag_db_id) {
             return Err(format!(
-                "deployment country {country_index} invalid/duplicate tag {tag_db_id}"
+                "deployment country {country_index} invalid/duplicate tag {}",
+                row.tag_db_id
             ));
         }
-        if flags & !COUNTRY_FLAG_QUEUE_COMPLETE != 0 || country_reserved != 0 {
+        if row.flags & !d11_grammar::deployment::COUNTRY_KNOWN_FLAGS != 0 || row.reserved != 0 {
             return Err(format!(
-                "deployment country {tag_db_id} invalid flags/reserved"
+                "deployment country {} invalid flags/reserved",
+                row.tag_db_id
             ));
         }
-        let queue_complete = flags & COUNTRY_FLAG_QUEUE_COMPLETE != 0;
-        if !queue_complete && conveyor_count != 0 {
+        let queue_complete = row.flags & CountryFlag::QueueComplete.bit() != 0;
+        if !queue_complete && row.conveyor_count != 0 {
             return Err(format!(
-                "deployment unknown country {tag_db_id} carries conveyors"
+                "deployment unknown country {} carries conveyors",
+                row.tag_db_id
             ));
         }
         if queue_complete {
             shape.complete_countries += 1;
         }
-        shape.tags.push(tag_db_id);
-        if conveyor_count > declared_conveyors.saturating_sub(shape.conveyor_rows) {
+        shape.tags.push(row.tag_db_id);
+        if row.conveyor_count > header.declared_conveyors.saturating_sub(shape.conveyor_rows) {
             return Err(format!(
-                "deployment country {tag_db_id} conveyor count exceeds declared remainder"
+                "deployment country {} conveyor count exceeds declared remainder",
+                row.tag_db_id
             ));
         }
-        for conveyor_ordinal in 0..conveyor_count {
-            need(payload, cursor + 40, "deployment conveyor row")?;
-            let ordinal = u32_at(payload, cursor);
-            let conveyor_id = u32_at(payload, cursor + 4);
-            let id_type = u32_at(payload, cursor + 8);
-            let template_id = u32_at(payload, cursor + 12);
-            let template_type = u32_at(payload, cursor + 16);
-            let amount = i32_at(payload, cursor + 20);
-            let conveyor_flags = u32_at(payload, cursor + 32);
-            let line_count = u32_at(payload, cursor + 36);
-            cursor += 40;
-            if ordinal != conveyor_ordinal
-                || conveyor_id == 0
-                || id_type != PDQ1_CONVEYOR_ID_TYPE
-                || !conveyor_ids.insert(conveyor_id)
-                || template_id == 0
-                || template_type != PDQ1_TEMPLATE_ID_TYPE
-                || amount < 0
-                || conveyor_flags & !CONVEYOR_FLAG_CLOSED != 0
+        let mut conveyors = conveyors_block
+            .open(payload)
+            .map_err(format_deployment_violation)?;
+        while conveyors.remaining() != 0 {
+            let fixed = conveyors.next(payload).map_err(format_deployment_violation)?;
+            let row = fixed.row;
+            if row.ordinal != fixed.index as u32
+                || row.conveyor_id == 0
+                || row.id_type != d11_grammar::deployment::CONVEYOR_ID_TYPE
+                || !conveyor_ids.insert(row.conveyor_id)
+                || row.template_id == 0
+                || row.template_id_type != d11_grammar::deployment::TEMPLATE_ID_TYPE
+                || row.amount < 0
+                || row.flags & !d11_grammar::deployment::CONVEYOR_KNOWN_FLAGS != 0
             {
                 return Err(format!(
-                    "deployment invalid conveyor identity/body {conveyor_id}"
+                    "deployment invalid conveyor identity/body {}",
+                    row.conveyor_id
                 ));
             }
-            // The two strings §4 has no kind for.
-            shape.string_bytes += skip_string(payload, &mut cursor, "deployment conveyor name")?;
-            shape.string_bytes += skip_string(payload, &mut cursor, "deployment conveyor role")?;
-            shape.conveyor_rows += 1;
-            if line_count > declared_lines.saturating_sub(shape.line_rows) {
+            let name = fixed
+                .name
+                .read_name(payload)
+                .map_err(format_deployment_violation)?;
+            shape.string_bytes +=
+                deployment_string_len(payload, name.name, "deployment conveyor name")?;
+            let role = name
+                .role
+                .read_role(payload)
+                .map_err(format_deployment_violation)?;
+            shape.string_bytes +=
+                deployment_string_len(payload, role.row.role, "deployment conveyor role")?;
+            shape.conveyor_rows = shape
+                .conveyor_rows
+                .checked_add(1)
+                .ok_or_else(|| "deployment conveyor count overflow".to_string())?;
+            if row.line_count > header.declared_lines.saturating_sub(shape.line_rows) {
                 return Err(format!(
-                    "deployment conveyor {conveyor_id} line count exceeds declared remainder"
+                    "deployment conveyor {} line count exceeds declared remainder",
+                    row.conveyor_id
                 ));
             }
-            for line_ordinal in 0..line_count {
-                need(payload, cursor + 72, "deployment line row")?;
-                let ordinal = u32_at(payload, cursor);
-                let line_id = u32_at(payload, cursor + 4);
-                let id_type = u32_at(payload, cursor + 8);
-                let name_order = i32_at(payload, cursor + 12);
-                let amount = i32_at(payload, cursor + 16);
-                let line_flags = u32_at(payload, cursor + 20);
-                let training = f64::from_bits(u64_at(payload, cursor + 24));
-                let max_training = f64::from_bits(u64_at(payload, cursor + 32));
-                let manpower_have = i64_at(payload, cursor + 40);
-                let manpower_need = i64_at(payload, cursor + 48);
-                let max_manpower = i64_at(payload, cursor + 56);
-                let equipment_count = u32_at(payload, cursor + 64);
-                let line_reserved = u32_at(payload, cursor + 68);
-                cursor += 72;
-                if ordinal != line_ordinal
-                    || line_id == 0
-                    || id_type != PDQ1_LINE_ID_TYPE
-                    || !line_ids.insert(line_id)
-                    || amount < 0
-                    || line_flags & !LINE_KNOWN_FLAGS != 0
-                    || line_reserved != 0
-                    || (line_flags & LINE_FLAG_NAME_ORDER == 0 && name_order != 0)
+            let mut lines = role.lines.open(payload).map_err(format_deployment_violation)?;
+            while lines.remaining() != 0 {
+                let fixed = lines.next(payload).map_err(format_deployment_violation)?;
+                let row = fixed.row;
+                if row.ordinal != fixed.index as u32
+                    || row.line_id == 0
+                    || row.id_type != d11_grammar::deployment::LINE_ID_TYPE
+                    || !line_ids.insert(row.line_id)
+                    || row.amount < 0
+                    || row.flags & !d11_grammar::deployment::LINE_KNOWN_FLAGS != 0
+                    || row.reserved != 0
+                    || (row.flags & LineFlag::NameOrder.bit() == 0 && row.name_order != 0)
                 {
-                    return Err(format!("deployment invalid line identity/body {line_id}"));
+                    return Err(format!("deployment invalid line identity/body {}", row.line_id));
                 }
-                check_optional_float(line_flags, LINE_FLAG_TRAINING, training, "training")?;
                 check_optional_float(
-                    line_flags,
-                    LINE_FLAG_MAX_TRAINING,
-                    max_training,
+                    row.flags,
+                    LineFlag::Training.bit(),
+                    f64::from_bits(row.training_bits),
+                    "training",
+                )?;
+                check_optional_float(
+                    row.flags,
+                    LineFlag::MaxTraining.bit(),
+                    f64::from_bits(row.max_training_bits),
                     "max_training",
                 )?;
                 for (flag, value, label) in [
-                    (LINE_FLAG_MANPOWER_HAVE, manpower_have, "manpower_have"),
-                    (LINE_FLAG_MANPOWER_NEED, manpower_need, "manpower_need"),
-                    (LINE_FLAG_MAX_MANPOWER, max_manpower, "max_manpower"),
+                    (LineFlag::ManpowerHave.bit(), row.manpower_have, "manpower_have"),
+                    (LineFlag::ManpowerNeed.bit(), row.manpower_need, "manpower_need"),
+                    (LineFlag::MaxManpower.bit(), row.max_manpower, "max_manpower"),
                 ] {
-                    if line_flags & flag != 0 {
+                    if row.flags & flag != 0 {
                         if value < 0 {
                             return Err(format!("deployment {label} is negative"));
                         }
                     } else if value != 0 {
-                        return Err(format!("deployment {label} payload present without flag"));
-                    }
-                }
-                shape.line_rows += 1;
-                if equipment_count > declared_equipment.saturating_sub(shape.equipment_rows) {
-                    return Err(format!(
-                        "deployment line {line_id} equipment count exceeds declared remainder"
-                    ));
-                }
-                for equipment_ordinal in 0..equipment_count {
-                    need(payload, cursor + 24, "deployment equipment row")?;
-                    let ordinal = u32_at(payload, cursor);
-                    let equipment_id = u32_at(payload, cursor + 4);
-                    let equipment_type = u32_at(payload, cursor + 8);
-                    let equipment_flags = u32_at(payload, cursor + 12);
-                    let amount = f64::from_bits(u64_at(payload, cursor + 16));
-                    cursor += 24;
-                    if equipment_flags & EQUIPMENT_FLAG_ARCHETYPE != 0 {
-                        // The third string.
-                        shape.string_bytes +=
-                            skip_string(payload, &mut cursor, "deployment archetype")?;
-                    }
-                    if ordinal != equipment_ordinal
-                        || equipment_id == 0
-                        || equipment_type != PDQ1_EQUIPMENT_ID_TYPE
-                        || equipment_flags & !EQUIPMENT_FLAG_ARCHETYPE != 0
-                        || !amount.is_finite()
-                        || amount < 0.0
-                    {
                         return Err(format!(
-                            "deployment invalid equipment row {equipment_id}:{equipment_type}"
+                            "deployment {label} payload present without flag"
                         ));
                     }
-                    shape.equipment_rows += 1;
                 }
+                shape.line_rows = shape
+                    .line_rows
+                    .checked_add(1)
+                    .ok_or_else(|| "deployment line count overflow".to_string())?;
+                if row.equipment_count
+                    > header.declared_equipment.saturating_sub(shape.equipment_rows)
+                {
+                    return Err(format!(
+                        "deployment line {} equipment count exceeds declared remainder",
+                        row.line_id
+                    ));
+                }
+                let mut equipment = fixed
+                    .equipment
+                    .open(payload)
+                    .map_err(format_deployment_violation)?;
+                while equipment.remaining() != 0 {
+                    let item = equipment.next(payload).map_err(format_deployment_violation)?;
+                    let row = item.row;
+                    if let Some(span) = row.archetype {
+                        shape.string_bytes +=
+                            deployment_string_len(payload, span, "deployment archetype")?;
+                    }
+                    if row.ordinal != item.index as u32
+                        || row.equipment_id == 0
+                        || row.id_type != d11_grammar::deployment::EQUIPMENT_ID_TYPE
+                        || row.flags & !d11_grammar::deployment::EQUIPMENT_KNOWN_FLAGS != 0
+                        || !f64::from_bits(row.amount_bits).is_finite()
+                        || f64::from_bits(row.amount_bits) < 0.0
+                    {
+                        return Err(format!(
+                            "deployment invalid equipment row {}:{}",
+                            row.equipment_id, row.id_type
+                        ));
+                    }
+                    if row.flags & EquipmentFlag::Archetype.bit() == 0 && row.archetype.is_some() {
+                        unreachable!();
+                    }
+                    shape.equipment_rows = shape
+                        .equipment_rows
+                        .checked_add(1)
+                        .ok_or_else(|| "deployment equipment count overflow".to_string())?;
+                    equipment = item.next;
+                }
+                lines = equipment
+                    .into_end()
+                    .map_err(format_deployment_violation)?;
             }
+            conveyors = lines.into_end().map_err(format_deployment_violation)?;
         }
-    }
-    if cursor != payload.len() {
-        return Err(format!(
-            "deployment trailing bytes: consumed {cursor} of {}",
-            payload.len()
-        ));
+        country_cursor = conveyors
+            .into_end()
+            .map_err(format_deployment_violation)?;
     }
     if (shape.conveyor_rows, shape.line_rows, shape.equipment_rows)
-        != (declared_conveyors, declared_lines, declared_equipment)
+        != (
+            header.declared_conveyors,
+            header.declared_lines,
+            header.declared_equipment,
+        )
     {
         return Err(format!(
-            "deployment declared/observed count mismatch: declared \
-             {declared_conveyors}/{declared_lines}/{declared_equipment}, observed \
-             {}/{}/{}",
-            shape.conveyor_rows, shape.line_rows, shape.equipment_rows
+            "deployment declared/observed count mismatch: declared {}/{}/{}, observed {}/{}/{}",
+            header.declared_conveyors,
+            header.declared_lines,
+            header.declared_equipment,
+            shape.conveyor_rows,
+            shape.line_rows,
+            shape.equipment_rows
         ));
     }
     Ok(shape)
@@ -1920,43 +2130,18 @@ fn check_optional_float(
     Ok(())
 }
 
-/// `deployment_queue.rs:611`. Returns the string's byte length and advances past
-/// it; the bytes themselves are checked for UTF-8 and discarded.
-fn skip_string(
-    payload: &[u8],
-    cursor: &mut usize,
-    label: &str,
-) -> core::result::Result<usize, String> {
-    need(payload, cursor.saturating_add(4), label)?;
-    let len = u32_at(payload, *cursor) as usize;
-    *cursor += 4;
-    if len > PDQ1_MAX_STRING_BYTES {
-        return Err(format!("{label} length {len} exceeds {PDQ1_MAX_STRING_BYTES}"));
-    }
-    need(payload, cursor.saturating_add(len), label)?;
-    core::str::from_utf8(&payload[*cursor..*cursor + len])
-        .map_err(|_| format!("{label} is not UTF-8"))?;
-    *cursor += len;
-    Ok(len)
-}
-
-fn need(payload: &[u8], upto: usize, label: &str) -> core::result::Result<(), String> {
-    if payload.len() < upto {
-        Err(format!("{label}: need {upto} bytes, have {}", payload.len()))
-    } else {
-        Ok(())
-    }
-}
-
 // --- Key extractors ----------------------------------------------------------
 
 /// `world_fold.rs::fold_production`.
 pub fn key_from_stockpile_row(row: &[u8]) -> core::result::Result<Key, String> {
     check_row_len(row, STOCKPILE_ROW_LEN, "stockpile")?;
-    Ok(Key(vec![
-        u32_at(row, 0) as i128,
-        u32_at(row, 4) as i128,
-    ]))
+    let row = d11_grammar::stockpile_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    Ok(key_from_stockpile_value(row))
+}
+
+fn key_from_stockpile_value(row: d11_grammar::StockpileRow) -> Key {
+    Key(vec![row.tag_db_id as i128, row.variant_id as i128])
 }
 
 /// `world_fold.rs::fold_production`.
@@ -1965,12 +2150,22 @@ pub fn key_from_line_row(row: &[u8]) -> core::result::Result<Key, String> {
     Ok(Key(vec![tag as i128, kind as i128, line_id as i128]))
 }
 
+fn key_from_line_value(row: d11_grammar::LineRow) -> Key {
+    Key(vec![
+        row.tag_db_id as i128,
+        row.kind as i128,
+        row.line_id as i128,
+    ])
+}
+
 /// The `(tag, kind, line_id)` triple, with the fold's kind gate. The base table
 /// itself does **not** reject a kind outside `{1, 2}` — `world_fold.rs::fold_production`
 /// folds everything that is not `2` as military — so no kind check belongs here.
 pub fn line_key_of_row(row: &[u8]) -> core::result::Result<LineKey, String> {
     check_row_len(row, LINE_ROW_LEN, "production line")?;
-    Ok((u32_at(row, 0), u32_at(row, 4), i32_at(row, 8)))
+    let row = d11_grammar::line_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    Ok((row.tag_db_id, row.kind, row.line_id))
 }
 
 /// The `(tag_db_id, construction_ordinal, line_id)` construction key.
@@ -1983,11 +2178,17 @@ pub fn line_key_of_row(row: &[u8]) -> core::result::Result<LineKey, String> {
 /// docs.
 pub fn key_from_construction_row(row: &[u8], ordinal: u32) -> core::result::Result<Key, String> {
     check_row_len(row, CONSTRUCTION_ROW_LEN, "construction")?;
-    Ok(Key(vec![
-        u32_at(row, 0) as i128,
+    let row = d11_grammar::construction_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    Ok(key_from_construction_value(row, ordinal))
+}
+
+fn key_from_construction_value(row: d11_grammar::ConstructionRow, ordinal: u32) -> Key {
+    Key(vec![
+        row.tag_db_id as i128,
         ordinal as i128,
-        u32_at(row, 4) as i128,
-    ]))
+        row.line_id as i128,
+    ])
 }
 
 // --- Boundary mappers --------------------------------------------------------
@@ -2004,11 +2205,20 @@ pub fn record_from_stockpile_row(
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
     check_row_len(row, STOCKPILE_ROW_LEN, "stockpile")?;
+    let row = d11_grammar::stockpile_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    record_from_stockpile_value(collection, row)
+}
+
+fn record_from_stockpile_value(
+    collection: &Collection,
+    row: d11_grammar::StockpileRow,
+) -> core::result::Result<Record, String> {
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
             // `world_fold.rs::fold_production`.
-            field::AMOUNT => Value::Continuous(i64_at(row, 8) as f64 / PRODUCTION_SCALE),
+            field::AMOUNT => Value::Continuous(row.amount_raw as f64 / PRODUCTION_SCALE),
             other => return Err(format!("stockpile has no mapping for field id {other}")),
         };
         values.push(value);
@@ -2035,7 +2245,18 @@ pub fn record_from_line_row(
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
-    let key = line_key_of_row(row)?;
+    let base_row = d11_grammar::line_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    record_from_line_value(collection, base_row, joins, ordinal)
+}
+
+fn record_from_line_value(
+    collection: &Collection,
+    base_row: d11_grammar::LineRow,
+    joins: LineJoins<'_>,
+    ordinal: u32,
+) -> core::result::Result<Record, String> {
+    let key = (base_row.tag_db_id, base_row.kind, base_row.line_id);
     let (tag, kind, line_id) = key;
 
     // `world_fold.rs::fold_production`:
@@ -2071,12 +2292,12 @@ pub fn record_from_line_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            field::ACTIVE_FACTORIES => Value::Signed(i32_at(row, 12) as i64),
-            field::COST => Value::Continuous(i32_at(row, 16) as f64 / PRODUCTION_SCALE),
-            field::SPEED => Value::Continuous(i32_at(row, 20) as f64 / PRODUCTION_SCALE),
-            field::PRODUCED => Value::Continuous(i32_at(row, 24) as f64 / PRODUCTION_SCALE),
+            field::ACTIVE_FACTORIES => Value::Signed(base_row.active_factories as i64),
+            field::COST => Value::Continuous(base_row.cost_raw as f64 / PRODUCTION_SCALE),
+            field::SPEED => Value::Continuous(base_row.speed_raw as f64 / PRODUCTION_SCALE),
+            field::PRODUCED => Value::Continuous(base_row.produced_raw as f64 / PRODUCTION_SCALE),
             // Raw: `world_fold.rs::fold_production` inserts the i32 with no division.
-            field::LINE_AMOUNT => Value::Signed(i32_at(row, 28) as i64),
+            field::LINE_AMOUNT => Value::Signed(base_row.amount as i64),
             field::EQUIPMENT_VARIANT_ID => match variant {
                 Some(id) => Value::ContentId(*id as u64),
                 None => Value::Unknown,
@@ -2132,7 +2353,16 @@ pub fn record_from_construction_row(
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
     check_row_len(row, CONSTRUCTION_ROW_LEN, "construction")?;
-    let template_id = u32_at(row, 8);
+    let row = d11_grammar::construction_row_at(row, 0)
+        .map_err(|violation| format_grammar_violation(row, violation, None))?;
+    record_from_construction_value(collection, row)
+}
+
+fn record_from_construction_value(
+    collection: &Collection,
+    row: d11_grammar::ConstructionRow,
+) -> core::result::Result<Record, String> {
+    let template_id = row.template_id;
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
@@ -2146,12 +2376,12 @@ pub fn record_from_construction_row(
                     Value::ContentId(template_id as u64)
                 }
             }
-            field::ACTIVE_FACTORIES => Value::Signed(i32_at(row, 12) as i64),
-            field::COST => Value::Continuous(i32_at(row, 16) as f64 / PRODUCTION_SCALE),
-            field::PRODUCED => Value::Continuous(i32_at(row, 20) as f64 / PRODUCTION_SCALE),
+            field::ACTIVE_FACTORIES => Value::Signed(row.active_factories as i64),
+            field::COST => Value::Continuous(row.cost_raw as f64 / PRODUCTION_SCALE),
+            field::PRODUCED => Value::Continuous(row.produced_raw as f64 / PRODUCTION_SCALE),
             // `world_fold.rs::fold_production` reads `+24` raw. Sparse, so it is data about
             // which source slots were skipped, not the queue's ordering.
-            field::CONSTRUCTION_PRIORITY => Value::Unsigned(u32_at(row, 24) as u64),
+            field::CONSTRUCTION_PRIORITY => Value::Unsigned(row.priority as u64),
             other => {
                 return Err(format!(
                     "construction_queue has no mapping for field id {other}"
@@ -2465,6 +2695,10 @@ pub fn fold_payload(
     status: StatusPredicates,
 ) -> core::result::Result<FoldOutcome, String> {
     let (header, tables) = split_payload(payload)?;
+    let grammar_header = d11_grammar::read_base_header(payload)
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
+    let layout = d11_grammar::base_layout(payload, &grammar_header)
+        .map_err(|violation| format_grammar_violation(payload, violation, None))?;
     let trailers = parse_trailers(tables.trailers, status)?;
 
     // `world_fold.rs::fold_production`: PCP1 seeds `per_tag` and must be bijective
@@ -2485,9 +2719,11 @@ pub fn fold_payload(
     // torn read and refuses the frame.
     let mut stockpile_rows: Vec<(Key, Record)> = Vec::new();
     let mut seen_stockpile: BTreeSet<(u32, u32)> = BTreeSet::new();
-    for (row_index, row) in tables.stockpile.chunks_exact(STOCKPILE_ROW_LEN).enumerate() {
-        let tag = u32_at(row, 0);
-        let variant_id = u32_at(row, 4);
+    for row in layout.stockpile_rows(payload) {
+        let (row_index, row) =
+            row.map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        let tag = row.tag_db_id;
+        let variant_id = row.variant_id;
         if !seen_stockpile.insert((tag, variant_id)) {
             return Err(format!(
                 "production stockpile row {row_index} duplicates variant {variant_id} for tag {tag}"
@@ -2495,8 +2731,8 @@ pub fn fold_payload(
         }
         per_tag.insert(tag);
         stockpile_rows.push((
-            key_from_stockpile_row(row)?,
-            record_from_stockpile_row(&collections.stockpile, row, 0)?,
+            key_from_stockpile_value(row),
+            record_from_stockpile_value(&collections.stockpile, row)?,
         ));
     }
 
@@ -2509,8 +2745,10 @@ pub fn fold_payload(
     // the fold builds its per-country arrays: `accum.military_lines.push(..)` /
     // `accum.naval_lines.push(..)` in base-table order (`:12659`, `:12662`).
     let mut line_ordinals: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    for (row_index, row) in tables.lines.chunks_exact(LINE_ROW_LEN).enumerate() {
-        let key = line_key_of_row(row)?;
+    for row in layout.line_rows(payload) {
+        let (row_index, row) =
+            row.map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        let key = (row.tag_db_id, row.kind, row.line_id);
         if !seen_lines.insert(key) {
             return Err(format!(
                 "production line row {row_index} duplicates tag {} kind {} line_id {}",
@@ -2527,8 +2765,8 @@ pub fn fold_payload(
             .checked_add(1)
             .ok_or("production line ordinal overflows")?;
         line_rows.push((
-            key_from_line_row(row)?,
-            record_from_line_row(&collections.lines, row, joins, this_ordinal, 0)?,
+            key_from_line_value(row),
+            record_from_line_value(&collections.lines, row, joins, this_ordinal)?,
         ));
     }
 
@@ -2539,8 +2777,10 @@ pub fn fold_payload(
     // every identity word land under two ordinals rather than colliding.
     let mut construction_rows: Vec<(Key, Record)> = Vec::new();
     let mut construction_ordinals: BTreeMap<u32, u32> = BTreeMap::new();
-    for row in tables.construction.chunks_exact(CONSTRUCTION_ROW_LEN) {
-        let tag = u32_at(row, 0);
+    for row in layout.construction_rows(payload) {
+        let (_, row) =
+            row.map_err(|violation| format_grammar_violation(payload, violation, None))?;
+        let tag = row.tag_db_id;
         per_tag.insert(tag);
         let ordinal = construction_ordinals.entry(tag).or_insert(0);
         let this_ordinal = *ordinal;
@@ -2548,8 +2788,8 @@ pub fn fold_payload(
             .checked_add(1)
             .ok_or("production construction ordinal overflows")?;
         construction_rows.push((
-            key_from_construction_row(row, this_ordinal)?,
-            record_from_construction_row(&collections.construction, row, 0)?,
+            key_from_construction_value(row, this_ordinal),
+            record_from_construction_value(&collections.construction, row)?,
         ));
     }
 
@@ -2805,25 +3045,9 @@ fn check_row_len(row: &[u8], expected: usize, what: &str) -> core::result::Resul
     Ok(())
 }
 
-/// Callers reach these only after a length check, so the slices are in bounds.
-fn u16_at(b: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([b[off], b[off + 1]])
-}
-
+#[cfg(test)]
 fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-fn i32_at(b: &[u8], off: usize) -> i32 {
-    i32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-fn u64_at(b: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(b[off..off + 8].try_into().expect("8 bytes"))
-}
-
-fn i64_at(b: &[u8], off: usize) -> i64 {
-    i64::from_le_bytes(b[off..off + 8].try_into().expect("8 bytes"))
 }
 
 #[cfg(test)]

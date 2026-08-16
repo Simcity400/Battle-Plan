@@ -1,28 +1,23 @@
 use std::collections::BTreeSet;
 
-pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = 2;
-const DEPLOYMENT_QUEUE_MIN_SCHEMA_VERSION: u32 = 1;
-pub const DEPLOYMENT_QUEUE_HEADER_LEN: usize = 40;
-pub const DEPLOYMENT_CONVEYOR_ID_TYPE: u32 = 64;
-pub const DEPLOYMENT_LINE_ID_TYPE: u32 = 63;
-pub const DEPLOYMENT_TEMPLATE_ID_TYPE: u32 = 52;
-pub const DEPLOYMENT_EQUIPMENT_ID_TYPE: u32 = 70;
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=2b63a23c6f69d9b69c92f7ae67a2817d6902fbe515079f76a27dbc2f82984065
+pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = d11_grammar::deployment::SchemaVersion::V2.wire();
+pub const DEPLOYMENT_QUEUE_HEADER_LEN: usize = d11_grammar::deployment::HEADER_LEN;
+pub const DEPLOYMENT_CONVEYOR_ID_TYPE: u32 = d11_grammar::deployment::CONVEYOR_ID_TYPE;
+pub const DEPLOYMENT_LINE_ID_TYPE: u32 = d11_grammar::deployment::LINE_ID_TYPE;
+pub const DEPLOYMENT_TEMPLATE_ID_TYPE: u32 = d11_grammar::deployment::TEMPLATE_ID_TYPE;
+pub const DEPLOYMENT_EQUIPMENT_ID_TYPE: u32 = d11_grammar::deployment::EQUIPMENT_ID_TYPE;
 
-const COUNTRY_FLAG_QUEUE_COMPLETE: u32 = 1;
-const CONVEYOR_FLAG_CLOSED: u32 = 1;
-const LINE_FLAG_TRAINING: u32 = 1;
-const LINE_FLAG_MAX_TRAINING: u32 = 1 << 1;
-const LINE_FLAG_MANPOWER_HAVE: u32 = 1 << 2;
-const LINE_FLAG_MANPOWER_NEED: u32 = 1 << 3;
-const LINE_FLAG_MAX_MANPOWER: u32 = 1 << 4;
-const LINE_FLAG_NAME_ORDER: u32 = 1 << 5;
-const LINE_KNOWN_FLAGS: u32 = LINE_FLAG_TRAINING
-    | LINE_FLAG_MAX_TRAINING
-    | LINE_FLAG_MANPOWER_HAVE
-    | LINE_FLAG_MANPOWER_NEED
-    | LINE_FLAG_MAX_MANPOWER
-    | LINE_FLAG_NAME_ORDER;
-const EQUIPMENT_FLAG_ARCHETYPE: u32 = 1;
+const COUNTRY_FLAG_QUEUE_COMPLETE: u32 = d11_grammar::deployment::CountryFlag::QueueComplete.bit();
+const CONVEYOR_FLAG_CLOSED: u32 = d11_grammar::deployment::ConveyorFlag::Closed.bit();
+const LINE_FLAG_TRAINING: u32 = d11_grammar::deployment::LineFlag::Training.bit();
+const LINE_FLAG_MAX_TRAINING: u32 = d11_grammar::deployment::LineFlag::MaxTraining.bit();
+const LINE_FLAG_MANPOWER_HAVE: u32 = d11_grammar::deployment::LineFlag::ManpowerHave.bit();
+const LINE_FLAG_MANPOWER_NEED: u32 = d11_grammar::deployment::LineFlag::ManpowerNeed.bit();
+const LINE_FLAG_MAX_MANPOWER: u32 = d11_grammar::deployment::LineFlag::MaxManpower.bit();
+const LINE_FLAG_NAME_ORDER: u32 = d11_grammar::deployment::LineFlag::NameOrder.bit();
+const LINE_KNOWN_FLAGS: u32 = d11_grammar::deployment::LINE_KNOWN_FLAGS;
+const EQUIPMENT_FLAG_ARCHETYPE: u32 = d11_grammar::deployment::EquipmentFlag::Archetype.bit();
 const MAX_STRING_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +69,134 @@ pub struct DeploymentCountryRow {
     pub conveyors: Vec<DeploymentConveyorRow>,
 }
 
+impl d11_grammar::deployment::EquipmentEncoding for DeploymentEquipmentRow {
+    fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+    fn equipment_id(&self) -> u32 {
+        self.equipment_id
+    }
+    fn id_type(&self) -> u32 {
+        DEPLOYMENT_EQUIPMENT_ID_TYPE
+    }
+    fn flags(&self) -> u32 {
+        u32::from(self.archetype.is_some()) * EQUIPMENT_FLAG_ARCHETYPE
+    }
+    fn amount_bits(&self) -> u64 {
+        self.amount.to_bits()
+    }
+    fn archetype(&self) -> Option<&[u8]> {
+        self.archetype.as_deref().map(str::as_bytes)
+    }
+}
+
+impl d11_grammar::deployment::LineEncoding for DeploymentLineRow {
+    type Equipment = DeploymentEquipmentRow;
+
+    fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+    fn line_id(&self) -> u32 {
+        self.line_id
+    }
+    fn id_type(&self) -> u32 {
+        DEPLOYMENT_LINE_ID_TYPE
+    }
+    fn name_order(&self) -> i32 {
+        self.name_order.unwrap_or(0)
+    }
+    fn amount(&self) -> i32 {
+        self.amount
+    }
+    fn flags(&self) -> u32 {
+        u32::from(self.training.is_some()) * LINE_FLAG_TRAINING
+            | u32::from(self.max_training.is_some()) * LINE_FLAG_MAX_TRAINING
+            | u32::from(self.manpower_have.is_some()) * LINE_FLAG_MANPOWER_HAVE
+            | u32::from(self.manpower_need.is_some()) * LINE_FLAG_MANPOWER_NEED
+            | u32::from(self.max_manpower.is_some()) * LINE_FLAG_MAX_MANPOWER
+            | u32::from(self.name_order.is_some()) * LINE_FLAG_NAME_ORDER
+    }
+    fn training_bits(&self) -> u64 {
+        self.training.unwrap_or(0.0).to_bits()
+    }
+    fn max_training_bits(&self) -> u64 {
+        self.max_training.unwrap_or(0.0).to_bits()
+    }
+    fn manpower_have(&self) -> i64 {
+        self.manpower_have.unwrap_or(0)
+    }
+    fn manpower_need(&self) -> i64 {
+        self.manpower_need.unwrap_or(0)
+    }
+    fn max_manpower(&self) -> i64 {
+        self.max_manpower.unwrap_or(0)
+    }
+    fn reserved(&self) -> u32 {
+        0
+    }
+    fn equipment(&self) -> &[Self::Equipment] {
+        &self.equipment_in_transit
+    }
+}
+
+impl d11_grammar::deployment::ConveyorEncoding for DeploymentConveyorRow {
+    type Line = DeploymentLineRow;
+
+    fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+    fn conveyor_id(&self) -> u32 {
+        self.conveyor_id
+    }
+    fn id_type(&self) -> u32 {
+        DEPLOYMENT_CONVEYOR_ID_TYPE
+    }
+    fn template_id(&self) -> u32 {
+        self.template_id
+    }
+    fn template_id_type(&self) -> u32 {
+        DEPLOYMENT_TEMPLATE_ID_TYPE
+    }
+    fn amount(&self) -> i32 {
+        self.amount
+    }
+    fn location(&self) -> u32 {
+        self.location
+    }
+    fn priority(&self) -> u32 {
+        self.priority
+    }
+    fn flags(&self) -> u32 {
+        u32::from(self.closed) * CONVEYOR_FLAG_CLOSED
+    }
+    fn name(&self) -> &[u8] {
+        self.name.as_bytes()
+    }
+    fn role(&self) -> &[u8] {
+        self.role.as_bytes()
+    }
+    fn lines(&self) -> &[Self::Line] {
+        &self.lines
+    }
+}
+
+impl d11_grammar::deployment::CountryEncoding for DeploymentCountryRow {
+    type Conveyor = DeploymentConveyorRow;
+
+    fn tag_db_id(&self) -> u32 {
+        self.tag_db_id
+    }
+    fn flags(&self) -> u32 {
+        u32::from(self.queue_complete) * COUNTRY_FLAG_QUEUE_COMPLETE
+    }
+    fn reserved(&self) -> u32 {
+        0
+    }
+    fn conveyors(&self) -> &[Self::Conveyor] {
+        &self.conveyors
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeploymentQueueSummary {
     pub country_rows: u32,
@@ -113,7 +236,7 @@ pub fn encode_deployment_queue_payload(
             "deployment changed_country_rows {changed_country_rows} > country_count {country_count}"
         ));
     }
-    let conveyor_count = countries.iter().try_fold(0u32, |total, country| {
+    let _conveyor_count = countries.iter().try_fold(0u32, |total, country| {
         total
             .checked_add(
                 u32::try_from(country.conveyors.len())
@@ -121,7 +244,7 @@ pub fn encode_deployment_queue_payload(
             )
             .ok_or_else(|| "deployment conveyor count overflow".to_string())
     })?;
-    let line_count = countries.iter().try_fold(0u32, |total, country| {
+    let _line_count = countries.iter().try_fold(0u32, |total, country| {
         country.conveyors.iter().try_fold(total, |total, conveyor| {
             total
                 .checked_add(
@@ -131,7 +254,7 @@ pub fn encode_deployment_queue_payload(
                 .ok_or_else(|| "deployment line count overflow".to_string())
         })
     })?;
-    let equipment_count = countries.iter().try_fold(0u32, |total, country| {
+    let _equipment_count = countries.iter().try_fold(0u32, |total, country| {
         country.conveyors.iter().try_fold(total, |total, conveyor| {
             conveyor.lines.iter().try_fold(total, |total, line| {
                 total
@@ -144,17 +267,6 @@ pub fn encode_deployment_queue_payload(
         })
     })?;
 
-    let mut out = Vec::new();
-    out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
-    out.extend_from_slice(&country_count.to_le_bytes());
-    out.extend_from_slice(&changed_country_rows.to_le_bytes());
-    out.extend_from_slice(&status_flags.to_le_bytes());
-    out.extend_from_slice(&DEPLOYMENT_QUEUE_SCHEMA_VERSION.to_le_bytes());
-    out.extend_from_slice(&conveyor_count.to_le_bytes());
-    out.extend_from_slice(&line_count.to_le_bytes());
-    out.extend_from_slice(&equipment_count.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-
     for country in countries {
         if country.tag_db_id == 0 {
             return Err("deployment country has zero tag_db_id".into());
@@ -165,75 +277,59 @@ pub fn encode_deployment_queue_payload(
                 country.tag_db_id
             ));
         }
-        out.extend_from_slice(&country.tag_db_id.to_le_bytes());
-        out.extend_from_slice(
-            &(if country.queue_complete {
-                COUNTRY_FLAG_QUEUE_COMPLETE
-            } else {
-                0
-            })
-            .to_le_bytes(),
-        );
-        out.extend_from_slice(&(country.conveyors.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes());
         for conveyor in &country.conveyors {
-            out.extend_from_slice(&conveyor.ordinal.to_le_bytes());
-            out.extend_from_slice(&conveyor.conveyor_id.to_le_bytes());
-            out.extend_from_slice(&DEPLOYMENT_CONVEYOR_ID_TYPE.to_le_bytes());
-            out.extend_from_slice(&conveyor.template_id.to_le_bytes());
-            out.extend_from_slice(&DEPLOYMENT_TEMPLATE_ID_TYPE.to_le_bytes());
-            out.extend_from_slice(&conveyor.amount.to_le_bytes());
-            out.extend_from_slice(&conveyor.location.to_le_bytes());
-            out.extend_from_slice(&conveyor.priority.to_le_bytes());
-            out.extend_from_slice(
-                &(if conveyor.closed {
-                    CONVEYOR_FLAG_CLOSED
-                } else {
-                    0
-                })
-                .to_le_bytes(),
-            );
-            out.extend_from_slice(&(conveyor.lines.len() as u32).to_le_bytes());
-            append_string(&mut out, &conveyor.name)?;
-            append_string(&mut out, &conveyor.role)?;
+            validate_encoded_string(&conveyor.name)?;
+            validate_encoded_string(&conveyor.role)?;
             for line in &conveyor.lines {
-                let mut flags = 0u32;
-                flags |= u32::from(line.training.is_some()) * LINE_FLAG_TRAINING;
-                flags |= u32::from(line.max_training.is_some()) * LINE_FLAG_MAX_TRAINING;
-                flags |= u32::from(line.manpower_have.is_some()) * LINE_FLAG_MANPOWER_HAVE;
-                flags |= u32::from(line.manpower_need.is_some()) * LINE_FLAG_MANPOWER_NEED;
-                flags |= u32::from(line.max_manpower.is_some()) * LINE_FLAG_MAX_MANPOWER;
-                flags |= u32::from(line.name_order.is_some()) * LINE_FLAG_NAME_ORDER;
-                out.extend_from_slice(&line.ordinal.to_le_bytes());
-                out.extend_from_slice(&line.line_id.to_le_bytes());
-                out.extend_from_slice(&DEPLOYMENT_LINE_ID_TYPE.to_le_bytes());
-                out.extend_from_slice(&line.name_order.unwrap_or(0).to_le_bytes());
-                out.extend_from_slice(&line.amount.to_le_bytes());
-                out.extend_from_slice(&flags.to_le_bytes());
-                out.extend_from_slice(&line.training.unwrap_or(0.0).to_bits().to_le_bytes());
-                out.extend_from_slice(&line.max_training.unwrap_or(0.0).to_bits().to_le_bytes());
-                out.extend_from_slice(&line.manpower_have.unwrap_or(0).to_le_bytes());
-                out.extend_from_slice(&line.manpower_need.unwrap_or(0).to_le_bytes());
-                out.extend_from_slice(&line.max_manpower.unwrap_or(0).to_le_bytes());
-                out.extend_from_slice(&(line.equipment_in_transit.len() as u32).to_le_bytes());
-                out.extend_from_slice(&0u32.to_le_bytes());
                 for equipment in &line.equipment_in_transit {
-                    out.extend_from_slice(&equipment.ordinal.to_le_bytes());
-                    out.extend_from_slice(&equipment.equipment_id.to_le_bytes());
-                    out.extend_from_slice(&DEPLOYMENT_EQUIPMENT_ID_TYPE.to_le_bytes());
-                    out.extend_from_slice(
-                        &(u32::from(equipment.archetype.is_some()) * EQUIPMENT_FLAG_ARCHETYPE)
-                            .to_le_bytes(),
-                    );
-                    out.extend_from_slice(&equipment.amount.to_bits().to_le_bytes());
                     if let Some(archetype) = equipment.archetype.as_deref() {
-                        append_string(&mut out, archetype)?;
+                        validate_encoded_string(archetype)?;
                     }
                 }
             }
         }
     }
-    Ok(out)
+
+    d11_grammar::deployment::encode_v2(
+        d11_grammar::deployment::HeaderWords {
+            elapsed_wall_ms,
+            changed_country_rows,
+            status_flags,
+        },
+        countries,
+    )
+    .map_err(format_deployment_encode_error)
+}
+
+fn format_deployment_encode_error(error: d11_grammar::deployment::DqEncodeError) -> String {
+    match error {
+        d11_grammar::deployment::DqEncodeError::CountOverflow { .. } => {
+            "deployment count exceeds u32".to_string()
+        }
+        d11_grammar::deployment::DqEncodeError::LengthOverflow { .. }
+        | d11_grammar::deployment::DqEncodeError::LengthDoesNotFitU32 { .. } => {
+            "deployment payload length overflow".to_string()
+        }
+        d11_grammar::deployment::DqEncodeError::Allocation { .. } => {
+            "deployment payload allocation failed".to_string()
+        }
+        d11_grammar::deployment::DqEncodeError::PreflightMismatch {
+            declared,
+            written,
+        } => format!(
+            "deployment encoder preflight declared {declared} byte(s) and wrote {written}; the row source changed between the two passes"
+        ),
+    }
+}
+
+fn validate_encoded_string(value: &str) -> Result<(), String> {
+    if value.len() > MAX_STRING_BYTES {
+        return Err(format!(
+            "deployment string length {} exceeds {MAX_STRING_BYTES}",
+            value.len()
+        ));
+    }
+    Ok(())
 }
 
 pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueueSummary, String> {
@@ -265,54 +361,88 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
 /// this entry point rather than reparsing around the strict identity, ordering,
 /// nullability, and trailing-byte gates enforced here.
 pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFrame, String> {
-    need(payload, DEPLOYMENT_QUEUE_HEADER_LEN, "deployment header")?;
-    let elapsed_wall_ms = read_u64(payload, 0);
-    let country_count = read_u32(payload, 8);
-    let changed_country_rows = read_u32(payload, 12);
-    let status_flags = read_u32(payload, 16);
-    let schema_version = read_u32(payload, 20);
-    let declared_conveyors = read_u32(payload, 24);
-    let declared_lines = read_u32(payload, 28);
-    let declared_equipment = read_u32(payload, 32);
-    let reserved = read_u32(payload, 36);
-    if !(DEPLOYMENT_QUEUE_MIN_SCHEMA_VERSION..=DEPLOYMENT_QUEUE_SCHEMA_VERSION)
-        .contains(&schema_version)
-        || reserved != 0
+    let country_cursor = d11_grammar::deployment::walk(payload)
+        .map_err(format_deployment_grammar_violation)?;
+    decode_deployment_queue_frame_from_cursor(payload, country_cursor)
+}
+
+/// Apply the deployment semantic policy to a carrier already opened by the
+/// shared structural leaf. This lets enclosing D11 readers decide schema
+/// fatality before any nested body is consumed without starting a second walk.
+pub fn decode_deployment_queue_frame_from_cursor(
+    payload: &[u8],
+    country_cursor: d11_grammar::deployment::CountryCursor,
+) -> Result<DeploymentQueueFrame, String> {
+    // The cursor and the payload arrive as INDEPENDENT arguments, so the
+    // cursor's header is not proof of what these bytes say. A caller could
+    // open a v2 frame, then hand the cursor here beside a v1 payload, and
+    // every check below -- the schema refusal included -- would be reading the
+    // wrong frame's header while the body came from this one. Read this
+    // payload's OWN header first and require the two to agree.
+    // (Codex round-18 finding 1: empty v1 and v2 frames are both 40 bytes with
+    // zero counts, so the substitution decoded clean and bypassed the refusal.)
+    let preview = d11_grammar::deployment::read_header_preview(payload)
+        .map_err(format_deployment_grammar_violation)?;
+    let header = *country_cursor.header();
+    // EVERY header word, not just the version. Comparing versions alone still
+    // accepted a cursor opened over a DIFFERENT frame of the same version:
+    // two empty v2 frames differing only in `elapsed_wall_ms` decoded clean and
+    // reported the cursor's elapsed time for the other frame's bytes (Codex
+    // round-19). The header is nine words; all nine must be the same nine.
+    if preview.elapsed_wall_ms != header.elapsed_wall_ms
+        || preview.country_count != header.country_count
+        || preview.changed_country_rows != header.changed_country_rows
+        || preview.status_flags != header.status_flags
+        || preview.schema_version != header.schema_version.wire()
+        || preview.declared_conveyors != header.declared_conveyors
+        || preview.declared_lines != header.declared_lines
+        || preview.declared_equipment != header.declared_equipment
+        || preview.reserved != header.reserved
     {
         return Err(format!(
-            "deployment invalid schema/reserved {schema_version}/{reserved}"
+            "deployment cursor was opened over a different carrier: cursor header says schema v{} elapsed {} countries {}, these bytes say v{} elapsed {} countries {}",
+            header.schema_version.wire(),
+            header.elapsed_wall_ms,
+            header.country_count,
+            preview.schema_version,
+            preview.elapsed_wall_ms,
+            preview.country_count,
         ));
     }
-    let legacy_v1 = schema_version == 1;
+    let elapsed_wall_ms = header.elapsed_wall_ms;
+    let country_count = header.country_count;
+    let changed_country_rows = header.changed_country_rows;
+    let status_flags = header.status_flags;
+    let declared_conveyors = header.declared_conveyors;
+    let declared_lines = header.declared_lines;
+    let declared_equipment = header.declared_equipment;
+    // OWNER RULING (2026-08-16): the gate accepts only what the shipping
+    // recorder writes, and the recorder writes schema v2. There is no
+    // old-format support before release, so a v1 carrier is REFUSED here
+    // rather than decoded under a legacy policy.
+    //
+    // This is not the same call as PLIC v1/v2, which stays widened: the
+    // shipping producer emits both PLIC versions and live capture files carry
+    // both, so refusing v1 there would reject real data. No capture carries a
+    // v1 deployment carrier.
+    //
+    // `SchemaVersion` and the v1 arm of the LEAF stay: the leaf is a grammar
+    // library and describes the format that exists. This is the GATE's policy,
+    // stated where the policy belongs.
+    if preview.schema_version == d11_grammar::deployment::SchemaVersion::V1.wire() {
+        return Err(format!(
+            "deployment schema v{} is refused: the recorder writes v{}, and no pre-release support exists for the older layout",
+            d11_grammar::deployment::SchemaVersion::V1.wire(),
+            d11_grammar::deployment::SchemaVersion::V2.wire(),
+        ));
+    }
     if changed_country_rows > country_count {
         return Err("deployment changed country count exceeds country count".into());
     }
+    let mut country_cursor = country_cursor
+        .precheck_declared_counts(payload)
+        .map_err(format_deployment_grammar_violation)?;
 
-    let mut cursor = DEPLOYMENT_QUEUE_HEADER_LEN;
-    require_count_fits_remaining(
-        country_count,
-        payload.len().saturating_sub(cursor),
-        16,
-        "country",
-    )?;
-    require_count_fits_remaining(
-        declared_conveyors,
-        payload.len().saturating_sub(cursor),
-        40,
-        "declared conveyor",
-    )?;
-    require_count_fits_remaining(
-        declared_lines,
-        payload.len().saturating_sub(cursor),
-        72,
-        "declared line",
-    )?;
-    require_count_fits_remaining(
-        declared_equipment,
-        payload.len().saturating_sub(cursor),
-        24,
-        "declared equipment",
-    )?;
     let mut tags = BTreeSet::new();
     let mut conveyor_ids = BTreeSet::new();
     let mut line_ids = BTreeSet::new();
@@ -320,13 +450,25 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
     let mut observed_conveyors = 0u32;
     let mut observed_lines = 0u32;
     let mut observed_equipment = 0u32;
-    for country_index in 0..country_count {
-        need(payload, cursor + 16, "deployment country row")?;
-        let tag_db_id = read_u32(payload, cursor);
-        let flags = read_u32(payload, cursor + 4);
-        let conveyor_count = read_u32(payload, cursor + 8);
-        let country_reserved = read_u32(payload, cursor + 12);
-        cursor += 16;
+    loop {
+        let (country_index, country_row, conveyors_block) = match country_cursor
+            .next(payload)
+            .map_err(format_deployment_grammar_violation)?
+        {
+            d11_grammar::deployment::CountryStep::Country { index, row, conveyors } => {
+                (index, row, conveyors)
+            }
+            d11_grammar::deployment::CountryStep::End(end) => {
+                observed_conveyors = end.totals.conveyors;
+                observed_lines = end.totals.lines;
+                observed_equipment = end.totals.equipment;
+                break;
+            }
+        };
+        let tag_db_id = country_row.tag_db_id;
+        let flags = country_row.flags;
+        let conveyor_count = country_row.conveyor_count;
+        let country_reserved = country_row.reserved;
         if tag_db_id == 0 || !tags.insert(tag_db_id) {
             return Err(format!(
                 "deployment country {country_index} invalid/duplicate tag {tag_db_id}"
@@ -350,26 +492,24 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                 "deployment country {tag_db_id} conveyor count exceeds declared remainder"
             ));
         }
-        require_count_fits_remaining(
-            conveyor_count,
-            payload.len().saturating_sub(cursor),
-            40,
-            "conveyor",
-        )?;
+        let mut conveyor_cursor = conveyors_block.open(payload)
+            .map_err(format_deployment_grammar_violation)?;
         let mut conveyors = Vec::with_capacity(conveyor_count as usize);
-        for conveyor_ordinal in 0..conveyor_count {
-            need(payload, cursor + 40, "deployment conveyor row")?;
-            let ordinal = read_u32(payload, cursor);
-            let conveyor_id = read_u32(payload, cursor + 4);
-            let id_type = read_u32(payload, cursor + 8);
-            let template_id = read_u32(payload, cursor + 12);
-            let template_type = read_u32(payload, cursor + 16);
-            let amount = read_i32(payload, cursor + 20);
-            let location = read_u32(payload, cursor + 24);
-            let priority = read_u32(payload, cursor + 28);
-            let conveyor_flags = read_u32(payload, cursor + 32);
-            let line_count = read_u32(payload, cursor + 36);
-            cursor += 40;
+        while conveyor_cursor.remaining() != 0 {
+            let fixed = conveyor_cursor.next(payload)
+                .map_err(format_deployment_grammar_violation)?;
+            let conveyor_ordinal = fixed.index as u32;
+            let row = fixed.row;
+            let ordinal = row.ordinal;
+            let conveyor_id = row.conveyor_id;
+            let id_type = row.id_type;
+            let template_id = row.template_id;
+            let template_type = row.template_id_type;
+            let amount = row.amount;
+            let location = row.location;
+            let priority = row.priority;
+            let conveyor_flags = row.flags;
+            let line_count = row.line_count;
             if ordinal != conveyor_ordinal
                 || conveyor_id == 0
                 || id_type != DEPLOYMENT_CONVEYOR_ID_TYPE
@@ -383,8 +523,12 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                     "deployment invalid conveyor identity/body {conveyor_id}"
                 ));
             }
-            let name = read_string(payload, &mut cursor, "deployment conveyor name")?;
-            let role = read_string(payload, &mut cursor, "deployment conveyor role")?;
+            let name_item = fixed.name.read_name(payload)
+                .map_err(format_deployment_grammar_violation)?;
+            let name = deployment_string(payload, name_item.name, "deployment conveyor name")?;
+            let role_item = name_item.role.read_role(payload)
+                .map_err(format_deployment_grammar_violation)?;
+            let role = deployment_string(payload, role_item.row.role, "deployment conveyor role")?;
             observed_conveyors = observed_conveyors
                 .checked_add(1)
                 .ok_or_else(|| "deployment conveyor count overflow".to_string())?;
@@ -393,45 +537,35 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                     "deployment conveyor {conveyor_id} line count exceeds declared remainder"
                 ));
             }
-            require_count_fits_remaining(
-                line_count,
-                payload.len().saturating_sub(cursor),
-                72,
-                "line",
-            )?;
+            let mut line_cursor = role_item.lines.open(payload)
+                .map_err(format_deployment_grammar_violation)?;
             let mut lines = Vec::with_capacity(line_count as usize);
-            for line_ordinal in 0..line_count {
-                need(payload, cursor + 72, "deployment line row")?;
-                let ordinal = read_u32(payload, cursor);
-                let line_id = read_u32(payload, cursor + 4);
-                let id_type = read_u32(payload, cursor + 8);
-                let name_order = read_i32(payload, cursor + 12);
-                let amount = read_i32(payload, cursor + 16);
-                let line_flags = read_u32(payload, cursor + 20);
-                let training = f64::from_bits(read_u64(payload, cursor + 24));
-                let max_training = f64::from_bits(read_u64(payload, cursor + 32));
-                let manpower_have = read_i64(payload, cursor + 40);
-                let manpower_need = read_i64(payload, cursor + 48);
-                let max_manpower = read_i64(payload, cursor + 56);
-                let equipment_count = read_u32(payload, cursor + 64);
-                let line_reserved = read_u32(payload, cursor + 68);
-                cursor += 72;
+            while line_cursor.remaining() != 0 {
+                let fixed = line_cursor.next(payload)
+                    .map_err(format_deployment_grammar_violation)?;
+                let line_ordinal = fixed.index as u32;
+                let row = fixed.row;
+                let ordinal = row.ordinal;
+                let line_id = row.line_id;
+                let id_type = row.id_type;
+                let name_order = row.name_order;
+                let amount = row.amount;
+                let line_flags = row.flags;
+                let training = f64::from_bits(row.training_bits);
+                let max_training = f64::from_bits(row.max_training_bits);
+                let manpower_have = row.manpower_have;
+                let manpower_need = row.manpower_need;
+                let max_manpower = row.max_manpower;
+                let equipment_count = row.equipment_count;
+                let line_reserved = row.reserved;
                 if ordinal != line_ordinal
                     || line_id == 0
                     || id_type != DEPLOYMENT_LINE_ID_TYPE
                     || !line_ids.insert(line_id)
                     || amount < 0
-                    || line_flags
-                        & !(if legacy_v1 {
-                            LINE_KNOWN_FLAGS & !LINE_FLAG_NAME_ORDER
-                        } else {
-                            LINE_KNOWN_FLAGS
-                        })
-                        != 0
+                    || line_flags & !LINE_KNOWN_FLAGS != 0
                     || line_reserved != 0
-                    || (!legacy_v1
-                        && line_flags & LINE_FLAG_NAME_ORDER == 0
-                        && name_order != 0)
+                    || (line_flags & LINE_FLAG_NAME_ORDER == 0 && name_order != 0)
                 {
                     return Err(format!("deployment invalid line identity/body {line_id}"));
                 }
@@ -468,38 +602,27 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                         "deployment line {line_id} equipment count exceeds declared remainder"
                     ));
                 }
-                require_count_fits_remaining(
-                    equipment_count,
-                    payload.len().saturating_sub(cursor),
-                    24,
-                    "equipment",
-                )?;
+                let mut equipment_cursor = fixed.equipment.open(payload)
+                    .map_err(format_deployment_grammar_violation)?;
                 let mut equipment_in_transit = Vec::with_capacity(equipment_count as usize);
-                for equipment_ordinal in 0..equipment_count {
-                    need(payload, cursor + 24, "deployment equipment row")?;
-                    let ordinal = read_u32(payload, cursor);
-                    let equipment_id = read_u32(payload, cursor + 4);
-                    let equipment_type = read_u32(payload, cursor + 8);
-                    let equipment_flags = read_u32(payload, cursor + 12);
-                    let amount = f64::from_bits(read_u64(payload, cursor + 16));
-                    cursor += 24;
-                    let archetype = if legacy_v1
-                        || equipment_flags & EQUIPMENT_FLAG_ARCHETYPE != 0
-                    {
-                        Some(read_string(
-                            payload,
-                            &mut cursor,
-                            "deployment archetype",
-                        )?)
-                    } else {
-                        None
-                    };
+                while equipment_cursor.remaining() != 0 {
+                    let item = equipment_cursor.next(payload)
+                        .map_err(format_deployment_grammar_violation)?;
+                    let equipment_ordinal = item.index as u32;
+                    let row = item.row;
+                    let ordinal = row.ordinal;
+                    let equipment_id = row.equipment_id;
+                    let equipment_type = row.id_type;
+                    let equipment_flags = row.flags;
+                    let amount = f64::from_bits(row.amount_bits);
+                    let archetype = row.archetype
+                        .map(|span| deployment_string(payload, span, "deployment archetype"))
+                        .transpose()?;
+                    equipment_cursor = item.next;
                     if ordinal != equipment_ordinal
                         || equipment_id == 0
                         || equipment_type != DEPLOYMENT_EQUIPMENT_ID_TYPE
-                        || (legacy_v1 && equipment_flags != 0)
-                        || (!legacy_v1
-                            && equipment_flags & !EQUIPMENT_FLAG_ARCHETYPE != 0)
+                        || equipment_flags & !EQUIPMENT_FLAG_ARCHETYPE != 0
                         || !amount.is_finite()
                         || amount < 0.0
                     {
@@ -517,10 +640,12 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                         amount,
                     });
                 }
+                line_cursor = equipment_cursor.into_end()
+                    .map_err(format_deployment_grammar_violation)?;
                 lines.push(DeploymentLineRow {
                     ordinal,
                     line_id,
-                    name_order: if legacy_v1 || line_flags & LINE_FLAG_NAME_ORDER != 0 {
+                    name_order: if line_flags & LINE_FLAG_NAME_ORDER != 0 {
                         Some(name_order)
                     } else {
                         None
@@ -538,6 +663,8 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
                     equipment_in_transit,
                 });
             }
+            conveyor_cursor = line_cursor.into_end()
+                .map_err(format_deployment_grammar_violation)?;
             conveyors.push(DeploymentConveyorRow {
                 ordinal,
                 conveyor_id,
@@ -556,18 +683,27 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
             queue_complete,
             conveyors,
         });
+        country_cursor = conveyor_cursor.into_end()
+            .map_err(format_deployment_grammar_violation)?;
     }
-    if cursor != payload.len() {
-        return Err(format!(
-            "deployment trailing bytes: consumed {cursor} of {}",
-            payload.len()
-        ));
-    }
-    if (observed_conveyors, observed_lines, observed_equipment)
-        != (declared_conveyors, declared_lines, declared_equipment)
+    // The COUNTRY count belongs in this comparison too, and its absence was the
+    // last hole in the carrier check (Codex round 20). The header agreement
+    // above proves the cursor was opened over THESE bytes; it does not prove
+    // the cursor is still at their START. A cursor already advanced past the
+    // only country walks straight to `End`, and a country with no conveyors
+    // declares 0/0/0, so the three counts below matched and the frame decoded
+    // clean with zero countries while its header said one.
+    //
+    // Checking the OUTCOME rather than the cursor's position closes it whatever
+    // state the cursor arrives in: what was decoded must be what the header
+    // describes.
+    let observed_countries = u32::try_from(countries.len())
+        .map_err(|_| "deployment decoded country count exceeds u32".to_string())?;
+    if (observed_countries, observed_conveyors, observed_lines, observed_equipment)
+        != (country_count, declared_conveyors, declared_lines, declared_equipment)
     {
         return Err(format!(
-            "deployment declared/observed count mismatch: declared {declared_conveyors}/{declared_lines}/{declared_equipment}, observed {observed_conveyors}/{observed_lines}/{observed_equipment}"
+            "deployment declared/observed count mismatch: declared {country_count}/{declared_conveyors}/{declared_lines}/{declared_equipment}, observed {observed_countries}/{observed_conveyors}/{observed_lines}/{observed_equipment}"
         ));
     }
     Ok(DeploymentQueueFrame {
@@ -578,51 +714,81 @@ pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFr
     })
 }
 
-fn require_count_fits_remaining(
-    count: u32,
-    remaining: usize,
-    minimum_row_len: usize,
+
+
+fn deployment_string(
+    payload: &[u8],
+    span: d11_grammar::Span,
     label: &str,
-) -> Result<(), String> {
-    let count = usize::try_from(count)
-        .map_err(|_| format!("deployment {label} count does not fit usize"))?;
-    if count > remaining / minimum_row_len {
-        return Err(format!(
-            "deployment {label} count {count} exceeds remaining payload bound {}",
-            remaining / minimum_row_len
-        ));
+) -> Result<String, String> {
+    if span.len > MAX_STRING_BYTES {
+        return Err(format!("{label} length {} exceeds {MAX_STRING_BYTES}", span.len));
     }
-    Ok(())
-}
-
-fn append_string(out: &mut Vec<u8>, value: &str) -> Result<(), String> {
-    let bytes = value.as_bytes();
-    if bytes.len() > MAX_STRING_BYTES {
-        return Err(format!(
-            "deployment string length {} exceeds {MAX_STRING_BYTES}",
-            bytes.len()
-        ));
-    }
-    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
-fn read_string(payload: &[u8], cursor: &mut usize, label: &str) -> Result<String, String> {
-    need(payload, cursor.saturating_add(4), label)?;
-    let len = read_u32(payload, *cursor) as usize;
-    *cursor += 4;
-    if len > MAX_STRING_BYTES {
-        return Err(format!("{label} length {len} exceeds {MAX_STRING_BYTES}"));
-    }
-    need(payload, cursor.saturating_add(len), label)?;
-    let value = std::str::from_utf8(&payload[*cursor..*cursor + len])
+    Ok(std::str::from_utf8(&payload[span.start..span.end])
         .map_err(|_| format!("{label} is not UTF-8"))?
-        .to_string();
-    *cursor += len;
-    Ok(value)
+        .to_string())
 }
-
+pub fn format_deployment_grammar_violation(
+    violation: d11_grammar::deployment::Violation,
+) -> String {
+    use d11_grammar::deployment::{Block, DqCallerDefect as CallerDefect, DqSection as Section, DqViolationKind as ViolationKind};
+    match violation.kind {
+        ViolationKind::Need { section, needed, available } => {
+            let label = match section {
+                Section::Header => "deployment header",
+                Section::Country => "deployment country row",
+                Section::Conveyor => "deployment conveyor row",
+                Section::ConveyorName => "deployment conveyor name",
+                Section::ConveyorRole => "deployment conveyor role",
+                Section::Line => "deployment line row",
+                Section::Equipment => "deployment equipment row",
+                Section::Archetype => "deployment archetype",
+            };
+            if matches!(
+                section,
+                Section::ConveyorName | Section::ConveyorRole | Section::Archetype
+            ) {
+                let declared_len = needed
+                    .saturating_sub(violation.at)
+                    .saturating_sub(d11_grammar::deployment::STRING_PREFIX_LEN);
+                if declared_len > MAX_STRING_BYTES {
+                    return format!(
+                        "{label} length {declared_len} exceeds {MAX_STRING_BYTES}"
+                    );
+                }
+            }
+            format!("{label} truncated: need {needed}, have {available}")
+        }
+        ViolationKind::UnknownSchema { version, reserved }
+        | ViolationKind::HeaderReserved { version, value: reserved } => {
+            format!("deployment invalid schema/reserved {version}/{reserved}")
+        }
+        ViolationKind::CountCannotFit { block, count, remaining, minimum_row_len } => {
+            let label = match block {
+                Block::Countries => "country",
+                Block::Conveyors if violation.at == d11_grammar::deployment::HEADER_LEN => "declared conveyor",
+                Block::Lines if violation.at == d11_grammar::deployment::HEADER_LEN => "declared line",
+                Block::Equipment if violation.at == d11_grammar::deployment::HEADER_LEN => "declared equipment",
+                Block::Conveyors => "conveyor",
+                Block::Lines => "line",
+                Block::Equipment => "equipment",
+            };
+            format!(
+                "deployment {label} count {count} exceeds remaining payload bound {}",
+                remaining / minimum_row_len
+            )
+        }
+        ViolationKind::TrailingBytes { consumed, available } => {
+            format!("deployment trailing bytes: consumed {consumed} of {available}")
+        }
+        ViolationKind::ArithmeticOverflow { operation, left, right } => {
+            format!("deployment count overflow ({operation:?}, {left}, {right})")
+        }
+        ViolationKind::CallerDefect(CallerDefect::BlockNotConsumed { block, remaining }) => {
+            format!("deployment caller did not consume {remaining} {block:?} row(s)")
+        }
+    }
+}
 fn validate_optional_float(flags: u32, flag: u32, value: f64, label: &str) -> Result<(), String> {
     if flags & flag != 0 {
         if !value.is_finite() || value < 0.0 {
@@ -650,32 +816,10 @@ fn validate_optional_nonnegative_i64(
     Ok(())
 }
 
-fn need(payload: &[u8], required: usize, label: &str) -> Result<(), String> {
-    if payload.len() < required {
-        Err(format!(
-            "{label} truncated: need {required}, have {}",
-            payload.len()
-        ))
-    } else {
-        Ok(())
-    }
-}
 
-fn read_u32(payload: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
-}
 
-fn read_i32(payload: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
-}
 
-fn read_u64(payload: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap())
-}
 
-fn read_i64(payload: &[u8], offset: usize) -> i64 {
-    i64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap())
-}
 
 #[cfg(test)]
 mod tests {
@@ -729,6 +873,139 @@ mod tests {
         let frame = decode_deployment_queue_frame(&payload).unwrap();
         assert_eq!(frame.elapsed_wall_ms, 9);
         assert_eq!(frame.countries, vec![country]);
+    }
+
+    /// kills: deleting the `SchemaVersion::V1` refusal in
+    /// `decode_deployment_queue_frame_from_cursor` makes this decode succeed.
+    ///
+    /// OWNER RULING (2026-08-16): the gate accepts only what the shipping
+    /// recorder writes, and it writes schema v2. There is no pre-release support
+    /// for the older layout, so a v1 carrier is refused by NAME rather than
+    /// decoded under a legacy policy. The leaf still describes v1 -- it is a
+    /// grammar library, and the format exists -- which is why this test builds a
+    /// real v1 frame through the leaf's own encoder rather than hand-corrupting a
+    /// version word.
+    #[test]
+    fn gate_refuses_a_deployment_carrier_written_in_schema_v1() {
+        let words = d11_grammar::deployment::HeaderWords {
+            elapsed_wall_ms: 9,
+            changed_country_rows: 0,
+            status_flags: 0,
+        };
+        let payload = d11_grammar::deployment::encode_v1(words, &[]).unwrap();
+        assert_eq!(
+            u32::from_le_bytes([payload[20], payload[21], payload[22], payload[23]]),
+            d11_grammar::deployment::SchemaVersion::V1.wire(),
+            "the fixture must really be a v1 frame or this test proves nothing"
+        );
+
+        let error = decode_deployment_queue_payload(&payload)
+            .expect_err("a schema v1 deployment carrier must be refused");
+        assert!(
+            error.contains("schema v1 is refused"),
+            "the refusal must name the version it refused, got: {error}"
+        );
+
+        // And the v2 equivalent still decodes, so the refusal is the VERSION and
+        // not the empty frame.
+        let v2 = encode_deployment_queue_payload(9, 0, 0, &[]).unwrap();
+        decode_deployment_queue_payload(&v2).expect("schema v2 is what ships");
+    }
+
+    /// kills: reverting the refusal to read `header.schema_version` (the
+    /// CURSOR's) instead of `preview.schema_version` (these bytes'), or deleting
+    /// the cursor/payload agreement check, lets this decode return `Ok`.
+    ///
+    /// `decode_deployment_queue_frame_from_cursor` takes the payload and the
+    /// cursor as INDEPENDENT arguments, so the cursor's header is not proof of
+    /// what the payload says. An empty v1 frame and an empty v2 frame are both
+    /// 40 bytes with zero counts, so a v2 cursor paired with v1 bytes used to
+    /// walk clean past the owner's refusal.
+    #[test]
+    fn gate_refuses_v1_bytes_carried_in_on_a_v2_cursor() {
+        let words = d11_grammar::deployment::HeaderWords {
+            elapsed_wall_ms: 9,
+            changed_country_rows: 0,
+            status_flags: 0,
+        };
+        let v1 = d11_grammar::deployment::encode_v1(words, &[]).unwrap();
+        let v2 = encode_deployment_queue_payload(9, 0, 0, &[]).unwrap();
+        assert_eq!(v1.len(), v2.len(), "the substitution needs two frames of one size");
+
+        // A cursor legitimately opened over the v2 frame ...
+        let cursor = d11_grammar::deployment::walk(&v2).expect("v2 walks");
+        // ... handed to the decoder beside the v1 bytes.
+        let error = decode_deployment_queue_frame_from_cursor(&v1, cursor)
+            .expect_err("v1 bytes must be refused however the cursor was opened");
+        assert!(
+            error.contains("schema v1 is refused") || error.contains("different carrier"),
+            "expected a version or carrier-mismatch refusal, got: {error}"
+        );
+    }
+
+    /// kills: narrowing the carrier-agreement check back to the schema version
+    /// alone. Two empty v2 frames that differ only in `elapsed_wall_ms` then
+    /// decode clean, and the frame reports the CURSOR's elapsed time for the
+    /// other frame's bytes.
+    #[test]
+    fn gate_refuses_a_same_version_cursor_opened_over_a_different_frame() {
+        let first = encode_deployment_queue_payload(1, 0, 0, &[]).unwrap();
+        let second = encode_deployment_queue_payload(2, 0, 0, &[]).unwrap();
+        assert_eq!(first.len(), second.len());
+        assert_ne!(first, second, "the two frames must actually differ");
+
+        let cursor = d11_grammar::deployment::walk(&first).expect("v2 walks");
+        let error = decode_deployment_queue_frame_from_cursor(&second, cursor)
+            .expect_err("a cursor from another frame must be refused");
+        assert!(
+            error.contains("different carrier"),
+            "expected a carrier-mismatch refusal, got: {error}"
+        );
+    }
+
+    /// kills: dropping `observed_countries`/`country_count` from the
+    /// declared/observed comparison at the end of
+    /// `decode_deployment_queue_frame_from_cursor`.
+    ///
+    /// The header-agreement check proves the cursor was opened over THESE bytes.
+    /// It does not prove the cursor is still at their START. A cursor already
+    /// advanced past the only country walks straight to `End`, and a country with
+    /// no conveyors declares 0/0/0, so the conveyor/line/equipment counts matched
+    /// and the frame decoded clean with ZERO countries while its header said one.
+    #[test]
+    fn gate_refuses_a_cursor_already_advanced_past_the_first_country() {
+        let country = DeploymentCountryRow {
+            tag_db_id: 7,
+            queue_complete: true,
+            conveyors: Vec::new(),
+        };
+        let payload = encode_deployment_queue_payload(9, 1, 0, &[country]).unwrap();
+        // Sanity: the honest path decodes exactly one country.
+        assert_eq!(
+            decode_deployment_queue_payload(&payload).unwrap().country_rows,
+            1
+        );
+
+        // Now advance a cursor past that country and hand it back with the same
+        // bytes, so every header word still agrees.
+        let cursor = d11_grammar::deployment::walk(&payload).expect("v2 walks");
+        let advanced = match cursor.next(&payload).expect("first country") {
+            d11_grammar::deployment::CountryStep::Country { conveyors, .. } => conveyors
+                .open(&payload)
+                .expect("empty conveyor block opens")
+                .into_end()
+                .expect("empty conveyor block closes"),
+            d11_grammar::deployment::CountryStep::End(_) => {
+                panic!("the fixture must carry one country")
+            }
+        };
+
+        let error = decode_deployment_queue_frame_from_cursor(&payload, advanced)
+            .expect_err("an advanced cursor must not decode as an empty frame");
+        assert!(
+            error.contains("declared/observed count mismatch"),
+            "expected a declared/observed refusal, got: {error}"
+        );
     }
 
     #[test]

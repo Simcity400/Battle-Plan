@@ -162,7 +162,7 @@ pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 =
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2: u16 =
     compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2;
 pub const COMPACT_FUEL_SCALE_RAW: u32 = 32768;
-pub const COMPACT_PRODUCTION_SCALE_RAW: u32 = 100000;
+pub const COMPACT_PRODUCTION_SCALE_RAW: u32 = d11_grammar::PRODUCTION_SCALE_RAW;
 pub const COMPACT_TECH_PROGRESS_SCALE_RAW: u32 = 1000;
 pub const COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100000;
 pub const COMPACT_FIXED_SCALE_RAW: u32 = 100000;
@@ -1609,47 +1609,51 @@ fn decode_compact_country_identity_data_payload(
     }
 }
 
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=2b63a23c6f69d9b69c92f7ae67a2817d6902fbe515079f76a27dbc2f82984065
 fn decode_compact_production_data_payload(
     offset: usize,
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    if payload.len() < 40 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production data payload is {} byte(s), expected at least 40",
-            payload.len()
-        ));
-        return;
-    }
-    let country_count = read_u32_le(payload, 8) as usize;
-    let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
-    let scale_raw = read_u32_le(payload, 20);
-    let stockpile_count = read_u32_le(payload, 24) as usize;
-    let military_count = read_u32_le(payload, 28) as usize;
-    let naval_count = read_u32_le(payload, 32) as usize;
-    let construction_count = read_u32_le(payload, 36) as usize;
+    let header = match d11_grammar::read_base_header(payload) {
+        Ok(header) => header,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            return;
+        }
+    };
+    let country_count = header.country_count as usize;
+    let changed_rows = header.changed_rows as usize;
+    let status_flags = header.status_flags;
+    let scale_raw = header.scale_raw;
+    let stockpile_count = header.stockpile_count as usize;
+    let military_count = header.military_count as usize;
+    let naval_count = header.naval_count as usize;
+    let construction_count = header.construction_count as usize;
     add_decoder_status(summary, status_flags);
     if scale_raw != COMPACT_PRODUCTION_SCALE_RAW {
         summary.parse_errors.push(format!(
             "offset {offset}: production data scale {scale_raw} != expected {COMPACT_PRODUCTION_SCALE_RAW}"
         ));
     }
-    let line_count = military_count.saturating_add(naval_count);
-    let base_len = 40usize
-        .saturating_add(stockpile_count.saturating_mul(16))
-        .saturating_add(line_count.saturating_mul(32))
-        .saturating_add(construction_count.saturating_mul(32));
     // Wave-4 production licensing: the base payload is self-delimiting to
     // base_len; any trailing bytes are the `PLIC` license trailer (parsed
     // after the base rows). A record with no trailer is exactly base_len.
-    if payload.len() < base_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production data payload is {} byte(s), expected at least {base_len}",
-            payload.len()
-        ));
-        return;
-    }
+    let base = match d11_grammar::BaseCursor::new(payload, &header) {
+        Ok(base) => base,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            return;
+        }
+    };
     if changed_rows > country_count {
         summary.parse_errors.push(format!(
             "offset {offset}: production data changed_rows {changed_rows} > country_count {country_count}"
@@ -1667,12 +1671,26 @@ fn decode_compact_production_data_payload(
     add_compact_domain_data_unit(summary, 11, "military_line_rows", military_count);
     add_compact_domain_data_unit(summary, 11, "naval_line_rows", naval_count);
     add_compact_domain_data_unit(summary, 11, "construction_queue_rows", construction_count);
-    let mut cursor = 40usize;
     let mut seen_stockpile = BTreeSet::new();
-    for row_index in 0..stockpile_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        let variant_id = read_u32_le(payload, cursor + 4);
-        let _amount_raw = read_i64_le(payload, cursor + 8);
+    let mut stockpiles = base.stockpiles();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = stockpiles.next()
+    {
+        let row = match d11_grammar::stockpile_row_at(payload, at) {
+            Ok(row) => row,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return;
+            }
+        };
+        let tag_db_id = row.tag_db_id;
+        let variant_id = row.variant_id;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: production stockpile row {row_index} has zero tag_db_id"
@@ -1683,18 +1701,40 @@ fn decode_compact_production_data_payload(
                 "offset {offset}: production stockpile row {row_index} duplicates tag_db_id {tag_db_id} variant_id {variant_id}"
             ));
         }
-        cursor += 16;
     }
+    let stockpiles_end = match stockpiles.into_end() {
+        Ok(end) => end,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            return;
+        }
+    };
     let mut seen_lines = BTreeSet::new();
-    for row_index in 0..line_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        let kind = read_u32_le(payload, cursor + 4);
-        let line_id = read_i32_le(payload, cursor + 8);
-        let active_factories = read_i32_le(payload, cursor + 12);
-        let _cost_raw = read_i32_le(payload, cursor + 16);
-        let _speed_raw = read_i32_le(payload, cursor + 20);
-        let _produced_raw = read_i32_le(payload, cursor + 24);
-        let _amount = read_i32_le(payload, cursor + 28);
+    let mut lines = stockpiles_end.next.lines();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = lines.next()
+    {
+        let row = match d11_grammar::line_row_at(payload, at) {
+            Ok(row) => row,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return;
+            }
+        };
+        let tag_db_id = row.tag_db_id;
+        let kind = row.kind;
+        let line_id = row.line_id;
+        let active_factories = row.active_factories;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: production line row {row_index} has zero tag_db_id"
@@ -1715,18 +1755,43 @@ fn decode_compact_production_data_payload(
                 "offset {offset}: production line row {row_index} duplicates tag_db_id {tag_db_id} kind {kind} line_id {line_id}"
             ));
         }
-        cursor += 32;
     }
+    let lines_end = match lines.into_end() {
+        Ok(end) => end,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            return;
+        }
+    };
     let mut seen_construction = BTreeSet::new();
-    for row_index in 0..construction_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        let line_id = read_u32_le(payload, cursor + 4);
-        let _template_id = read_u32_le(payload, cursor + 8);
-        let active_factories = read_i32_le(payload, cursor + 12);
-        let cost_raw = read_i32_le(payload, cursor + 16);
-        let produced_raw = read_i32_le(payload, cursor + 20);
-        let priority = read_u32_le(payload, cursor + 24);
-        let reserved = read_u32_le(payload, cursor + 28);
+    let mut construction = lines_end.next.construction();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = construction.next()
+    {
+        let row = match d11_grammar::construction_row_at(payload, at) {
+            Ok(row) => row,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return;
+            }
+        };
+        let tag_db_id = row.tag_db_id;
+        let line_id = row.line_id;
+        let active_factories = row.active_factories;
+        let cost_raw = row.cost_raw;
+        let produced_raw = row.produced_raw;
+        let priority = row.priority;
+        let reserved = row.reserved;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: construction row {row_index} has zero tag_db_id"
@@ -1752,257 +1817,342 @@ fn decode_compact_production_data_payload(
                 "offset {offset}: construction row {row_index} duplicates tag_db_id {tag_db_id} line_id {line_id} priority {priority}"
             ));
         }
-        cursor += 32;
     }
     // Parse the strict additive D11 trailer chain (`PLIC`, X4-P1 `PVJ1`,
     // X4-P2 `PFR1`, exact-priority `PPR1`, XUI12 `PLS1`/`PEF1`, X4-P5
     // `PMI1`, completeness witnesses, and B2 `PCV1`).
-    if cursor != payload.len() {
-        decode_compact_production_trailers(
-            offset,
-            payload,
-            cursor,
-            country_count,
-            &seen_stockpile,
-            &seen_lines,
-            summary,
-        );
-    }
+    let trailers = match construction.into_end() {
+        Ok(end) => end.next,
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            return;
+        }
+    };
+    decode_compact_production_trailers(
+        offset,
+        payload,
+        trailers,
+        country_count,
+        &seen_stockpile,
+        &seen_lines,
+        summary,
+    );
 }
 
+fn format_authority_production_header_shape(
+    offset: usize,
+    payload: &[u8],
+    preview: d11_grammar::HeaderPreview,
+) -> String {
+    let available = payload.len().saturating_sub(preview.at);
+    match preview.trailer {
+        d11_grammar::Trailer::Plic => format!(
+            "offset {offset}: production license trailer header shape invalid (version {}, header_len {}, reserved {})",
+            preview.version, preview.header_len, preview.reserved()
+        ),
+        d11_grammar::Trailer::Pmi1
+        | d11_grammar::Trailer::Pcp1
+        | d11_grammar::Trailer::Pcv1
+        | d11_grammar::Trailer::Pdq1 => format!(
+            "offset {offset}: {} header/count/length is invalid",
+            preview.trailer.label()
+        ),
+        trailer => format!(
+            "offset {offset}: {} header shape invalid (version {}, header_len {}, segment_len {}, expected {}, reserved {}, available {available})",
+            trailer.label(), preview.version, preview.header_len, preview.words[0],
+            preview.computed_len(), preview.reserved()
+        ),
+    }
+}
+fn format_authority_production_grammar_violation(
+    offset: usize,
+    payload: &[u8],
+    violation: d11_grammar::Violation,
+    preview: Option<d11_grammar::HeaderPreview>,
+) -> String {
+    use d11_grammar::{CallerDefect, Section, ViolationKind};
+    match violation.kind {
+        ViolationKind::Need { section, needed, available } => match section {
+            Section::BaseHeader => format!(
+                "offset {offset}: production data payload is {available} byte(s), expected at least {needed}"
+            ),
+            Section::BaseStockpiles | Section::BaseLines | Section::BaseConstruction => {
+                let base_len = d11_grammar::read_base_header(payload).ok()
+                    .and_then(|header| d11_grammar::derive_base_layout(&header).ok())
+                    .map_or(needed, |layout| layout.base_len);
+                format!("offset {offset}: production data payload is {available} byte(s), expected at least {base_len}")
+            }
+            Section::TrailerMagic => format!(
+                "offset {offset}: production trailer at {} has truncated magic",
+                violation.at
+            ),
+            Section::TrailerHeader(trailer) => {
+                let available = payload.len().saturating_sub(violation.at);
+                match trailer {
+                    d11_grammar::Trailer::Pmi1
+                    | d11_grammar::Trailer::Pcv1
+                    | d11_grammar::Trailer::Pdq1 => format!(
+                        "offset {offset}: {} trailer is truncated before its header",
+                        trailer.label()
+                    ),
+                    d11_grammar::Trailer::Plic => format!(
+                        "offset {offset}: production license trailer is {available} byte(s), expected at least {}",
+                        trailer.header_len()
+                    ),
+                    d11_grammar::Trailer::Pvj1
+                    | d11_grammar::Trailer::Pfr1
+                    | d11_grammar::Trailer::Ppr1
+                    | d11_grammar::Trailer::Pls1
+                    | d11_grammar::Trailer::Pef1
+                    | d11_grammar::Trailer::Pcp1 => format!(
+                        "offset {offset}: {} trailer is {available} byte(s), expected at least {}",
+                        trailer.label(), trailer.header_len()
+                    ),
+                }
+            }
+            Section::TrailerBody(d11_grammar::Trailer::Plic) => {
+                let expected = preview.map_or(needed.saturating_sub(violation.at), |p| p.computed_len());
+                format!("offset {offset}: production license trailer len {} < {expected}", payload.len().saturating_sub(violation.at))
+            }
+            Section::TrailerBody(_) => preview
+                .map(|p| format_authority_production_header_shape(offset, payload, p))
+                .unwrap_or_else(|| format!("offset {offset}: production trailer is truncated")),
+        },
+        ViolationKind::UnknownTrailerMagic { .. } => format!(
+            "offset {offset}: production trailing bytes are not a known D11 trailer"
+        ),
+        ViolationKind::DuplicateTrailer { trailer, .. } => format!(
+            "offset {offset}: production has duplicate {} trailer", trailer.label()
+        ),
+        ViolationKind::UnknownVersion { .. }
+        | ViolationKind::HeaderLen { .. }
+        | ViolationKind::ReservedWord { .. }
+        | ViolationKind::DeclaredExtent { .. } => preview
+            .map(|p| format_authority_production_header_shape(offset, payload, p))
+            .unwrap_or_else(|| format!("offset {offset}: production trailer header/count/length is invalid")),
+        ViolationKind::PlicItemCount {
+            declared_items,
+            summed_items,
+        } => format!(
+            "offset {offset}: production license id total {summed_items} != id_rows {declared_items}"
+        ),
+        ViolationKind::ArithmeticOverflow {
+            section: Section::TrailerBody(d11_grammar::Trailer::Pdq1),
+            ..
+        } => format!("offset {offset}: PDQ1 segment size overflows usize"),
+        ViolationKind::ArithmeticOverflow { section, .. } => match section {
+            Section::TrailerBody(trailer) => format!(
+                "offset {offset}: {} header/count/length is invalid", trailer.label()
+            ),
+            Section::BaseHeader | Section::BaseStockpiles | Section::BaseLines | Section::BaseConstruction => {
+                format!("offset {offset}: production data payload size overflows usize")
+            }
+            Section::TrailerMagic | Section::TrailerHeader(_) => {
+                format!("offset {offset}: production trailer size overflows usize")
+            }
+        },
+        ViolationKind::CallerDefect(defect) => match defect {
+            CallerDefect::BodyNotDelimited => format!("offset {offset}: production trailer body was not delimited"),
+            CallerDefect::BlockNotConsumed { owner, block, remaining } => format!(
+                "offset {offset}: production caller did not consume {remaining} row(s) from {owner:?} {}", block.name()
+            ),
+        },
+    }
+}
+fn authority_production_step<T>(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+    result: Result<T, d11_grammar::Violation>,
+) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(violation) => {
+            summary
+                .parse_errors
+                .push(format_authority_production_grammar_violation(
+                    offset, payload, violation, None,
+                ));
+            None
+        }
+    }
+}
 fn decode_compact_production_trailers(
     offset: usize,
     payload: &[u8],
-    mut trailer_offset: usize,
+    mut cursor: d11_grammar::TrailerCursor,
     country_count: usize,
     base_stockpile: &BTreeSet<(u32, u32)>,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
 ) {
-    let mut plic_seen = false;
-    let mut pvj_seen = false;
-    let mut pfr_seen = false;
-    let mut ppr_seen = false;
-    let mut pls_seen = false;
-    let mut pef_seen = false;
-    let mut pmi_seen = false;
-    let mut pcp_seen = false;
-    let mut pcv_seen = false;
-    let mut pdq_seen = false;
-    while trailer_offset < payload.len() {
-        let Some(magic) = payload.get(trailer_offset..trailer_offset.saturating_add(4)) else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: production trailer at {trailer_offset} has truncated magic"
-            ));
+    loop {
+        let step = match cursor.next(payload) {
+            Ok(step) => step,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return;
+            }
+        };
+        let d11_grammar::TrailerStep::Magic { trailer, .. } = step else {
             return;
         };
-        let next = if magic == b"PLIC" {
-            if plic_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PLIC trailer"
-                ));
-                return;
-            }
-            plic_seen = true;
-            decode_compact_production_license_trailer(offset, payload, trailer_offset, summary)
-        } else if magic == b"PVJ1" {
-            if pvj_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PVJ1 trailer"
-                ));
-                return;
-            }
-            pvj_seen = true;
-            decode_compact_production_variant_join_trailer(
+        let preview = cursor.peek_header(payload).ok();
+        macro_rules! read_body {
+            ($variant:ident) => {{
+                let body = match cursor.read_body(payload) {
+                    Ok(body) => body,
+                    Err(violation) => {
+                        summary
+                            .parse_errors
+                            .push(format_authority_production_grammar_violation(
+                                offset, payload, violation, preview,
+                            ));
+                        return;
+                    }
+                };
+                let d11_grammar::TrailerBody::$variant(body) = body else {
+                    unreachable!()
+                };
+                body
+            }};
+        }
+        let resume = match trailer {
+            d11_grammar::Trailer::Plic => decode_compact_production_license_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                {
+                    let body = match cursor.read_body_recoverable(payload) {
+                        Ok(body) => body,
+                        Err(violation) => {
+                            summary.parse_errors.push(
+                                format_authority_production_grammar_violation(
+                                    offset, payload, violation, preview,
+                                ),
+                            );
+                            return;
+                        }
+                    };
+                    let d11_grammar::TrailerBody::Plic(body) = body else {
+                        unreachable!()
+                    };
+                    body
+                },
+                summary,
+            ),
+            d11_grammar::Trailer::Pvj1 => decode_compact_production_variant_join_trailer(
+                offset,
+                payload,
+                read_body!(Pvj1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PFR1" {
-            if pfr_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PFR1 trailer"
-                ));
-                return;
-            }
-            pfr_seen = true;
-            decode_compact_production_requested_factories_trailer(
+            ),
+            d11_grammar::Trailer::Pfr1 => decode_compact_production_requested_factories_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pfr1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PPR1" {
-            if ppr_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PPR1 trailer"
-                ));
-                return;
-            }
-            ppr_seen = true;
-            decode_compact_production_priority_trailer(
+            ),
+            d11_grammar::Trailer::Ppr1 => decode_compact_production_priority_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Ppr1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PLS1" {
-            if pls_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PLS1 trailer"
-                ));
-                return;
-            }
-            pls_seen = true;
-            decode_compact_production_line_subtype_trailer(
+            ),
+            d11_grammar::Trailer::Pls1 => decode_compact_production_line_subtype_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pls1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PEF1" {
-            if pef_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PEF1 trailer"
-                ));
-                return;
-            }
-            pef_seen = true;
-            decode_compact_production_efficiency_trailer(
+            ),
+            d11_grammar::Trailer::Pef1 => decode_compact_production_efficiency_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pef1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PMI1" {
-            if pmi_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PMI1 trailer"
-                ));
-                return;
-            }
-            pmi_seen = true;
-            decode_compact_production_mio_join_trailer(
+            ),
+            d11_grammar::Trailer::Pmi1 => decode_compact_production_mio_join_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pmi1),
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PCP1" {
-            if pcp_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PCP1 trailer"
-                ));
-                return;
-            }
-            pcp_seen = true;
-            decode_compact_production_completeness_trailer(
+            ),
+            d11_grammar::Trailer::Pcp1 => decode_compact_production_completeness_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pcp1),
                 country_count,
                 base_stockpile,
                 base_lines,
                 summary,
-            )
-        } else if magic == b"PCV1" {
-            if pcv_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PCV1 trailer"
-                ));
-                return;
-            }
-            pcv_seen = true;
-            decode_compact_country_convoy_trailer(
+            ),
+            d11_grammar::Trailer::Pcv1 => decode_compact_country_convoy_trailer(
                 offset,
                 payload,
-                trailer_offset,
+                read_body!(Pcv1),
                 country_count,
                 summary,
-            )
-        } else if magic == b"PDQ1" {
-            if pdq_seen {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: production has duplicate PDQ1 trailer"
-                ));
-                return;
+            ),
+            d11_grammar::Trailer::Pdq1 => {
+                let body = read_body!(Pdq1);
+                let resume = decode_compact_deployment_queue_trailer(
+                    offset,
+                    payload,
+                    body,
+                    country_count,
+                    summary,
+                );
+                if resume
+                    .as_ref()
+                    .is_some_and(|resume| resume.end() != payload.len())
+                {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: PDQ1 must be the final D11 trailer"
+                    ));
+                    return;
+                }
+                resume
             }
-            pdq_seen = true;
-            decode_compact_deployment_queue_trailer(
-                offset,
-                payload,
-                trailer_offset,
-                country_count,
-                summary,
-            )
-        } else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: production trailing bytes are not a known D11 trailer"
-            ));
-            return;
         };
-        let Some(next) = next else { return };
-        if pdq_seen && next != payload.len() {
-            summary.parse_errors.push(format!(
-                "offset {offset}: PDQ1 must be the final D11 trailer"
-            ));
-            return;
-        }
-        trailer_offset = next;
+        let Some(resume) = resume else { return };
+        cursor = resume.resume();
     }
 }
 
 fn decode_compact_deployment_queue_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::PdqCursor,
     base_country_count: usize,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PDQ1 offset beyond payload"));
-        return None;
+) -> Option<d11_grammar::TrailerResume> {
+    let span = body.inner_payload_span();
+    let codec_payload = &payload[span.start..span.end];
+    let codec_cursor = match d11_grammar::deployment::walk(codec_payload) {
+        Ok(cursor) => cursor,
+        Err(violation) => {
+            let error = production11::deployment_queue::format_deployment_grammar_violation(violation);
+            summary.parse_errors.push(format!(
+                "offset {offset}: PDQ1 deployment carrier is invalid: {error}"
+            ));
+            return None;
+        }
     };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PDQ1 trailer is truncated before its header"
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let codec_payload_len = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let Some(expected) = HEADER_LEN.checked_add(codec_payload_len) else {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PDQ1 segment size overflows usize"
-        ));
-        return None;
-    };
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PDQ1 header/count/length is invalid"
-        ));
-        return None;
-    }
-    let codec_payload = &trailer[HEADER_LEN..segment_len];
-    let frame = match production11::decode_deployment_queue_frame(codec_payload) {
+    let codec_schema_version = codec_cursor.header().schema_version.wire();
+    let frame = match production11::decode_deployment_queue_frame_from_cursor(codec_payload, codec_cursor) {
         Ok(frame) => frame,
         Err(error) => {
             summary.parse_errors.push(format!(
@@ -2011,14 +2161,19 @@ fn decode_compact_deployment_queue_trailer(
             return None;
         }
     };
-    let codec_schema_version = read_u32_le(codec_payload, 20);
     if codec_schema_version != production11::deployment_queue::DEPLOYMENT_QUEUE_SCHEMA_VERSION {
         summary.parse_errors.push(format!(
             "offset {offset}: PDQ1 requires deployment codec v{}, got v{codec_schema_version}",
             production11::deployment_queue::DEPLOYMENT_QUEUE_SCHEMA_VERSION
         ));
     }
-    if frame.elapsed_wall_ms != read_u64_le(payload, 0) {
+    let base_header = authority_production_step(
+        offset,
+        payload,
+        summary,
+        d11_grammar::read_base_header(payload),
+    )?;
+    if frame.elapsed_wall_ms != base_header.elapsed_wall_ms {
         summary.parse_errors.push(format!(
             "offset {offset}: PDQ1 elapsed_wall_ms does not match D11"
         ));
@@ -2035,14 +2190,14 @@ fn decode_compact_deployment_queue_trailer(
             frame.changed_country_rows
         ));
     }
-    let base_changed_country_rows = read_u32_le(payload, 12);
+    let base_changed_country_rows = base_header.changed_rows;
     if frame.changed_country_rows != base_changed_country_rows {
         summary.parse_errors.push(format!(
             "offset {offset}: PDQ1 changed_country_rows {} != D11 changed_rows {base_changed_country_rows}",
             frame.changed_country_rows
         ));
     }
-    let base_status_flags = read_u32_le(payload, 16);
+    let base_status_flags = base_header.status_flags;
     if frame.status_flags != base_status_flags {
         summary.parse_errors.push(format!(
             "offset {offset}: PDQ1 status_flags {:#x} != D11 status_flags {base_status_flags:#x}",
@@ -2107,52 +2262,38 @@ fn decode_compact_deployment_queue_trailer(
     );
     add_compact_domain_data_unit(summary, 11, "deployment_queue_conveyor_rows", conveyor_rows);
     add_compact_domain_data_unit(summary, 11, "deployment_queue_line_rows", line_rows);
-    add_compact_domain_data_unit(summary, 11, "deployment_queue_equipment_rows", equipment_rows);
-    Some(trailer_offset + segment_len)
+    add_compact_domain_data_unit(
+        summary,
+        11,
+        "deployment_queue_equipment_rows",
+        equipment_rows,
+    );
+    // The lane decoder supplies values; explicitly consume the carrier block.
+    Some(body.inner_payload().discard_all().next)
 }
 
 fn decode_compact_production_mio_join_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    const ROW_LEN: usize = 16;
-    let trailer = payload.get(trailer_offset..)?;
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PMI1 trailer is truncated before its header"
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.checked_add(row_count.checked_mul(ROW_LEN)?)?;
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PMI1 header/count/length is invalid"
-        ));
-        return None;
-    }
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
-    for row_index in 0..row_count {
-        let cursor = HEADER_LEN + row_index * ROW_LEN;
-        let key = (
-            read_u32_le(trailer, cursor),
-            read_u32_le(trailer, cursor + 4),
-            read_i32_le(trailer, cursor + 8),
-        );
-        let _mio_id = read_u32_le(trailer, cursor + 12);
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pmi_row_at(payload, at),
+        )?;
+        let key = (row.key.tag_db_id, row.key.kind, row.key.line_id);
         if key.0 == 0 || (key.1 != 1 && key.1 != 2) || !base_lines.contains(&key) {
             summary.parse_errors.push(format!(
                 "offset {offset}: PMI1 row {row_index} references an invalid or absent production line"
@@ -2172,62 +2313,42 @@ fn decode_compact_production_mio_join_trailer(
         ));
     }
     add_compact_domain_data_unit(summary, 11, "production_mio_join_rows", row_count);
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_country_convoy_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::PcvCursor,
     base_country_count: usize,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 28;
-    const COUNTRY_ROW_LEN: usize = 40;
-    const VARIANT_ROW_LEN: usize = 16;
-    const RESERVATION_ROW_LEN: usize = 8;
-    const KNOWN_FLAGS: u32 = 0b1_1111;
+) -> Option<d11_grammar::TrailerResume> {
     const SCALE: i64 = 100_000;
     const OWNED_RAW_CAP: i64 = 0x53E2_D620_FB40;
-    let trailer = payload.get(trailer_offset..)?;
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PCV1 trailer is truncated before its header"
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let country_count = read_u32_le(trailer, 12) as usize;
-    let variant_count = read_u32_le(trailer, 16) as usize;
-    let reservation_count = read_u32_le(trailer, 20) as usize;
-    let reserved = read_u32_le(trailer, 24);
-    let expected = HEADER_LEN
-        .checked_add(country_count.checked_mul(COUNTRY_ROW_LEN)?)?
-        .checked_add(variant_count.checked_mul(VARIANT_ROW_LEN)?)?
-        .checked_add(reservation_count.checked_mul(RESERVATION_ROW_LEN)?)?;
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || country_count < base_country_count
-        || trailer.len() < segment_len
-    {
+    let header = *body.header();
+    let country_count = header.country_count;
+    let variant_count = header.variant_count;
+    let reservation_count = header.reservation_count;
+    if country_count < base_country_count {
         summary.parse_errors.push(format!(
             "offset {offset}: PCV1 header/count/length is invalid"
         ));
         return None;
     }
-    let country_base = HEADER_LEN;
-    let variant_base = country_base + country_count * COUNTRY_ROW_LEN;
-    let reservation_base = variant_base + variant_count * VARIANT_ROW_LEN;
     let mut variants = Vec::with_capacity(variant_count);
-    for row_index in 0..variant_count {
-        let cursor = variant_base + row_index * VARIANT_ROW_LEN;
-        let variant_id = read_u32_le(trailer, cursor);
-        let equip_type = read_u32_le(trailer, cursor + 4);
-        let amount_raw = read_i64_le(trailer, cursor + 8);
+    for row in header.variant_rows(payload) {
+        let (row_index, row) = match row {
+            Ok(row) => row,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return None;
+            }
+        };
+        let (variant_id, equip_type, amount_raw) = (row.variant_id, row.equip_type, row.amount_raw);
         if variant_id == 0 || variant_id >= (1 << 24) || equip_type != 70 || amount_raw < 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCV1 variant row {row_index} has invalid id/type/amount"
@@ -2236,10 +2357,19 @@ fn decode_compact_country_convoy_trailer(
         variants.push((variant_id, amount_raw));
     }
     let mut reservations = Vec::with_capacity(reservation_count);
-    for row_index in 0..reservation_count {
-        let cursor = reservation_base + row_index * RESERVATION_ROW_LEN;
-        let priority = read_i32_le(trailer, cursor);
-        let count = read_i32_le(trailer, cursor + 4);
+    for row in header.reservation_rows(payload) {
+        let (row_index, row) = match row {
+            Ok(row) => row,
+            Err(violation) => {
+                summary
+                    .parse_errors
+                    .push(format_authority_production_grammar_violation(
+                        offset, payload, violation, None,
+                    ));
+                return None;
+            }
+        };
+        let (priority, count) = (row.priority, row.count);
         if count < 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCV1 reservation row {row_index} has negative count"
@@ -2249,38 +2379,48 @@ fn decode_compact_country_convoy_trailer(
     }
 
     let mut tags = BTreeSet::new();
-    let mut expected_variant_start = 0usize;
-    let mut expected_reservation_start = 0usize;
-    for row_index in 0..country_count {
-        let cursor = country_base + row_index * COUNTRY_ROW_LEN;
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let flags = read_u32_le(trailer, cursor + 4);
-        let owned_raw = read_i64_le(trailer, cursor + 8);
-        let assigned = read_i32_le(trailer, cursor + 16);
-        let available = read_i32_le(trailer, cursor + 20);
-        let variant_start = read_u32_le(trailer, cursor + 24) as usize;
-        let variant_len = read_u32_le(trailer, cursor + 28) as usize;
-        let reservation_start = read_u32_le(trailer, cursor + 32) as usize;
-        let reservation_len = read_u32_le(trailer, cursor + 36) as usize;
+    let mut countries = body.countries();
+    loop {
+        let (row_index, row, noncanonical_ranges) = match authority_production_step(
+            offset,
+            payload,
+            summary,
+            countries.next(payload),
+        )? {
+            d11_grammar::PcvCountryStep::Row { index, row, .. } => (index, row, false),
+            d11_grammar::PcvCountryStep::RecoverableRow { index, row, .. } => {
+                (index, row, true)
+            }
+            d11_grammar::PcvCountryStep::RecoverableFinal { .. } => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: PCV1 country ranges do not cover all rows"
+                ));
+                break;
+            }
+            d11_grammar::PcvCountryStep::End(_) => break,
+        };
+        let tag_db_id = row.tag_db_id;
+        let flags = row.flags;
+        let owned_raw = row.owned_raw;
+        let assigned = row.assigned;
+        let available = row.available;
+        let variant_start = row.variant_start as usize;
+        let variant_len = row.variant_len as usize;
+        let reservation_start = row.reservation_start as usize;
+        let reservation_len = row.reservation_len as usize;
         let variant_end = variant_start.checked_add(variant_len);
         let reservation_end = reservation_start.checked_add(reservation_len);
-        if tag_db_id == 0 || !tags.insert(tag_db_id) || flags & !KNOWN_FLAGS != 0 {
+        if tag_db_id == 0 || !tags.insert(tag_db_id) || flags & !d11_grammar::KNOWN_PCV_FLAGS != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCV1 country row {row_index} has invalid tag/flags"
             ));
         }
-        if variant_start != expected_variant_start
-            || reservation_start != expected_reservation_start
-            || variant_end.is_none_or(|end| end > variant_count)
-            || reservation_end.is_none_or(|end| end > reservation_count)
-        {
+        if noncanonical_ranges {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCV1 country row {row_index} has noncanonical ranges"
             ));
             return None;
         }
-        expected_variant_start += variant_len;
-        expected_reservation_start += reservation_len;
         let complete = flags & 1 != 0;
         let reservations_complete = flags & (1 << 1) != 0;
         let cache_valid = flags & (1 << 2) != 0;
@@ -2308,19 +2448,22 @@ fn decode_compact_country_convoy_trailer(
                 "offset {offset}: PCV1 country row {row_index} has inconsistent witnesses"
             ));
         }
-        let Some(variant_end) = variant_end else { return None };
+        let Some(variant_end) = variant_end else {
+            return None;
+        };
         let Some(reservation_end) = reservation_end else {
             return None;
         };
         let mut seen_variants = BTreeSet::new();
-        let sum_raw = variants[variant_start..variant_end]
-            .iter()
-            .try_fold(0i64, |sum, (variant_id, amount_raw)| {
+        let sum_raw = variants[variant_start..variant_end].iter().try_fold(
+            0i64,
+            |sum, (variant_id, amount_raw)| {
                 if !seen_variants.insert(*variant_id) {
                     return None;
                 }
                 Some(sum.saturating_add(*amount_raw).min(OWNED_RAW_CAP))
-            });
+            },
+        );
         if sum_raw != Some(owned_raw)
             || assigned < 0
             || i64::from(assigned) > owned_raw / SCALE
@@ -2334,11 +2477,15 @@ fn decode_compact_country_convoy_trailer(
             ));
         }
     }
-    if expected_variant_start != variant_count || expected_reservation_start != reservation_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PCV1 country ranges do not cover all rows"
-        ));
-    }
+    let countries_end = match authority_production_step(
+        offset,
+        payload,
+        summary,
+        countries.into_end(),
+    )? {
+        d11_grammar::PcvCountryEnd::Complete(end) => end,
+        d11_grammar::PcvCountryEnd::Recoverable { end, .. } => end,
+    };
     add_compact_domain_data_unit(summary, 11, "country_convoy_rows", country_count);
     add_compact_domain_data_unit(summary, 11, "country_convoy_variant_rows", variant_count);
     add_compact_domain_data_unit(
@@ -2347,64 +2494,50 @@ fn decode_compact_country_convoy_trailer(
         "country_convoy_reservation_rows",
         reservation_count,
     );
-    Some(trailer_offset + segment_len)
+    // Variant values were validated before country rows to retain historical order.
+    let variants_end = countries_end.next.variants().discard_all();
+    // Reservation values were validated in that same historical order.
+    let reservations_end = variants_end.next.reservations().discard_all();
+    Some(reservations_end.next)
 }
 
 fn decode_compact_production_completeness_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     country_count: usize,
     base_stockpile: &BTreeSet<(u32, u32)>,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    const KNOWN_FLAGS: u32 = 0b111;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PCP1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PCP1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(8));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || row_count != country_count
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
+    if row_count != country_count {
         summary.parse_errors.push(format!(
             "offset {offset}: PCP1 header/count/length is invalid"
         ));
         return None;
     }
-    let mut cursor = HEADER_LEN;
     let mut flags_by_tag = BTreeMap::new();
     let mut complete_counts = [0usize; 3];
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let flags = read_u32_le(trailer, cursor + 4);
-        cursor += 8;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pcp_row_at(payload, at),
+        )?;
+        let (tag_db_id, flags) = (row.tag_db_id, row.flags);
         if tag_db_id == 0 || flags_by_tag.insert(tag_db_id, flags).is_some() {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCP1 row {row_index} has invalid/duplicate tag_db_id {tag_db_id}"
             ));
         }
-        if flags & !KNOWN_FLAGS != 0 {
+        if flags & !d11_grammar::KNOWN_PCP_FLAGS != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: PCP1 row {row_index} has unknown flags {flags:#x}"
             ));
@@ -2439,7 +2572,7 @@ fn decode_compact_production_completeness_trailer(
         complete_counts[1],
     );
     add_compact_domain_data_unit(summary, 11, "naval_lines_complete_rows", complete_counts[2]);
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 /// Decode + gate the domain-11 `PLIC` production-license trailer. The trailer
@@ -2448,61 +2581,29 @@ fn decode_compact_production_completeness_trailer(
 fn decode_compact_production_license_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::PlicCursor,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const MAGIC: &[u8; 4] = b"PLIC";
-    const HEADER_LEN: usize = 20;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer offset {trailer_offset} beyond payload"
-        ));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    if &trailer[0..4] != MAGIC {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer magic is invalid"
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let country_rows = read_u32_le(trailer, 8) as usize;
-    let id_rows = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    if (version != 1 && version != 2) || header_len != HEADER_LEN || reserved != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer header shape invalid (version {version}, header_len {header_len}, reserved {reserved})"
-        ));
-        return None;
-    }
-    let item_len = if version == 1 { 4 } else { 16 };
-    let expected = HEADER_LEN
-        .saturating_add(country_rows.saturating_mul(8))
-        .saturating_add(id_rows.saturating_mul(item_len));
-    if trailer.len() < expected {
-        summary.parse_errors.push(format!(
-            "offset {offset}: production license trailer len {} < {expected}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+) -> Option<d11_grammar::TrailerResume> {
+    let header = *body.header();
+    let version = header.version;
+    let country_rows = header.country_count;
+    let id_rows = header.item_count;
+    let mut countries_cursor = body.countries();
     let mut seen_country = BTreeSet::new();
     let mut counts = Vec::with_capacity(country_rows);
-    let mut total_ids = 0usize;
     let mut empty_country_rows = 0usize;
-    for row_index in 0..country_rows {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let count = read_u32_le(trailer, cursor + 4) as usize;
-        cursor += 8;
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = countries_cursor.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::plic_country_row_at(payload, at),
+        )?;
+        let (tag_db_id, count) = (row.tag_db_id, row.count as usize);
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: production license country row {row_index} has zero tag_db_id"
@@ -2516,29 +2617,53 @@ fn decode_compact_production_license_trailer(
         if count == 0 {
             empty_country_rows = empty_country_rows.saturating_add(1);
         }
-        total_ids = total_ids.saturating_add(count);
         counts.push((tag_db_id, count));
     }
-    if total_ids != id_rows {
+    let countries_end = authority_production_step(
+        offset,
+        payload,
+        summary,
+        countries_cursor.into_end(),
+    )?;
+    if header.summed_item_count != header.item_count {
         summary.parse_errors.push(format!(
-            "offset {offset}: production license id total {total_ids} != id_rows {id_rows}"
+            "offset {offset}: production license id total {} != id_rows {}",
+            header.summed_item_count, header.item_count
         ));
         return None;
     }
+    let mut items = countries_end.next.items();
     for (tag_db_id, count) in &counts {
         let mut seen_ids = BTreeSet::new();
         for expected_order in 0..*count {
-            let variant_id = read_u32_le(trailer, cursor);
-            let (visible_order, creator_tag_db_id, origin_tag_db_id) = if version == 2 {
-                (
-                    read_u32_le(trailer, cursor + 4),
-                    read_u32_le(trailer, cursor + 8),
-                    read_u32_le(trailer, cursor + 12),
-                )
-            } else {
-                (expected_order as u32, 0, 0)
+            let d11_grammar::RowStep::Row { at, .. } = items.next() else {
+                return None;
             };
-            cursor += item_len;
+            let (variant_id, visible_order, creator_tag_db_id, origin_tag_db_id) = match version {
+                d11_grammar::PlicVersion::V1 => {
+                    let row = authority_production_step(
+                        offset,
+                        payload,
+                        summary,
+                        d11_grammar::plic_v1_item_at(payload, at),
+                    )?;
+                    (row.variant_id, expected_order as u32, 0, 0)
+                }
+                d11_grammar::PlicVersion::V2 => {
+                    let row = authority_production_step(
+                        offset,
+                        payload,
+                        summary,
+                        d11_grammar::plic_v2_item_at(payload, at),
+                    )?;
+                    (
+                        row.variant_id,
+                        row.visible_order,
+                        row.creator_tag_db_id,
+                        row.origin_tag_db_id,
+                    )
+                }
+            };
             if variant_id == 0 || variant_id >= (1 << 24) {
                 summary.parse_errors.push(format!(
                     "offset {offset}: production license id {variant_id} for tag {tag_db_id} out of range"
@@ -2549,7 +2674,7 @@ fn decode_compact_production_license_trailer(
                     "offset {offset}: production license tag {tag_db_id} duplicates variant_id {variant_id}"
                 ));
             }
-            if version == 2
+            if version == d11_grammar::PlicVersion::V2
                 // `> i32::MAX` is one short of the id rule (it admits the size
                 // ceiling, which no database can index).
                 && (visible_order != expected_order as u32
@@ -2571,56 +2696,36 @@ fn decode_compact_production_license_trailer(
         "production_license_empty_country_rows",
         empty_country_rows,
     );
-    Some(trailer_offset + expected)
+    Some(authority_production_step(offset, payload, summary, items.into_end())?.next)
 }
 
 fn decode_compact_production_variant_join_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PVJ1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PVJ1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PVJ1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let kind = read_u32_le(trailer, cursor + 4);
-        let line_id = read_i32_le(trailer, cursor + 8);
-        let variant_id = read_u32_le(trailer, cursor + 12);
-        cursor += 16;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pvj_row_at(payload, at),
+        )?;
+        let (tag_db_id, kind, line_id, variant_id) = (
+            row.key.tag_db_id,
+            row.key.kind,
+            row.key.line_id,
+            row.equipment_variant_id,
+        );
         let key = (tag_db_id, kind, line_id);
         if tag_db_id == 0 || (kind != 1 && kind != 2) {
             summary.parse_errors.push(format!(
@@ -2646,56 +2751,36 @@ fn decode_compact_production_variant_join_trailer(
         ));
     }
     add_compact_domain_data_unit(summary, 11, "production_variant_join_rows", row_count);
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_production_requested_factories_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PFR1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PFR1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(16));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PFR1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let kind = read_u32_le(trailer, cursor + 4);
-        let line_id = read_i32_le(trailer, cursor + 8);
-        let requested_factories = read_i32_le(trailer, cursor + 12);
-        cursor += 16;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pfr_row_at(payload, at),
+        )?;
+        let (tag_db_id, kind, line_id, requested_factories) = (
+            row.key.tag_db_id,
+            row.key.kind,
+            row.key.line_id,
+            row.requested_factories,
+        );
         let key = (tag_db_id, kind, line_id);
         if tag_db_id == 0 || (kind != 1 && kind != 2) {
             summary.parse_errors.push(format!(
@@ -2726,58 +2811,37 @@ fn decode_compact_production_requested_factories_trailer(
         "production_requested_factories_rows",
         row_count,
     );
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_production_priority_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    const ROW_LEN: usize = 16;
+) -> Option<d11_grammar::TrailerResume> {
     const MAX_PRIORITY: i32 = 4095;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PPR1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PPR1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PPR1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let kind = read_u32_le(trailer, cursor + 4);
-        let line_id = read_i32_le(trailer, cursor + 8);
-        let priority = read_i32_le(trailer, cursor + 12);
-        cursor += ROW_LEN;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::ppr_row_at(payload, at),
+        )?;
+        let (tag_db_id, kind, line_id, priority) = (
+            row.key.tag_db_id,
+            row.key.kind,
+            row.key.line_id,
+            row.priority,
+        );
         if tag_db_id == 0 || (kind != 1 && kind != 2) {
             summary.parse_errors.push(format!(
                 "offset {offset}: PPR1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
@@ -2802,58 +2866,37 @@ fn decode_compact_production_priority_trailer(
         ));
     }
     add_compact_domain_data_unit(summary, 11, "production_priority_rows", row_count);
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_production_line_subtype_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    const ROW_LEN: usize = 16;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PLS1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PLS1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PLS1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
     let mut subtype_counts = [0usize; 4];
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let kind = read_u32_le(trailer, cursor + 4);
-        let line_id = read_i32_le(trailer, cursor + 8);
-        let subtype = read_u32_le(trailer, cursor + 12);
-        cursor += ROW_LEN;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pls_row_at(payload, at),
+        )?;
+        let (tag_db_id, kind, line_id, subtype) = (
+            row.key.tag_db_id,
+            row.key.kind,
+            row.key.line_id,
+            row.subtype,
+        );
         let coherent = matches!((kind, subtype), (1, 1) | (2, 2) | (2, 3) | (1, 4));
         if tag_db_id == 0 || !coherent {
             summary.parse_errors.push(format!(
@@ -2885,59 +2928,36 @@ fn decode_compact_production_line_subtype_trailer(
     ] {
         add_compact_domain_data_unit(summary, 11, name, count);
     }
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_production_efficiency_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
+    body: d11_grammar::FixedCursor,
     base_lines: &BTreeSet<(u32, u32, i32)>,
     summary: &mut DomainDataDecodeSummary,
-) -> Option<usize> {
-    const HEADER_LEN: usize = 20;
-    const ROW_LEN: usize = 36;
-    let Some(trailer) = payload.get(trailer_offset..) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: PEF1 offset beyond payload"));
-        return None;
-    };
-    if trailer.len() < HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PEF1 trailer is {} byte(s), expected at least {HEADER_LEN}",
-            trailer.len()
-        ));
-        return None;
-    }
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let segment_len = read_u32_le(trailer, 8) as usize;
-    let row_count = read_u32_le(trailer, 12) as usize;
-    let reserved = read_u32_le(trailer, 16);
-    let expected = HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    if version != 1
-        || header_len != HEADER_LEN
-        || segment_len != expected
-        || reserved != 0
-        || trailer.len() < segment_len
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: PEF1 header shape invalid (version {version}, header_len {header_len}, segment_len {segment_len}, expected {expected}, reserved {reserved}, available {})",
-            trailer.len()
-        ));
-        return None;
-    }
-    let mut cursor = HEADER_LEN;
+) -> Option<d11_grammar::TrailerResume> {
+    let row_count = body.header().row_count;
     let mut seen = BTreeSet::new();
-    for row_index in 0..row_count {
-        let tag_db_id = read_u32_le(trailer, cursor);
-        let kind = read_u32_le(trailer, cursor + 4);
-        let line_id = read_i32_le(trailer, cursor + 8);
-        let efficiency_raw = read_i64_le(trailer, cursor + 12);
-        let efficiency_cap_raw = read_i64_le(trailer, cursor + 20);
-        let efficiency_growth_raw = read_i64_le(trailer, cursor + 28);
-        cursor += ROW_LEN;
+    let mut rows = body.rows();
+    while let d11_grammar::RowStep::Row {
+        index: row_index,
+        at,
+    } = rows.next()
+    {
+        let row = authority_production_step(
+            offset,
+            payload,
+            summary,
+            d11_grammar::pef_row_at(payload, at),
+        )?;
+        let (tag_db_id, kind, line_id) = (row.key.tag_db_id, row.key.kind, row.key.line_id);
+        let (efficiency_raw, efficiency_cap_raw, efficiency_growth_raw) = (
+            row.efficiency_raw,
+            row.efficiency_cap_raw,
+            row.efficiency_growth_raw,
+        );
         if tag_db_id == 0 || (kind != 1 && kind != 2) {
             summary.parse_errors.push(format!(
                 "offset {offset}: PEF1 row {row_index} has invalid tag/kind ({tag_db_id}, {kind})"
@@ -2962,7 +2982,7 @@ fn decode_compact_production_efficiency_trailer(
         ));
     }
     add_compact_domain_data_unit(summary, 11, "production_efficiency_rows", row_count);
-    Some(trailer_offset + segment_len)
+    Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
 fn decode_compact_focus_data_payload(

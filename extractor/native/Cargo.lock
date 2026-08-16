@@ -149,6 +149,7 @@ dependencies = [
  "country_army_upgrade_requests_live_lane",
  "country_dynamic_modifiers_live_lane",
  "country_economy_production_stockpile_live_lane",
+ "d11_grammar",
  "d13_grammar",
  "d24_grammar",
  "d43_grammar",
@@ -271,6 +272,7 @@ name = "country_economy_production_stockpile_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "d11_grammar",
 ]
 
 [[package]]
@@ -315,6 +317,10 @@ dependencies = [
  "generic-array",
  "typenum",
 ]
+
+[[package]]
+name = "d11_grammar"
+version = "0.1.0"
 
 [[package]]
 name = "d13_grammar"
@@ -914,6 +920,7 @@ dependencies = [
  "construction_buildings_state_damage_live",
  "country_army_upgrade_requests_live_lane",
  "country_economy_production_stockpile_live_lane",
+ "d11_grammar",
  "d13_grammar",
  "d24_grammar",
  "d43_grammar",
@@ -1304,6 +1311,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "compact_contract",
+ "d11_grammar",
  "d13_grammar",
  "d24_grammar",
  "d68_grammar",

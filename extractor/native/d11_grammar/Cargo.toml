@@ -1,0 +1,14 @@
+[package]
+name = "d11_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "The single structural walk and encoder for domain 11 production_live compact DATA payloads: the base payload and all ten outer trailer families."
+
+# THIS CRATE HAS NO DEPENDENCIES, AND THAT IS THE POINT.
+#
+# `collector` (the producer), `recorder_host` (the fold and authority),
+# `wire_format`, and `country_economy_production_stockpile_live` deliberately
+# do not depend on one another, and none of them may start to. A dependency-free
+# leaf is the only shape every site can execute without reversing those crate
+# directions. Adding a dependency here would put that coupling into every site.
+[dependencies]

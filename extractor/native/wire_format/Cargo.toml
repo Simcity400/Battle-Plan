@@ -19,6 +19,10 @@ blake3 = "1"
 # reference implementation. It does not replace capture, measurement, packed
 # reopen, or source-parity gates.
 compact_contract = { path = "../compact_contract" }
+# D11's payload grammar (lane KX). Same dependency-free leaf shape as D13:
+# wire_format keeps its semantic projection and messages, while all byte
+# boundaries and the nested deployment walk come from the shared grammar.
+d11_grammar = { path = "../d11_grammar" }
 # D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder. This is a
 # LEAF crate with no dependencies of its own, so depending on it reverses none of
 # this crate's directions -- in particular it is NOT a `recorder_host` dependency

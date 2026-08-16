@@ -199,6 +199,18 @@ fn world_fold_citations_match_the_shipping_fold() {
         "extractor/native/recorder_host/src/world_fold.rs",
         "extractor/native/wire_format/src/d13.rs",
     ];
+    // d11's six sites, named for the same reason (lane KX). d11 is the first
+    // domain whose SECOND grammar layer is attested too: `deployment_queue.rs`
+    // executes the leaf's PDQ1 inner codec, which `wire_format::d11` used to
+    // transcribe in 250 lines of its own.
+    const D11_CONSUMERS: [&str; 6] = [
+        "extractor/native/collector/src/attach_log.rs",
+        "extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs",
+        "extractor/native/lanes/country_economy_production_stockpile_live/src/lib.rs",
+        "extractor/native/recorder_host/src/domain_data_authority.rs",
+        "extractor/native/recorder_host/src/world_fold.rs",
+        "extractor/native/wire_format/src/d11.rs",
+    ];
     // d43's three sites, named for the same reason. The fourth d43 site is the
     // lane gate (`extractor/native/lanes/market_trade_live`), which does not
     // take the leaf yet and is therefore not listed: this array states what is
@@ -210,6 +222,7 @@ fn world_fold_citations_match_the_shipping_fold() {
     ];
     for (crate_name, consumers) in [
         ("d13_grammar", &D13_CONSUMERS[..]),
+        ("d11_grammar", &D11_CONSUMERS[..]),
         ("d43_grammar", &D43_CONSUMERS[..]),
     ] {
         let prefix = format!("// @leaf-source-authority crate={crate_name} ");

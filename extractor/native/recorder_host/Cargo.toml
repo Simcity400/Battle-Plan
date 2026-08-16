@@ -18,6 +18,10 @@ mem-alloc-trace = []
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
+# D11's base payload, ten trailer families and nested PDQ1 codec. Like the
+# other domain grammar leaves below, it has no dependencies so every writer
+# and reader can share one structural walk without reversing crate direction.
+d11_grammar = { path = "../d11_grammar" }
 # D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder. A LEAF with
 # no dependencies, which is the only shape the four D13 sites could share -- the
 # producer, this fold, this crate's authority validator and the wire port sit on

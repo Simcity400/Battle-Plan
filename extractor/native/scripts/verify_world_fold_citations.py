@@ -361,6 +361,30 @@ REQUIRED_LEAF_AUTHORITIES = {
             ),
         },
     ),
+    "d11_grammar": LeafAuthority(
+        root="extractor/native/d11_grammar",
+        consumers=(
+            "extractor/native/collector/src/attach_log.rs",
+            "extractor/native/lanes/country_economy_production_stockpile_live/src/deployment_queue.rs",
+            "extractor/native/lanes/country_economy_production_stockpile_live/src/lib.rs",
+            "extractor/native/recorder_host/src/domain_data_authority.rs",
+            "extractor/native/recorder_host/src/world_fold.rs",
+            "extractor/native/wire_format/src/d11.rs",
+        ),
+        const_only={
+            # Three aliases and no walk. `PRODUCTION_SCALE_RAW` is a bare
+            # `const`; the other two spell `PLIC` and `PDQ1` as
+            # `Trailer::…​.magic()`, which is a `const fn` read of the same
+            # single-source table rather than a second copy of the four bytes.
+            # `Trailer` is recorded here because the scan matches the item after
+            # `::`, so this file cannot start naming the rest of the grammar --
+            # or start walking it -- without failing the gate.
+            "extractor/native/collector/src/attach_log/offsets.rs": (
+                "PRODUCTION_SCALE_RAW",
+                "Trailer",
+            ),
+        },
+    ),
     "d43_grammar": LeafAuthority(
         root="extractor/native/d43_grammar",
         consumers=(
