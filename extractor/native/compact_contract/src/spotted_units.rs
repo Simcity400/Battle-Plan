@@ -1,6 +1,5 @@
 //! Pointer-free exact-a729 current-POV map-spotted unit carrier (d95).
 
-use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 95;
 pub const DOMAIN_NAME: &str = "pov_spotted_units_live";
@@ -73,34 +72,58 @@ pub struct SpottedUnitsSnapshot {
     pub taskforces: Vec<SpottedUnitHandle>,
 }
 
+/// The land surface's admitted intel floor; rows below it are refused.
+pub const LAND_MINIMUM_INTEL: u8 = 250;
+/// The task-force surface's admitted intel floor.
+pub const TASKFORCE_MINIMUM_INTEL: u8 = 150;
+
+/// The snapshot's validation over BORROWED parts, so a holder of the two
+/// frames can validate before it copies a row. [`SpottedUnitsSnapshot::validate`]
+/// is exactly this over its own fields, so the two cannot disagree. It is
+/// [`validate_snapshot_header`] plus [`validate_surface_rows`] per surface —
+/// the D95 producer certifies its rows with the latter at publish time (outside
+/// the slot mutex) and the D95 drain runs only the former under the mutex the
+/// engine's hooks block on (lane LO), so nothing that allocates or walks rows
+/// happens while it is held.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_snapshot_parts(
+    capture_sequence: u64,
+    pov_country_id: u32,
+    land_frame_sequence: Option<u64>,
+    taskforce_frame_sequence: Option<u64>,
+    land_frame_hour_raw: Option<i32>,
+    taskforce_frame_hour_raw: Option<i32>,
+    land: &[SpottedUnitHandle],
+    taskforces: &[SpottedUnitHandle],
+) -> Result<(), String> {
+    validate_snapshot_header(
+        capture_sequence,
+        pov_country_id,
+        land_frame_sequence,
+        taskforce_frame_sequence,
+        land_frame_hour_raw,
+        taskforce_frame_hour_raw,
+        land.len(),
+        taskforces.len(),
+    )
+    .map_err(str::to_string)?;
+    validate_surface_rows("land", land, LAND_MINIMUM_INTEL)?;
+    validate_surface_rows("taskforce", taskforces, TASKFORCE_MINIMUM_INTEL)?;
+    Ok(())
+}
+
 impl SpottedUnitsSnapshot {
     pub fn validate(&self) -> Result<(), String> {
-        if self.capture_sequence == 0 {
-            return Err("spotted-units capture sequence is zero".into());
-        }
-        if self.pov_country_id == 0 || self.pov_country_id > MAX_POV_COUNTRY_ID {
-            return Err("spotted-units POV country ID is outside the admitted range".into());
-        }
-        validate_surface("land", self.land_frame_sequence, &self.land, 250)?;
-        validate_surface(
-            "taskforce",
+        validate_snapshot_parts(
+            self.capture_sequence,
+            self.pov_country_id,
+            self.land_frame_sequence,
             self.taskforce_frame_sequence,
+            self.land_frame_hour_raw,
+            self.taskforce_frame_hour_raw,
+            &self.land,
             &self.taskforces,
-            150,
-        )?;
-        if self.land_frame_sequence.is_none() && self.taskforce_frame_sequence.is_none() {
-            return Err("spotted-units snapshot has no complete producer frame".into());
-        }
-        // A producer hour is a statement BY a producer frame. Without the
-        // frame there is nothing for it to date, and admitting one would let a
-        // consumer age an observation that is not in the payload.
-        if self.land_frame_hour_raw.is_some() && self.land_frame_sequence.is_none() {
-            return Err("spotted-units land producer hour has no land frame".into());
-        }
-        if self.taskforce_frame_hour_raw.is_some() && self.taskforce_frame_sequence.is_none() {
-            return Err("spotted-units taskforce producer hour has no taskforce frame".into());
-        }
-        Ok(())
+        )
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, String> {
@@ -373,34 +396,105 @@ mod tests {
     }
 }
 
-fn validate_surface(
-    name: &str,
+/// The header-only half of a snapshot's validation: the two surfaces' shape
+/// (count ceiling, sequence rules) and the cross-surface rules. Constant time
+/// and ALLOCATION-FREE on every path — the errors are static — because this is
+/// the half a holder of an engine-shared mutex runs (lane LO: the D95 drain,
+/// while the engine's producer hooks may be waiting for the slot).
+/// [`validate_snapshot_parts`] is this plus [`validate_surface_rows`] per
+/// surface, so the two cannot drift.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_snapshot_header(
+    capture_sequence: u64,
+    pov_country_id: u32,
+    land_frame_sequence: Option<u64>,
+    taskforce_frame_sequence: Option<u64>,
+    land_frame_hour_raw: Option<i32>,
+    taskforce_frame_hour_raw: Option<i32>,
+    land_rows: usize,
+    taskforce_rows: usize,
+) -> Result<(), &'static str> {
+    if capture_sequence == 0 {
+        return Err("spotted-units capture sequence is zero");
+    }
+    if pov_country_id == 0 || pov_country_id > MAX_POV_COUNTRY_ID {
+        return Err("spotted-units POV country ID is outside the admitted range");
+    }
+    validate_surface_shape(Surface::Land, land_frame_sequence, land_rows)?;
+    validate_surface_shape(Surface::Taskforce, taskforce_frame_sequence, taskforce_rows)?;
+    if land_frame_sequence.is_none() && taskforce_frame_sequence.is_none() {
+        return Err("spotted-units snapshot has no complete producer frame");
+    }
+    // A producer hour is a statement BY a producer frame. Without the
+    // frame there is nothing for it to date, and admitting one would let a
+    // consumer age an observation that is not in the payload.
+    if land_frame_hour_raw.is_some() && land_frame_sequence.is_none() {
+        return Err("spotted-units land producer hour has no land frame");
+    }
+    if taskforce_frame_hour_raw.is_some() && taskforce_frame_sequence.is_none() {
+        return Err("spotted-units taskforce producer hour has no taskforce frame");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Surface {
+    Land,
+    Taskforce,
+}
+
+fn validate_surface_shape(
+    surface: Surface,
     sequence: Option<u64>,
+    rows: usize,
+) -> Result<(), &'static str> {
+    if rows > MAX_ROWS_PER_SURFACE {
+        return Err(match surface {
+            Surface::Land => "spotted-units land row count exceeds the admitted ceiling",
+            Surface::Taskforce => "spotted-units taskforce row count exceeds the admitted ceiling",
+        });
+    }
+    match sequence {
+        None if rows != 0 => Err(match surface {
+            Surface::Land => "spotted-units land rows lack a complete frame",
+            Surface::Taskforce => "spotted-units taskforce rows lack a complete frame",
+        }),
+        Some(0) => Err(match surface {
+            Surface::Land => "spotted-units land frame sequence is zero",
+            Surface::Taskforce => "spotted-units taskforce frame sequence is zero",
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// The per-row admission rule, one row at a time: what
+/// [`validate_surface_rows`] enforces per element and what a producer that
+/// already emits rows in strict key order can apply INLINE while it
+/// materialises (lane LO: the D95 producer certifies rows this way in the one
+/// pass it already makes, on the engine's thread, outside the slot mutex).
+#[inline]
+pub fn row_in_admitted_range(row: &SpottedUnitHandle, minimum_intel: u8) -> bool {
+    row.type_id != 0 && row.stable_id != 0 && row.raw_intel >= minimum_intel
+}
+
+/// The per-row half: every row inside the admitted range, and the rows
+/// strictly increasing by `(type_id, stable_id)` — which is what makes them
+/// unique, so no set is built (lane LO: the earlier `BTreeSet` was redundant
+/// with the strict-order check and allocated on every validation).
+pub fn validate_surface_rows(
+    name: &str,
     rows: &[SpottedUnitHandle],
     minimum_intel: u8,
 ) -> Result<(), String> {
-    if rows.len() > MAX_ROWS_PER_SURFACE {
-        return Err(format!(
-            "spotted-units {name} row count exceeds the admitted ceiling"
-        ));
-    }
-    match sequence {
-        None if !rows.is_empty() => {
-            return Err(format!("spotted-units {name} rows lack a complete frame"));
-        }
-        Some(0) => return Err(format!("spotted-units {name} frame sequence is zero")),
-        _ => {}
-    }
-    let mut identities = BTreeSet::new();
     let mut prior = None;
     for row in rows {
-        if row.type_id == 0 || row.stable_id == 0 || row.raw_intel < minimum_intel {
+        if !row_in_admitted_range(row, minimum_intel) {
             return Err(format!(
                 "spotted-units {name} row is outside the admitted range"
             ));
         }
         let key = (row.type_id, row.stable_id);
-        if prior.is_some_and(|value| value >= key) || !identities.insert(key) {
+        if prior.is_some_and(|value| value >= key) {
             return Err(format!(
                 "spotted-units {name} rows are not unique and sorted"
             ));

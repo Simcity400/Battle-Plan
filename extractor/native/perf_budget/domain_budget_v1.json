@@ -1,0 +1,697 @@
+{
+ "schema": "H4_PERF_BUDGET_V1",
+ "purpose": "Per-domain in-hour cost budgets (ms), checked against an EXPLICITLY NAMED capture run directory by scripts/check_perf_budget.py; a breach fails that run's perf verdict (exit 2). Budgets are a RATCHET: they only go down, and every tightening cites the capture that measured the new floor. Headroom over the baseline is 30% because read_time_us is load-sensitive on a shared box (lane LM measured a 1.26x background drift between two captures on the same tip); a breach measured on a loaded box is re-run on a quiet box before it is believed, but it is never waived. The checker separates DETECTION (this table) from ACCEPTANCE (the paired free-run vs recording measurement, runs/lo_zero_impact_plan/measure) - Codex refutation 01a00925 s7.",
+ "baseline_run": "runs/lh_le_landing/t61_after (lane LH, 2026-08-16, D04 1944 speed 5, 360 s, 439 countries, tip 7ed25b34-era)",
+ "headroom_over_baseline": 1.3,
+ "global": {
+  "sum_domain_read_time_p50_ms_max": 865.3,
+  "crit_wall_p50_ms_max": 161.0,
+  "crit_wall_p95_ms_max": 280.8,
+  "baseline": {
+   "sum_domain_read_time_p50_ms": 665.6,
+   "crit_wall_p50_ms": 123.879,
+   "crit_wall_p95_ms": 215.965
+  }
+ },
+ "phase_units_per_record": {
+  "rail_replay_state_live": {
+   "d81_phase_walk_total_us": {
+    "ms_max": 91.47,
+    "baseline_ms": 70.364,
+    "note": "lane LO's merged window index targets ~18 ms/record; tighten after the batch-1 measurement (t70)"
+   }
+  }
+ },
+ "domains": {
+  "fuel_live": {
+   "domain_id": 10,
+   "read_time_p50_ms_max": 0.63,
+   "read_time_p95_ms_max": 1.61,
+   "baseline": {
+    "read_time_p50_ms": 0.481,
+    "read_time_p95_ms": 1.235,
+    "invocations": 1506
+   }
+  },
+  "production_live": {
+   "domain_id": 11,
+   "read_time_p50_ms_max": 16.16,
+   "read_time_p95_ms_max": 49.88,
+   "baseline": {
+    "read_time_p50_ms": 12.428,
+    "read_time_p95_ms": 38.369,
+    "invocations": 1481
+   }
+  },
+  "focus_live": {
+   "domain_id": 12,
+   "read_time_p50_ms_max": 0.73,
+   "read_time_p95_ms_max": 6.01,
+   "baseline": {
+    "read_time_p50_ms": 0.562,
+    "read_time_p95_ms": 4.626,
+    "invocations": 1509
+   }
+  },
+  "tech_live": {
+   "domain_id": 13,
+   "read_time_p50_ms_max": 133.58,
+   "read_time_p95_ms_max": 194.81,
+   "baseline": {
+    "read_time_p50_ms": 102.756,
+    "read_time_p95_ms": 149.855,
+    "invocations": 973
+   }
+  },
+  "politics_live": {
+   "domain_id": 14,
+   "read_time_p50_ms_max": 22.14,
+   "read_time_p95_ms_max": 77.98,
+   "baseline": {
+    "read_time_p50_ms": 17.027,
+    "read_time_p95_ms": 59.985,
+    "invocations": 1457
+   }
+  },
+  "politics_residuals": {
+   "domain_id": 15,
+   "read_time_p50_ms_max": 4.31,
+   "read_time_p95_ms_max": 29.08,
+   "baseline": {
+    "read_time_p50_ms": 3.312,
+    "read_time_p95_ms": 22.373,
+    "invocations": 1498
+   }
+  },
+  "decisions_live": {
+   "domain_id": 16,
+   "read_time_p50_ms_max": 13.34,
+   "read_time_p95_ms_max": 47.66,
+   "baseline": {
+    "read_time_p50_ms": 10.264,
+    "read_time_p95_ms": 36.665,
+    "invocations": 1486
+   }
+  },
+  "diplomacy_live": {
+   "domain_id": 17,
+   "read_time_p50_ms_max": 0.59,
+   "read_time_p95_ms_max": 1.37,
+   "baseline": {
+    "read_time_p50_ms": 0.454,
+    "read_time_p95_ms": 1.054,
+    "invocations": 1504
+   }
+  },
+  "country_identity": {
+   "domain_id": 18,
+   "read_time_p50_ms_max": 5.74,
+   "read_time_p95_ms_max": 36.26,
+   "baseline": {
+    "read_time_p50_ms": 4.417,
+    "read_time_p95_ms": 27.895,
+    "invocations": 1447
+   }
+  },
+  "divisions": {
+   "domain_id": 20,
+   "read_time_p50_ms_max": 30.73,
+   "read_time_p95_ms_max": 111.11,
+   "baseline": {
+    "read_time_p50_ms": 23.635,
+    "read_time_p95_ms": 85.469,
+    "invocations": 1445
+   }
+  },
+  "land_combats": {
+   "domain_id": 21,
+   "read_time_p50_ms_max": 1.46,
+   "read_time_p95_ms_max": 1.9,
+   "baseline": {
+    "read_time_p50_ms": 1.121,
+    "read_time_p95_ms": 1.463,
+    "invocations": 1435
+   }
+  },
+  "map_control": {
+   "domain_id": 22,
+   "read_time_p50_ms_max": 2.21,
+   "read_time_p95_ms_max": 3.68,
+   "baseline": {
+    "read_time_p50_ms": 1.703,
+    "read_time_p95_ms": 2.834,
+    "invocations": 1438
+   }
+  },
+  "map_detail": {
+   "domain_id": 23,
+   "read_time_p50_ms_max": 36.06,
+   "read_time_p95_ms_max": 87.11,
+   "baseline": {
+    "read_time_p50_ms": 27.737,
+    "read_time_p95_ms": 67.004,
+    "invocations": 1436
+   }
+  },
+  "weather_live": {
+   "domain_id": 24,
+   "read_time_p50_ms_max": 2.66,
+   "read_time_p95_ms_max": 3.84,
+   "baseline": {
+    "read_time_p50_ms": 2.046,
+    "read_time_p95_ms": 2.95,
+    "invocations": 1437
+   }
+  },
+  "division_equipment": {
+   "domain_id": 26,
+   "read_time_p50_ms_max": 25.76,
+   "read_time_p95_ms_max": 94.71,
+   "baseline": {
+    "read_time_p50_ms": 19.819,
+    "read_time_p95_ms": 72.852,
+    "invocations": 1446
+   }
+  },
+  "army_orders": {
+   "domain_id": 27,
+   "read_time_p50_ms_max": 6.54,
+   "read_time_p95_ms_max": 30.9,
+   "baseline": {
+    "read_time_p50_ms": 5.032,
+    "read_time_p95_ms": 23.773,
+    "invocations": 1446
+   }
+  },
+  "oob_command": {
+   "domain_id": 28,
+   "read_time_p50_ms_max": 26.14,
+   "read_time_p95_ms_max": 54.71,
+   "baseline": {
+    "read_time_p50_ms": 20.109,
+    "read_time_p95_ms": 42.088,
+    "invocations": 1467
+   }
+  },
+  "ships": {
+   "domain_id": 29,
+   "read_time_p50_ms_max": 2.27,
+   "read_time_p95_ms_max": 40.57,
+   "baseline": {
+    "read_time_p50_ms": 1.743,
+    "read_time_p95_ms": 31.209,
+    "invocations": 1451
+   }
+  },
+  "air_wings": {
+   "domain_id": 30,
+   "read_time_p50_ms_max": 1.23,
+   "read_time_p95_ms_max": 1.67,
+   "baseline": {
+    "read_time_p50_ms": 0.945,
+    "read_time_p95_ms": 1.284,
+    "invocations": 1434
+   }
+  },
+  "air_region_activity": {
+   "domain_id": 31,
+   "read_time_p50_ms_max": 1.11,
+   "read_time_p95_ms_max": 1.38,
+   "baseline": {
+    "read_time_p50_ms": 0.854,
+    "read_time_p95_ms": 1.061,
+    "invocations": 1434
+   }
+  },
+  "air_wing_loadouts": {
+   "domain_id": 32,
+   "read_time_p50_ms_max": 1.97,
+   "read_time_p95_ms_max": 2.68,
+   "baseline": {
+    "read_time_p50_ms": 1.512,
+    "read_time_p95_ms": 2.059,
+    "invocations": 1443
+   }
+  },
+  "air_variant_defs": {
+   "domain_id": 33,
+   "read_time_p50_ms_max": 1.83,
+   "read_time_p95_ms_max": 2.46,
+   "baseline": {
+    "read_time_p50_ms": 1.404,
+    "read_time_p95_ms": 1.892,
+    "invocations": 1441
+   }
+  },
+  "air_base_status": {
+   "domain_id": 34,
+   "read_time_p50_ms_max": 1.9,
+   "read_time_p95_ms_max": 2.42,
+   "baseline": {
+    "read_time_p50_ms": 1.459,
+    "read_time_p95_ms": 1.859,
+    "invocations": 1441
+   }
+  },
+  "air_variant_stats": {
+   "domain_id": 35,
+   "read_time_p50_ms_max": 1.71,
+   "read_time_p95_ms_max": 2.16,
+   "baseline": {
+    "read_time_p50_ms": 1.316,
+    "read_time_p95_ms": 1.659,
+    "invocations": 1436
+   }
+  },
+  "air_variant_reserves": {
+   "domain_id": 36,
+   "read_time_p50_ms_max": 3.15,
+   "read_time_p95_ms_max": 13.07,
+   "baseline": {
+    "read_time_p50_ms": 2.426,
+    "read_time_p95_ms": 10.056,
+    "invocations": 1443
+   }
+  },
+  "stockpile_variant_defs": {
+   "domain_id": 37,
+   "read_time_p50_ms_max": 1.74,
+   "read_time_p95_ms_max": 2.59,
+   "baseline": {
+    "read_time_p50_ms": 1.336,
+    "read_time_p95_ms": 1.992,
+    "invocations": 1438
+   }
+  },
+  "air_superiority_inputs": {
+   "domain_id": 38,
+   "read_time_p50_ms_max": 3.72,
+   "read_time_p95_ms_max": 17.65,
+   "baseline": {
+    "read_time_p50_ms": 2.862,
+    "read_time_p95_ms": 13.579,
+    "invocations": 1450
+   }
+  },
+  "air_variant_upgrades": {
+   "domain_id": 39,
+   "read_time_p50_ms_max": 1.64,
+   "read_time_p95_ms_max": 1.97,
+   "baseline": {
+    "read_time_p50_ms": 1.261,
+    "read_time_p95_ms": 1.519,
+    "invocations": 1438
+   }
+  },
+  "stockpile_variant_upgrades": {
+   "domain_id": 40,
+   "read_time_p50_ms_max": 1.56,
+   "read_time_p95_ms_max": 1.99,
+   "baseline": {
+    "read_time_p50_ms": 1.2,
+    "read_time_p95_ms": 1.532,
+    "invocations": 1435
+   }
+  },
+  "projects_live": {
+   "domain_id": 41,
+   "read_time_p50_ms_max": 45.98,
+   "read_time_p95_ms_max": 86.39,
+   "baseline": {
+    "read_time_p50_ms": 35.367,
+    "read_time_p95_ms": 66.457,
+    "invocations": 1431
+   }
+  },
+  "air_combat_losses_live": {
+   "domain_id": 42,
+   "read_time_p50_ms_max": 8.29,
+   "read_time_p95_ms_max": 49.52,
+   "baseline": {
+    "read_time_p50_ms": 6.379,
+    "read_time_p95_ms": 38.096,
+    "invocations": 1447
+   }
+  },
+  "market_trade_live": {
+   "domain_id": 43,
+   "read_time_p50_ms_max": 35.14,
+   "read_time_p95_ms_max": 70.71,
+   "baseline": {
+    "read_time_p50_ms": 27.031,
+    "read_time_p95_ms": 54.392,
+    "invocations": 1450
+   }
+  },
+  "supply_logistics_attrition_live": {
+   "domain_id": 44,
+   "read_time_p50_ms_max": 45.47,
+   "read_time_p95_ms_max": 111.29,
+   "baseline": {
+    "read_time_p50_ms": 34.975,
+    "read_time_p95_ms": 85.604,
+    "invocations": 1396
+   }
+  },
+  "focus_research_decisions_depth_live": {
+   "domain_id": 45,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.191,
+    "read_time_p95_ms": 0.761,
+    "invocations": 933
+   }
+  },
+  "air_variant_archetypes": {
+   "domain_id": 46,
+   "read_time_p50_ms_max": 17.54,
+   "read_time_p95_ms_max": 54.47,
+   "baseline": {
+    "read_time_p50_ms": 13.496,
+    "read_time_p95_ms": 41.898,
+    "invocations": 1459
+   }
+  },
+  "characters_leaders_cabinet_live": {
+   "domain_id": 47,
+   "read_time_p50_ms_max": 52.89,
+   "read_time_p95_ms_max": 77.91,
+   "baseline": {
+    "read_time_p50_ms": 40.685,
+    "read_time_p95_ms": 59.927,
+    "invocations": 1080
+   }
+  },
+  "construction_buildings_state_damage_live": {
+   "domain_id": 48,
+   "read_time_p50_ms_max": 12.36,
+   "read_time_p95_ms_max": 38.59,
+   "baseline": {
+    "read_time_p50_ms": 9.51,
+    "read_time_p95_ms": 29.686,
+    "invocations": 1459
+   }
+  },
+  "naval_combat_lifecycle_live": {
+   "domain_id": 49,
+   "read_time_p50_ms_max": 1.74,
+   "read_time_p95_ms_max": 26.91,
+   "baseline": {
+    "read_time_p50_ms": 1.34,
+    "read_time_p95_ms": 20.702,
+    "invocations": 1443
+   }
+  },
+  "naval_combat_members_live": {
+   "domain_id": 50,
+   "read_time_p50_ms_max": 1.74,
+   "read_time_p95_ms_max": 26.91,
+   "baseline": {
+    "read_time_p50_ms": 1.34,
+    "read_time_p95_ms": 20.702,
+    "invocations": 1443
+   }
+  },
+  "scripted_state_flags_variables_live": {
+   "domain_id": 51,
+   "read_time_p50_ms_max": 22.08,
+   "read_time_p95_ms_max": 59.86,
+   "baseline": {
+    "read_time_p50_ms": 16.987,
+    "read_time_p95_ms": 46.043,
+    "invocations": 1460
+   }
+  },
+  "occupation_resistance_compliance_live": {
+   "domain_id": 52,
+   "read_time_p50_ms_max": 8.93,
+   "read_time_p95_ms_max": 35.49,
+   "baseline": {
+    "read_time_p50_ms": 6.869,
+    "read_time_p95_ms": 27.301,
+    "invocations": 1452
+   }
+  },
+  "diplomacy_intel_operatives_live": {
+   "domain_id": 53,
+   "read_time_p50_ms_max": 65.2,
+   "read_time_p95_ms_max": 110.33,
+   "baseline": {
+    "read_time_p50_ms": 50.15,
+    "read_time_p95_ms": 84.873,
+    "invocations": 1390
+   }
+  },
+  "army_battleplans_depth_live": {
+   "domain_id": 54,
+   "read_time_p50_ms_max": 0.98,
+   "read_time_p95_ms_max": 1.71,
+   "baseline": {
+    "read_time_p50_ms": 0.756,
+    "read_time_p95_ms": 1.315,
+    "invocations": 763
+   }
+  },
+  "land_combat_detail_events_live": {
+   "domain_id": 55,
+   "read_time_p50_ms_max": 2.39,
+   "read_time_p95_ms_max": 4.18,
+   "baseline": {
+    "read_time_p50_ms": 1.84,
+    "read_time_p95_ms": 3.214,
+    "invocations": 772
+   }
+  },
+  "naval_missions_status_live": {
+   "domain_id": 56,
+   "read_time_p50_ms_max": 17.02,
+   "read_time_p95_ms_max": 43.89,
+   "baseline": {
+    "read_time_p50_ms": 13.093,
+    "read_time_p95_ms": 33.758,
+    "invocations": 1462
+   }
+  },
+  "capitulation_war_state_live": {
+   "domain_id": 60,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.376,
+    "read_time_p95_ms": 0.478,
+    "invocations": 1434
+   }
+  },
+  "air_loss_stats_live": {
+   "domain_id": 61,
+   "read_time_p50_ms_max": 0.56,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.431,
+    "read_time_p95_ms": 0.518,
+    "invocations": 1435
+   }
+  },
+  "hub_motorization_live": {
+   "domain_id": 62,
+   "read_time_p50_ms_max": 0.79,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.606,
+    "read_time_p95_ms": 0.733,
+    "invocations": 1434
+   }
+  },
+  "country_core_scalars_live": {
+   "domain_id": 63,
+   "read_time_p50_ms_max": 1.98,
+   "read_time_p95_ms_max": 2.3,
+   "baseline": {
+    "read_time_p50_ms": 1.525,
+    "read_time_p95_ms": 1.767,
+    "invocations": 1441
+   }
+  },
+  "delayed_events_live": {
+   "domain_id": 64,
+   "read_time_p50_ms_max": 1.22,
+   "read_time_p95_ms_max": 1.42,
+   "baseline": {
+    "read_time_p50_ms": 0.94,
+    "read_time_p95_ms": 1.091,
+    "invocations": 1433
+   }
+  },
+  "special_project_programs_live": {
+   "domain_id": 65,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.333,
+    "read_time_p95_ms": 0.397,
+    "invocations": 1432
+   }
+  },
+  "occupation_state_extras_live": {
+   "domain_id": 66,
+   "read_time_p50_ms_max": 1.48,
+   "read_time_p95_ms_max": 1.78,
+   "baseline": {
+    "read_time_p50_ms": 1.14,
+    "read_time_p95_ms": 1.371,
+    "invocations": 1434
+   }
+  },
+  "country_dynamic_modifiers_live": {
+   "domain_id": 67,
+   "read_time_p50_ms_max": 1.03,
+   "read_time_p95_ms_max": 1.23,
+   "baseline": {
+    "read_time_p50_ms": 0.789,
+    "read_time_p95_ms": 0.95,
+    "invocations": 1432
+   }
+  },
+  "session_header_live": {
+   "domain_id": 68,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.065,
+    "read_time_p95_ms": 0.086,
+    "invocations": 1430
+   }
+  },
+  "tech_sharing_groups_live": {
+   "domain_id": 69,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.329,
+    "read_time_p95_ms": 0.379,
+    "invocations": 1429
+   }
+  },
+  "sunk_convoy_history_live": {
+   "domain_id": 70,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.194,
+    "read_time_p95_ms": 0.278,
+    "invocations": 1431
+   }
+  },
+  "rail_replay_state_live": {
+   "domain_id": 81,
+   "read_time_p50_ms_max": 134.05,
+   "read_time_p95_ms_max": 200.16,
+   "baseline": {
+    "read_time_p50_ms": 103.117,
+    "read_time_p95_ms": 153.971,
+    "invocations": 1049
+   }
+  },
+  "nuke_stockpile_live": {
+   "domain_id": 83,
+   "read_time_p50_ms_max": 2.29,
+   "read_time_p95_ms_max": 2.77,
+   "baseline": {
+    "read_time_p50_ms": 1.762,
+    "read_time_p95_ms": 2.13,
+    "invocations": 1441
+   }
+  },
+  "sunk_ship_history_live": {
+   "domain_id": 86,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.308,
+    "read_time_p95_ms": 0.508,
+    "invocations": 791
+   }
+  },
+  "convoy_transport_attack_live": {
+   "domain_id": 90,
+   "read_time_p50_ms_max": 1.76,
+   "read_time_p95_ms_max": 30.49,
+   "baseline": {
+    "read_time_p50_ms": 1.353,
+    "read_time_p95_ms": 23.452,
+    "invocations": 791
+   }
+  },
+  "raid_instances_live": {
+   "domain_id": 91,
+   "read_time_p50_ms_max": 1.43,
+   "read_time_p95_ms_max": 1.65,
+   "baseline": {
+    "read_time_p50_ms": 1.102,
+    "read_time_p95_ms": 1.271,
+    "invocations": 1435
+   }
+  },
+  "country_preferred_tactic_live": {
+   "domain_id": 92,
+   "read_time_p50_ms_max": 3.88,
+   "read_time_p95_ms_max": 21.0,
+   "baseline": {
+    "read_time_p50_ms": 2.986,
+    "read_time_p95_ms": 16.151,
+    "invocations": 1442
+   }
+  },
+  "country_army_upgrade_requests_live": {
+   "domain_id": 93,
+   "read_time_p50_ms_max": 18.19,
+   "read_time_p95_ms_max": 46.34,
+   "baseline": {
+    "read_time_p50_ms": 13.993,
+    "read_time_p95_ms": 35.646,
+    "invocations": 1457
+   }
+  },
+  "pov_province_visibility_live": {
+   "domain_id": 94,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.003,
+    "read_time_p95_ms": 0.004,
+    "invocations": 1531
+   }
+  },
+  "pov_spotted_units_live": {
+   "domain_id": 95,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.002,
+    "read_time_p95_ms": 0.003,
+    "invocations": 1531
+   }
+  },
+  "country_preferred_tactic_weight_live": {
+   "domain_id": 96,
+   "read_time_p50_ms_max": 3.88,
+   "read_time_p95_ms_max": 21.0,
+   "baseline": {
+    "read_time_p50_ms": 2.986,
+    "read_time_p95_ms": 16.151,
+    "invocations": 1442
+   }
+  },
+  "peace_conference_live": {
+   "domain_id": 97,
+   "read_time_p50_ms_max": 0.5,
+   "read_time_p95_ms_max": 1.0,
+   "baseline": {
+    "read_time_p50_ms": 0.011,
+    "read_time_p95_ms": 0.014,
+    "invocations": 1531
+   }
+  }
+ }
+}

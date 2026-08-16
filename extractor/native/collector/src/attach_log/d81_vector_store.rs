@@ -266,46 +266,26 @@ impl FamilyStore {
         }
     }
 
-    /// The window containing `[addr, addr + len)`, if any.
+    /// TEST-ONLY REFERENCE for the merged index (lane LO): every window of
+    /// THIS store containing `[addr, addr + len)` — `(first live hit,
+    /// highest start first; any dead containment)`.
     ///
-    /// Windows are sorted by start after `seal`. The candidate is the last
-    /// window starting at or below `addr`; because engine objects can alias
-    /// under malformed pointers, up to [`D81_LOOKUP_BACKSCAN`] earlier
-    /// windows are also checked for containment rather than assuming
-    /// non-overlap. A read no window contains is simply not this family's.
-    fn locate(&self, addr: u64, len: u32) -> Option<usize> {
-        let position = self.starts.partition_point(|&start| start <= addr);
-        if position == 0 {
-            return None;
-        }
-        let lowest = position.saturating_sub(D81_LOOKUP_BACKSCAN);
-        for index in (lowest..position).rev() {
-            if self.status[index] & ST_DEAD != 0 {
-                continue;
-            }
-            let start = self.starts[index];
-            let width = self.lens[index] as u64;
-            if addr >= start && addr.saturating_add(u64::from(len)) <= start.saturating_add(width)
-            {
-                return Some(index);
-            }
-        }
-        None
-    }
-
-    /// [`Self::locate`], but a DEAD window's containment is reported too.
-    ///
-    /// A retired window must POISON its span, never merely vanish (Codex
-    /// review round 3): invisible retirement let a dead record-pointer
-    /// window's span fall through to the bulk view and to an exempt
-    /// closing-only family, bypassing the divergent closing observation the
-    /// dead window held. `(live hit, dead containment)`.
+    /// Lane HS's router asked this of each of the eleven stores per read,
+    /// bounding the backward scan at eight neighbours on a window-width
+    /// argument; the production path now answers it for all stores at once
+    /// out of [`MergedWindowIndex`], and this exact (unbounded) per-store
+    /// scan is what the equivalence test in `shape_tests` pins that index
+    /// against. A retired window must POISON its span, never merely vanish
+    /// (Codex review round 3): invisible retirement let a dead
+    /// record-pointer window's span fall through to the bulk view and to an
+    /// exempt closing-only family, bypassing the divergent closing
+    /// observation the dead window held.
+    #[cfg(test)]
     fn locate_with_dead(&self, addr: u64, len: u32) -> (Option<usize>, bool) {
         let position = self.starts.partition_point(|&start| start <= addr);
-        let lowest = position.saturating_sub(D81_LOOKUP_BACKSCAN);
         let mut dead = false;
         let mut live = None;
-        for index in (lowest..position).rev() {
+        for index in (0..position).rev() {
             let start = self.starts[index];
             let width = self.lens[index] as u64;
             let contains = addr >= start
@@ -348,16 +328,116 @@ impl FamilyStore {
     }
 }
 
-/// How many earlier windows [`FamilyStore::locate`] rechecks for containment.
+/// Store ordinals inside [`MergedWindowIndex`]: the nine opening stores keep
+/// their family discriminant, the two closing-side stores of the mixed
+/// families follow.
+const STORE_HEADER_CLOSE: u8 = D81_FAMILY_COUNT as u8;
+const STORE_RECORD_PTR_CLOSE: u8 = D81_FAMILY_COUNT as u8 + 1;
+const STORE_COUNT: usize = D81_FAMILY_COUNT + 2;
+
+/// ONE sorted index over every window of all eleven stores (lane LO).
 ///
-/// Windows within one family are same-shaped (one length per family except
-/// the blobs), so a read inside window `i` can only also fall inside a
-/// nearby earlier window when engine pointers alias. Blobs are bounded at
-/// `MAX_NEIGHBORS_PER_PROVINCE * 8` bytes and every other family's windows
-/// are under 0xA8 bytes, so aliased containment beyond a handful of
-/// neighbours is impossible by widths alone. Eight is comfortably past that
-/// and still O(1).
-const D81_LOOKUP_BACKSCAN: usize = 8;
+/// # Why
+///
+/// Lane HS's router answered every scalar read of the walk by probing all
+/// nine families plus the two closing stores — eleven `partition_point`
+/// binary searches over large, cold arrays per read — because the
+/// single-family rule needs to know whether a SECOND family also contains
+/// the span. Lane LM measured that at t61 (`runs/lm_perf_budget/
+/// IN_HOUR_BUDGET_30MS.md` §5): d81's post-bracket walk went 14.26 → 70.36 ms
+/// per invocation against a 1.26x background drift, ~80,700 windows per
+/// frame, and every read paying eleven searches.
+///
+/// # What this is
+///
+/// The same question — "which live windows of which stores contain
+/// `[addr, addr+len)`, and does any dead window contain it" — answered
+/// EXACTLY out of one merged list sorted by start. `prefix_max_end[i]` is the
+/// largest end among entries `0..=i`; it is monotone, so a backward scan from
+/// the last entry starting at or below `addr` may stop the moment
+/// `prefix_max_end` drops below `addr` — nothing earlier can reach it. In the
+/// ordinary non-overlapping layout that is one binary search plus one or two
+/// containment checks per read.
+///
+/// # What does not change
+///
+/// No verdict, no image, no status bit, no failure class: the census over
+/// stores that [`D81VectorCapture::read`] runs is the same census, fed by
+/// this list instead of eleven per-store probes. Where HS's per-store scan
+/// stopped after eight neighbours (an approximation its own comment
+/// justified by window widths: blobs ≤ `max_neighbors * 8` bytes, every
+/// other family under 0xA8), this scan is exact — the two agree wherever
+/// that width argument holds, and where it does not the exact answer is the
+/// more fail-closed one (an alias HS's bound would have missed refuses
+/// here). `status` is read live from the stores, so a
+/// retirement after the index is built still poisons.
+///
+/// Built lazily on the first read (post-bracket, on the walk's own thread),
+/// never inside the copy bracket.
+struct MergedWindowIndex {
+    starts: Vec<u64>,
+    ends: Vec<u64>,
+    prefix_max_end: Vec<u64>,
+    store: Vec<u8>,
+    index: Vec<u32>,
+}
+
+impl MergedWindowIndex {
+    fn build(stores: [&FamilyStore; STORE_COUNT]) -> Self {
+        let total: usize = stores.iter().map(|store| store.starts.len()).sum();
+        // (start, store, index) — for equal starts within one store the
+        // higher index is the wider window (`seal` sorts by (start, len)), and
+        // the backward scan below meets it first, exactly as the per-store
+        // reverse scan did.
+        let mut entries: Vec<(u64, u8, u32)> = Vec::with_capacity(total);
+        for (store_id, store) in stores.iter().enumerate() {
+            for (index, &start) in store.starts.iter().enumerate() {
+                entries.push((start, store_id as u8, index as u32));
+            }
+        }
+        entries.sort_unstable();
+        let mut merged = Self {
+            starts: Vec::with_capacity(total),
+            ends: Vec::with_capacity(total),
+            prefix_max_end: Vec::with_capacity(total),
+            store: Vec::with_capacity(total),
+            index: Vec::with_capacity(total),
+        };
+        let mut running_max = 0u64;
+        for (start, store_id, index) in entries {
+            let len = stores[usize::from(store_id)].lens[index as usize];
+            let end = start.saturating_add(u64::from(len));
+            running_max = running_max.max(end);
+            merged.starts.push(start);
+            merged.ends.push(end);
+            merged.prefix_max_end.push(running_max);
+            merged.store.push(store_id);
+            merged.index.push(index);
+        }
+        merged
+    }
+
+    /// Visit every entry whose window contains `[addr, addr+len)`, highest
+    /// start first (and, for equal starts, later store/index first).
+    fn for_each_containing(&self, addr: u64, len: u32, mut visit: impl FnMut(u8, usize)) {
+        let want_end = addr.saturating_add(u64::from(len));
+        let mut position = self.starts.partition_point(|&start| start <= addr);
+        while position > 0 {
+            position -= 1;
+            // Monotone bound: every entry at or before `position` ends at or
+            // before this value; once it is below `addr` no earlier window
+            // can contain the span. `<` (not `<=`) keeps the zero-length
+            // read at a window's exact end answered as HS's scan answered it.
+            if self.prefix_max_end[position] < addr {
+                break;
+            }
+            if self.ends[position] < want_end {
+                continue;
+            }
+            visit(self.store[position], self.index[position] as usize);
+        }
+    }
+}
 
 /// What a vector read answered. The walk-facing adapter in
 /// `d81_copy_bracket` maps these onto the same miss classes the recipe view
@@ -434,9 +514,35 @@ pub struct D81VectorCapture {
     /// mutation gates place writes against, read off the run that took it
     /// exactly as the executor's `final_wave_copies` was.
     pub closing_tail_start: u64,
+    /// The merged sorted index over all eleven stores, built on the first
+    /// read (see [`MergedWindowIndex`]). Every store must be sealed before
+    /// the first read; the pipeline seals them all inside
+    /// [`d81_vector_observe`] and nothing pushes afterwards.
+    merged: std::sync::OnceLock<MergedWindowIndex>,
 }
 
 impl D81VectorCapture {
+    fn stores(&self) -> [&FamilyStore; STORE_COUNT] {
+        [
+            &self.opening[0],
+            &self.opening[1],
+            &self.opening[2],
+            &self.opening[3],
+            &self.opening[4],
+            &self.opening[5],
+            &self.opening[6],
+            &self.opening[7],
+            &self.opening[8],
+            &self.header_close,
+            &self.record_ptr_close,
+        ]
+    }
+
+    fn merged(&self) -> &MergedWindowIndex {
+        self.merged
+            .get_or_init(|| MergedWindowIndex::build(self.stores()))
+    }
+
     /// Windows that are their OWN intervals — the scattered opening families'
     /// live windows. Closing-only families sit inside bulk intervals, the
     /// closing stores share their opening stores' spans, and dead aliases own
@@ -504,6 +610,22 @@ impl D81VectorCapture {
     /// observation must never be routed around (Codex review round 2,
     /// findings 1 and 2).
     pub fn read(&self, addr: u64, len: u32, image: VectorImage) -> VectorAnswer<'_> {
+        // ONE pass over the merged index answers, per store, "first live
+        // window containing the span (highest start)" and "any dead window
+        // containing it" — the same two facts HS's eleven per-store scans
+        // produced (see `MergedWindowIndex`).
+        let stores = self.stores();
+        let mut live: [Option<usize>; STORE_COUNT] = [None; STORE_COUNT];
+        let mut dead: [bool; STORE_COUNT] = [false; STORE_COUNT];
+        self.merged().for_each_containing(addr, len, |store_id, index| {
+            let store_id = usize::from(store_id);
+            if stores[store_id].status[index] & ST_DEAD != 0 {
+                dead[store_id] = true;
+            } else if live[store_id].is_none() {
+                live[store_id] = Some(index);
+            }
+        });
+
         // (family id, opening-side store hit, closing-side store hit).
         // The census counts DEAD containment too: a retired window poisons
         // its span rather than vanishing, so a span it contains can neither
@@ -512,14 +634,16 @@ impl D81VectorCapture {
         let mut hit: Option<(usize, Option<usize>, Option<usize>)> = None;
         let mut poisoned = false;
         for family in 0..D81_FAMILY_COUNT {
-            let (opening_hit, opening_dead) = self.opening[family].locate_with_dead(addr, len);
+            let (opening_hit, opening_dead) = (live[family], dead[family]);
             let (closing_hit, closing_dead) = match family {
-                f if f == D81Family::RailHeader as usize => {
-                    self.header_close.locate_with_dead(addr, len)
-                }
-                f if f == D81Family::MapRecordPtr as usize => {
-                    self.record_ptr_close.locate_with_dead(addr, len)
-                }
+                f if f == D81Family::RailHeader as usize => (
+                    live[usize::from(STORE_HEADER_CLOSE)],
+                    dead[usize::from(STORE_HEADER_CLOSE)],
+                ),
+                f if f == D81Family::MapRecordPtr as usize => (
+                    live[usize::from(STORE_RECORD_PTR_CLOSE)],
+                    dead[usize::from(STORE_RECORD_PTR_CLOSE)],
+                ),
                 _ => (None, false),
             };
             poisoned |= opening_dead || closing_dead;
@@ -710,6 +834,7 @@ pub fn d81_vector_observe(
         voids: 0,
         aliases_retired: 0,
         closing_tail_start: 0,
+        merged: std::sync::OnceLock::new(),
     };
 
     // ---- stage 1: rail slots out of the BULK table image -------------------
@@ -1198,6 +1323,7 @@ mod shape_tests {
             voids: 0,
             aliases_retired: 0,
             closing_tail_start: 0,
+            merged: std::sync::OnceLock::new(),
         }
     }
 
@@ -1333,6 +1459,301 @@ mod shape_tests {
                 "a poisoned span must refuse every image, found {image:?}",
             );
         }
+    }
+
+    /// kills: retiring a window AFTER the index could have been built and
+    /// having the merged index still serve it (lane LM's Codex review, claim
+    /// 2c: an `exclusive` flag decided at seal is NOT equivalent because
+    /// retirement happens after seal). The merged index carries no
+    /// liveness; `status` is read live per hit, so a sibling retired after
+    /// the first read still poisons its span on the next.
+    #[test]
+    fn a_window_retired_after_the_first_read_poisons_from_the_next_read() {
+        let calls = Cell::new(0);
+        let mut copy = |_addr: u64, out: &mut [u8]| {
+            out.fill(5);
+            true
+        };
+        let mut capture = empty_capture();
+        let mut record = FamilyStore::new(family_images(D81Family::MapRecordPtr));
+        record.push(0x2000, 8);
+        record.seal();
+        record.copy_side(2, ST_O, &mut copy, &calls);
+        capture.opening[D81Family::MapRecordPtr as usize] = record;
+        // First read builds the merged index and serves.
+        assert!(matches!(
+            capture.read(0x2000, 8, VectorImage::Opening),
+            VectorAnswer::Served(_)
+        ));
+        // Retire the window after the index exists.
+        assert_eq!(
+            capture.opening[D81Family::MapRecordPtr as usize]
+                .retire_intersecting(&[(0x1FFC, 0x2010)]),
+            1
+        );
+        assert_eq!(
+            capture.read(0x2000, 8, VectorImage::Opening),
+            VectorAnswer::Aliased
+        );
+    }
+
+    /// kills: the merged index inheriting HS's per-store eight-window
+    /// horizon. A live window whose span contains the read but which sits
+    /// NINE same-store predecessors back (eight short windows start between
+    /// it and the read) is found here — HS's bounded scan would have missed
+    /// it and answered `NotCovered` (falling through to the bulk view). The
+    /// exact answer is the more fail-closed one when the far window is a
+    /// foreign family (Aliased) and the more complete one when it is the
+    /// sole owner (Served); both are asserted.
+    #[test]
+    fn a_containing_window_beyond_eight_predecessors_is_found() {
+        let calls = Cell::new(0);
+        let mut copy = |_addr: u64, out: &mut [u8]| {
+            out.fill(6);
+            true
+        };
+        let mut capture = empty_capture();
+        // One wide blob window at 0x1000 (0x200 bytes), then nine narrow
+        // blob windows starting inside it.
+        let mut blob = FamilyStore::new(family_images(D81Family::PairBlob));
+        blob.push(0x1000, 0x200);
+        for k in 0..9u64 {
+            blob.push(0x1010 + k * 8, 8);
+        }
+        blob.seal();
+        blob.copy_side(2, ST_O, &mut copy, &calls);
+        capture.opening[D81Family::PairBlob as usize] = blob;
+        // A read at 0x1100 is contained only by the wide window, which is
+        // ten entries back in the sorted list.
+        assert!(matches!(
+            capture.read(0x1100, 8, VectorImage::Opening),
+            VectorAnswer::Served(_)
+        ));
+        // Add a foreign-family window at the same span: the census now sees
+        // two families and refuses.
+        let mut anchors = FamilyStore::new(family_images(D81Family::MapAnchors));
+        anchors.push(0x1100, 24);
+        anchors.seal();
+        anchors.copy_side(2, ST_O, &mut copy, &calls);
+        let mut capture2 = empty_capture();
+        capture2.opening[D81Family::PairBlob as usize] =
+            std::mem::replace(&mut capture.opening[D81Family::PairBlob as usize], FamilyStore::default());
+        capture2.opening[D81Family::MapAnchors as usize] = anchors;
+        assert_eq!(
+            capture2.read(0x1100, 8, VectorImage::Opening),
+            VectorAnswer::Aliased
+        );
+    }
+
+    /// kills: the merged index answering a read differently from the eleven
+    /// per-store scans it replaced (lane LO) — a lost containment, a wrong
+    /// store, a missed dead poison, a mis-ordered equal-start preference. The
+    /// world is a deterministic pseudo-random layout of all eleven stores
+    /// with overlapping windows, cross-store aliases and retired windows,
+    /// probed at every start, end, and interior offset in every image; the
+    /// reference is a `read` re-implemented over `locate_with_dead` exactly
+    /// as HS's router was, so the two can only agree by computing the same
+    /// answer.
+    #[test]
+    fn merged_index_agrees_with_per_store_scans() {
+        // A tiny LCG keeps the world reproducible with no dependency.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let calls = Cell::new(0);
+        let mut capture = empty_capture();
+        let widths: [u32; STORE_COUNT] = [16, 8, 8, 24, 4, 0xA8, 8, 8, 7, 16, 8];
+        let images: [usize; STORE_COUNT] = [2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 2];
+        // Dense: ~200 windows per store inside a 64 KiB region, so overlaps
+        // within a store and across stores are common; blobs get variable
+        // widths.
+        for store_id in 0..STORE_COUNT {
+            let store = match store_id {
+                s if s < D81_FAMILY_COUNT => &mut capture.opening[s],
+                s if s == usize::from(STORE_HEADER_CLOSE) => &mut capture.header_close,
+                _ => &mut capture.record_ptr_close,
+            };
+            for _ in 0..200 {
+                let start = 0x10_0000 + (next() % 0x1_0000);
+                let width = if store_id == D81Family::PairBlob as usize {
+                    8 * (1 + (next() % 64) as u32)
+                } else {
+                    widths[store_id]
+                };
+                store.push(start, width);
+            }
+            store.seal();
+            let mut copy = |addr: u64, out: &mut [u8]| {
+                // A deterministic pattern per address so served bytes can be
+                // compared byte-for-byte; every ~9th window fails outright
+                // and every ~13th loses its second image.
+                let fail = (addr / 8) % 9 == 0;
+                let drop_second = (addr / 8) % 13 == 0;
+                if fail {
+                    return false;
+                }
+                let image_ordinal = calls.get() % 2;
+                if drop_second && image_ordinal == 1 {
+                    return false;
+                }
+                for (i, byte) in out.iter_mut().enumerate() {
+                    *byte = (addr as u8).wrapping_add(i as u8);
+                }
+                true
+            };
+            store.copy_side(images[store_id], ST_O, &mut copy, &calls);
+            // Retire a scattering of windows to exercise the poison path.
+            let mut spans = Vec::new();
+            for index in (0..store.starts.len()).step_by(17) {
+                spans.push((store.starts[index], store.starts[index] + 1));
+            }
+            store.retire_intersecting(&spans);
+        }
+
+        // The reference: HS's router, verbatim over `locate_with_dead`.
+        fn reference<'a>(
+            capture: &'a D81VectorCapture,
+            addr: u64,
+            len: u32,
+            image: VectorImage,
+        ) -> VectorAnswer<'a> {
+            let mut hit: Option<(usize, Option<usize>, Option<usize>)> = None;
+            let mut poisoned = false;
+            for family in 0..D81_FAMILY_COUNT {
+                let (opening_hit, opening_dead) =
+                    capture.opening[family].locate_with_dead(addr, len);
+                let (closing_hit, closing_dead) = match family {
+                    f if f == D81Family::RailHeader as usize => {
+                        capture.header_close.locate_with_dead(addr, len)
+                    }
+                    f if f == D81Family::MapRecordPtr as usize => {
+                        capture.record_ptr_close.locate_with_dead(addr, len)
+                    }
+                    _ => (None, false),
+                };
+                poisoned |= opening_dead || closing_dead;
+                if opening_hit.is_none()
+                    && closing_hit.is_none()
+                    && !opening_dead
+                    && !closing_dead
+                {
+                    continue;
+                }
+                if hit.is_some() {
+                    return VectorAnswer::Aliased;
+                }
+                hit = Some((family, opening_hit, closing_hit));
+            }
+            if poisoned {
+                return VectorAnswer::Aliased;
+            }
+            let Some((family, opening_hit, closing_hit)) = hit else {
+                return VectorAnswer::NotCovered;
+            };
+            let store = &capture.opening[family];
+            match image {
+                VectorImage::Opening | VectorImage::Sample(_) => {
+                    let ordinal = match image {
+                        VectorImage::Sample(sample) => sample,
+                        _ => 0,
+                    };
+                    if store.images.opening == 0 {
+                        return VectorAnswer::NotCovered;
+                    }
+                    let Some(index) = opening_hit else {
+                        return VectorAnswer::NotCovered;
+                    };
+                    if ordinal >= usize::from(store.images.opening) {
+                        return VectorAnswer::NeverObserved;
+                    }
+                    D81VectorCapture::serve_side(store, index, addr, len, ordinal, ST_O)
+                }
+                VectorImage::Closing | VectorImage::ClosingSample(_) => {
+                    let ordinal = match image {
+                        VectorImage::ClosingSample(sample) => sample,
+                        _ => 0,
+                    };
+                    if let Some(index) = closing_hit {
+                        let close_store = if family == D81Family::RailHeader as usize {
+                            &capture.header_close
+                        } else {
+                            &capture.record_ptr_close
+                        };
+                        return D81VectorCapture::serve_side(
+                            close_store,
+                            index,
+                            addr,
+                            len,
+                            ordinal,
+                            ST_O,
+                        );
+                    }
+                    if store.images.closing == 0 {
+                        return VectorAnswer::NeverObserved;
+                    }
+                    let Some(index) = opening_hit else {
+                        return VectorAnswer::NotCovered;
+                    };
+                    if ordinal >= usize::from(store.images.closing) {
+                        return VectorAnswer::NeverObserved;
+                    }
+                    D81VectorCapture::serve_side(store, index, addr, len, ordinal, ST_O)
+                }
+            }
+        }
+
+        // Probe every window's start, interior and end, plus a scattering
+        // of addresses nobody covers, in every image, at several lengths.
+        let mut probes: Vec<(u64, u32)> = Vec::new();
+        for store in capture.stores() {
+            for index in 0..store.starts.len() {
+                let start = store.starts[index];
+                let width = store.lens[index];
+                probes.push((start, width));
+                probes.push((start, 1));
+                probes.push((start + u64::from(width) / 2, 1));
+                probes.push((start + u64::from(width) - 1, 1));
+                probes.push((start + u64::from(width), 0));
+                probes.push((start.wrapping_sub(3), 8));
+            }
+        }
+        for _ in 0..2000 {
+            probes.push((0x10_0000 + (next() % 0x1_0100), 1 + (next() % 16) as u32));
+        }
+        let mut agreed = 0usize;
+        let mut aliased = 0usize;
+        let mut served = 0usize;
+        for &(addr, len) in &probes {
+            for image in [
+                VectorImage::Opening,
+                VectorImage::Sample(1),
+                VectorImage::Closing,
+                VectorImage::ClosingSample(1),
+                VectorImage::ClosingSample(2),
+            ] {
+                let want = reference(&capture, addr, len, image);
+                let got = capture.read(addr, len, image);
+                assert_eq!(
+                    got, want,
+                    "merged index disagrees at addr {addr:#x} len {len} {image:?}"
+                );
+                agreed += 1;
+                match got {
+                    VectorAnswer::Aliased => aliased += 1,
+                    VectorAnswer::Served(_) => served += 1,
+                    _ => {}
+                }
+            }
+        }
+        // The world must actually exercise both the alias census and the
+        // serving path, or the agreement is vacuous.
+        assert!(agreed > 10_000, "{agreed}");
+        assert!(aliased > 100, "aliased {aliased}");
+        assert!(served > 100, "served {served}");
     }
 
     /// kills: the pipeline taking the header closing pair after the blob
