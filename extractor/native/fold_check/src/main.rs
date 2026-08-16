@@ -156,6 +156,19 @@ struct DomainCompleteness {
     /// from the PERF status, so this is the word the declaration is checked
     /// against for EQUALITY.
     non_tolerated_status_flags: u32,
+    /// The RAW `DOMAIN_PERF` status word, exactly as published.
+    ///
+    /// Kept because `H4FD` documents its `status_flags` as that word and this
+    /// audit is the only thing positioned to hold it to it. Reconciling only
+    /// `non_tolerated_flags` -- which is what this audit did -- checks the
+    /// classification and nothing else, so a notice could state a raw word the
+    /// PERF record does not carry (a corrupted informational bit, a lane-local
+    /// badge that is not there) and still certify, and the two artefacts would
+    /// then disagree about the domain's status while agreeing about its
+    /// verdict. Neither `normalized_status_flags_or` nor
+    /// `lane_local_status_flags_or` can stand in: both also absorb the
+    /// DOMAIN_DATA payload's word, and one of them is normalized.
+    raw_perf_status_flags_or: u32,
     /// The same classification applied to the status embedded in this domain's
     /// `DOMAIN_DATA` payload, kept SEPARATE from the PERF-derived word above.
     ///
@@ -439,7 +452,9 @@ struct HourCompleteness {
     /// applied none of its rows. `DomainCompleteness::is_complete` is the one
     /// place that answers "is this domain complete for this hour", and the
     /// report publishes its answer per domain so no consumer re-derives it.
-    declared_degraded_domains: BTreeMap<u16, u32>,
+    /// `domain_id -> (status_flags, non_tolerated_flags)`, both as the notice
+    /// states them.
+    declared_degraded_domains: BTreeMap<u16, (u32, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -605,7 +620,10 @@ struct CompletenessAudit {
     /// rides immediately before `FRAME_END`, so it is always populated (or
     /// legitimately absent) by the time the hour closes and the two sides are
     /// compared.
-    current_declared_degraded: BTreeMap<u16, u32>,
+    /// `domain_id -> (status_flags, non_tolerated_flags)`. BOTH, because the
+    /// record states both and this audit is where they are held to the PERF
+    /// record.
+    current_declared_degraded: BTreeMap<u16, (u32, u32)>,
 }
 
 impl CompletenessAudit {
@@ -754,6 +772,7 @@ impl CompletenessAudit {
                     domain.lane_local_status_flags_or |=
                         status_flags & lane_local_status_mask(domain_id);
                     domain.non_tolerated_status_flags |= residual;
+                    domain.raw_perf_status_flags_or |= status_flags;
                 } else if residual != 0 {
                     // An unassigned probe id has no domain descriptor, so it can
                     // never be declared degraded and there is nothing to defer
@@ -764,7 +783,7 @@ impl CompletenessAudit {
                 }
             }
             COMPACT_RECORD_TYPE_FRAME_DEGRADED => {
-                let record = compact_contract::frame_degraded::FrameDegradedRecordV1::decode(
+                let record = compact_contract::frame_degraded::FrameDegradedRecordV2::decode(
                     payload,
                 )
                 .map_err(|reason| format!("FRAME_DEGRADED payload is unreadable: {reason}"))?;
@@ -784,7 +803,10 @@ impl CompletenessAudit {
                 for domain in &record.domains {
                     if self
                         .current_declared_degraded
-                        .insert(domain.domain_id, domain.non_tolerated_flags)
+                        .insert(
+                            domain.domain_id,
+                            (domain.status_flags, domain.non_tolerated_flags),
+                        )
                         .is_some()
                     {
                         return Err(format!(
@@ -834,18 +856,40 @@ impl CompletenessAudit {
                 // has exactly one answer, reachable from either the per-record
                 // status words or the frame-level notice, and the certifier
                 // refuses any stream where those two answers differ.
-                let observed_degraded: BTreeMap<u16, u32> = self
+                //
+                // BOTH words the notice states, not only the classified one.
+                // `H4FD` documents `status_flags` as the raw PERF status, and
+                // an audit that compares only `non_tolerated_flags` lets the
+                // two artefacts describe the same domain-hour with different
+                // status words while agreeing about the verdict.
+                let observed_degraded: BTreeMap<u16, (u32, u32)> = self
                     .current_domains
                     .iter()
                     .filter(|(_, domain)| domain.non_tolerated_status_flags != 0)
-                    .map(|(domain_id, domain)| (*domain_id, domain.non_tolerated_status_flags))
+                    .map(|(domain_id, domain)| {
+                        (
+                            *domain_id,
+                            (
+                                domain.raw_perf_status_flags_or,
+                                domain.non_tolerated_status_flags,
+                            ),
+                        )
+                    })
                     .collect();
                 let declared_degraded = std::mem::take(&mut self.current_declared_degraded);
                 if observed_degraded != declared_degraded {
-                    for (domain_id, residual) in &observed_degraded {
+                    for (domain_id, (raw, residual)) in &observed_degraded {
                         match declared_degraded.get(domain_id) {
-                            Some(declared) if declared == residual => {}
-                            Some(declared) => {
+                            Some((declared_raw, declared)) if declared == residual => {
+                                if declared_raw != raw {
+                                    return Err(format!(
+                                        "domain {domain_id} PERF status is {raw:#010x} but the \
+                                         hour's H4FD notice declares it degraded from status \
+                                         {declared_raw:#010x}"
+                                    ));
+                                }
+                            }
+                            Some((_, declared)) => {
                                 return Err(format!(
                                     "domain {domain_id} PERF status has non-tolerated failure flags \
                                      {residual:#010x} but the hour's H4FD notice declares it \
@@ -901,8 +945,8 @@ impl CompletenessAudit {
                         continue;
                     }
                     match declared_degraded.get(domain_id) {
-                        Some(declared) if (payload_residual & !declared) == 0 => {}
-                        Some(declared) => {
+                        Some((_, declared)) if (payload_residual & !declared) == 0 => {}
+                        Some((_, declared)) => {
                             return Err(format!(
                                 "domain {domain_id} DOMAIN_DATA payload status has non-tolerated \
                                  failure flags {payload_residual:#010x} that the hour's H4FD notice \
@@ -2172,10 +2216,11 @@ fn completeness_json(completeness: &HourCompleteness) -> Value {
     let declared_degraded: Map<String, Value> = completeness
         .declared_degraded_domains
         .iter()
-        .map(|(domain_id, non_tolerated_flags)| {
+        .map(|(domain_id, (status_flags, non_tolerated_flags))| {
             (
                 domain_id.to_string(),
                 json!({
+                    "status_flags": status_flags,
                     "non_tolerated_flags": non_tolerated_flags,
                     "non_tolerated_flag_names":
                         compact_contract::compact_status_flag_names(*non_tolerated_flags),

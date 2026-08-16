@@ -226,6 +226,47 @@ def reason_summary(reason: str) -> str:
     return reason[index + len(REASON_SUMMARY_MARKER):].strip()
 
 
+def predicate_label(item: dict) -> str:
+    """The stable grouping key for one degraded domain entry.
+
+    The summary clause above is a PROSE key: it is the best split this report
+    could make when prose was all the wire carried. `H4FD` version 2 publishes
+    the producer's own predicate as a code plus its name, which is the key the
+    producer actually decided by -- one code per check, no per-frame values in
+    it -- so it groups causes where the summary groups sentences that happen to
+    match. The two are printed side by side rather than one replacing the
+    other: the predicate says WHICH CHECK failed, the summary says what the
+    producer wrote about that particular failure, and a lane chasing an empty
+    domain wants both.
+
+    Every entry gets a label, including the ones with no predicate, so the
+    printed counts sum to the domain's stored occurrence count. Version 2 always
+    writes a predicate, so a large `(none on the wire)` count is a fact about a
+    BROKEN capture rather than an older one -- this function has no
+    pre-version-2 read path and old captures are disposable. Showing it beats
+    dropping those rows out of a total the reader is about to trust.
+
+    The code is rendered beside the name because the name is per-domain, not
+    globally unique (the shared contract defines a predicate as the pair), so
+    two domains' identically named checks are still two different predicates.
+    """
+    if "predicate_code" not in item and "predicate_name" not in item:
+        return "(none on the wire)"
+    code = item.get("predicate_code")
+    name = item.get("predicate_name")
+    # Read EXACTLY, never coerced: `int(10.9)` would name a predicate the
+    # producer never published, and a bool is an int in Python but never a
+    # predicate code. The name is likewise rendered as the wire wrote it --
+    # trimming it before display would print a string nobody published, and the
+    # producer's names come from static text that never carried padding, so a
+    # name with surrounding whitespace is itself corruption worth seeing.
+    if isinstance(code, bool) or not isinstance(code, int):
+        return "(unreadable predicate code)"
+    if not isinstance(name, str) or not name.strip():
+        return f"(unnamed predicate) [0x{code:08x}]"
+    return f"{name} [0x{code:08x}]"
+
+
 def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
     """`domain_id -> ` what the wire said about that domain's degraded hours.
 
@@ -291,6 +332,7 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
                         "outcome_counts": {},
                         "coverage_claims": {},
                         "summaries": {},
+                        "predicates": {},
                         "distinct_full_reasons": set(),
                         "sample_reason": reason,
                         "first_hour": None,
@@ -306,6 +348,8 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
                 summary = reason_summary(reason)
                 slot["summaries"][summary] = slot["summaries"].get(summary, 0) + 1
                 slot["distinct_full_reasons"].add(reason)
+                predicate = predicate_label(item)
+                slot["predicates"][predicate] = slot["predicates"].get(predicate, 0) + 1
                 slot["occurrences"] += 1
                 # Only an hour this report can actually compare bounds a range.
                 # Seeding from an unreadable value would print a "range" that
@@ -319,6 +363,9 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
         slot["distinct_full_reason_count"] = len(slot.pop("distinct_full_reasons"))
         slot["summaries"] = dict(
             sorted(slot["summaries"].items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        slot["predicates"] = dict(
+            sorted(slot["predicates"].items(), key=lambda kv: (-kv[1], kv[0]))
         )
     return collected, unreadable
 
@@ -338,6 +385,18 @@ def print_outcome_reasons(reasons: dict, indent: str) -> None:
     )
     if claims:
         print(f"{indent}  coverage claim: {claims}")
+    # Before the prose: which check the producer says failed, and how often.
+    # `outcome_substantiated_from_record` here means the producer diagnosed
+    # nothing and the frame-final sweep reconstructed the outcome from the
+    # published record; `producer_declared_no_predicate` means nobody diagnosed
+    # it at all. Those two and a real predicate call for three different pieces
+    # of work, and they are indistinguishable in the reason strings below.
+    predicates = list(reasons["predicates"].items())
+    for predicate, count in predicates[:REASON_SUMMARIES_SHOWN]:
+        print(f"{indent}  x{count} predicate {predicate}")
+    if len(predicates) > REASON_SUMMARIES_SHOWN:
+        print(f"{indent}  (+{len(predicates) - REASON_SUMMARIES_SHOWN} more distinct "
+              f"predicate(s))")
     summaries = list(reasons["summaries"].items())
     for summary, count in summaries[:REASON_SUMMARIES_SHOWN]:
         print(f"{indent}  x{count} {summary}")
@@ -805,6 +864,42 @@ def selftest() -> int:
                                           "reason": "VERBATIM_SENTINEL"}]},
          ]},
          "sample full reason (1 of 2 distinct):  VERBATIM_SENTINEL", None),
+        # The reason is the same sentence both times, so grouping by prose says
+        # "one cause, twice". The producer decided by two different checks and
+        # says so in the predicate. Grouping by reason -- what this report did
+        # before `H4FD` version 2 -- prints `x2` and hides the second cause.
+        ("one reason written by two predicates is two causes",
+         {"fuel_live": (10, 0)},
+         {"frame_degraded_outcomes": [
+             {"hour_raw": 1, "domains": [{
+                 "domain_id": 10, "reason": "rows=3 | reason=the read did not complete",
+                 "predicate_code": 0x00020011, "predicate_name": "d10_rows_rejected"}]},
+             {"hour_raw": 2, "domains": [{
+                 "domain_id": 10, "reason": "rows=9 | reason=the read did not complete",
+                 "predicate_code": 0x00020012,
+                 "predicate_name": "outcome_substantiated_from_record"}]},
+         ]},
+         "x1 predicate d10_rows_rejected [0x00020011]", "x2 predicate"),
+        # A capture written before version 2 carries no predicate at all. That
+        # is shown, not dropped, so the predicate counts still sum to the
+        # domain's occurrence count.
+        ("an entry with no predicate is counted as having none",
+         {"fuel_live": (10, 0)},
+         {"frame_degraded_outcomes": [
+             {"hour_raw": 1, "domains": [{"domain_id": 10, "reason": "a"}]},
+             {"hour_raw": 2, "domains": [{"domain_id": 10, "reason": "b"}]},
+         ]},
+         "x2 predicate (none on the wire)", None),
+        # A code this report cannot read is named as unreadable rather than
+        # coerced: `int(10.9)` would name a predicate nobody published.
+        ("an unreadable predicate code is named, not coerced",
+         {"fuel_live": (10, 0)},
+         {"frame_degraded_outcomes": [
+             {"hour_raw": 1, "domains": [{
+                 "domain_id": 10, "reason": "a",
+                 "predicate_code": 10.9, "predicate_name": "d10_rows_rejected"}]},
+         ]},
+         "x1 predicate (unreadable predicate code)", None),
     )
     for label, domains, stream_extra, want_text, forbidden in reason_cases:
         code, out = run(domains, stream_extra=stream_extra)

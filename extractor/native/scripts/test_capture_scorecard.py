@@ -560,5 +560,229 @@ class DescheduledRecordTests(unittest.TestCase):
         self.assertNotIn("publishes no reason", detail)
 
 
+class DegradedReasonGrouping(unittest.TestCase):
+    """A domain that produced no rows is named beside WHY, grouped by predicate.
+
+    Reasons carry per-frame values, so counting distinct reason strings counts
+    frames rather than causes: the same condition repeated across a capture
+    presented as many different ones, and whichever frame happened to repeat
+    became the "dominant reason". H4FD version 2 carries the predicate, which is
+    one code per check, so it is the key that groups.
+
+    It also carries the distinction the reason cannot: whether the producer
+    diagnosed the domain itself or the frame-final sweep reconstructed the
+    diagnosis from the published record. Those call for different work and this
+    line is where an operator sees which.
+    """
+
+    AXIS = "domains that produced no rows"
+
+    def scorecard(self, entries):
+        manifest = {
+            "compact_stream": {
+                "frame_end_record_count": 3,
+                "expected_domains": ["d47"],
+                "per_domain": {
+                    "d47": {"domain_id": 47, "data_record_count": 1,
+                            "row_count_total": 0, "gap_record_count": None},
+                },
+                "gap_ledger": gap_ledger.pack_rows_for_tests([], []),
+                "frame_degraded_outcomes": [
+                    {"hour_raw": index, "domains": [entry]}
+                    for index, entry in enumerate(entries)
+                ],
+            },
+            "hourly_requirement": {},
+            "replay_artifact": {},
+        }
+        return axis(manifest, self.AXIS)[1]
+
+    def one_frame_scorecard(self, entries, axis_name):
+        """Every entry in ONE frame, which `scorecard` above cannot express.
+
+        `scorecard` puts each entry in its own hour, so entries never meet
+        inside a single frame's offender set. Every defect that only appears
+        when two entries are COMPARED to each other is invisible to it.
+        """
+        manifest = {
+            "compact_stream": {
+                "frame_end_record_count": 1,
+                "expected_domains": ["d47"],
+                "per_domain": {
+                    "d47": {"domain_id": 47, "data_record_count": 1,
+                            "row_count_total": 0, "gap_record_count": None},
+                },
+                "gap_ledger": gap_ledger.pack_rows_for_tests([], []),
+                "frame_degraded_outcomes": [{"hour_raw": 0, "domains": entries}],
+            },
+            "hourly_requirement": {},
+            "replay_artifact": {},
+        }
+        return axis(manifest, axis_name)[1]
+
+    def entry(self, predicate, reason, code=0x00020011):
+        return {
+            "domain_id": 47,
+            "status_flags": 0x100,
+            "non_tolerated_flags": 0x100,
+            "predicate_code": code,
+            "predicate_name": predicate,
+            "authority": "authority=self",
+            "reason": reason,
+        }
+
+    def test_one_cause_with_per_frame_values_counts_once(self):
+        detail = self.scorecard([
+            self.entry("outcome_substantiated_from_record", "d47 saw 3 rows"),
+            self.entry("outcome_substantiated_from_record", "d47 saw 7 rows"),
+            self.entry("outcome_substantiated_from_record", "d47 saw 9 rows"),
+        ])
+        self.assertIn("3x outcome_substantiated_from_record", detail)
+
+    def test_two_predicates_are_two_causes_however_the_reasons_read(self):
+        """The reverse mistake: one reason string, two different checks.
+
+        Grouping by reason would report a single cause with three hits and hide
+        that a producer-declared failure and a swept one are both present.
+        """
+        detail = self.scorecard([
+            self.entry("domain47_manager_is_readable", "d47 read refused"),
+            self.entry("domain47_manager_is_readable", "d47 read refused"),
+            self.entry("producer_declared_no_predicate", "d47 read refused",
+                       code=0x00020012),
+        ])
+        self.assertIn("2x domain47_manager_is_readable", detail)
+
+    def test_one_name_shared_by_two_codes_is_two_causes(self):
+        """The CODE is the identity within a domain, not the name.
+
+        The shared contract defines a predicate as a code plus a name and says
+        the code is per-domain rather than globally unique. Keying on the name
+        merges two genuinely different checks that happen to read alike, which
+        is the same "one cause, counted twice" error the reason grouping made.
+        """
+        detail = self.scorecard([
+            self.entry("read_refused", "a", code=0x00020011),
+            self.entry("read_refused", "b", code=0x00020012),
+            self.entry("read_refused", "c", code=0x00020012),
+        ])
+        self.assertIn("2x read_refused [0x00020012]", detail)
+        self.assertNotIn("3x", detail)
+
+    def test_one_code_whose_name_was_reworded_is_still_one_cause(self):
+        """And the split in the other direction."""
+        detail = self.scorecard([
+            self.entry("manager_is_readable", "a"),
+            self.entry("manager_readable", "b"),
+            self.entry("manager_is_readable", "c"),
+        ])
+        self.assertIn("3x", detail)
+
+    def test_the_reason_is_still_shown_as_the_sample(self):
+        detail = self.scorecard([
+            self.entry("outcome_substantiated_from_record", "d47 saw 3 rows"),
+        ])
+        self.assertIn("d47 saw 3 rows", detail)
+
+    def test_an_entry_without_a_predicate_is_named_as_such_not_as_its_reason(self):
+        """Version 2 always writes a predicate, so a missing one is a BROKEN
+        capture, not an older one. Falling back to the reason -- what this file
+        did before -- dressed that up as an ordinary cause and hid it. There is
+        no pre-version-2 read path here; old captures are disposable.
+        """
+        detail = self.scorecard([
+            {"domain_id": 47, "reason": "d47 read refused"},
+        ])
+        self.assertIn("1x (no readable predicate)", detail)
+        self.assertNotIn("1x d47 read refused", detail)
+
+    def test_two_differently_typed_ids_in_one_frame_do_not_crash_the_sort(self):
+        """The defect a per-entry check cannot see.
+
+        Admitting any hashable id let integer `47` and string `"47"` land in one
+        offender set. Each is individually fine; together they made
+        `sorted(always_degrading)` raise `TypeError: '<' not supported between
+        instances of 'str' and 'int'`, which took the WHOLE scorecard down --
+        every unrelated axis with it -- from inside the render, long after the
+        entries were read.
+
+        A domain id is a `u16` on the wire, so the string is malformed and is
+        excluded and COUNTED rather than admitted or coerced. `int("47")` would
+        merge it into d47's real numbers and invent an attribution.
+        """
+        detail = self.one_frame_scorecard(
+            [
+                {"domain_id": 47, "predicate_code": 0x11,
+                 "predicate_name": "n", "reason": "a"},
+                {"domain_id": "47", "predicate_code": 0x11,
+                 "predicate_name": "n", "reason": "b"},
+            ],
+            "degraded frames",
+        )
+        self.assertIn("d47", detail)
+        self.assertIn("1 degraded record unreadable", detail)
+
+    def test_a_frame_whose_domains_is_not_a_list_is_counted_not_assumed_empty(self):
+        """Treating it as an empty frame said "this hour degraded nothing",
+        which is a CLAIM about the hour rather than an admission that the record
+        could not be read. The two call for different work.
+        """
+        manifest = {
+            "compact_stream": {
+                "frame_end_record_count": 1,
+                "expected_domains": ["d47"],
+                "per_domain": {
+                    "d47": {"domain_id": 47, "data_record_count": 1,
+                            "row_count_total": 0, "gap_record_count": None},
+                },
+                "gap_ledger": gap_ledger.pack_rows_for_tests([], []),
+                "frame_degraded_outcomes": [{"hour_raw": 0, "domains": "nope"}],
+            },
+            "hourly_requirement": {},
+            "replay_artifact": {},
+        }
+        detail = axis(manifest, "degraded frames")[1]
+        self.assertIn("1 degraded record unreadable", detail)
+
+    def test_an_absent_outcomes_block_is_not_counted_as_unreadable(self):
+        """Absent is not malformed: a clean capture omits the key, and counting
+        that would put a permanent 1 on every clean capture.
+        """
+        manifest = {
+            "compact_stream": {
+                "frame_end_record_count": 1,
+                "expected_domains": ["d47"],
+                "per_domain": {
+                    "d47": {"domain_id": 47, "data_record_count": 1,
+                            "row_count_total": 0, "gap_record_count": None},
+                },
+                "gap_ledger": gap_ledger.pack_rows_for_tests([], []),
+            },
+            "hourly_requirement": {},
+            "replay_artifact": {},
+        }
+        detail = axis(manifest, "degraded frames")[1]
+        self.assertNotIn("unreadable", detail)
+
+    def test_malformed_entries_cost_their_own_line_not_the_scorecard(self):
+        """Shapes the recorder should never write, each of which used to raise
+        on the way to a verdict: a report that dies on one bad entry says
+        nothing about the other 72 domains.
+        """
+        detail = self.scorecard([
+            "not a dict",
+            {"domain_id": 47, "predicate_code": 10.9, "reason": "x"},
+            {"domain_id": 47, "predicate_code": True, "reason": "x"},
+            {"domain_id": 47, "predicate_code": 0x11, "predicate_name": 7,
+             "reason": "x"},
+            {"domain_id": 47, "predicate_code": 0x11, "predicate_name": "n",
+             "reason": 7},
+            {"domain_id": ["unhashable"], "predicate_code": 0x11,
+             "predicate_name": "n", "reason": "x"},
+            self.entry("manager_is_readable", "the readable one"),
+        ])
+        self.assertIn("d47", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

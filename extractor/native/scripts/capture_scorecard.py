@@ -146,6 +146,28 @@ def registry_descheduled(native_root=None):
     }
 
 
+def readable_domain_id(value):
+    """The entry's domain id as an `int`, or `None` if it is not one.
+
+    On the wire a domain id is a `u16`, so anything else is a malformed entry.
+    This returns `None` rather than the value because ADMITTING a foreign type
+    is what broke this file: a frame carrying both `47` and `"47"` put two
+    different types into one `set`, and the `sorted()` that renders the
+    always-degrading list then raised `TypeError` and took the whole scorecard
+    down -- the exact totality failure the defensive parsing was added to end,
+    reached by a route the per-entry checks could not see because it only
+    appears when two entries are compared to each other.
+
+    Not coerced, for the reason the raw-capture report gives at its own parse:
+    `int("47")` would silently merge a malformed entry into d47's real counts,
+    and a report that invents an attribution is worse than one that admits it
+    could not read a row. `bool` is an `int` in Python and never a domain id.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def score(manifest):
     """Every axis on which the capture can be short of complete.
 
@@ -299,22 +321,80 @@ def score(manifest):
     # is what sent a whole lane after an answer the manifest already carried.
     # Report the dominant reason beside each name so this file answers "why is
     # it empty" without a second tool.
+    # Grouped by PREDICATE, with the reason as the sample beside it.
+    #
+    # Reasons carry per-frame values ("47 rows observed, 3 rejected"), so
+    # counting distinct reason strings counts frames, not causes: a domain
+    # failing the same way 505 times looked like 505 different conditions and
+    # the "dominant reason" was whichever frame happened to repeat. H4FD v2
+    # carries the predicate, which is the stable key -- one code per check --
+    # and in particular separates a producer's own diagnosis from
+    # `outcome_substantiated_from_record`, the frame-final sweep's
+    # reconstruction, and from `producer_declared_no_predicate`, which means
+    # nobody diagnosed it at all. Those three call for different work.
+    #
+    # The key is the CODE, not the name. The shared contract defines a predicate
+    # as a code plus a name and says the code is per-domain rather than globally
+    # unique, so within one domain the code is the identity and the name is how
+    # it reads. Keying on the name instead merged two codes that happened to
+    # share a name and split one code whose name was reworded -- and this file
+    # claimed to be keying on the code while doing neither.
+    #
+    # An entry with no readable predicate is grouped as such rather than falling
+    # back to its reason: version 2 always writes one, so a missing predicate is
+    # a fact about a broken capture, and quietly substituting prose would hide
+    # exactly the thing worth seeing. There is no pre-version-2 read path here
+    # -- old captures are disposable.
     reason_by_domain = collections.defaultdict(collections.Counter)
-    for frame in stream.get("frame_degraded_outcomes", []) or []:
-        for entry in frame.get("domains", []) or []:
-            reason = (entry.get("reason") or "").strip()
-            if reason:
-                reason_by_domain[entry.get("domain_id")][reason] += 1
+    sample_reason = {}
+    predicate_label = {}
+    frames = stream.get("frame_degraded_outcomes")
+    for frame in frames if isinstance(frames, list) else []:
+        if not isinstance(frame, dict):
+            continue
+        entries = frame.get("domains")
+        for entry in entries if isinstance(entries, list) else []:
+            # Every shape below is one the recorder should never write. Each was
+            # an unhandled exception on the way to a scorecard: a report that
+            # dies on one malformed entry tells the reader nothing about the
+            # other 72 domains.
+            if not isinstance(entry, dict):
+                continue
+            reason = entry.get("reason")
+            reason = reason.strip() if isinstance(reason, str) else ""
+            code = entry.get("predicate_code")
+            name = entry.get("predicate_name")
+            # THE KEY IS THE CODE ALONE. Putting the name in the key -- even
+            # beside the code -- reintroduces half the defect: one code whose
+            # name is reworded between builds splits into two causes, which is
+            # the same overcounting the reason strings produced. The name is
+            # display, remembered from the first entry that carried this code.
+            if isinstance(code, bool) or not isinstance(code, int):
+                key = "(no readable predicate)"
+                label = key
+            else:
+                key = code
+                shown = name if isinstance(name, str) and name.strip() else "(unnamed)"
+                label = f"{shown} [0x{code:08x}]"
+            domain_id = readable_domain_id(entry.get("domain_id"))
+            if domain_id is None:
+                continue
+            reason_by_domain[domain_id][key] += 1
+            predicate_label.setdefault((domain_id, key), label)
+            sample_reason.setdefault((domain_id, key), reason)
 
     def with_reason(name):
         info = per_domain.get(name) or {}
-        counts = reason_by_domain.get(info.get("domain_id"))
+        domain_id = info.get("domain_id")
+        counts = reason_by_domain.get(domain_id)
         if not counts:
             return name
-        reason, hits = counts.most_common(1)[0]
-        # The reasons carry per-frame values, so the leading clause is the
-        # stable part; the tail is a sample and would differ every frame.
-        return f"{name} [{hits}x {reason[:110]}]"
+        key, hits = counts.most_common(1)[0]
+        label = predicate_label.get((domain_id, key), str(key))
+        sample = sample_reason.get((domain_id, key), "")
+        if sample:
+            return f"{name} [{hits}x {label}: {sample[:90]}]"
+        return f"{name} [{hits}x {label[:110]}]"
 
     # Producers that counted what they threw away. Any nonzero counter here is
     # data the reader saw and did not record.
@@ -333,11 +413,50 @@ def score(manifest):
     # either one broken domain repeated 505 times or 505 unrelated events, and
     # those call for opposite responses. Name the offenders and how often each
     # appears, so the count carries its own explanation.
-    degraded_outcomes = stream.get("frame_degraded_outcomes", []) or []
+    # Normalised ONCE, then used by all three walks below. Each of them used to
+    # re-walk the raw JSON and raise `AttributeError` on a non-dict frame or
+    # offender, which took the WHOLE scorecard -- every unrelated axis included
+    # -- down over one malformed entry. Doing it once also keeps the numerator
+    # and the denominator of the "would still be degraded" ratio counting the
+    # same set of frames, which two independent walks could not promise.
+    raw_degraded = stream.get("frame_degraded_outcomes")
+    degraded_offenders = []
+    # ONE counter for every shape this walk could not read, at whatever level it
+    # sat: a malformed frame and a malformed offender inside a good frame are
+    # both "something the numbers below do not include", which is the only thing
+    # a reader needs from it. The wording on the detail line says "record(s)"
+    # rather than "entries" for that reason -- an earlier spelling called them
+    # all offender entries while the number also counted whole frames.
+    unreadable_records = 0
+    # ABSENT is not MALFORMED: a stream with no degraded frames omits the key,
+    # and counting that as unreadable would put a permanent 1 on every clean
+    # capture. A key that is present but not a list is a real defect.
+    if raw_degraded is not None and not isinstance(raw_degraded, list):
+        unreadable_records += 1
+    for frame in raw_degraded if isinstance(raw_degraded, list) else []:
+        if not isinstance(frame, dict):
+            unreadable_records += 1
+            continue
+        offenders = frame.get("domains")
+        if offenders is not None and not isinstance(offenders, list):
+            # Silently treating this as an empty frame said "this hour degraded
+            # nothing", which is a claim, not a gap.
+            unreadable_records += 1
+        ids = set()
+        for offender in offenders if isinstance(offenders, list) else []:
+            if not isinstance(offender, dict):
+                unreadable_records += 1
+                continue
+            domain_id = readable_domain_id(offender.get("domain_id"))
+            if domain_id is None:
+                unreadable_records += 1
+                continue
+            ids.add(domain_id)
+        degraded_offenders.append(ids)
+    degraded_frame_count = len(degraded_offenders)
     degraded_by_domain = collections.Counter()
-    for frame in degraded_outcomes:
-        for offender in frame.get("domains", []) or []:
-            degraded_by_domain[offender.get("domain_id")] += 1
+    for ids in degraded_offenders:
+        degraded_by_domain.update(ids)
     name_by_id = {
         info.get("domain_id"): name for name, info in per_domain.items()
     }
@@ -348,21 +467,32 @@ def score(manifest):
     # A domain that offends in EVERY degraded frame is a standing condition, not
     # an event; separating those says how many frames would still be degraded if
     # it were fixed.
+    # One domain per frame, counted once: the wire contract already refuses a
+    # notice that names a domain twice, so this changes no valid capture, and
+    # it keeps `count` comparable to the frame count on the next line -- which
+    # a per-entry count could exceed.
     always_degrading = {
         domain_id for domain_id, count in degraded_by_domain.items()
-        if degraded_outcomes and count == len(degraded_outcomes)
+        if degraded_frame_count and count == degraded_frame_count
     }
     frames_degraded_by_others = sum(
-        1 for frame in degraded_outcomes
-        if {offender.get("domain_id") for offender in frame.get("domains", []) or []}
-        - always_degrading
+        1 for ids in degraded_offenders if ids - always_degrading
     )
     if always_degrading:
         degraded_detail += (
             "; always-degrading: "
             + ", ".join(f"d{i}" for i in sorted(always_degrading))
-            + f"; {frames_degraded_by_others} of {len(degraded_outcomes)} frames "
+            + f"; {frames_degraded_by_others} of {degraded_frame_count} frames "
               "would still be degraded without them")
+    if unreadable_records:
+        # NAMED, not dropped. Every count above is over the records this
+        # function could read, so a reader comparing them against the frame
+        # count needs to know some never joined them. Silently losing an
+        # offender is the same defect class as dying on one.
+        degraded_detail += (
+            f"; {unreadable_records} degraded record"
+            + ("" if unreadable_records == 1 else "s")
+            + " unreadable and excluded from these counts")
 
     # A production capture must not expect a domain the owner ruled out of
     # capture scope: if it does, some roster path did not get the deschedule and

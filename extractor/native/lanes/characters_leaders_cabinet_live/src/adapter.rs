@@ -641,8 +641,48 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     if stats.identity_degraded_rows != 0 {
         frame.status_flags |= compact::STATUS_PARTIAL_DATA | compact::STATUS_SOURCE_UNAVAILABLE;
     }
+    // BRIDGE_UNAVAILABLE IS PAIRED. Stated precisely, because the obvious
+    // stronger claim is false.
+    //
+    // This is the only `|=` of that bit in the tree, and the bit sits outside
+    // `domain_outcome::DERIVED_STATUS_MASK`: no `DomainOutcome` can speak for
+    // it, because `is_failure` is decided by completion/extent/clock/authority
+    // and every one of those derives a bit inside the mask. So a word carrying
+    // it ALONE is a failure the collector's frame-final
+    // `substantiate_silent_domain_outcomes` cannot substantiate, and it would
+    // reach the completeness walk as `MigratedButSilent` — a FRAME finding that
+    // refuses the hour and takes the other 72 domains' data with it.
+    //
+    // WHAT THIS PAIRING IS NOT. It is not what stops that happening. This
+    // adapter's word is an INTERMEDIATE: the scheduled reader classifies it
+    // through d47's expected-partial tolerance and replaces any non-tolerated
+    // result with a rowless frame carrying `SOURCE_UNAVAILABLE | PARTIAL_DATA`,
+    // and that finalized word is what the PERF record publishes. A bare
+    // BRIDGE_UNAVAILABLE was therefore already unable to reach the wire. Saying
+    // otherwise here would be a false claim about a live invariant.
+    //
+    // WHAT IT IS. Two things, both worth the one constant. The adapter's own
+    // frame becomes independently diagnosable — the intermediate says why it
+    // failed in a vocabulary an outcome can express, instead of relying on a
+    // normalisation three thousand lines away in another crate to say it for
+    // it. And it removes that dependency from the collector's boundary
+    // argument: the sweep's "no domain-level site can publish an unspeakable
+    // bit" now holds at the writer, not only after the finalizer.
+    //
+    // And it is the honest word, not a workaround. The cabinet is per-country:
+    // roles, advisors and leader slots are all attributed THROUGH a country, so
+    // a bridge that yielded no countries did not complete this read. That is
+    // what SOURCE_UNAVAILABLE says, in the same spelling the block above uses
+    // and for the same stated reason — "this frame's sources did not all
+    // yield". It changes no published word: the finalizer adds the same bit and
+    // more. It changes no completeness verdict either — d47's expected-partial
+    // tolerance covers PARTIAL_DATA only, so a word carrying BRIDGE_UNAVAILABLE
+    // was already outside every tolerance and already Degraded — and no prewarm
+    // behaviour, because `domain47_should_invalidate_roots_on_frame` keys on
+    // parse errors and dead roots, never on status bits.
     if input.countries.is_empty() {
-        frame.status_flags |= compact::STATUS_BRIDGE_UNAVAILABLE;
+        frame.status_flags |=
+            compact::STATUS_BRIDGE_UNAVAILABLE | compact::STATUS_SOURCE_UNAVAILABLE;
     }
     if input.characters.is_empty()
         && input.unit_leaders.is_empty()
@@ -1129,6 +1169,66 @@ mod tests {
         );
         assert_eq!(summary.character_portrait_rows, 1);
         assert_eq!(summary.appointed_advisor_rows, 1);
+    }
+
+    /// A missing country bridge is a failure the collector can DIAGNOSE.
+    ///
+    /// `BRIDGE_UNAVAILABLE` is the only failure bit in the whole tree that a
+    /// domain-level site sets and that no `DomainOutcome` can speak for: the
+    /// outcome vocabulary derives its bits from completion/extent/clock/
+    /// authority and every one of those lands inside
+    /// `domain_outcome::DERIVED_STATUS_MASK`, which this bit is outside. A word
+    /// carrying it alone cannot be substantiated by the collector's frame-final
+    /// sweep and reaches the completeness walk as `MigratedButSilent`, which
+    /// refuses the whole hour — all 73 domains — for one domain's missing
+    /// bridge.
+    ///
+    /// This is the ADAPTER's half of keeping that unreachable. The published
+    /// word has a second guard: the scheduled reader replaces any non-tolerated
+    /// adapter result with a rowless frame carrying `SOURCE_UNAVAILABLE |
+    /// PARTIAL_DATA`. What the pairing buys is that the intermediate frame says
+    /// it for itself, in a vocabulary an outcome can express, rather than the
+    /// property holding only after a normalisation in another crate.
+    ///
+    /// The second half of the assertion is what stops the pairing being read as
+    /// "always set both": a frame WITH countries and with every family present
+    /// carries neither bit.
+    ///
+    /// kills: dropping `STATUS_SOURCE_UNAVAILABLE` from the empty-countries
+    /// arm, and moving the pairing onto the unconditional path.
+    #[test]
+    fn an_unavailable_country_bridge_publishes_a_word_an_outcome_can_speak_for() {
+        let mut mem = FakeMemory::default();
+        write_character(&mut mem, 0x1000, 100, 2);
+        // Characters ARE present. This is the shape that made the bare bit
+        // reachable: the third arm below only fires when every family is
+        // empty, so a bridge outage beside a populated character list used to
+        // publish `BRIDGE_UNAVAILABLE` on its own.
+        let input = AdapterInput {
+            characters: vec![CharacterRoot {
+                character_addr: 0x1000,
+                char_id: 100,
+                name: None,
+                token: Some("ENG_character".to_string()),
+            }],
+            ..AdapterInput::default()
+        };
+        assert!(input.countries.is_empty());
+
+        let status = build_lane_frame_from_adapter_input(&mem, &roots(), &input)
+            .frame
+            .status_flags;
+        assert_ne!(
+            status & compact::STATUS_BRIDGE_UNAVAILABLE,
+            0,
+            "an empty country bridge must still say so"
+        );
+        assert_ne!(
+            status & compact::STATUS_SOURCE_UNAVAILABLE,
+            0,
+            "the bridge outage must also carry a bit the outcome vocabulary derives, or the \
+             collector's sweep cannot substantiate this word and the frame is refused for it"
+        );
     }
 
     #[test]

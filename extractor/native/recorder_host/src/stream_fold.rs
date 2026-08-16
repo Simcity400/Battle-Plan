@@ -1441,7 +1441,7 @@ impl BoundaryTracker {
                         return;
                     }
                 }
-                match compact_contract::frame_degraded::FrameDegradedRecordV1::decode(payload) {
+                match compact_contract::frame_degraded::FrameDegradedRecordV2::decode(payload) {
                     Ok(record) if record.degraded_hour == header.game_hour_raw => {}
                     Ok(record) => {
                         self.violation = Some(format!(

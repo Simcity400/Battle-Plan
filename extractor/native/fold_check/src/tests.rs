@@ -4,6 +4,23 @@
 //! ignoring, mutation detection, and fail-closed certification.
 
 use super::*;
+
+/// The diagnosis every H4FD fixture in this file carries.
+///
+/// These tests are about the fold's RECONCILIATION of a notice against the
+/// per-domain status words, not about who diagnosed the domain, so the
+/// diagnosis is held constant and minimal: the reserved undeclared pair, which
+/// is what an entry for a domain whose deciding site recorded no outcome
+/// carries in production. `frame_degraded`'s own tests are where the predicate
+/// and authority fields are exercised.
+fn fixture_diagnosis(
+    reason: &str,
+) -> compact_contract::frame_degraded::FrameDegradedDiagnosis {
+    compact_contract::frame_degraded::FrameDegradedDiagnosis::undeclared(
+        compact_contract::diagnostic_channel::Authority::SelfDomain,
+        reason,
+    )
+}
 use compact_contract::calendar::DATE_EPOCH_CONST;
 use compact_contract::campaign_identity::{
     encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
@@ -2259,7 +2276,7 @@ fn degraded_hour_stream(
         sequence += 1;
     }
     if let Some(entries) = declared {
-        let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+        let notice = compact_contract::frame_degraded::FrameDegradedRecordV2 {
             degraded_hour: raw_for(HOUR_A),
             domains: entries
                 .iter()
@@ -2272,6 +2289,8 @@ fn degraded_hour_stream(
                                 *domain_id,
                                 *status_flags,
                             ),
+                        predicate: compact_contract::diagnostic_channel::Predicate::undeclared(),
+                        authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
                         reason: (*reason).to_string(),
                     }
                 })
@@ -2335,12 +2354,14 @@ fn a_declared_degradation_the_status_does_not_support_fails_certification() {
         sequence += 1;
     }
     // Self-consistent as a record, but domain 30's PERF above is clean.
-    let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+    let notice = compact_contract::frame_degraded::FrameDegradedRecordV2 {
         degraded_hour: raw_for(HOUR_A),
         domains: vec![compact_contract::frame_degraded::FrameDegradedDomain {
             domain_id: 30,
             status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
             non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            predicate: compact_contract::diagnostic_channel::Predicate::undeclared(),
+            authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
             reason: "d30_root_unreadable=1".to_string(),
         }],
     };
@@ -2419,12 +2440,19 @@ fn a_frame_declaring_its_degraded_domains_certifies_and_the_hour_records_them_un
     assert_eq!(
         hour.completeness.declared_degraded_domains,
         [
-            (29u16, COMPACT_STATUS_PARTIAL_DATA),
-            (30u16, COMPACT_STATUS_SOURCE_UNAVAILABLE)
+            (29u16, (COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_PARTIAL_DATA)),
+            (
+                30u16,
+                (
+                    COMPACT_STATUS_SOURCE_UNAVAILABLE,
+                    COMPACT_STATUS_SOURCE_UNAVAILABLE
+                )
+            )
         ]
         .into_iter()
-        .collect::<BTreeMap<u16, u32>>(),
-        "a degraded domain must be certified as unknown, never as complete"
+        .collect::<BTreeMap<u16, (u32, u32)>>(),
+        "a degraded domain must be certified as unknown, never as complete, and the notice's \
+         RAW status word must be the one the PERF record published"
     );
     assert!(
         !hour.completeness.declared_degraded_domains.contains_key(&18),
@@ -2581,7 +2609,7 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         compact_contract::frame_degraded::FrameDegradedDomain::from_status(
             26,
             COMPACT_STATUS_PARTIAL_DATA,
-            "mislabelled",
+            fixture_diagnosis("mislabelled"),
         )
         .is_none(),
         "a tolerated partial must not produce a degraded entry"
@@ -2669,7 +2697,7 @@ fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
         compact_contract::frame_degraded::FrameDegradedDomain::from_status(
             86,
             COMPACT_STATUS_PARTIAL_DATA,
-            "mislabelled",
+            fixture_diagnosis("mislabelled"),
         )
         .is_none(),
         "a tolerated d86 partial must not produce a degraded entry"
@@ -2840,7 +2868,7 @@ fn append_d86_hour(
     );
     *sequence += 1;
     if let Some((status_flags, reason)) = declared {
-        let notice = compact_contract::frame_degraded::FrameDegradedRecordV1 {
+        let notice = compact_contract::frame_degraded::FrameDegradedRecordV2 {
             degraded_hour: raw_for(hour_index),
             domains: vec![compact_contract::frame_degraded::FrameDegradedDomain {
                 domain_id: 86,
@@ -2849,6 +2877,8 @@ fn append_d86_hour(
                     86,
                     status_flags,
                 ),
+                predicate: compact_contract::diagnostic_channel::Predicate::undeclared(),
+                authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
                 reason: reason.to_string(),
             }],
         };
@@ -2932,7 +2962,10 @@ fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
         .expect("the hour must publish");
     assert_eq!(
         hour.completeness.declared_degraded_domains.get(&86),
-        Some(&COMPACT_STATUS_SOURCE_UNAVAILABLE),
+        Some(&(
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE
+        )),
         "the certified hour must record d86 as unknown with its exact bits"
     );
     // The word is still on the identity, so "accounted" never means "erased".
@@ -3282,7 +3315,7 @@ fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolera
             compact_contract::frame_degraded::FrameDegradedDomain::from_status(
                 86,
                 failure,
-                "domain 86: read_completion=2",
+                fixture_diagnosis("domain 86: read_completion=2"),
             )
             .is_some(),
             "{label}: the accounting path for a d86 FAILURE is the H4FD declaration"

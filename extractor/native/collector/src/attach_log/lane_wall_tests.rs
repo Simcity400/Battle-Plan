@@ -1103,6 +1103,12 @@ fn outside_build_preboundary_cost() {
         domain_id: 47,
         status_flags: 2,
         non_tolerated_flags: 2,
+        // The bench measures the INSERTION, so the diagnosis only has to be
+        // encodable; the reserved undeclared pair is the shortest legal one and
+        // keeps the entry's variable part at its minimum, which is the
+        // conservative direction for a splice cost.
+        predicate: compact_contract::diagnostic_channel::Predicate::undeclared(),
+        authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
         reason: "bench".to_string(),
     }];
 
@@ -1121,7 +1127,7 @@ fn outside_build_preboundary_cost() {
     // allocator may decline, so the actual spare capacity of each prepared
     // buffer is printed rather than assumed.
     let notice_len = compact_contract::COMPACT_RECORD_HEADER_LEN
-        + compact_contract::frame_degraded::FrameDegradedRecordV1 {
+        + compact_contract::frame_degraded::FrameDegradedRecordV2 {
             degraded_hour: last_hour,
             domains: domains.clone(),
         }
