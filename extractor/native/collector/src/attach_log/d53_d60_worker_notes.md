@@ -1,5 +1,18 @@
 # D53 / D60 off-frame worker paths — traced state (lane d53_d60_worker)
 
+> **SUPERSEDED IN PART — lane MF, 2026-08-17.** Everything below that describes
+> the WAR family as a heap-sweep consumer is history now. D60 registers no
+> needles at all and takes its refresh cadence from `discovery_clock_snapshot`
+> (elapsed time, no reads); D53 registers FOUR needles, not six, and resolves
+> its war-row addresses through the same bounded H-B5 owner route D60 uses
+> (`domain53_war_row_addrs_from_relation_roots`). The needle order is now
+> `[operative, operation_instance, strategic_operative, country_intel_network]`.
+> Consequently: D60 can no longer be stranded at `capwar_sweep_not_warmed` by a
+> slow first sweep pass (§ "Scale of the strand"), and neither domain's war
+> family waits on a heap pass. The off-frame reap/spawn/backoff machinery, the
+> epoch guards and the fail-closed reasons are unchanged and this note remains
+> the reference for them. See `runs/mf_heap_sweep_retire/RESULTS.md`.
+
 Base: `integration/extractor-recovery-20260731` @ `4d0e0dd2`.
 All line numbers are `extractor/native/collector/src/attach_log.rs` at this
 lane's HEAD unless stated otherwise.
