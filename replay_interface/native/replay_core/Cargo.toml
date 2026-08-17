@@ -11,6 +11,11 @@ description = "Replay ingest and scrubbable world timeline for .battleplan recor
 # `PackagedStaticArtifact::unauthenticated_for_consumer_tests`.
 [features]
 test_support = []
+# Lane MN batch 2 measurement. Times each typed-view builder inside
+# `WorldFrame::from_raw_with_design_catalog` and exposes a construction entry a
+# measurement can reach without a container. Measurement only: never on by
+# default, nothing ships with it, and with it off the timing calls compile away.
+mn_frame_profile = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
