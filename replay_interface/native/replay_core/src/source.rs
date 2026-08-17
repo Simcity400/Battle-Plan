@@ -2102,17 +2102,20 @@ fn open_packaged_replay_cache(
         (cache, receipt, hours)
     };
 
-    let first_json = cache
-        .reconstruct_json(hours[0])
+    // Opening a recording reconstructs its first hour to check the body's
+    // identity against the container's. That is one hour, once — and it used to
+    // be one hour spelled to JSON, hashed, parsed and flattened, which on
+    // capture t53 is over a second of the time between double-clicking a
+    // recording and seeing it. Same check, same body, off the tree.
+    let first_world = cache
+        .reconstruct_value(hours[0])
         .map_err(|error| SourceError::Open(format!("reconstruct first replay hour: {error}")))?
         .0;
-    let first: snapshot::Snapshot = snapshot::parse_json_strict(&first_json)
-        .and_then(serde_json::from_value)
-        .map_err(|error| {
-            SourceError::Open(format!(
-                "first binary replay reconstruction is not canonical snapshot JSON: {error}"
-            ))
-        })?;
+    let first = snapshot::Snapshot::from_world_value(first_world).map_err(|error| {
+        SourceError::Open(format!(
+            "first binary replay reconstruction is not canonical snapshot JSON: {error}"
+        ))
+    })?;
     validate_snapshot_container_identity(
         store
             .container()
@@ -5582,9 +5585,19 @@ impl ReplaySource for IndexedReplaySource {
     }
 
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
-        let (json, receipt) = self
+        // THE DRAW PATH TAKES THE TREE, NOT THE BYTES. This used to ask the
+        // reader for the hour's canonical JSON, hash it against the index's
+        // parity digest, parse those bytes back into a `Value`, and hand that
+        // `Value` to serde, which buffered the whole world a third time because
+        // `Snapshot::rest` is `#[serde(flatten)]` — four whole-world passes to
+        // put one hour on screen, 31.6 MB of them per hour on capture t53.
+        // `reconstruct_value` walks the same records and hands back the tree
+        // the reader is already holding; `admit_cache` proved the cache's bytes
+        // once when this source was opened, and the producer proved at seal
+        // time that decoding them reproduces every hour's parity digest.
+        let (world, receipt) = self
             .cache
-            .reconstruct_json(hour_index)
+            .reconstruct_value(hour_index)
             .map_err(|error| {
                 SourceError::Open(format!(
                     "reconstruct replay_decoder hour {hour_index}: {error}"
@@ -5595,13 +5608,11 @@ impl ReplaySource for IndexedReplaySource {
                 "replay_decoder hour {hour_index} exceeded its certified seek bound"
             )));
         }
-        let mut snapshot: snapshot::Snapshot = snapshot::parse_json_strict(&json)
-            .and_then(serde_json::from_value)
-            .map_err(|error| {
-                SourceError::Open(format!(
-                    "replay_decoder hour {hour_index} is not canonical snapshot JSON: {error}"
-                ))
-            })?;
+        let mut snapshot = snapshot::Snapshot::from_world_value(world).map_err(|error| {
+            SourceError::Open(format!(
+                "replay_decoder hour {hour_index} is not canonical snapshot JSON: {error}"
+            ))
+        })?;
         if snapshot.hour_index != Some(hour_index)
             || snapshot.game_id.as_deref() != Some(self.game_id())
         {

@@ -53,6 +53,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
+use serde_json::Value;
+
 pub const HOUR_INDEX_ROLE: &str = "replay_decoder_hour_index";
 pub const CHECKPOINT_CACHE_ROLE: &str = "replay_decoder_checkpoint_cache";
 pub const HOUR_INDEX_FILE: &str = "replay_decoder/hour_index.h4ix";
@@ -2024,6 +2026,24 @@ pub enum ScrubOutcome {
     },
 }
 
+/// What a VIEWER-facing reconstruction came back with: the hour's world as the
+/// tree a consumer reads, never as bytes.
+///
+/// The same two arms as [`ScrubOutcome`], for the same reason: either an hour
+/// was rebuilt, or the caller's own stop switch ended the walk and nothing is
+/// claimed about any hour.
+#[derive(Debug)]
+pub enum FrameOutcome {
+    Reconstructed {
+        world: Value,
+        receipt: ReplaySeekReceipt,
+    },
+    Abandoned {
+        reached_hour: i64,
+        walked_deltas: u32,
+    },
+}
+
 /// Where a certified cache's bytes live.
 ///
 /// Everything this module does with a cache reduces to two questions: what does
@@ -2051,6 +2071,19 @@ pub(crate) trait CacheRecords {
     /// as well as the whole-artifact one. A backing that could only produce
     /// one digest could not confine anything.
     fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError>;
+    /// Whether a record read AFTER admission can differ from the bytes
+    /// admission hashed.
+    ///
+    /// This is the whole reason [`CertifiedReplayCache::reconstruct_value`] can
+    /// drop the per-hour world digest. A resident cache is owned, immutable
+    /// bytes: what admission hashed is what every later read returns, forever.
+    /// A cache left ON DISK is not — the file can be rewritten under an open
+    /// handle, in place and at the same length, between the admission pass and
+    /// the read of any given record. The old draw path noticed because it
+    /// re-hashed the whole reconstructed world every time; a draw path that
+    /// does not must authenticate each record the FIRST time it reads it, which
+    /// is what this flag turns on.
+    fn records_may_change(&self) -> bool;
     /// The bytes of the record at `offset`, refusing any window that leaves the
     /// cache or exceeds [`MAX_CACHE_RECORD_BYTES`].
     fn record(&self, offset: u64, len: u64) -> Result<Cow<'_, [u8]>, ReplayCacheError>;
@@ -2076,6 +2109,11 @@ fn record_window(cache_len: u64, offset: u64, len: u64) -> Result<(u64, usize), 
 pub(crate) struct SliceCache<'a>(pub(crate) &'a [u8]);
 
 impl<'a> CacheRecords for SliceCache<'a> {
+    /// Owned, resident bytes: nothing can rewrite them behind the reader.
+    fn records_may_change(&self) -> bool {
+        false
+    }
+
     fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
         sink.write_all(self.0)
             .map_err(|error| ReplayCacheError::new(format!("audit resident cache: {error}")))
@@ -2118,6 +2156,11 @@ impl CertifiedCacheFile {
 }
 
 impl CacheRecords for CertifiedCacheFile {
+    /// A file on disk, read record by record long after it was admitted.
+    fn records_may_change(&self) -> bool {
+        true
+    }
+
     fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
         let mut file = self
             .file
@@ -2510,16 +2553,7 @@ impl CertifiedReplayCache {
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
-        let installed = self
-            .interrupt
-            .lock()
-            .ok()
-            .and_then(|held| held.clone());
-        let keep_going: Box<dyn Fn() -> bool> = match installed {
-            Some(switch) => Box::new(move || switch()),
-            None => Box::new(|| true),
-        };
-        match self.reconstruct_json_interruptible(hour_index, keep_going.as_ref())? {
+        match self.reconstruct_json_interruptible(hour_index, self.keep_going().as_ref())? {
             ScrubOutcome::Reconstructed { json, receipt } => Ok((json, receipt)),
             ScrubOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
                 "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour}                  because the caller's stop switch asked it to stop"
@@ -2563,6 +2597,61 @@ impl CertifiedReplayCache {
         self.cache.with_records(|records| {
             reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
         })
+    }
+
+    /// The world for one hour as the VIEWER reads it — a `serde_json::Value`
+    /// built straight from the reconstructed tree.
+    ///
+    /// THIS IS THE DRAW PATH, and it is the one that must not spell a world out
+    /// to text. [`Self::reconstruct_json`] answers "what bytes did the recorder
+    /// seal for this hour", which is a question the producer's proofs and the
+    /// measurement instruments ask; a viewer putting an hour on screen is
+    /// asking "what is the world", and paying a 31.6 MB serialization, a
+    /// SHA-256 over it, a parse of those same bytes back into a tree, and a
+    /// `serde(flatten)` re-buffer of that tree to be told. This route walks the
+    /// same records, resumes the same [`ScrubCursor`], and hands back the tree
+    /// the reader was already holding.
+    ///
+    /// See [`reconstruct_value_cursored`] for why no per-hour digest is taken
+    /// here, and what proves the walk instead.
+    pub fn reconstruct_value(
+        &self,
+        hour_index: i64,
+    ) -> Result<(Value, ReplaySeekReceipt), ReplayCacheError> {
+        match self.reconstruct_value_interruptible(hour_index, self.keep_going().as_ref())? {
+            FrameOutcome::Reconstructed { world, receipt } => Ok((world, receipt)),
+            FrameOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
+                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
+                 because the caller's stop switch asked it to stop"
+            ))),
+        }
+    }
+
+    /// [`Self::reconstruct_value`] with the caller holding a stop switch. See
+    /// [`Self::reconstruct_json_interruptible`] for why a seek must be
+    /// abandonable and what an abandoned one keeps.
+    pub fn reconstruct_value_interruptible(
+        &self,
+        hour_index: i64,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<FrameOutcome, ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        self.cache.with_records(|records| {
+            reconstruct_value_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+        })
+    }
+
+    /// The installed stop switch as a predicate, or one that never says stop.
+    fn keep_going(&self) -> Box<dyn Fn() -> bool + '_> {
+        let installed = self.interrupt.lock().ok().and_then(|held| held.clone());
+        match installed {
+            Some(switch) => Box::new(move || switch()),
+            None => Box::new(|| true),
+        }
     }
 
     /// Install the stop switch every later reconstruction consults, so a caller
@@ -2879,6 +2968,103 @@ fn reconstruct_json_cursored(
     cursor: &mut Option<ScrubCursor>,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<ScrubOutcome, ReplayCacheError> {
+    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
+        let json = value.to_json_bytes();
+        if Sha256::hex(&json) != target.world_json_sha256 {
+            return Err(ReplayCacheError::new(format!(
+                "reconstructed hour {} does not byte-match replay_decoder parity hash",
+                target.hour_index
+            )));
+        }
+        Ok(json)
+    })? {
+        CursoredOutcome::Produced { produced, receipt } => Ok(ScrubOutcome::Reconstructed {
+            json: produced,
+            receipt,
+        }),
+        CursoredOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        } => Ok(ScrubOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        }),
+    }
+}
+
+/// The same walk, finishing with the VIEWER'S world instead of the recording's
+/// bytes: the reconstructed [`CanonValue`] converted straight into a
+/// `serde_json::Value`, with no text spelled and no digest taken.
+///
+/// WHY NO DIGEST HERE, STATED WHERE IT IS SKIPPED. The per-hour
+/// `world_json_sha256` is not what makes a served hour authentic — [`admit_cache`]
+/// is, ONCE, when the reader is opened: it streams the whole cache, compares it
+/// to the whole-cache digest the index is bound to, compares EVERY record
+/// against the per-record digest the same index publishes, proves the records
+/// tile the cache exactly, and confines by name any record that disagrees. And
+/// the producer proves, before it publishes, that decoding exactly those
+/// records reproduces every hour's `world_json_sha256`
+/// ([`ReplayCacheReader::verify_every_hour`], run by the seal path). So on an
+/// admitted cache the per-draw digest re-derives a sealed, already-authenticated
+/// determinism — at the cost of spelling 31.6 MB of text per drawn hour on
+/// capture t53 and hashing it, which is 179 ms of a 16 ms display frame.
+///
+/// What the digest was still buying is a check on THIS reader's own walk — a
+/// cursor resumed from a state that is not a prefix of the target's walk would
+/// change the bytes and be caught. That is now proved where a proof belongs:
+/// `the_cursored_value_route_equals_the_cold_text_route` walks every hour of a
+/// recording both ways and requires the same world, and
+/// `verify_every_hour` still hashes every hour on the producer's side.
+fn reconstruct_value_cursored(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+    hour_index: i64,
+    cursor: &mut Option<ScrubCursor>,
+    keep_going: &dyn Fn() -> bool,
+) -> Result<FrameOutcome, ReplayCacheError> {
+    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
+        crate::canon_to_json::to_value(value).map_err(|error| {
+            ReplayCacheError::new(format!(
+                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                target.hour_index
+            ))
+        })
+    })? {
+        CursoredOutcome::Produced { produced, receipt } => Ok(FrameOutcome::Reconstructed {
+            world: produced,
+            receipt,
+        }),
+        CursoredOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        } => Ok(FrameOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        }),
+    }
+}
+
+/// What one cursored walk came back with, before it is named for the consumer
+/// that asked. See [`ScrubOutcome`] and [`FrameOutcome`].
+enum CursoredOutcome<T> {
+    Produced {
+        produced: T,
+        receipt: ReplaySeekReceipt,
+    },
+    Abandoned {
+        reached_hour: i64,
+        walked_deltas: u32,
+    },
+}
+
+fn reconstruct_cursored<T>(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+    hour_index: i64,
+    cursor: &mut Option<ScrubCursor>,
+    keep_going: &dyn Fn() -> bool,
+    finish: &dyn Fn(&CanonValue, &ReplayHourEntry) -> Result<T, ReplayCacheError>,
+) -> Result<CursoredOutcome<T>, ReplayCacheError> {
     let target_position = index
         .hours
         .binary_search_by_key(&hour_index, ReplayHourEntry::hour_index)
@@ -2908,7 +3094,8 @@ fn reconstruct_json_cursored(
             held.position,
         ),
         None => {
-            let (kind, checkpoint_hour, payload) = cache_record(cache, checkpoint)?;
+            let (kind, checkpoint_hour, payload) =
+                cache_record_authenticated(cache, checkpoint)?;
             if kind != RECORD_CHECKPOINT || checkpoint_hour != checkpoint.hour_index {
                 return Err(ReplayCacheError::new(
                     "checkpoint index points at a non-checkpoint cache record",
@@ -2941,12 +3128,12 @@ fn reconstruct_json_cursored(
                 budget,
                 names,
             });
-            return Ok(ScrubOutcome::Abandoned {
+            return Ok(CursoredOutcome::Abandoned {
                 reached_hour: index.hours[position].hour_index,
                 walked_deltas: walked,
             });
         }
-        let (kind, record_hour, payload) = cache_record(cache, entry)?;
+        let (kind, record_hour, payload) = cache_record_authenticated(cache, entry)?;
         if kind != RECORD_DELTA || record_hour != entry.hour_index {
             return Err(ReplayCacheError::new(
                 "delta index points at an invalid cache record",
@@ -2959,13 +3146,7 @@ fn reconstruct_json_cursored(
         position += 1;
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
-    let json = value.to_json_bytes();
-    if Sha256::hex(&json) != target.world_json_sha256 {
-        return Err(ReplayCacheError::new(format!(
-            "reconstructed hour {} does not byte-match replay_decoder parity hash",
-            target.hour_index
-        )));
-    }
+    let produced = finish(&value, target)?;
     let receipt = ReplaySeekReceipt {
         checkpoint_hour: checkpoint.hour_index,
         target_hour: target.hour_index,
@@ -2986,7 +3167,113 @@ fn reconstruct_json_cursored(
         budget,
         names,
     });
-    Ok(ScrubOutcome::Reconstructed { json, receipt })
+    Ok(CursoredOutcome::Produced { produced, receipt })
+}
+
+/// The same record, proved to be the bytes the seal wrote — every time a reader
+/// that cannot re-check the world reads it from a backing that can change.
+///
+/// WHAT THIS CLOSES. [`admit_cache`] hashes every record once, when the reader
+/// is opened. For a resident cache that is forever: the bytes are owned and
+/// nothing can rewrite them. For a cache left ON DISK it is a statement about a
+/// moment — the file can be rewritten in place, at the same length, and every
+/// later read returns the new bytes. The old draw path noticed anyway, because
+/// it re-hashed the whole reconstructed world against the index's per-hour
+/// parity digest on every single draw. [`CertifiedReplayCache::reconstruct_value`]
+/// does not, so the check moves here.
+///
+/// EVERY READ, NOT ONCE PER RECORD, and that distinction is the whole
+/// correctness of it. A first cut remembered which records it had already
+/// proved and skipped the digest on later reads. That is wrong for exactly the
+/// case it exists for: authenticate checkpoint A, seek away to another window,
+/// let the file be rewritten in place, seek back — the record is "already
+/// proved", the digest is skipped, and the altered world is served (Codex
+/// implementation review, round 2 finding 1, BLOCKING). Remembering a proof
+/// about bytes that can change is not a proof.
+///
+/// EVERY ROUTE, TOO. A second cut authenticated only on the value route, on the
+/// argument that the byte route re-derives the world's own digest and so needs
+/// no record digest. It does need one, because the two routes SHARE a cursor: a
+/// byte-route walk that the stop switch abandons part-way stores its running
+/// value in that cursor WITHOUT reaching its world digest, and the value route
+/// then resumes it and serves a world no digest ever saw (Codex round 3
+/// finding 1, BLOCKING). A record read into shared state is authenticated by
+/// whoever reads it, not by whoever eventually finishes.
+///
+/// It is still once per RECORD READ and not once per DRAW, which is the whole
+/// difference in cost: a forward step reads one new delta record (2.1 MB on
+/// capture t53, about 1.5 ms to hash) instead of spelling and hashing a 14 MB
+/// world.
+///
+/// The header is parsed from THE SAME BYTES that were hashed — one read, one
+/// digest, one header — so a record cannot be authenticated in one version of
+/// the file and interpreted in another.
+///
+/// kills: making this a no-op for a mutable backing, or hashing only the
+/// payload rather than the header-and-payload window the index published a
+/// digest for, or restoring a per-route or per-record exemption.
+/// `a_rewritten_cache_file_is_refused_even_after_it_was_served`,
+/// `a_rewritten_record_header_is_refused_as_well` and
+/// `an_abandoned_walk_never_leaves_unauthenticated_state_behind` assert those.
+fn cache_record_authenticated<'a>(
+    cache: &'a dyn CacheRecords,
+    entry: &ReplayHourEntry,
+) -> Result<(u8, i64, Cow<'a, [u8]>), ReplayCacheError> {
+    if !cache.records_may_change() {
+        return cache_record(cache, entry);
+    }
+    if entry.cache_record_len > MAX_CACHE_RECORD_BYTES {
+        return Err(ReplayCacheError::new(format!(
+            "cache record length {} exceeds the {MAX_CACHE_RECORD_BYTES}-byte per-record reader bound",
+            entry.cache_record_len
+        )));
+    }
+    let whole = cache.record(entry.cache_record_offset, entry.cache_record_len)?;
+    if Sha256::hex(whole.as_ref()) != entry.cache_record_sha256 {
+        return Err(ReplayCacheError::new(format!(
+            "the cache record for game hour {} no longer hashes to the digest this recording's              index published, so the file changed after this reader authenticated it",
+            entry.hour_index
+        )));
+    }
+    let header_len = usize::try_from(RECORD_HEADER_LEN)
+        .map_err(|_| ReplayCacheError::new("cache record header length does not fit usize"))?;
+    let (kind, hour, payload_len) = parse_record_header(
+        whole
+            .as_ref()
+            .get(..header_len)
+            .ok_or_else(|| ReplayCacheError::new("cache record is shorter than its header"))?,
+    )?;
+    if payload_len.checked_add(RECORD_HEADER_LEN) != Some(entry.cache_record_len) {
+        return Err(ReplayCacheError::new(format!(
+            "cache record declares a {payload_len}-byte payload but the index published a {}-byte record",
+            entry.cache_record_len
+        )));
+    }
+    let payload = match whole {
+        Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[header_len..]),
+        Cow::Owned(mut bytes) => Cow::Owned(bytes.split_off(header_len)),
+    };
+    Ok((kind, hour, payload))
+}
+
+/// The 21-byte record header, decoded and structurally checked.
+fn parse_record_header(header: &[u8]) -> Result<(u8, i64, u64), ReplayCacheError> {
+    let mut reader = ByteReader::new(header);
+    let kind = reader.u8()?;
+    if reader.take(3)? != [0, 0, 0] {
+        return Err(ReplayCacheError::new(
+            "cache record reserved bytes are nonzero",
+        ));
+    }
+    let hour = reader.i64()?;
+    let payload_len = reader.u64()?;
+    if reader.u8()? != 0 {
+        return Err(ReplayCacheError::new(
+            "cache record trailing reserved byte is nonzero",
+        ));
+    }
+    reader.finish()?;
+    Ok((kind, hour, payload_len))
 }
 
 /// Read one indexed record's kind, hour and payload.
@@ -3007,21 +3294,7 @@ fn cache_record<'a>(
         )));
     }
     let header = cache.record(entry.cache_record_offset, RECORD_HEADER_LEN)?;
-    let mut reader = ByteReader::new(header.as_ref());
-    let kind = reader.u8()?;
-    if reader.take(3)? != [0, 0, 0] {
-        return Err(ReplayCacheError::new(
-            "cache record reserved bytes are nonzero",
-        ));
-    }
-    let hour = reader.i64()?;
-    let payload_len = reader.u64()?;
-    if reader.u8()? != 0 {
-        return Err(ReplayCacheError::new(
-            "cache record trailing reserved byte is nonzero",
-        ));
-    }
-    reader.finish()?;
+    let (kind, hour, payload_len) = parse_record_header(header.as_ref())?;
     if payload_len.checked_add(RECORD_HEADER_LEN) != Some(entry.cache_record_len) {
         return Err(ReplayCacheError::new(format!(
             "cache record declares a {payload_len}-byte payload but the index published a {}-byte record",
@@ -7029,6 +7302,251 @@ mod tests {
         }
     }
 
+    /// THE EQUALITY THE DRAW PATH STANDS ON, now that it no longer re-derives
+    /// the parity digest: the world `reconstruct_value` serves must be the
+    /// world the digest-checked byte route serves, for every hour, in every
+    /// request order a scrub produces.
+    ///
+    /// The byte route is the one that hashes; an hour that agrees with it
+    /// agrees with the digest `replay_decoder` sealed. Forward, backward,
+    /// same-hour and scattered orders are all here because the cursor's resume
+    /// condition behaves differently in each, and the value route is the one
+    /// that would no longer notice if a resume were wrong.
+    ///
+    /// kills: relaxing `reconstruct_cursored`'s resume condition in either
+    /// direction; the value route reading a different record than the byte
+    /// route; `canon_to_json::to_value` diverging from
+    /// `parse_json_strict(to_json_bytes())`.
+    #[test]
+    fn the_cursored_value_route_equals_the_cold_text_route() {
+        let (cache, index, source_sha) = scrub_fixture(240, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 240 * 100;
+        let bytes_route =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+        let value_route =
+            CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+        let descending: Vec<i64> = hours.iter().rev().copied().collect();
+        let scattered: Vec<i64> = (0..hours.len())
+            .map(|step| hours[(step * 97) % hours.len()])
+            .collect();
+        let repeated: Vec<i64> = hours.iter().take(4).flat_map(|h| [*h, *h, *h]).collect();
+        let mut resumed = 0usize;
+        for order in [&hours, &descending, &scattered, &repeated] {
+            for hour in order.iter() {
+                // The byte route is asked COLD, so it rebuilds from the
+                // checkpoint and hashes: it is the independent authority here,
+                // not a second copy of the same walk.
+                bytes_route.forget_scrub_cursor();
+                let (json, _) = bytes_route.reconstruct_json(*hour).unwrap();
+                let want = crate::parse_json_strict(&json).unwrap();
+                let (got, receipt) = value_route.reconstruct_value(*hour).unwrap();
+                if receipt.walked_deltas < receipt.applied_deltas {
+                    resumed += 1;
+                }
+                assert_eq!(got, want, "hour {hour} differs between the two routes");
+            }
+        }
+        assert!(
+            resumed > hours.len(),
+            "only {resumed} lookups resumed a cursor; the equality above would hold with the              cursor deleted, so this test must see it working"
+        );
+    }
+
+    /// A cache file rewritten UNDER THE OPEN HANDLE, in place and at the same
+    /// length, must be refused — by name, at the record that changed — and it
+    /// must be refused whether or not this reader had already read that record.
+    ///
+    /// This is what the per-draw world digest used to catch and what open-time
+    /// admission cannot: admission hashed the file at one moment, and every
+    /// record read afterwards trusts that moment. `reconstruct_value` does not
+    /// re-hash the world, so it authenticates every record it reads from a
+    /// backing whose bytes can change.
+    ///
+    /// The SECOND half — rewriting a record this reader has ALREADY served and
+    /// asking for it again — is the case a "remember what we proved" cache gets
+    /// wrong, and it is the one that matters: the interesting attack is on the
+    /// hour the viewer keeps coming back to, not on one it has never opened.
+    ///
+    /// kills: deleting the digest comparison in `cache_record_authenticated`;
+    /// passing `false` for `authenticate` on the value route; caching the
+    /// verdict per record and skipping the digest on a later read.
+    #[test]
+    fn a_rewritten_cache_file_is_refused_even_after_it_was_served() {
+        let hours: Vec<(i64, &str)> = (0..8)
+            .map(|hour| {
+                (
+                    hour,
+                    if hour % 2 == 0 {
+                        r#"{"rows":[1,2]}"#
+                    } else {
+                        r#"{"rows":[1,3]}"#
+                    },
+                )
+            })
+            .collect();
+        let (cache, index, source_sha) = build(16, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 800;
+        let scratch = TempCacheFile::write("rewrite", &cache);
+        let reader =
+            CertifiedReplayCache::open_file(&index_bytes, scratch.open(), source_len, &source_sha)
+                .unwrap();
+
+        // Every hour serves, so every record has been read once and any
+        // "already proved" bookkeeping is now fully warmed.
+        for (hour, _) in &hours {
+            reader.reconstruct_value(*hour).unwrap();
+        }
+
+        // Rewrite one byte of an ALREADY-READ record's payload, in place,
+        // keeping the file exactly as long as the one admission hashed.
+        let victim = index.hours()[5].clone();
+        let offset = victim.cache_record_offset() + RECORD_HEADER_LEN;
+        let mut rewritten = cache.clone();
+        rewritten[offset as usize] ^= 0xff;
+        assert_eq!(rewritten.len(), cache.len(), "the rewrite must not resize");
+        std::fs::write(&scratch.0, &rewritten).expect("rewrite the scratch cache");
+
+        // Force the walk to read that record again rather than resume past it.
+        reader.forget_scrub_cursor();
+        let refusal = reader
+            .reconstruct_value(hours[5].0)
+            .expect_err("a rewritten record must not be walked")
+            .to_string();
+        assert!(
+            refusal.contains("no longer hashes to the digest"),
+            "refusal must name what changed: {refusal}"
+        );
+        // And an hour whose records were NOT rewritten still serves, so the
+        // refusal is confined to the damage rather than closing the recording.
+        reader.forget_scrub_cursor();
+        reader.reconstruct_value(hours[0].0).unwrap();
+    }
+
+    /// The digest covers the record HEADER as well as its payload, so a rewrite
+    /// that only touches the header is refused too.
+    ///
+    /// kills: hashing `payload` instead of the whole
+    /// `[cache_record_offset, +cache_record_len)` window.
+    #[test]
+    fn a_rewritten_record_header_is_refused_as_well() {
+        let hours: Vec<(i64, &str)> = (0..4).map(|hour| (hour, r#"{"rows":[1,2]}"#)).collect();
+        let (cache, index, source_sha) = build(16, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        let scratch = TempCacheFile::write("rewrite-header", &cache);
+        let reader =
+            CertifiedReplayCache::open_file(&index_bytes, scratch.open(), 400, &source_sha).unwrap();
+        reader.reconstruct_value(2).unwrap();
+
+        // Byte 1 of the header is a reserved zero: flipping it changes the
+        // record without changing its length or its payload.
+        let offset = index.hours()[2].cache_record_offset() + 1;
+        let mut rewritten = cache.clone();
+        rewritten[offset as usize] ^= 0x01;
+        std::fs::write(&scratch.0, &rewritten).expect("rewrite the scratch cache");
+
+        reader.forget_scrub_cursor();
+        let refusal = reader
+            .reconstruct_value(2)
+            .expect_err("a rewritten header must not be walked")
+            .to_string();
+        assert!(
+            refusal.contains("no longer hashes to the digest"),
+            "refusal must name what changed: {refusal}"
+        );
+    }
+
+    /// A walk the stop switch ABANDONS must not leave state behind that no
+    /// digest ever saw — whichever route was walking.
+    ///
+    /// The two routes share one cursor. The byte route re-derives the world's
+    /// own digest at the END of a walk, so an abandoned byte-route walk reaches
+    /// no digest at all; if its records were read unauthenticated, the value
+    /// route could resume that state and serve a world nothing ever checked.
+    /// Authenticating on read rather than on completion is what closes it, and
+    /// this is the sequence that would prove it open.
+    ///
+    /// kills: exempting the byte route from `cache_record_authenticated`, or
+    /// moving the record digest from the read to the end of a walk.
+    #[test]
+    fn an_abandoned_walk_never_leaves_unauthenticated_state_behind() {
+        let hours: Vec<(i64, &str)> = (0..12)
+            .map(|hour| {
+                (
+                    hour,
+                    if hour % 2 == 0 {
+                        r#"{"rows":[1,2]}"#
+                    } else {
+                        r#"{"rows":[1,3]}"#
+                    },
+                )
+            })
+            .collect();
+        let (cache, index, source_sha) = build(16, &hours);
+        let index_bytes = index.to_bytes().unwrap();
+        let scratch = TempCacheFile::write("abandon", &cache);
+        let reader =
+            CertifiedReplayCache::open_file(&index_bytes, scratch.open(), 1200, &source_sha)
+                .unwrap();
+
+        // Rewrite one delta record in place, at the same length.
+        let offset = index.hours()[4].cache_record_offset() + RECORD_HEADER_LEN;
+        let mut rewritten = cache.clone();
+        rewritten[offset as usize] ^= 0xff;
+        std::fs::write(&scratch.0, &rewritten).expect("rewrite the scratch cache");
+
+        // A BYTE-route walk towards a later hour, told to stop after it has had
+        // the chance to read the rewritten record. It must refuse rather than
+        // park a running value built from bytes it never checked.
+        reader.forget_scrub_cursor();
+        let allowed = std::cell::Cell::new(8u32);
+        let outcome = reader.reconstruct_json_interruptible(hours[10].0, &|| {
+            let go = allowed.get() > 0;
+            allowed.set(allowed.get().saturating_sub(1));
+            go
+        });
+        let refusal = outcome
+            .expect_err("a rewritten record must not be walked, abandoned or not")
+            .to_string();
+        assert!(
+            refusal.contains("no longer hashes to the digest"),
+            "the byte route must refuse the record, not park it: {refusal}"
+        );
+
+        // And the value route, asked for any hour whose walk passes that
+        // record, refuses too rather than resuming leftover state.
+        let resumed = reader
+            .reconstruct_value(hours[10].0)
+            .expect_err("the value route must not resume unauthenticated state")
+            .to_string();
+        assert!(
+            resumed.contains("no longer hashes to the digest"),
+            "the value route must refuse for the same reason: {resumed}"
+        );
+    }
+
+    /// The other half of the same rule: a RESIDENT cache is owned bytes, so it
+    /// pays no per-record re-hash at all. Without this the "once per record"
+    /// claim would quietly become "once per record, twice for every reader that
+    /// could not have needed it".
+    ///
+    /// kills: making `records_may_change` return `true` unconditionally.
+    #[test]
+    fn a_resident_cache_re_authenticates_nothing() {
+        let hours: Vec<(i64, &str)> = (0..4).map(|hour| (hour, r#"{"rows":[1,2]}"#)).collect();
+        let (cache, index, source_sha) = build(16, &hours);
+        assert!(!SliceCache(&cache).records_may_change());
+        let index_bytes = index.to_bytes().unwrap();
+        let reader = CertifiedReplayCache::open(&index_bytes, cache, 400, &source_sha).unwrap();
+        for (hour, _) in &hours {
+            reader.reconstruct_value(*hour).unwrap();
+        }
+    }
+
     /// The whole point of the file backing: identical answers, no residency.
     ///
     /// Production change that would make this fail: any divergence between the
@@ -7255,6 +7773,10 @@ mod tests {
     }
 
     impl CacheRecords for CountingCache<'_> {
+        fn records_may_change(&self) -> bool {
+            false
+        }
+
         fn read_all(&self, sink: &mut dyn Write) -> Result<(), ReplayCacheError> {
             self.inner.read_all(sink)
         }

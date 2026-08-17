@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 pub mod canon;
+pub mod canon_to_json;
 pub mod canon_value;
 pub mod container;
 pub mod design_catalog;
@@ -67,7 +68,7 @@ pub use replay_cache::{
     CacheTruncation, CanonicalWorldHour, ConfinedHour,
     validate_checkpoint_cache_header, CertifiedCacheFile, CertifiedReplayCache, ReplayCacheEncoder,
     ReplayCacheError, ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex,
-    ReplaySeekReceipt, ScrubOutcome,
+    FrameOutcome, ReplaySeekReceipt, ScrubOutcome,
     CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
     MAX_CHECKPOINT_INTERVAL_HOURS, PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,
@@ -78,6 +79,7 @@ pub use stream_verify::{
     verify_replay_container_streaming_file_at_path_with_policy, StreamEntryPolicy,
     StreamVerifyReport,
 };
+pub use canon_to_json::{to_value as canon_to_value, CanonToValueError};
 pub use strict_json::from_slice as parse_json_strict;
 
 /// Strictly build one JSON tree, rejecting duplicate members recursively, then
@@ -212,6 +214,58 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The same body `serde_json::from_value::<Snapshot>(world)` builds, taken
+    /// from an owned world tree WITHOUT serde's flatten buffering.
+    ///
+    /// WHY THIS EXISTS. `rest` is `#[serde(flatten)]`, and serde implements
+    /// flatten by buffering every member it did not recognise through its
+    /// `Content` intermediate and rebuilding the map from it — a whole extra
+    /// copy of the entire world per call, which on capture t53 is 31.6 MB of
+    /// document per drawn game hour. The five header fields are simply five
+    /// members of the root object; taking them out by name and keeping the rest
+    /// is the same answer for the cost of five map removals.
+    ///
+    /// It is the SAME answer, not a similar one:
+    /// `the_direct_body_matches_serde_flatten` builds both ways over documents
+    /// covering every shape each field admits (absent, null, present, and the
+    /// wrong type) and requires them to agree, refusal included.
+    pub fn from_world_value(world: Value) -> Result<Snapshot, String> {
+        let Value::Object(mut root) = world else {
+            return Err("a world body is a JSON object".to_string());
+        };
+        fn text(root: &mut Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+            match root.remove(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) => Ok(Some(text)),
+                Some(_) => Err(format!("world member {key} is not a string")),
+            }
+        }
+        let game_id = text(&mut root, "game_id")?;
+        let date = text(&mut root, "date")?;
+        let save_version = text(&mut root, "save_version")?;
+        let hour_index = match root.remove("hour_index") {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(number)) => Some(
+                number
+                    .as_i64()
+                    .ok_or_else(|| "world member hour_index is not an integer".to_string())?,
+            ),
+            Some(_) => return Err("world member hour_index is not an integer".to_string()),
+        };
+        let schema_version = match root.remove("schema_version") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value),
+        };
+        Ok(Snapshot {
+            game_id,
+            date,
+            hour_index,
+            save_version,
+            schema_version,
+            rest: root,
+        })
+    }
+
     pub fn domain(&self, key: &str) -> Option<&Value> {
         self.rest.get(key)
     }
@@ -829,6 +883,63 @@ impl Store {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// [`Snapshot::from_world_value`] must be the same deserialization serde
+    /// performs, on every shape each header field admits — including the ones
+    /// that must be REFUSED, since a hand-written extractor that quietly
+    /// accepted `"hour_index": 1.5` would let a malformed body through the door
+    /// serde closes.
+    ///
+    /// kills: dropping the `Some(_) => Err(...)` arm of either extractor (the
+    /// wrong-type rows below start passing where serde refuses); treating an
+    /// explicit `null` as a present value (the null rows diverge); forgetting
+    /// to REMOVE a header field from the root (it would appear in `rest`,
+    /// where serde's flatten never puts it).
+    #[test]
+    fn the_direct_body_matches_serde_flatten() {
+        for document in [
+            r#"{}"#,
+            r#"{"game_id":"g","date":"1936.1.1.1","hour_index":17032314,"save_version":"1.19","schema_version":"3","countries":{"GER":{"n":1}}}"#,
+            r#"{"game_id":null,"date":null,"hour_index":null,"save_version":null,"schema_version":null,"states":[1,2]}"#,
+            r#"{"schema_version":{"world":4},"hour_index":-1}"#,
+            r#"{"hour_index":9223372036854775807}"#,
+            // Refused by serde, and so refused here.
+            r#"{"hour_index":1.5}"#,
+            r#"{"hour_index":9223372036854775808}"#,
+            r#"{"hour_index":"12"}"#,
+            r#"{"date":12}"#,
+            r#"{"game_id":[]}"#,
+            r#"{"save_version":{}}"#,
+            r#"[1,2,3]"#,
+        ] {
+            let value: Value = serde_json::from_str(document).expect("fixture parses");
+            let serde_body: Result<Snapshot, _> = serde_json::from_value(value.clone());
+            let direct = Snapshot::from_world_value(value);
+            match (serde_body, direct) {
+                (Ok(want), Ok(got)) => {
+                    assert_eq!(want.game_id, got.game_id, "{document}: game_id");
+                    assert_eq!(want.date, got.date, "{document}: date");
+                    assert_eq!(want.hour_index, got.hour_index, "{document}: hour_index");
+                    assert_eq!(
+                        want.save_version, got.save_version,
+                        "{document}: save_version"
+                    );
+                    assert_eq!(
+                        want.schema_version, got.schema_version,
+                        "{document}: schema_version"
+                    );
+                    assert_eq!(want.rest, got.rest, "{document}: rest");
+                }
+                (Err(_), Err(_)) => {}
+                (want, got) => panic!(
+                    "{document}: serde and the direct body disagree about acceptance: \
+                     serde ok={} direct ok={}",
+                    want.is_ok(),
+                    got.is_ok()
+                ),
+            }
+        }
+    }
 
     fn temp_root(tag: &str) -> PathBuf {
         let mut path = std::env::temp_dir();

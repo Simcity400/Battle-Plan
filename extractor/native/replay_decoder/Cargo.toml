@@ -52,6 +52,14 @@ hr-truncated-prefix = []
 # under that crate's `src/`, instrument or not. Measurement only: it writes
 # nothing and no production path enables it.
 mc-scrub-bench = []
+# Lane MN per-stage frame-cost instrument (`src/bin/mn_frame_cost.rs`). Prices
+# each stage the viewer pays to put one hour on screen -- walk, serialize,
+# digest, strict parse, flatten deserialize -- separately, on a real
+# index/cache pair, so the round trip the owner ruled against is aimed at
+# rather than estimated. Same acquisition-side placement and the same reason as
+# `mc-scrub-bench`. Measurement only: it writes nothing and no production path
+# enables it.
+mn-frame-cost = []
 
 [dependencies]
 # Instrument-only; pulled in solely by the Lane DQ prototype feature.
@@ -87,6 +95,11 @@ required-features = ["hr-truncated-prefix"]
 name = "mc_scrub_bench"
 path = "src/bin/mc_scrub_bench.rs"
 required-features = ["mc-scrub-bench"]
+
+[[bin]]
+name = "mn_frame_cost"
+path = "src/bin/mn_frame_cost.rs"
+required-features = ["mn-frame-cost"]
 
 # `src/bin/replay_prefold_worker.rs` is deliberately NOT a `[[bin]]` target and
 # `autobins = false` keeps it from becoming one. It is PRODUCTION SOURCE: the
