@@ -1,13 +1,16 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::adapter::{
-    build_lane_frame_from_adapter_input_ref, AdapterBuildStats, AdapterInput, AdapterInputRef,
-    AdvisorRoot, CharacterPortraitInput, CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot,
-    TraitDefinitionRoot, UnitLeaderRoot,
+    build_lane_frame_from_adapter_input_ref, build_lane_frame_reusing_walk, AdapterBuildStats,
+    AdapterInput, AdapterInputRef, AdvisorRoot, CachedWalk, CharacterPortraitInput,
+    CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot, TraitDefinitionRoot,
+    UnitLeaderRoot, CACHEABLE_WALK_FAMILIES,
 };
 use crate::domain47_characters_leaders_cabinet_live as compact;
 use crate::extractor::{
-    encode_frame_payload, LaneFrame, LaneMemory, ResolvedTypeRoots, DOMAIN_ID, DOMAIN_NAME,
+    encode_frame_payload, encode_frame_payload_over, LaneFrame, LaneMemory, ResolvedTypeRoots,
+    DOMAIN_ID, DOMAIN_NAME,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,6 +237,111 @@ pub struct NativeScheduledObservation {
     /// alternative sweeps in the bracket close — and on the composed path the
     /// seam is a function call.
     observe: Duration,
+    /// Lane MT: the adopting frame's walk this frame reused for the families
+    /// `cached.families` names (their vectors in `frame` are empty). Shared,
+    /// immutable, decided before the bracket closed - the compute half only
+    /// reads it. `None` on a frame that walked every family itself.
+    cached: Option<Arc<CachedWalk>>,
+}
+
+impl NativeScheduledObservation {
+    /// Lane MT: turn THIS (adopting) observation's walk output into the
+    /// [`CachedWalk`] later reused frames take, for `families` (a subset of
+    /// [`CACHEABLE_WALK_FAMILIES`] the collector proved witnessed), and make
+    /// this observation the first to encode over it. Returns `None` - and
+    /// changes nothing - when the walk is not reusable: it rejected or
+    /// degraded a row, it built no rows (rowless outcome), it itself reused a
+    /// cache, or `families` is empty.
+    ///
+    /// NOTHING IS CLONED (Codex 01a00f20 finding 2): the cached families'
+    /// rows are MOVED out of `frame` into the cache (the frame's vectors for
+    /// them are left empty, exactly the shape a reused frame has, and the
+    /// encoder reads them back from the cache), the portrait rows are
+    /// partitioned by key (cached keys' admissions move into the cache in
+    /// their input order; the rest stay as this frame's extras), and the two
+    /// indexes are sorted vectors. What remains is one sort of ~25k keys.
+    pub fn adopt_cached_walk(&mut self, families: u32) -> Option<Arc<CachedWalk>> {
+        let families = families & CACHEABLE_WALK_FAMILIES;
+        // Unit leaders and their traits are one loop: both bits or neither.
+        let leader_pair = compact::FAMILY_UNIT_LEADER | compact::FAMILY_UNIT_LEADER_TRAIT;
+        let families = if families & leader_pair == leader_pair {
+            families
+        } else {
+            families & !leader_pair
+        };
+        if families == 0
+            || self.cached.is_some()
+            || self.stats.has_rejections()
+            || self.stats.identity_degraded_rows != 0
+            || (self.frame.characters.is_empty()
+                && self.frame.advisor_roster.is_empty()
+                && self.frame.country_leader_roles.is_empty()
+                && self.frame.unit_leaders.is_empty())
+        {
+            return None;
+        }
+        let mut cached = CachedWalk {
+            families,
+            stats: self.stats.clone(),
+            ..CachedWalk::default()
+        };
+        let mut known_keys: Vec<(u32, u32)> = Vec::new();
+        if families & compact::FAMILY_CHARACTER != 0 {
+            cached.characters = std::mem::take(&mut self.frame.characters);
+            cached.character_identity = cached
+                .characters
+                .iter()
+                .enumerate()
+                .map(|(index, row)| ((row.country_tag_db_id, row.char_id), index as u32))
+                .collect();
+            cached.character_identity.sort_unstable_by_key(|(key, _)| *key);
+            known_keys.extend(cached.character_identity.iter().map(|(key, _)| *key));
+        }
+        if families & compact::FAMILY_UNIT_LEADER != 0 {
+            cached.unit_leaders = std::mem::take(&mut self.frame.unit_leaders);
+            cached.unit_leader_traits = std::mem::take(&mut self.frame.unit_leader_traits);
+            known_keys.extend(cached.unit_leaders.iter().map(|r| (r.country_tag_db_id, r.char_id)));
+        }
+        if families & compact::FAMILY_COUNTRY_LEADER_ROLE != 0 {
+            cached.country_leader_roles = std::mem::take(&mut self.frame.country_leader_roles);
+            known_keys.extend(cached.country_leader_roles.iter().map(|r| (r.country_tag_db_id, r.char_id)));
+        }
+        if families & compact::FAMILY_ADVISOR_ROSTER != 0 {
+            cached.advisor_roster = std::mem::take(&mut self.frame.advisor_roster);
+            known_keys.extend(cached.advisor_roster.iter().map(|r| (r.country_tag_db_id, r.char_id)));
+        }
+        known_keys.sort_unstable();
+        known_keys.dedup();
+        cached.known_keys = known_keys;
+        // Portraits. The cache holds the cached keys' admissions in input
+        // order. When EVERY admitted portrait has a cached key (the common
+        // case) they MOVE into the cache and this frame encodes them from
+        // there; otherwise the frame keeps its whole family (input order on
+        // the wire, Codex 01a00f20 round 2) and the cache takes a clone of the
+        // cached-key subset for the reused frames after it.
+        let cached_key = |p: &crate::extractor::CharacterPortraitRecord| {
+            cached.knows(&(p.country_tag_db_id, p.char_id))
+        };
+        if self.frame.character_portraits.iter().all(cached_key) {
+            cached.character_portraits = std::mem::take(&mut self.frame.character_portraits);
+        } else {
+            cached.character_portraits = self
+                .frame
+                .character_portraits
+                .iter()
+                .filter(|p| cached_key(p))
+                .cloned()
+                .collect();
+        }
+        let cached = Arc::new(cached);
+        self.cached = Some(cached.clone());
+        Some(cached)
+    }
+
+    /// Which families this observation took from a cached walk (0 = none).
+    pub fn reused_walk_families(&self) -> u32 {
+        self.cached.as_ref().map_or(0, |c| c.families)
+    }
 }
 
 /// PHASE 1 — the only half that reads the engine.
@@ -247,12 +355,26 @@ pub fn observe_native_scheduled_frame<M: LaneMemory>(
     cache: &NativeRootCache,
     frame_input: NativeFrameInput,
 ) -> NativeScheduledObservation {
+    observe_native_scheduled_frame_reusing(mem, cache, frame_input, None)
+}
+
+/// [`observe_native_scheduled_frame`] for a frame that REPLAYED the discovery
+/// witness and may take `cached`'s families from the adopting frame's walk
+/// (lane MT). `None` is the plain call.
+pub fn observe_native_scheduled_frame_reusing<M: LaneMemory>(
+    mem: &M,
+    cache: &NativeRootCache,
+    frame_input: NativeFrameInput,
+    cached: Option<Arc<CachedWalk>>,
+) -> NativeScheduledObservation {
     let started = Instant::now();
-    let (frame, stats) = observe_native_scheduled_parts(mem, cache, frame_input);
+    let (frame, stats, cached) =
+        observe_native_scheduled_parts(mem, cache, frame_input, cached);
     NativeScheduledObservation {
         frame,
         stats,
         observe: started.elapsed(),
+        cached,
     }
 }
 
@@ -276,9 +398,10 @@ pub fn finish_native_scheduled_read(
         frame,
         stats,
         observe,
+        cached,
     } = observation;
     let compute_started = Instant::now();
-    let payload = encode_frame_payload(&frame);
+    let payload = encode_frame_payload_over(&frame, cached.as_deref());
     let gate = compact::decode_payload(0, &payload);
     // THE SUM OF TWO MEASURED HALVES, not one span across the bracket close.
     // See [`NativeScheduledObservation::observe`] for what a single span would
@@ -326,7 +449,8 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
     mem: &M,
     cache: &NativeRootCache,
     frame_input: NativeFrameInput,
-) -> (LaneFrame, AdapterBuildStats) {
+    cached: Option<Arc<CachedWalk>>,
+) -> (LaneFrame, AdapterBuildStats, Option<Arc<CachedWalk>>) {
     if cache.has_stable_roots()
         && rowless_outcome_is_already_decided(cache, &frame_input)
     {
@@ -339,6 +463,7 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
         (
             rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
             AdapterBuildStats::default(),
+            None,
         )
     } else if cache.has_stable_roots() {
         // BORROW the cached roots instead of deep-cloning them into an owned
@@ -349,11 +474,15 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
         // owned value for the fixture/benchmark entry points; both forms feed
         // the identical builder over the identical data.
         let adapter_input = adapter_input_ref_from_cache(cache, &frame_input);
-        let mut adapter_result = build_lane_frame_from_adapter_input_ref(
-            mem,
-            &cache.roots.expect("checked by has_stable_roots"),
-            &adapter_input,
-        );
+        let roots = &cache.roots.expect("checked by has_stable_roots");
+        // Lane MT: a cached walk serving NO family is no cache at all.
+        let cached = cached.filter(|c| c.families != 0);
+        let mut adapter_result = match cached.as_deref() {
+            Some(cached_walk) => {
+                build_lane_frame_reusing_walk(mem, roots, &adapter_input, cached_walk)
+            }
+            None => build_lane_frame_from_adapter_input_ref(mem, roots, &adapter_input),
+        };
         // The frame can only have observed what the roots that fed it did. The
         // adapter builds every family it is given input for and cannot tell an
         // empty family from an unobserved one — that distinction lives in the
@@ -414,14 +543,17 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
             frame.status_flags = adapter_input.status_flags
                 | compact::STATUS_SOURCE_UNAVAILABLE
                 | compact::STATUS_PARTIAL_DATA;
-            (frame, adapter_result.stats)
+            // The rowless frame carries NO cached families either: a
+            // rejection replaces every row, cached ones included.
+            (frame, adapter_result.stats, None)
         } else {
-            (adapter_result.frame, adapter_result.stats)
+            (adapter_result.frame, adapter_result.stats, cached)
         }
     } else {
         (
             rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
             AdapterBuildStats::default(),
+            None,
         )
     }
 }
@@ -513,7 +645,7 @@ mod tests {
     const ADVISOR_VT: u64 = 0x1000_5000;
     const TRAIT_VT: u64 = 0x1000_6000;
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct FakeMemory {
         bytes: BTreeMap<u64, u8>,
     }
@@ -1227,6 +1359,165 @@ mod tests {
     /// production performs on that path. The payload, the status word and the
     /// row count — everything that reaches the wire — are compared on both
     /// arms.
+    /// Lane MT: a frame that takes the cacheable families from the adopting
+    /// frame's walk publishes the SAME payload as a frame that walks them,
+    /// row for row and byte for byte, over the fixture memory (which does not
+    /// change between the two, exactly as a validated witness proves for the
+    /// engine); its stats agree on every counted field; and the reuse is
+    /// visible in `reused_walk_families`.
+    ///
+    /// kills: a cached family the reused walk ALSO walked (double rows), a
+    /// stats field not copied from the cache, portraits admitted twice or not
+    /// at all, appointed advisors computed over an empty roster, the ruler
+    /// backfill missing the cached identity index.
+    #[test]
+    fn reused_walk_matches_full_walk() {
+        let (mem, cache, frame_input) = borrowed_input_fixture();
+        let mut input = frame_input;
+        input.skipped_input_rows = 0;
+        let input_again = input.clone();
+        let plain = observe_native_scheduled_frame(&mem, &cache, input.clone());
+        assert_eq!(plain.reused_walk_families(), 0);
+        let plain_read = finish_native_scheduled_read(plain.clone());
+        // The adopting frame's walk, cached for every cacheable family (the
+        // collector decides the mask from the witness; here it is total). The
+        // adopting observation itself now encodes over the cache ...
+        let mut full = plain.clone();
+        let cached = full
+            .adopt_cached_walk(CACHEABLE_WALK_FAMILIES)
+            .expect("the fixture walk is clean, so it caches");
+        assert_eq!(cached.families, CACHEABLE_WALK_FAMILIES);
+        assert!(!cached.characters.is_empty(), "fixture has characters");
+        assert!(full.frame.characters.is_empty(), "moved, not cloned");
+        assert_eq!(full.reused_walk_families(), CACHEABLE_WALK_FAMILIES);
+        // ... and publishes the plain walk's payload byte for byte.
+        assert_eq!(finish_native_scheduled_read(full.clone()).payload, plain_read.payload);
+        let reused = observe_native_scheduled_frame_reusing(&mem, &cache, input, Some(cached.clone()));
+        assert_eq!(reused.reused_walk_families(), CACHEABLE_WALK_FAMILIES);
+        // The reused frame's own vectors for the cached families are empty ...
+        assert!(reused.frame.characters.is_empty());
+        assert!(reused.frame.advisor_roster.is_empty());
+        assert!(reused.frame.country_leader_roles.is_empty());
+        assert!(reused.frame.unit_leaders.is_empty());
+        // ... and the payload is the full walk's, byte for byte.
+        let full_read = finish_native_scheduled_read(full.clone());
+        let reused_read = finish_native_scheduled_read(reused.clone());
+        assert_eq!(reused_read.payload, full_read.payload);
+        assert_eq!(reused_read.row_count, full_read.row_count);
+        assert_eq!(reused_read.status_flags, full_read.status_flags);
+        assert!(reused_read.parse_errors.is_empty());
+        let without_timings = |mut stats: AdapterBuildStats| {
+            stats.walk_characters_us = 0;
+            stats.walk_unit_leaders_us = 0;
+            stats.walk_country_leader_roles_us = 0;
+            stats.walk_active_rulers_us = 0;
+            stats.walk_advisors_us = 0;
+            stats.walk_appointed_advisors_us = 0;
+            stats.walk_portraits_us = 0;
+            stats
+        };
+        assert_eq!(without_timings(reused_read.adapter_stats), without_timings(full_read.adapter_stats));
+        // A cached walk that serves nothing is no cache: the frame walks.
+        let none = observe_native_scheduled_frame_reusing(
+            &mem,
+            &cache,
+            input_again.clone(),
+            Some(Arc::new(CachedWalk::default())),
+        );
+        assert_eq!(none.reused_walk_families(), 0);
+        // A PARTIAL mask (advisor roster only): live families' keys then admit
+        // portraits the cache does not know, and the wire order must still be
+        // the plain frame's (Codex 01a00f20 round 2).
+        let mut partial = plain.clone();
+        let cached_partial = partial
+            .adopt_cached_walk(compact::FAMILY_ADVISOR_ROSTER)
+            .expect("advisor roster caches");
+        assert_eq!(cached_partial.families, compact::FAMILY_ADVISOR_ROSTER);
+        assert_eq!(finish_native_scheduled_read(partial.clone()).payload, plain_read.payload);
+        let reused_partial = observe_native_scheduled_frame_reusing(
+            &mem,
+            &cache,
+            input_again.clone(),
+            Some(cached_partial),
+        );
+        assert_eq!(finish_native_scheduled_read(reused_partial).payload, plain_read.payload);
+        // THE LIVE-ONLY FALLBACK (Codex 01a00f20 rounds 3-4), on a CONSISTENT
+        // two-character world: a second character (7,7) censused and appointed
+        // through a second advisor, and no advisor for (2,1458). Portrait inputs in order [(2,1458), (7,7)]. With the advisor
+        // roster cached, the cache knows (7,7) only; (2,1458)'s portrait is
+        // admitted by the LIVE character family, so both the adopting frame
+        // and the reused frame must build the whole family in input order.
+        //
+        // kills: dropping the whole-family fallback leaves the reused frame
+        // with the one live-only extra and the encoder prepending the cached
+        // row: order [(7,7), (2,1458)], payload != plain.
+        let mut mem2 = mem.clone();
+        write_character(&mut mem2, 0x6000, 7, 7);
+        mem2.write_u64(0x7000, ADVISOR_VT);
+        mem2.write_u64(0x7000 + CADVISOR_CHARACTER_PTR_OFF, 0x6000);
+        let mut cache_two = cache.clone();
+        // (7,7) is a censused character too (Codex round 5: an advisor without
+        // a character root would be an orphan the fold rejects); the cache
+        // mask below is advisor-only, so (2,1458) is still admitted by the
+        // LIVE character family alone.
+        cache_two.characters.push(CharacterRoot {
+            character_addr: 0x6000,
+            char_id: 7,
+            name: Some("Other".to_string()),
+            token: Some("OTHER_other".to_string()),
+        });
+        cache_two.advisors = vec![AdvisorRoot {
+            advisor_addr: 0x7000,
+            idea_token: "OTHER_theorist".to_string(),
+            slot: Some("theorist".to_string()),
+            ledger: None,
+        }];
+        cache_two.portraits.push(CharacterPortraitInput {
+            country_tag_db_id: 7,
+            char_id: 7,
+            role: "civilian".to_string(),
+            size: "large".to_string(),
+            gfx: "GFX_portrait_other".to_string(),
+            gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
+        });
+        let plain_two = observe_native_scheduled_frame(&mem2, &cache_two, input_again.clone());
+        let plain_two_read = finish_native_scheduled_read(plain_two.clone());
+        assert_eq!(plain_two.frame.character_portraits.len(), 2, "both admitted");
+        let mut adopting_two = plain_two.clone();
+        let cached_two = adopting_two
+            .adopt_cached_walk(compact::FAMILY_ADVISOR_ROSTER)
+            .expect("advisor roster caches");
+        assert_eq!(cached_two.known_keys, vec![(7, 7)]);
+        assert_eq!(cached_two.character_portraits.len(), 1, "the cached-key subset");
+        assert_eq!(adopting_two.frame.character_portraits.len(), 2, "kept whole: a live-only admission");
+        assert_eq!(finish_native_scheduled_read(adopting_two).payload, plain_two_read.payload);
+        let fallback = observe_native_scheduled_frame_reusing(
+            &mem2,
+            &cache_two,
+            input_again.clone(),
+            Some(cached_two),
+        );
+        let keys: Vec<(u32, u32)> = fallback
+            .frame
+            .character_portraits
+            .iter()
+            .map(|p| (p.country_tag_db_id, p.char_id))
+            .collect();
+        assert_eq!(keys, vec![(2, 1458), (7, 7)], "whole family, input order");
+        let fallback_read = finish_native_scheduled_read(fallback);
+        assert_eq!(fallback_read.payload, plain_two_read.payload);
+        assert_eq!(fallback_read.adapter_stats.portrait_rows, 2);
+        // A cache built from a reused observation is refused (no chaining).
+        assert!(reused.clone().adopt_cached_walk(CACHEABLE_WALK_FAMILIES).is_none());
+        // Only the leader pair together: a mask naming one half caches neither.
+        let half = plain
+            .clone()
+            .adopt_cached_walk(compact::FAMILY_CHARACTER | compact::FAMILY_UNIT_LEADER)
+            .expect("characters alone cache");
+        assert_eq!(half.families, compact::FAMILY_CHARACTER);
+        assert!(half.unit_leaders.is_empty());
+    }
+
     #[test]
     fn borrowed_scheduled_read_matches_owned_build() {
         let (mem, cache, frame_input) = borrowed_input_fixture();
@@ -1273,12 +1564,24 @@ mod tests {
                 encode_frame_payload(&expected_frame),
                 "payload must be byte-identical to the owned build"
             );
+            // The walk's per-family spans (lane MT) are timings and differ
+            // between two runs; every counted field must still agree.
+            let without_timings = |mut stats: AdapterBuildStats| {
+                stats.walk_characters_us = 0;
+                stats.walk_unit_leaders_us = 0;
+                stats.walk_country_leader_roles_us = 0;
+                stats.walk_active_rulers_us = 0;
+                stats.walk_advisors_us = 0;
+                stats.walk_appointed_advisors_us = 0;
+                stats.walk_portraits_us = 0;
+                stats
+            };
             assert_eq!(
-                read.adapter_stats,
+                without_timings(read.adapter_stats),
                 if decided_before_the_walk {
                     AdapterBuildStats::default()
                 } else {
-                    owned_result.stats
+                    without_timings(owned_result.stats)
                 }
             );
             assert_eq!(read.status_flags, {

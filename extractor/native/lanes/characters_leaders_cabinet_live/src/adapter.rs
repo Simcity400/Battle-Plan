@@ -279,6 +279,23 @@ pub struct AdapterBuildStats {
     /// per-frame churn is the PARTIAL-upsert fold design (queued), not
     /// clean-emission-with-omissions.
     pub dead_roots: u32,
+    /// Lane MT (2026-08-17): what each family loop of the walk spent,
+    /// microseconds, measured around the loop body (engine reads + row
+    /// building) - the split of the ~41 ms in-bracket walk that
+    /// `lw_d47_inb_us - domain47_discovery_us` could only give as one number.
+    /// Observational; saturating u32 (71 minutes) so a frame can never wrap.
+    pub walk_characters_us: u32,
+    pub walk_unit_leaders_us: u32,
+    pub walk_country_leader_roles_us: u32,
+    pub walk_active_rulers_us: u32,
+    pub walk_advisors_us: u32,
+    pub walk_appointed_advisors_us: u32,
+    pub walk_portraits_us: u32,
+}
+
+/// Microseconds elapsed since `since`, saturated into the stats' u32.
+fn walk_phase_us(since: std::time::Instant) -> u32 {
+    since.elapsed().as_micros().min(u32::MAX as u128) as u32
 }
 
 impl AdapterBuildStats {
@@ -314,6 +331,79 @@ pub struct AdapterBuildResult {
     pub stats: AdapterBuildStats,
 }
 
+/// The families a REUSED frame may take from the adopting frame's walk
+/// instead of walking (lane MT, 2026-08-17): the four whose rows are a
+/// function of the root cache and of engine bytes the walk reads. Unit
+/// leaders and their traits are one loop and travel together. NOT here:
+/// active rulers (walked from this frame's live country politics roots),
+/// appointed advisors (a pure function of the roster and this frame's
+/// countries, recomputed) and portraits (a pure function of the cache and the
+/// keys of every family's rows, recomputed against the cached keys plus this
+/// frame's live keys).
+pub const CACHEABLE_WALK_FAMILIES: u32 = compact::FAMILY_CHARACTER
+    | compact::FAMILY_UNIT_LEADER
+    | compact::FAMILY_UNIT_LEADER_TRAIT
+    | compact::FAMILY_COUNTRY_LEADER_ROLE
+    | compact::FAMILY_ADVISOR_ROSTER;
+
+/// The walk output of one ADOPTING full-discovery frame, held beside the
+/// discovery witness for the frames that replay it (lane MT, 2026-08-17).
+///
+/// The collector decides `families`: a family is in it only when EVERY guarded
+/// read the adopting frame's walk made for that family (attributed through
+/// [`LaneMemory::walk_family`]) lay inside the sealed witness AND read the
+/// same bytes the witness holds. A reused frame validates the witness against
+/// the engine at bracket open and again after the walk before bracket close,
+/// so for those families the rows a live walk would build from those bytes
+/// are these rows; the frame takes them without reading or allocating. Any
+/// family outside `families` is walked live exactly as before.
+///
+/// Built only from a walk with no rejections and no degraded identity, so no
+/// cached family carries a refusal a later frame would republish.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CachedWalk {
+    /// Subset of [`CACHEABLE_WALK_FAMILIES`] served from here.
+    pub families: u32,
+    pub characters: Vec<CharacterRecord>,
+    pub unit_leaders: Vec<UnitLeaderRecord>,
+    pub unit_leader_traits: Vec<UnitLeaderTraitRecord>,
+    pub country_leader_roles: Vec<CountryLeaderRoleRecord>,
+    pub advisor_roster: Vec<AdvisorRecord>,
+    /// Portrait rows admitted by the cached families' keys ALONE, in input
+    /// order. A reused frame appends the (rare) portraits only a live
+    /// family's key admits.
+    pub character_portraits: Vec<CharacterPortraitRecord>,
+    /// `(country, char_id)` of every row of every cached family, sorted and
+    /// deduplicated: the portrait filter's cached half (`knows`).
+    pub known_keys: Vec<(u32, u32)>,
+    /// `((country, char_id), index into characters)`, sorted by key, for the
+    /// active-ruler name/token backfill when the character family is cached.
+    pub character_identity: Vec<((u32, u32), u32)>,
+    /// The adopting walk's stats; a reused frame copies the cached families'
+    /// row counts from here.
+    pub stats: AdapterBuildStats,
+}
+
+impl CachedWalk {
+    pub fn serves(&self, family: u32) -> bool {
+        self.families & family != 0
+    }
+
+    /// Is `key` the identity of some cached family's row?
+    pub fn knows(&self, key: &(u32, u32)) -> bool {
+        self.known_keys.binary_search(key).is_ok()
+    }
+
+    /// The cached character row with this identity, if the character family
+    /// is cached and holds it.
+    pub fn character(&self, key: &(u32, u32)) -> Option<&CharacterRecord> {
+        self.character_identity
+            .binary_search_by_key(key, |(k, _)| *k)
+            .ok()
+            .and_then(|i| self.characters.get(self.character_identity[i].1 as usize))
+    }
+}
+
 pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     mem: &M,
     roots: &ResolvedTypeRoots,
@@ -327,6 +417,29 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     roots: &ResolvedTypeRoots,
     input: &AdapterInputRef<'_>,
 ) -> AdapterBuildResult {
+    build_lane_frame_inner(mem, roots, input, None)
+}
+
+/// The walk of a frame that REPLAYED the discovery witness: families in
+/// `cached.families` are not walked (their rows are `cached`'s, and the
+/// frame's own vector for that family stays EMPTY - the encoder takes them
+/// from the cache); every other family is walked live, unchanged.
+pub fn build_lane_frame_reusing_walk<M: LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    input: &AdapterInputRef<'_>,
+    cached: &CachedWalk,
+) -> AdapterBuildResult {
+    build_lane_frame_inner(mem, roots, input, Some(cached))
+}
+
+fn build_lane_frame_inner<M: LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    input: &AdapterInputRef<'_>,
+    cached: Option<&CachedWalk>,
+) -> AdapterBuildResult {
+    let served = |family: u32| cached.map_or(false, |c| c.serves(family));
     let mut frame = LaneFrame::new(input.elapsed_wall_ms);
     frame.status_flags = input.status_flags;
     let mut stats = AdapterBuildStats::default();
@@ -357,7 +470,15 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     let mut characters_by_id = BTreeMap::<u32, CharacterRecord>::new();
     let mut ambiguous_character_ids = BTreeSet::new();
     stats.character_roots_seen = input.characters.len().min(u32::MAX as usize) as u32;
-    for root in input.characters {
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_CHARACTER);
+    if let Some(cached) = cached.filter(|c| c.serves(compact::FAMILY_CHARACTER)) {
+        stats.character_rows = cached.stats.character_rows;
+        stats.deduplicated_character_rows = cached.stats.deduplicated_character_rows;
+        stats.ambiguous_character_rows = cached.stats.ambiguous_character_rows;
+        stats.identity_degraded_rows = cached.stats.identity_degraded_rows;
+    }
+    for root in input.characters.iter().filter(|_| !served(compact::FAMILY_CHARACTER)) {
         match read_character_raw_fields(mem, roots, root.character_addr) {
             Ok(raw) => {
                 // The root's `name`/`token` were read at this address by the
@@ -431,6 +552,9 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
         }
     }
     frame.characters.extend(characters_by_id.into_values());
+    if !served(compact::FAMILY_CHARACTER) {
+        stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
+    }
     for (index, row) in frame.characters.iter().enumerate() {
         let key = (row.country_tag_db_id, row.char_id);
         if track_known_characters {
@@ -442,10 +566,20 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
         // again in this function, so the index stays valid at the read.
         character_identity.insert(key, index);
     }
-    stats.character_rows = frame.characters.len().min(u32::MAX as usize) as u32;
+    stats.walk_characters_us = walk_phase_us(phase_started);
 
     stats.unit_leader_roots_seen = input.unit_leaders.len().min(u32::MAX as usize) as u32;
-    for root in input.unit_leaders {
+    let phase_started = std::time::Instant::now();
+    // One loop builds leaders AND their trait rows: the mark names the pair
+    // (Codex 01a00f20 finding 1: a single-bit mark could never satisfy the
+    // pair rule, so unit leaders were never cached).
+    mem.walk_family(compact::FAMILY_UNIT_LEADER | compact::FAMILY_UNIT_LEADER_TRAIT);
+    if let Some(cached) = cached.filter(|c| c.serves(compact::FAMILY_UNIT_LEADER)) {
+        stats.unit_leader_rows = cached.stats.unit_leader_rows;
+        stats.unit_leader_trait_rows = cached.stats.unit_leader_trait_rows;
+        stats.missing_trait_tokens = cached.stats.missing_trait_tokens;
+    }
+    for root in input.unit_leaders.iter().filter(|_| !served(compact::FAMILY_UNIT_LEADER)) {
         match read_unit_leader(mem, roots, root, &trait_tokens) {
             Ok((leader, traits, missing_trait_tokens)) => {
                 if track_known_characters {
@@ -466,12 +600,26 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             },
         }
     }
-    stats.unit_leader_rows = frame.unit_leaders.len().min(u32::MAX as usize) as u32;
-    stats.unit_leader_trait_rows = frame.unit_leader_traits.len().min(u32::MAX as usize) as u32;
+    if !served(compact::FAMILY_UNIT_LEADER) {
+        stats.unit_leader_rows = frame.unit_leaders.len().min(u32::MAX as usize) as u32;
+        stats.unit_leader_trait_rows =
+            frame.unit_leader_traits.len().min(u32::MAX as usize) as u32;
+    }
+    stats.walk_unit_leaders_us = walk_phase_us(phase_started);
 
     stats.country_leader_roots_seen =
         input.country_leader_roles.len().min(u32::MAX as usize) as u32;
-    for root in input.country_leader_roles {
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_COUNTRY_LEADER_ROLE);
+    if let Some(cached) = cached.filter(|c| c.serves(compact::FAMILY_COUNTRY_LEADER_ROLE)) {
+        stats.country_leader_role_rows = cached.stats.country_leader_role_rows;
+        stats.identity_mismatch_rows = cached.stats.identity_mismatch_rows;
+    }
+    for root in input
+        .country_leader_roles
+        .iter()
+        .filter(|_| !served(compact::FAMILY_COUNTRY_LEADER_ROLE))
+    {
         match read_country_leader_role(mem, roots, root) {
             Ok(row) => {
                 if track_known_characters {
@@ -499,9 +647,16 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             }
         }
     }
-    stats.country_leader_role_rows = frame.country_leader_roles.len().min(u32::MAX as usize) as u32;
+    if !served(compact::FAMILY_COUNTRY_LEADER_ROLE) {
+        stats.country_leader_role_rows =
+            frame.country_leader_roles.len().min(u32::MAX as usize) as u32;
+    }
+    stats.walk_country_leader_roles_us = walk_phase_us(phase_started);
 
     stats.country_roots_seen = input.countries.len().min(u32::MAX as usize) as u32;
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_ACTIVE_RULER);
+    let cached_characters = cached.filter(|c| c.serves(compact::FAMILY_CHARACTER));
     for root in input.countries {
         match read_active_ruler_from_country(
             mem,
@@ -513,11 +668,12 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             root.ruler_token.clone(),
         ) {
             Ok(mut row) => {
-                if let Some(index) = character_identity
-                    .get(&(row.country_tag_db_id, row.char_id))
-                    .copied()
-                {
-                    let identity = &frame.characters[index];
+                let key = (row.country_tag_db_id, row.char_id);
+                let identity = match cached_characters {
+                    Some(cached) => cached.character(&key),
+                    None => character_identity.get(&key).map(|i| &frame.characters[*i]),
+                };
+                if let Some(identity) = identity {
                     if row.name.is_none() {
                         row.name = identity.name.clone();
                     }
@@ -545,9 +701,15 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
         }
     }
     stats.active_ruler_rows = frame.active_rulers.len().min(u32::MAX as usize) as u32;
+    stats.walk_active_rulers_us = walk_phase_us(phase_started);
 
     stats.advisor_roots_seen = input.advisors.len().min(u32::MAX as usize) as u32;
-    for root in input.advisors {
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_ADVISOR_ROSTER);
+    if let Some(cached) = cached.filter(|c| c.serves(compact::FAMILY_ADVISOR_ROSTER)) {
+        stats.advisor_roster_rows = cached.stats.advisor_roster_rows;
+    }
+    for root in input.advisors.iter().filter(|_| !served(compact::FAMILY_ADVISOR_ROSTER)) {
         match read_advisor_raw_fields(mem, roots, root.advisor_addr) {
             Ok(raw) => {
                 if track_known_characters {
@@ -575,7 +737,16 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             },
         }
     }
-    stats.advisor_roster_rows = frame.advisor_roster.len().min(u32::MAX as usize) as u32;
+    if !served(compact::FAMILY_ADVISOR_ROSTER) {
+        stats.advisor_roster_rows = frame.advisor_roster.len().min(u32::MAX as usize) as u32;
+    }
+    stats.walk_advisors_us = walk_phase_us(phase_started);
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_APPOINTED_ADVISOR);
+    let roster: &[AdvisorRecord] = match cached.filter(|c| c.serves(compact::FAMILY_ADVISOR_ROSTER)) {
+        Some(cached) => &cached.advisor_roster,
+        None => &frame.advisor_roster,
+    };
     // A currently appointed advisor is the exact intersection of the validated
     // CAdvisor roster and this country's same-frame active-idea identities.
     // `SCHEMA_APPOINTED_FROM_ACTIVE_IDEAS` has described that wire contract
@@ -583,13 +754,37 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
     // empty list. Leveled/modded idea identities remain fail-closed because
     // only literal identity equality is admitted.
     frame.appointed_advisors =
-        appointed_advisors_from_country_active_ideas(&frame.advisor_roster, input.countries);
+        appointed_advisors_from_country_active_ideas(roster, input.countries);
     stats.appointed_advisor_rows =
         frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
+    stats.walk_appointed_advisors_us = walk_phase_us(phase_started);
 
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
+    let phase_started = std::time::Instant::now();
+    mem.walk_family(compact::FAMILY_CHARACTER_PORTRAIT);
+    // With a cached walk the portraits its keys admit are ALREADY rows in
+    // `cached.character_portraits`, and the encoder takes them from there
+    // when this frame's own portrait vector is EMPTY. A portrait only a LIVE
+    // family's key admits (usually none) would break the input order the
+    // wire keeps (Codex 01a00f20 round 2), so if there is even one, this
+    // frame builds the WHOLE family itself in input order and the cache's
+    // rows are not used. The rejected count is the same either way.
+    let live_only_admitted = cached.map_or(false, |c| {
+        input.portraits.iter().any(|portrait| {
+            let key = (portrait.country_tag_db_id, portrait.char_id);
+            !c.knows(&key) && known_characters.contains(&key)
+        })
+    });
+    let admit = |key: &(u32, u32)| -> bool {
+        known_characters.contains(key) || cached.map_or(false, |c| c.knows(key))
+    };
     for portrait in input.portraits {
-        if known_characters.contains(&(portrait.country_tag_db_id, portrait.char_id)) {
+        let key = (portrait.country_tag_db_id, portrait.char_id);
+        let cached_key = cached.map_or(false, |c| c.knows(&key));
+        if cached_key && !live_only_admitted {
+            continue;
+        }
+        if admit(&key) {
             frame.character_portraits.push(CharacterPortraitRecord {
                 country_tag_db_id: portrait.country_tag_db_id,
                 char_id: portrait.char_id,
@@ -602,7 +797,13 @@ pub fn build_lane_frame_from_adapter_input_ref<M: LaneMemory>(
             stats.rejected_roots = stats.rejected_roots.saturating_add(1);
         }
     }
-    stats.portrait_rows = frame.character_portraits.len().min(u32::MAX as usize) as u32;
+    stats.portrait_rows = if frame.character_portraits.is_empty() {
+        cached.map_or(0, |c| c.character_portraits.len())
+    } else {
+        frame.character_portraits.len()
+    }
+    .min(u32::MAX as usize) as u32;
+    stats.walk_portraits_us = walk_phase_us(phase_started);
 
     if stats.has_rejections() {
         frame.status_flags |= compact::STATUS_PARTIAL_DATA;
