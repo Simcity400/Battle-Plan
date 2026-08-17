@@ -71,7 +71,49 @@ pub const CHECKPOINT_CACHE_FILE: &str = "replay_decoder/checkpoints.h4cp";
 /// deletes source bytes because the cache holds them must read this.
 pub const PUBLISHED_COVERAGE_FILE: &str = "replay_decoder/published_coverage.json";
 pub const PUBLISHED_COVERAGE_SCHEMA: &str = "battle-plan-published-coverage-v1";
-pub const DEFAULT_CHECKPOINT_INTERVAL_HOURS: u32 = 168;
+/// How many game hours a checkpoint covers before another whole world is
+/// written.
+///
+/// A checkpoint is the ONLY record that carries a world in full; every other
+/// hour is a delta against the hour before it. So this number is a size lever
+/// with no information in it at all — the same recording, written at a
+/// different cadence, holds exactly the same hours.
+///
+/// Measured on capture t53, 219 hours, production encoder and reader, zstd 3,
+/// every hour reconstructed byte-identically at both settings
+/// (`extractor/native/runs/lz_size_batch2/CKPT744_t53_219h.json` against
+/// `REFUND_t53_219h.json`, and this lane's `MB_CKPT744_*.json`):
+///
+/// * at 168 the checkpoints are 9,693 of t53's 77,637 sealed bytes per game
+///   hour — a fifth of the owner's entire 47,532 B/hour budget spent restating
+///   worlds the deltas already describe;
+/// * at 744 they are 2,189. Over a 105,192-hour campaign that is 141
+///   checkpoints (0.23 GB) instead of 626 (1.02 GB).
+///
+/// The obvious cost is SEEK: opening the replay at an arbitrary date applies
+/// up to 743 deltas instead of up to 167. The owner approved the change on
+/// 2026-08-18 with one condition — the replay must still scrub like video —
+/// which is a replay-side requirement (a seek index and a decoded-state cache
+/// at open, lane MC) and explicitly not a reason to spend the bytes here.
+///
+/// THE LESS OBVIOUS COST IS THE DELTA STREAM ITSELF, and it can go either way.
+/// A checkpoint releases the whole [`Shadow`] with it, so a longer interval
+/// means the revive memories of more fold-outs are held at once against the
+/// same [`MAX_SHADOW_BYTES`] cap. Where that cap binds, a revive is declined
+/// and a whole subtree is re-emitted — so a longer interval buys checkpoint
+/// bytes and can spend delta bytes. It does not bite on any capture measured
+/// here. The decisive one is t55, whose 1,416 hours are nearly two COMPLETE
+/// 744-hour windows rather than one prefix of one, so the longer window gets
+/// its full effect on the memories -- and it is the best of the four:
+/// t53 (219 h) -16.9%, t54 (357 h) -18.8%, t51 (602 h) -24.5%, t55 -22.8%
+/// (`runs/mb_size_batch3/SIZE_LEVERS_MB.txt`, both levers together). Anyone
+/// changing this constant again measures the DELTA payload, not just the
+/// checkpoint payload, and on a recording longer than one window.
+///
+/// 744 is also [`MAX_CHECKPOINT_INTERVAL_HOURS`]. That is not a coincidence to
+/// be tidied away: both are "one game month", and the ceiling exists so a
+/// recording cannot be given an interval whose seek cost is unbounded.
+pub const DEFAULT_CHECKPOINT_INTERVAL_HOURS: u32 = 744;
 pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
 
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
@@ -1641,11 +1683,23 @@ impl<W: Write> ReplayCacheEncoder<W> {
     /// added, which meant a real allocation with no row (Codex review round 6,
     /// finding S4).
     ///
-    /// An UPPER bound, not a measurement: the budget is charged when a memory
-    /// is taken and never refunded when one is dropped, so this reads at or
-    /// above what is actually resident, and it is bounded by
-    /// [`MAX_SHADOW_BYTES`] by construction.
-    pub fn shadow_heap_bytes_upper_bound(&self) -> u64 {
+    /// NOT an upper bound on the heap, despite what this used to be called.
+    ///
+    /// Two claims in the old name and doc were both wrong. The budget is no
+    /// longer a meter that never refunds — it is a BALANCE (see
+    /// [`ShadowBudget`]), refunded the moment a memory stops existing. And what
+    /// it counts is [`CanonValue::content_bytes`], a PORTABLE weight over what
+    /// the values hold, deliberately blind to reserved capacity, because both
+    /// encoder and reader must reach the same admission verdict from the same
+    /// document. Real heap ownership includes that capacity: an array holding
+    /// one element with room reserved for sixty-four is charged one element's
+    /// weight and owns sixty-four slots. So this number can sit well BELOW the
+    /// heap, not above it.
+    ///
+    /// What it is, exactly: the content of the revive memories live at this
+    /// instant — the same quantity [`MAX_SHADOW_BYTES`] is enforced against,
+    /// which is the only thing a caller can usefully compare it with.
+    pub fn shadow_memory_content_bytes(&self) -> u64 {
         self.shadow_budget.spent
     }
 
@@ -2465,10 +2519,18 @@ struct Shadow {
 /// of `map._r2_weather_live`'s 57 fold-outs -- and each declined revive is a
 /// whole subtree re-emitted in full.
 ///
-/// A balance is bounded by the WORLD and not by the window, which is what the
-/// cap was really for: the memories live at one instant sit at disjoint paths
-/// (a memory's own descendants are released when it is taken), so their total
-/// is at most the content of one world.
+/// A balance is bounded by the SHAPE of the world and not by the length of the
+/// window, which is what the cap was really for: the memories live at one
+/// instant sit at disjoint paths (a memory's own descendants are released when
+/// it is taken), so at most one is held per path that is currently folded out.
+///
+/// That is NOT the same as "at most one world". Each memory holds the subtree
+/// as it stood when its path went null, and different paths went null in
+/// different hours, so the sum is bounded by the largest each of those paths
+/// has ever been rather than by any single hour's document. The bound is
+/// therefore comfortable, not tight — and it is a bound on the window, so a
+/// longer [`DEFAULT_CHECKPOINT_INTERVAL_HOURS`] holds more of them at once.
+/// See that constant for what the measurements say about it.
 ///
 /// It is a SIZE lever with no correctness edge: while the cap is reached the
 /// encoder simply stops offering revives and spends full replaces instead.

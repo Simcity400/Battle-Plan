@@ -43,9 +43,10 @@ const BASE_HOUR: i64 = 16_959_360;
 /// every interior case.
 const HOURS: usize = 12;
 const GAME_ID: &str = "ha_entry_confinement";
-/// Four, not the production 168. The confinement law is stated in windows, and
+/// Four, not the production `DEFAULT_CHECKPOINT_INTERVAL_HOURS` (744; it was
+/// 168 when this was written). The confinement law is stated in windows, and
 /// a window has to fit inside the instrument for its edges to be observable at
-/// all: at 168 every hour here would share one window and no cell could tell
+/// all: at the production interval every hour here would share one window and no cell could tell
 /// "confined to the window" from "confined to the recording". The interval is
 /// a build parameter of the same production function, not a code path of its
 /// own, and `runs/ha_entry_confinement/checkpoint_density_pricing.md` prices
