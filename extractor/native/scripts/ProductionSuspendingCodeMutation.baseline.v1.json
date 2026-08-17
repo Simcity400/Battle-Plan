@@ -427,30 +427,7 @@
                                                  }
                                              ]
                   },
-                  {
-                      "unit":  "extractor/native/lanes/power_balance_presentation_live",
-                      "performs_suspending_code_mutation":  false,
-                      "delegates_suspending_code_mutation":  true,
-                      "direct_evidence":  [
-
-                                          ],
-                      "delegated_patchers":  [
-                                                 {
-                                                     "dependency":  "inline_detour",
-                                                     "package":  "inline_detour",
-                                                     "reaches_suspension":  true,
-                                                     "reaches_code_mutation":  true,
-                                                     "capability_digest":  "9d0d08999b166a0be22f97e91f103d9f6a02c6f55967fcab08042c0574990751"
-                                                 },
-                                                 {
-                                                     "dependency":  "minhook",
-                                                     "package":  "minhook_h4",
-                                                     "reaches_suspension":  false,
-                                                     "reaches_code_mutation":  true,
-                                                     "capability_digest":  "9a7ad07ae529b8ad09db7fa96895e529b7d749f23b6a259cfcdd1647623de139"
-                                                 }
-                                             ]
-                  },
+                  
                   {
                       "unit":  "extractor/native/lanes/resolved_tooltip_instances_live",
                       "performs_suspending_code_mutation":  false,

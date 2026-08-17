@@ -22,9 +22,14 @@
 
 
 
-d78 is the same-hour admission context for the live design catalogue. Its
-catalogue identities join the authoritative d59 census; one sealed hour is not
-temporal evidence.
+d78 is the same-hour admission context for the live design catalogue: the
+designer-view mode/family, the current-country identity, the filter toggles, the
+selected-country tag vector and the displayed row ORDER. It carries no
+definitions, no upserts and no tombstones, and it does NOT own the play-time
+divergence of equipment variants and division templates — that belongs to the
+separate mandatory A27 `design_catalog_live` live artifact, and the authored
+static definitions belong to d59. Its catalogue identities join those two;
+one sealed hour is not temporal evidence.
 
 The producer repeats a whole-sweep census and double-reads the game date, tag/country registries, every country A/B/template vector, every definition/lifecycle field, and both heap censuses.
 

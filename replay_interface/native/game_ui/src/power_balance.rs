@@ -841,11 +841,16 @@ fn measured_live_row(
     row: &PowerBalanceStateRecordExact,
 ) -> Result<MeasuredLiveRow<'_>, PowerBalanceRejection> {
     let value = row.value_raw_fixed5 as f64 / 100_000.0;
+    // Side identities are admitted on shape here; whether a side EXISTS is
+    // decided against the balance's own authored definition in `admit_one`,
+    // which is where the certified installed content are in hand. The engine can
+    // legitimately hold a trending side that is neither left nor right (the
+    // load path writes any valid side of the definition straight to the
+    // trending pointer), so refusing that here would drop a real row.
     if row.balance_id.trim().is_empty()
         || row.left_side_id.trim().is_empty()
         || row.right_side_id.trim().is_empty()
-        || row.left_side_id == row.right_side_id
-        || (row.trending_side_id != row.left_side_id && row.trending_side_id != row.right_side_id)
+        || row.trending_side_id.trim().is_empty()
         || !value.is_finite()
         || !(-1.0..=1.0).contains(&value)
         || row.active_range_id.trim().is_empty()
@@ -918,7 +923,14 @@ fn admit_one(
     {
         return Err(PowerBalanceRejection::MissingRuntimeProvenance);
     }
-    if definition.side(row.left_side).is_none() || definition.side(row.right_side).is_none() {
+    // Every side identity the recording carries must be a side this balance
+    // actually authors. That is the mod-aware check the producer cannot make:
+    // it reads pointers out of the definition's side array and has no access
+    // to the files that array was built from.
+    if definition.side(row.left_side).is_none()
+        || definition.side(row.right_side).is_none()
+        || definition.side(row.trending_side).is_none()
+    {
         return Err(PowerBalanceRejection::InvalidDynamicSides);
     }
     let expected_active = if row.value < 0.0 {
@@ -1287,7 +1299,61 @@ pub fn apply_power_balance_launcher_to_compose_options(
 
 #[cfg(test)]
 mod tests {
-    use super::{PowerBalanceDefinitionCatalog, StaticCatalogError};
+    use super::{
+        measured_live_row, PowerBalanceDefinitionCatalog, PowerBalanceRejection, StaticCatalogError,
+    };
+    use replay_core::{PowerBalanceStateCadenceExact, PowerBalanceStateRecordExact};
+
+    /// One recorded record, with the trending side under the test's control.
+    fn state_record(trending_side_id: &str) -> PowerBalanceStateRecordExact {
+        PowerBalanceStateRecordExact {
+            source_record_id: "d74:900:0:ITA_power_balance".into(),
+            manager_ordinal: 0,
+            balance_id: "ITA_power_balance".into(),
+            left_side_id: "ITA_grand_council_side".into(),
+            right_side_id: "ITA_mussolini_side".into(),
+            trending_side_id: trending_side_id.into(),
+            active_range_id: "ITA_mussolini_medium_control_range".into(),
+            effective_catalog_sha256: "11".repeat(32),
+            value_raw_fixed5: 35_000,
+            daily_sum_raw_fixed5: 0,
+            weekly_sum_raw_fixed5: 0,
+            weekly_equivalent_raw_fixed5: 0,
+            change_cadence: PowerBalanceStateCadenceExact::Weekly,
+            member_tag_db_ids: Vec::new(),
+            member_accumulators: Vec::new(),
+            side_gfx_overrides: Vec::new(),
+        }
+    }
+
+    // kills: reinstating "the trending side must be the left or the right side"
+    // in `measured_live_row`. The engine's load path writes any valid side of
+    // the balance's own definition straight to the trending pointer and returns
+    // without recomputing it, so a third side is engine state; refusing it here
+    // would drop a real row from the panel. Whether the side EXISTS is decided
+    // against the authored definition in `admit_one`, not here.
+    #[test]
+    fn a_trending_side_that_is_neither_left_nor_right_is_admitted() {
+        let row = state_record("ITA_army_side");
+        let measured = measured_live_row(&row).expect("a third trending side is engine state");
+        assert_eq!(measured.trending_side, "ITA_army_side");
+
+        // A balance whose authored left and right sides are the same is also
+        // the engine's business, not this consumer's.
+        let mut same = state_record("ITA_grand_council_side");
+        same.right_side_id = same.left_side_id.clone();
+        assert!(measured_live_row(&same).is_ok());
+    }
+
+    // kills: dropping the shape check that replaced the identity rule. An empty
+    // trending token is not a third side, it is a missing one.
+    #[test]
+    fn an_empty_trending_side_is_still_refused() {
+        assert!(matches!(
+            measured_live_row(&state_record("   ")),
+            Err(PowerBalanceRejection::InvalidLiveRow)
+        ));
+    }
 
     /// A minimal balance body that passes `convert_definition` unchanged, so a
     /// duplicated key exercises the `DuplicateBalance` refusal rather than an

@@ -158,8 +158,8 @@ mod tests {
     /// such producer exists to populate; when one does, this test is replaced by
     /// that lane, not kept. And it covers only the ONE wrong predecessor it
     /// populates -- a conditional clone of some other `Option<Value>` field the
-    /// fixture leaves `None`, such as `power_balance_presentation_this_hour`,
-    /// would still pass here.
+    /// fixture leaves `None`, such as `power_balance_state_this_hour`, would
+    /// still pass here.
     #[test]
     fn fill_refuses_the_hover_bound_tooltip_carrier_and_the_wire_carries_the_typed_null() {
         let mut fold = WorldFold::new("ik-gp-u1-politics");

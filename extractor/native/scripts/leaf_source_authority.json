@@ -34,6 +34,14 @@
         "extractor/native/d43_grammar/src/tests.rs",
         "extractor/native/d43_grammar/src/walk.rs"
       ]
+    },
+    "d74_grammar": {
+      "root": "extractor/native/d74_grammar",
+      "files": [
+        "extractor/native/d74_grammar/Cargo.toml",
+        "extractor/native/d74_grammar/src/lib.rs",
+        "extractor/native/d74_grammar/src/tests.rs"
+      ]
     }
   }
 }

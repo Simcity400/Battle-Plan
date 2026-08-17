@@ -31,6 +31,7 @@ d24_grammar = { path = "../d24_grammar" }
 # D43's payload grammar (lane KU). This packer writes it; the fold, the
 # authority validator and the market_trade lane gate read it.
 d43_grammar = { path = "../d43_grammar" }
+d74_grammar = { path = "../d74_grammar" }
 direct_frd_transitions_live = { path = "../lanes/direct_frd_transitions_live" }
 air_loss_stats_live_lane = { path = "../lanes/air_loss_stats_live" }
 hub_motorization_live_lane = { path = "../lanes/hub_motorization_live" }
@@ -50,7 +51,6 @@ session_multiplayer_metadata_live_lane = { package = "session_multiplayer_metada
 dynamic_collection_trace_live_lane = { path = "../lanes/dynamic_collection_trace_live" }
 active_command_abilities_live_lane = { path = "../lanes/active_command_abilities_live" }
 resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_instances_live" }
-power_balance_presentation_live_lane = { path = "../lanes/power_balance_presentation_live" }
 fired_event_popups_live_lane = { path = "../lanes/fired_event_popups_live" }
 runtime_text_inputs_live_lane = { path = "../lanes/runtime_text_inputs_live" }
 production_render_submit_live_lane = { path = "../lanes/production_render_submit_live" }

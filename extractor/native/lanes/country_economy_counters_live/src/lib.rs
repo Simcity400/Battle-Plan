@@ -223,23 +223,27 @@ pub fn economy_counter_badges() -> Vec<EconomyCounterBadge> {
         EconomyCounterBadge {
             counter_id: 3,
             name: "requested_factory_counts",
-            status: COUNTER_STATUS_SCHEMA_BLOCKED,
-            status_label: "schema_blocked",
-            evidence_mask: COUNTER_EVIDENCE_CURRENT_COMPACT_SCHEMA
-                | COUNTER_EVIDENCE_CURRENT_COLLECTOR_ROOTS
+            // Was schema_blocked and claimed by this domain. Domain 11's PFR1
+            // segment carries requested factories per production line and the
+            // fold publishes them (`world_fold.rs` `requested_factories`), so
+            // the block is closed and the owner is d11, not d58.
+            status: COUNTER_STATUS_OWNED_ELSEWHERE,
+            status_label: "owned_elsewhere",
+            evidence_mask: COUNTER_EVIDENCE_OWNER_BOUNDARY
+                | COUNTER_EVIDENCE_CURRENT_COMPACT_SCHEMA
                 | COUNTER_EVIDENCE_SAVE_ORACLE,
-            current_support: COUNTER_SUPPORT_NONE,
-            current_compact_evidence: "domain 11 line rows do not carry requested_factories; only active_factories is encoded",
-            source_evidence: "save_oracle/parse_production.py reads countries.<TAG>.production.*_lines.requested_factories",
-            fail_closed_badge: "requested factories omitted until a live CEquipmentProductionLine requested-factory offset is validated and added to a schema bump",
+            current_support: COUNTER_SUPPORT_OWNED_ELSEWHERE,
+            current_compact_evidence: "domain 11 PFR1 line rows carry requested_factories beside active_factories and the fold emits both",
+            source_evidence: "save_oracle/parse_production.py reads countries.<TAG>.production.*_lines.requested_factories; domain 11 now measures the same counter live",
+            fail_closed_badge: "domain 58 must not duplicate domain 11 production-line factory demand",
             current_domain_id: DOMAIN_PRODUCTION_LIVE as u32,
-            proposed_record_kind: RECORD_KIND_PRODUCTION_LINE_COUNTERS,
-            proposed_record: "production_line_requested_factory_counts",
-            current_row_len: 32,
-            root_status: ROOT_STATUS_SCHEMA_ONLY,
+            proposed_record_kind: RECORD_KIND_COUNTER_BADGE,
+            proposed_record: "production_line_factory_demand_boundary_badge",
+            current_row_len: 0,
+            root_status: ROOT_STATUS_OWNED_ELSEWHERE,
             proof_status: PROOF_STATUS_LANE_LOCAL_BADGE,
-            owner_domain_id: DOMAIN_ID as u32,
-            owner_boundary: "domain 58 owns residual factory-demand counters keyed by tag_db_id, kind, line_id",
+            owner_domain_id: DOMAIN_PRODUCTION_LIVE as u32,
+            owner_boundary: "domain 11 owns production-line requested/active factory counters; domain 58 must not duplicate them",
             exclusion_mask: EXCLUSION_NONE,
         },
         EconomyCounterBadge {
@@ -1211,9 +1215,13 @@ mod tests {
         );
         assert_eq!(decoded.row_count, rows.len() as u32);
         assert_eq!(decoded.validated_slice_rows, 2);
-        assert_eq!(decoded.schema_blocked_rows, 1);
+        // `requested_factory_counts` was the one schema_blocked row and is now
+        // owned_elsewhere: domain 11's PFR1 segment carries requested factories
+        // per production line and the fold already emits them, so nothing about
+        // this counter is blocked on a schema. No badge is schema_blocked today.
+        assert_eq!(decoded.schema_blocked_rows, 0);
         assert_eq!(decoded.source_blocked_rows, 3);
-        assert_eq!(decoded.owned_elsewhere_rows, 2);
+        assert_eq!(decoded.owned_elsewhere_rows, 3);
         assert_eq!(decoded.market_excluded_rows, 2);
         assert_eq!(decoded.rows, rows);
     }

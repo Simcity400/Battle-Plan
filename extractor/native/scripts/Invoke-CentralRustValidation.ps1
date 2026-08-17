@@ -325,6 +325,14 @@ $gapLedgerExpansionTests = Join-Path $PSScriptRoot "Test-GapLedgerExpansion.ps1"
 # This suite proves the corpus is source-only and that the committed map is
 # what this tree produces; the failure names the rows that moved.
 $domainFileMapTests = Join-Path $PSScriptRoot "test_map_files_to_domains.py"
+# Domain 59's static catalog is the only thing replay has for authored division
+# templates, unit definitions and equipment definitions, and it is resolved
+# across a [vanilla, mod, ...] layer list. The gate's own proof run needs an
+# installed game and a real mod, so nothing ever gated the layering: these cases
+# build a two-layer tree in a temp dir and drive the gate's own collectors, so a
+# mod override that stops winning fails here instead of on a modded recording.
+$templatesEquipmentGateTests =
+    Join-Path $PSScriptRoot "test_templates_equipment_catalog_gate.py"
 # The Replay-side pair. `external_producer_dependencies.json` is the machine
 # authority eleven current documents cite for what Replay still needs from a
 # producer, and `EXTRACTOR_INPUT_RESIDUALS.md` is its generated human view.
@@ -2672,6 +2680,7 @@ try {
         Invoke-Checked -Program "python" -Arguments @($sinkReconciliationTests)
         Invoke-Checked -Program "python" -Arguments @($gapLedgerTests)
         Invoke-Checked -Program "python" -Arguments @($domainFileMapTests)
+        Invoke-Checked -Program "python" -Arguments @($templatesEquipmentGateTests)
         Invoke-Checked -Program "powershell.exe" -Arguments @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",

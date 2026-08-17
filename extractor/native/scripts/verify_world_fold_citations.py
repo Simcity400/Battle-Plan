@@ -385,6 +385,29 @@ REQUIRED_LEAF_AUTHORITIES = {
             ),
         },
     ),
+    "d74_grammar": LeafAuthority(
+        root="extractor/native/d74_grammar",
+        consumers=(
+            # The producer half: the passive manager census builds every PBS1
+            # row and hands the crate a whole `Payload` to encode.
+            "extractor/native/collector/src/attach_log/d74_power_balance.rs",
+            # The emission arm, which decodes the payload it just encoded to
+            # price the perf record's row/unit counts.
+            "extractor/native/collector/src/attach_log.rs",
+            # The two readers: the fold builds `_r2_power_balance_state_live`
+            # from a decoded payload, and the authority validator re-walks it.
+            "extractor/native/recorder_host/src/domain_data_authority.rs",
+            "extractor/native/recorder_host/src/world_fold.rs",
+            # The fold's own differential test builds payloads through the
+            # crate's constructors, so it holds a semantic layer over the
+            # grammar exactly as `domain13_tech_delta_tests.rs` does for d13.
+            "extractor/native/recorder_host/src/world_fold/tests.rs",
+        ),
+        # No `const_only` entry. Every site above names bounds
+        # (`MAX_RECORDS`, `MAX_MEMBERS_PER_RECORD`, `MAX_OVERRIDES_PER_RECORD`,
+        # `MAX_TOKEN_BYTES`) AND builds or walks the crate's row types, which is
+        # not the `crate::CONST`-only shape a const_only entry may carry.
+    ),
     "d43_grammar": LeafAuthority(
         root="extractor/native/d43_grammar",
         consumers=(
@@ -431,7 +454,7 @@ LEAF_MARKER_SCAN_ROOTS = (Path("."),)
 # what was true, not a claim about this tree.
 LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
     {"runs", "target", ".git", "re_evidence", ".cargo-target", "node_modules",
-     ".claude", ".pnpm-store", ".reference", ".t3-worktrees"}
+     ".claude", ".pnpm-store", ".reference", ".t3-worktrees", "captures"}
 )
 # MANIFESTS are skipped in fewer places than sources.  An evidence tree is
 # append-only prose and a marker quoted inside one is a record, not a claim --
@@ -445,7 +468,7 @@ LEAF_SCAN_SKIP_DIRECTORIES = frozenset(
 # gate that reads them certifies (or refuses) work that is not here.
 LEAF_MANIFEST_SKIP_DIRECTORIES = frozenset(
     {"target", ".git", ".cargo-target", "node_modules", ".claude",
-     ".pnpm-store", ".reference", ".t3-worktrees"}
+     ".pnpm-store", ".reference", ".t3-worktrees", "captures"}
 )
 # A leaf's attested files: its manifest and every Rust source under it, wherever
 # it sits (`src/`, `tests/`, `benches/`, a `build.rs`).  The set is what the

@@ -699,6 +699,16 @@
     "read_time_p95_ms": 0.014,
     "invocations": 1531
    }
+  },
+  "power_balance_state_live": {
+   "domain_id": 74,
+   "read_time_p50_ms_max": 2.0,
+   "read_time_p95_ms_max": 4.0,
+   "baseline": {
+    "read_time_p50_ms": 0.784,
+    "read_time_p95_ms": 1.31,
+    "invocations": 169
+   }
   }
  }
 }

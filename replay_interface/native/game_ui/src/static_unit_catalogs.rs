@@ -717,3 +717,275 @@ fn matching_id(
     }
     Ok(id)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Domain 59's absent/malformed admission half.
+    //!
+    //! The catalogs here are REQUIRED artifacts: replay parses their payload
+    //! bytes into the lookup structures the unit views join against, and no
+    //! installed-game file is reopened to fill a hole. So the product's answer
+    //! to a recording that omits one, renames one, or carries one whose rows
+    //! disagree with their own declared counts must be a refusal with a reason,
+    //! never a silently empty catalog. None of that was tested; the artifacts
+    //! are built by a Python gate that needs an installed game, so the only way
+    //! to drive these paths is over bytes the test writes itself.
+    //!
+    //! `unauthenticated_for_consumer_tests` skips only the container/index
+    //! join. Everything below it -- the artifact-name check, the schema check,
+    //! the counts and every row rule -- is the product's own code.
+
+    use super::*;
+    use replay_core::PackagedStaticArtifact;
+
+    const SOURCE_SHA: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const CONTAINER_SHA: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+    const CONTENT_DIGEST: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+    fn artifact(name: &str, value: &Value) -> PackagedStaticArtifact {
+        PackagedStaticArtifact::unauthenticated_for_consumer_tests(
+            name,
+            &format!("static/{name}.json"),
+            CONTAINER_SHA,
+            CONTENT_DIGEST,
+            serde_json::to_vec(value).expect("fixture serialises"),
+        )
+    }
+
+    fn templates_value() -> Value {
+        serde_json::json!({
+            "schema": TEMPLATES_EQUIPMENT_SCHEMA,
+            "counts": {
+                "division_templates": 1,
+                "equipment_definitions": 1,
+                "unit_definitions": 1
+            },
+            "catalog": {
+                "division_templates": [{
+                    "name": "Infanterie",
+                    "division_names_group": "GER_INF_01",
+                    "source": "history/units/GER_1936.txt",
+                    "source_sha256": SOURCE_SHA,
+                    "ordinal_in_file": 0,
+                    "regiment_count": 2,
+                    "support_count": 1,
+                    "regiments": [
+                        {"unit_type": "infantry", "x": "0", "y": "0"},
+                        {"unit_type": "infantry", "x": "0", "y": "1"}
+                    ],
+                    "support": [{"unit_type": "engineer", "x": "0", "y": "0"}]
+                }],
+                "equipment_definitions": {
+                    "equipments": {
+                        "token": "equipments",
+                        "source": "common/units/equipment/infantry.txt",
+                        "source_sha256": SOURCE_SHA,
+                        "fields": {
+                            "infantry_equipment_1": {"build_cost_ic": "0.43"}
+                        }
+                    }
+                },
+                "unit_definitions": {
+                    "infantry": {
+                        "token": "infantry",
+                        "source": "common/units/infantry.txt",
+                        "source_sha256": SOURCE_SHA,
+                        "fields": {"max_organisation": "60"}
+                    }
+                }
+            }
+        })
+    }
+
+    fn ships_value() -> Value {
+        serde_json::json!({
+            "schema": SHIP_DEFINITIONS_SCHEMA,
+            "meta": {"ship_hull_count": 1, "ship_module_count": 1},
+            "ship_hulls": {
+                "ship_hull_light_1": {
+                    "id": "ship_hull_light_1",
+                    "archetype": "ship_hull_light",
+                    "localised_name": null,
+                    "source_file": "common/units/ship_hull_light.txt",
+                    "source_layer": "vanilla",
+                    "default_modules": {"fixed_ship_engine_slot": "light_engine_1"},
+                    "stats": {"max_strength": 100}
+                }
+            },
+            "ship_modules": {
+                "light_engine_1": {
+                    "id": "light_engine_1",
+                    "category": "ship_engine",
+                    "localised_name": null,
+                    "source_file": "common/units/equipment/modules/ship_modules.txt",
+                    "source_layer": "vanilla",
+                    "add_stats": {"max_strength": "10"},
+                    "multiply_stats": {}
+                }
+            }
+        })
+    }
+
+    fn admit(templates: &Value) -> Result<StaticUnitCatalogs, StaticUnitCatalogError> {
+        let templates = artifact(TEMPLATES_EQUIPMENT_ARTIFACT, templates);
+        let ships = artifact(SHIP_DEFINITIONS_ARTIFACT, &ships_value());
+        admit_static_unit_catalogs(Some(&templates), Some(&ships))
+    }
+
+    /// The anchor the refusals below are measured against: with nothing wrong,
+    /// the same fixture is ADMITTED and joins by the keys replay uses. Without
+    /// this, every assertion after it could be passing for the wrong reason.
+    #[test]
+    fn a_well_formed_pair_is_admitted_and_joins_by_name_and_token() {
+        let catalogs = admit(&templates_value()).expect("the well-formed fixture is admitted");
+        let templates = &catalogs.templates_equipment;
+        assert_eq!(templates.identity.artifact_name, TEMPLATES_EQUIPMENT_ARTIFACT);
+        assert_eq!(templates.division_templates.len(), 1);
+        assert_eq!(
+            templates
+                .templates_named("Infanterie")
+                .map(|row| row.regiment_count)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(templates.equipment_named("infantry_equipment_1").len(), 1);
+        assert_eq!(
+            templates.equipment_named("infantry_equipment_1")[0].wrapper_token,
+            "equipments"
+        );
+        assert_eq!(templates.unit_named("infantry").len(), 1);
+        assert!(templates.templates_named("Volksgrenadier").next().is_none());
+        assert_eq!(catalogs.ships.hulls.len(), 1);
+        assert_eq!(catalogs.ships.modules.len(), 1);
+    }
+
+    /// kills: admitting a recording that carries no templates/equipment catalog
+    /// at all. Replay would then join every unit view against an empty catalog
+    /// and show authored rows as missing rather than saying the recording is.
+    #[test]
+    fn a_recording_without_the_templates_catalog_is_refused_by_name() {
+        let ships = artifact(SHIP_DEFINITIONS_ARTIFACT, &ships_value());
+        let error = admit_static_unit_catalogs(None, Some(&ships))
+            .expect_err("a missing required artifact is a refusal");
+        assert!(
+            error.to_string().contains(TEMPLATES_EQUIPMENT_ARTIFACT),
+            "the refusal must name the artifact: {error}"
+        );
+    }
+
+    /// kills: the same hole on the ship half.
+    #[test]
+    fn a_recording_without_the_ship_definitions_catalog_is_refused_by_name() {
+        let templates = artifact(TEMPLATES_EQUIPMENT_ARTIFACT, &templates_value());
+        let error = admit_static_unit_catalogs(Some(&templates), None)
+            .expect_err("a missing required artifact is a refusal");
+        assert!(
+            error.to_string().contains(SHIP_DEFINITIONS_ARTIFACT),
+            "the refusal must name the artifact: {error}"
+        );
+    }
+
+    /// kills: dropping `require_artifact_name`, which would let a container
+    /// hand any packaged payload to this consumer under the wrong role.
+    #[test]
+    fn an_artifact_delivered_under_another_name_is_refused() {
+        let templates = artifact("some_other_static_artifact", &templates_value());
+        let ships = artifact(SHIP_DEFINITIONS_ARTIFACT, &ships_value());
+        let error = admit_static_unit_catalogs(Some(&templates), Some(&ships))
+            .expect_err("a renamed artifact is a refusal");
+        assert!(
+            error.to_string().contains(TEMPLATES_EQUIPMENT_ARTIFACT),
+            "the refusal must name the artifact it expected: {error}"
+        );
+    }
+
+    /// kills: dropping the schema check, which is what stops a future format
+    /// from being read with this format's rules.
+    #[test]
+    fn a_payload_declaring_another_schema_is_refused() {
+        let mut value = templates_value();
+        value["schema"] = Value::String("templates_equipment_catalog_live.static_artifact.v2".into());
+        let error = admit(&value).expect_err("a foreign schema is a refusal");
+        assert!(error.to_string().contains("schema"), "{error}");
+    }
+
+    /// kills: dropping the count cross-check. The counts are the only thing
+    /// that can catch a payload truncated between its rows and its census, and
+    /// a truncated catalog reads as a game that simply has fewer definitions.
+    #[test]
+    fn counts_that_disagree_with_the_rows_are_refused() {
+        for field in ["division_templates", "equipment_definitions", "unit_definitions"] {
+            let mut value = templates_value();
+            value["counts"][field] = serde_json::json!(7);
+            let error = admit(&value)
+                .expect_err("a count that disagrees with its rows is a refusal")
+                .to_string();
+            assert!(error.contains(field), "the refusal must name the field: {error}");
+        }
+    }
+
+    /// kills: dropping `require_array_len` on a template's own regiment and
+    /// support grids, which are what the unit view counts battalions from.
+    #[test]
+    fn a_template_whose_grid_disagrees_with_its_declared_count_is_refused() {
+        let mut value = templates_value();
+        value["catalog"]["division_templates"][0]["regiment_count"] = serde_json::json!(9);
+        let error = admit(&value).expect_err("a grid/count disagreement is a refusal");
+        assert!(error.to_string().contains("regiments"), "{error}");
+    }
+
+    /// kills: dropping the block-key/token agreement rule, which is what stops
+    /// one definition being filed under another definition's name.
+    #[test]
+    fn a_unit_block_whose_key_disagrees_with_its_token_is_refused() {
+        let mut value = templates_value();
+        let block = value["catalog"]["unit_definitions"]["infantry"].clone();
+        value["catalog"]["unit_definitions"] = serde_json::json!({"artillery": block});
+        let error = admit(&value).expect_err("a key/token disagreement is a refusal");
+        assert!(error.to_string().contains("token"), "{error}");
+    }
+
+    /// kills: admitting rows that are not the shape the schema promises -- a
+    /// template that is not an object, a source digest that is not a digest,
+    /// an empty definition token.
+    #[test]
+    fn rows_of_the_wrong_shape_are_refused_one_by_one() {
+        let mut not_an_object = templates_value();
+        not_an_object["catalog"]["division_templates"][0] = serde_json::json!("Infanterie");
+        assert!(admit(&not_an_object).is_err(), "a non-object template row");
+
+        let mut bad_digest = templates_value();
+        bad_digest["catalog"]["division_templates"][0]["source_sha256"] =
+            serde_json::json!("not-a-digest");
+        assert!(admit(&bad_digest).is_err(), "a source digest that is not one");
+
+        let mut empty_token = templates_value();
+        empty_token["catalog"]["equipment_definitions"]["equipments"]["fields"] =
+            serde_json::json!({"   ": {"build_cost_ic": "0.43"}});
+        assert!(admit(&empty_token).is_err(), "an empty definition token");
+
+        let mut missing_name = templates_value();
+        missing_name["catalog"]["division_templates"][0]
+            .as_object_mut()
+            .expect("template row is an object")
+            .remove("name");
+        assert!(admit(&missing_name).is_err(), "a template with no name");
+    }
+
+    /// kills: handing bytes that are not JSON to the parser and treating the
+    /// failure as an empty catalog.
+    #[test]
+    fn bytes_that_are_not_json_are_refused() {
+        let templates = PackagedStaticArtifact::unauthenticated_for_consumer_tests(
+            TEMPLATES_EQUIPMENT_ARTIFACT,
+            "static/templates_equipment_catalog.json",
+            CONTAINER_SHA,
+            CONTENT_DIGEST,
+            b"this is not json".to_vec(),
+        );
+        let ships = artifact(SHIP_DEFINITIONS_ARTIFACT, &ships_value());
+        let error = admit_static_unit_catalogs(Some(&templates), Some(&ships))
+            .expect_err("unparseable bytes are a refusal");
+        assert!(error.to_string().contains("parse"), "{error}");
+    }
+}

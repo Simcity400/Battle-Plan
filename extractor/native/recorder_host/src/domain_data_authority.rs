@@ -127,7 +127,7 @@ pub(crate) fn a29_expected_source_record_sha256(
 pub const SUPPORTED_DOMAIN_DATA_IDS: &[u16] = &[
     10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 60, 61,
-    62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
+    62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 78, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89,
     90, 91, 92, 93, 94, 95, 96, 97,
 ];
 
@@ -17104,6 +17104,41 @@ fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
         bytes[offset + 7],
     ])
 }
+
+// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=4d68e6710f155e9f9598cd171526cc1134abb89685600ed063be18678f2d8f21
+fn decode_compact_power_balance_state_data_payload(
+    offset: usize,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    match d74_grammar::decode(payload) {
+        Ok(decoded) => {
+            add_decoder_status(summary, decoded.status_flags);
+            add_compact_domain_data_unit(
+                summary,
+                d74_grammar::DOMAIN_ID,
+                "power_balance_records",
+                decoded.records.len(),
+            );
+            let members = decoded.records.iter().fold(0usize, |count, record| {
+                count.saturating_add(record.members.len())
+            });
+            add_compact_domain_data_unit(
+                summary,
+                d74_grammar::DOMAIN_ID,
+                "power_balance_members",
+                members,
+            );
+            let domain = summary.per_domain.entry(d74_grammar::DOMAIN_ID).or_default();
+            domain.data_rows_total = domain
+                .data_rows_total
+                .saturating_add(decoded.records.len() as u64);
+        }
+        Err(error) => summary.parse_errors.push(format!(
+            "offset {offset}: power_balance_state PBS1 invalid: {error:?}"
+        )),
+    }
+}
 pub fn summarize_domain_data_payload(
     domain_id: u16,
     payload: &[u8],
@@ -17280,6 +17315,7 @@ pub fn summarize_domain_data_payload(
             payload,
             &mut summary,
         ),
+        74 => decode_compact_power_balance_state_data_payload(offset, payload, &mut summary),
         75 => decode_compact_fired_event_popups_data_payload(offset, payload, &mut summary),
         78 => decode_compact_design_catalog_context_data_payload(offset, payload, &mut summary),
         hud79::DOMAIN_ID => {
@@ -20025,7 +20061,10 @@ mod tests {
                     continue;
                 }
                 let call = d43_enclosing_call_name(&source, at);
-                let leaf_call = call == Some("d43_grammar::decode::decode_record");
+                let leaf_call = matches!(
+                    call,
+                    Some("d43_grammar::decode::decode_record" | "d74_grammar::decode")
+                );
                 let local_authority_forwarder = call
                     == Some("decode_compact_market_trade_record")
                     && source.contains("fn decode_compact_market_trade_record(");
@@ -20121,6 +20160,398 @@ mod tests {
             implementations,
             ["d43_grammar"],
             "D43 must have exactly one structural payload reader"
+        );
+    }
+
+    fn d74_marker_region<'a>(source: &'a str, end_marker: &str) -> &'a str {
+        const MARKER: &str = "// @leaf-source-authority crate=d74_grammar";
+        let start = source.find(MARKER).expect("the D74 authority marker moved");
+        let marked = &source[start..];
+        let end = marked.find(end_marker).expect("the D74 region end moved");
+        &marked[..end]
+    }
+
+    /// kills: indexing, slicing, cursor walking, or forwarding the d74 payload
+    /// to a local parser makes a consumer a second implementation.
+    #[test]
+    fn d74_has_exactly_one_structural_payload_reader() {
+        let world_fold = include_str!("world_fold.rs").replace("\r\n", "\n");
+        let authority = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
+        let collector = include_str!("../../collector/src/attach_log.rs").replace("\r\n", "\n");
+        let regions = [
+            ("world_fold", d74_marker_region(&world_fold, "\n    fn fold_fired_event_popups")),
+            ("domain_data_authority", d74_marker_region(&authority, "\npub fn summarize_domain_data_payload")),
+            ("collector_perf_projection", d74_marker_region(&collector, "\n\nfn encode_hud_activation_from_live_roots(")),
+        ];
+        let counts: Vec<(&str, usize)> = regions.iter()
+            .map(|(site, source)| (*site, d43_computed_payload_reads(source)))
+            .collect();
+        let leaf = include_str!("../../d74_grammar/src/lib.rs");
+        let mut implementations = Vec::new();
+        if d43_computed_payload_reads(leaf) > 0 { implementations.push("d74_grammar"); }
+        for (site, count) in &counts {
+            if *count > 0 { implementations.push(*site); }
+        }
+        assert_eq!(counts, [
+            ("world_fold", 0),
+            ("domain_data_authority", 0),
+            ("collector_perf_projection", 0),
+        ]);
+        assert_eq!(implementations, ["d74_grammar"]);
+    }
+
+    /// kills: adding a second PBS1 byte walker anywhere else in the native
+    /// tree. The region census above only proves that the three KNOWN consumer
+    /// sites forward to the leaf; it is blind to a fourth file. This walks
+    /// every `.rs` under `extractor/native` instead, and requires that the
+    /// magic bytes are spelled in exactly one crate and that the leaf decoder
+    /// is called from exactly the sites that are allowed to call it.
+    /// Every way the four magic bytes can be written down, counted in one
+    /// source file: the quoted literal, the little-endian word the bytes make,
+    /// the big-endian word a hand-rolled reader would compare after a
+    /// byte-swap, either word in decimal, the four bytes listed one after
+    /// another in hex or in decimal, and backslash-escaped hex bytes inside a
+    /// literal. Whitespace, commas, underscores and backslashes are squeezed
+    /// out first, so formatting cannot hide a spelling.
+    ///
+    /// Every needle is BUILT from `d74_grammar::MAGIC` at run time and none is
+    /// ever typed out here, so this scanner does not report itself.
+    fn pbs1_magic_spellings(text: &str) -> usize {
+        let magic = d74_grammar::MAGIC;
+        // The QUOTED literal, not the bare word: prose and named refusal
+        // strings mention the format by name and are not implementations.
+        let text_form = format!("\"{}\"", core::str::from_utf8(magic).expect("magic is ascii"));
+        let little_endian = u32::from_le_bytes(*magic);
+        let big_endian = u32::from_be_bytes(*magic);
+        // Collapse whitespace, separators and Rust's numeric underscores so a
+        // spelling cannot hide behind formatting.
+        let squeezed: String = text
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '_' && *c != ',' && *c != '\\')
+            .collect();
+        let squeezed = squeezed.to_ascii_lowercase();
+        let mut needles = vec![
+            format!("{little_endian:08x}"),
+            format!("{big_endian:08x}"),
+            format!("{little_endian}"),
+            format!("{big_endian}"),
+        ];
+        // The four bytes one after another, hex or decimal, however spaced.
+        needles.push(
+            magic
+                .iter()
+                .map(|byte| format!("0x{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(""),
+        );
+        needles.push(
+            magic
+                .iter()
+                .map(|byte| format!("x{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(""),
+        );
+        needles.push(
+            magic
+                .iter()
+                .map(|byte| format!("{byte}"))
+                .collect::<Vec<_>>()
+                .join(""),
+        );
+        let mut hits = text.matches(text_form.as_str()).count();
+        for needle in &needles {
+            hits += squeezed.matches(needle.as_str()).count();
+        }
+        hits
+    }
+
+    /// Calls of the ONE leaf decoder in a source file, including calls made
+    /// through a renamed import. A `use d74_grammar::decode as parse_pbs1;`
+    /// makes `parse_pbs1(` a decoder call site in that file.
+    fn pbs1_leaf_decoder_calls(text: &str) -> usize {
+        let qualified = format!("{}::decode", "d74_grammar");
+        let mut hits = 0usize;
+        let mut names: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            // A line of prose about the decoder is not a call of it.
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if trimmed.starts_with("use ") && trimmed.contains("d74_grammar") {
+                // `use d74_grammar as pbs;` renames the CRATE, and then
+                // `pbs::decode(payload)` is a decoder call site that names
+                // neither the crate nor the magic.
+                if let Some(rest) = trimmed.strip_prefix("use d74_grammar as ") {
+                    let alias: String = rest
+                        .trim()
+                        .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                        .to_string();
+                    if !alias.is_empty() {
+                        names.push(format!("{alias}::decode"));
+                    }
+                }
+                // `use d74_grammar::decode as alias;` and
+                // `use d74_grammar::{decode as alias, Payload};`
+                for piece in trimmed.split(',') {
+                    let Some((left, right)) = piece.split_once(" as ") else {
+                        continue;
+                    };
+                    if !left.contains("decode") {
+                        continue;
+                    }
+                    let alias: String = right
+                        .trim()
+                        .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                        .to_string();
+                    if !alias.is_empty() {
+                        names.push(alias);
+                    }
+                }
+                // A bare `use d74_grammar::decode;` puts `decode(` in scope.
+                if trimmed.contains("::decode") && !trimmed.contains(" as ") {
+                    names.push(String::from("decode"));
+                }
+                continue;
+            }
+            // The fully qualified path counts where it is CALLED and where it
+            // is BOUND (a function pointer handed to somebody else is still a
+            // way in), but not where it is merely quoted inside a string.
+            for at in line.match_indices(qualified.as_str()) {
+                let after = &line[at.0 + qualified.len()..];
+                if after.starts_with('(')
+                    || after.starts_with(';')
+                    || after.starts_with(',')
+                    || after.starts_with(')')
+                    || after.starts_with(" as")
+                {
+                    hits += 1;
+                }
+            }
+        }
+        for name in &names {
+            hits += text.matches(&format!("{name}(")).count();
+        }
+        hits
+    }
+
+    #[test]
+    fn no_second_pbs1_reader_exists_anywhere_in_the_native_tree() {
+        let native_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("extractor/native")
+            .to_path_buf();
+        // The only files allowed to spell the magic in ANY form, and the exact
+        // number of times each spells it: the leaf grammar, which defines it,
+        // and the leaf grammar's own codec test, which asserts the bytes on the
+        // wire. Both live inside the one crate.
+        const MAGIC_SITES: &[(&str, usize)] = &[
+            ("d74_grammar/src/lib.rs", 1),
+            ("d74_grammar/src/tests.rs", 1),
+        ];
+        // Every site allowed to reach the leaf decoder, with the EXACT number
+        // of times it may do so. A count, not a licence: a second decode inside
+        // a listed file moves its number, and a site that stops decoding cannot
+        // linger in the list as a hole for a later reader to walk through.
+        // (Inside `d74_grammar` itself `decode` is the leaf, not a caller of
+        // it, so the crate's own files are not sites.)
+        const DECODER_SITES: &[(&str, usize)] = &[
+            ("recorder_host/src/world_fold.rs", 1),
+            ("recorder_host/src/domain_data_authority.rs", 1),
+        ];
+        let mut magic_files: Vec<(String, usize)> = Vec::new();
+        let mut decoder_files: Vec<(String, usize)> = Vec::new();
+        let mut scanned = 0usize;
+        let mut stack = vec![native_root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read native tree") {
+                let path = entry.expect("dir entry").path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if path.is_dir() {
+                    // Build output and version control are not source.
+                    if name.starts_with('.') || name == "target" || name == "runs" {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                    scanned += 1;
+                    let text = std::fs::read_to_string(&path).expect("read source");
+                    let relative = path
+                        .strip_prefix(&native_root)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string()
+                        .replace('\\', "/");
+                    let magic = pbs1_magic_spellings(&text);
+                    if magic > 0 {
+                        magic_files.push((relative.clone(), magic));
+                    }
+                    let calls = pbs1_leaf_decoder_calls(&text);
+                    if calls > 0 {
+                        decoder_files.push((relative, calls));
+                    }
+                }
+            }
+        }
+        assert!(scanned > 200, "the walk found almost nothing: {scanned} files");
+        for (file, spellings) in &magic_files {
+            let allowed = MAGIC_SITES
+                .iter()
+                .find(|(site, _)| file.ends_with(site))
+                .unwrap_or_else(|| {
+                    panic!("the domain-74 magic is spelled outside the leaf grammar: {file}")
+                });
+            assert_eq!(
+                (file.as_str(), *spellings),
+                (file.as_str(), allowed.1),
+                "the number of magic spellings in {file} changed"
+            );
+        }
+        for (site, expected) in MAGIC_SITES {
+            let observed = magic_files
+                .iter()
+                .find(|(file, _)| file.ends_with(site))
+                .map(|(_, spellings)| *spellings)
+                .unwrap_or(0);
+            assert_eq!((*site, observed), (*site, *expected));
+        }
+        for (file, calls) in &decoder_files {
+            let allowed = DECODER_SITES
+                .iter()
+                .find(|(site, _)| file.ends_with(site))
+                .unwrap_or_else(|| {
+                    panic!("the d74 leaf decoder is called from an unregistered site: {file}")
+                });
+            assert_eq!(
+                (file.as_str(), *calls),
+                (file.as_str(), allowed.1),
+                "the number of d74 leaf decoder calls in {file} changed; \
+                 re-read the new call and update this census deliberately"
+            );
+        }
+        // No registered site may be dead weight: an entry that no longer calls
+        // the decoder is a hole in the census, not a licence to keep.
+        for (site, expected) in DECODER_SITES {
+            let observed = decoder_files
+                .iter()
+                .find(|(file, _)| file.ends_with(site))
+                .map(|(_, calls)| *calls)
+                .unwrap_or(0);
+            assert_eq!(
+                (*site, observed),
+                (*site, *expected),
+                "registered d74 decoder site {site} does not call the decoder the \
+                 registered number of times"
+            );
+        }
+    }
+
+    // kills: a census that only greps for the text magic and the fully spelled
+    // `d74_grammar::decode`. Each of these sources is a second PBS1 reader that
+    // the previous scanner reported as clean. The evasions are ASSEMBLED from
+    // `d74_grammar::MAGIC` so that this test file does not itself become a
+    // magic-spelling site.
+    #[test]
+    fn the_one_decoder_census_sees_through_aliases_and_numeric_magic() {
+        let magic = d74_grammar::MAGIC;
+        let little_endian = u32::from_le_bytes(*magic);
+        let big_endian = u32::from_be_bytes(*magic);
+
+        let numeric = format!(
+            "fn looks_like_pbs1(p: &[u8]) -> bool {{\n    \
+             u32::from_le_bytes(p[..4].try_into().unwrap()) == 0x{little_endian:08X}\n}}\n"
+        );
+        assert_eq!(pbs1_magic_spellings(&numeric), 1, "numeric magic missed");
+
+        let byteswapped = format!("const HEADER_TAG: u32 = {big_endian};\n");
+        assert_eq!(
+            pbs1_magic_spellings(&byteswapped),
+            1,
+            "byte-swapped magic missed"
+        );
+
+        let byte_list = format!(
+            "const TAG: [u8; 4] = [0x{:02X}, 0x{:02X}, 0x{:02X}, 0x{:02X}];\n",
+            magic[0], magic[1], magic[2], magic[3]
+        );
+        assert_eq!(pbs1_magic_spellings(&byte_list), 1, "byte list missed");
+
+        let escaped = format!(
+            "const TAG: &[u8] = b\"\\x{:02x}\\x{:02x}\\x{:02x}\\x{:02x}\";\n",
+            magic[0], magic[1], magic[2], magic[3]
+        );
+        assert_eq!(pbs1_magic_spellings(&escaped), 1, "escaped magic missed");
+
+        let clean = "fn unrelated(bytes: &[u8]) -> usize { bytes.len() }\n";
+        assert_eq!(pbs1_magic_spellings(clean), 0, "a clean file must be clean");
+
+        let word = core::str::from_utf8(magic).expect("magic is ascii");
+        let prose = format!("// the {word} payload could not be decoded this hour\n");
+        assert_eq!(
+            pbs1_magic_spellings(&prose),
+            0,
+            "naming the format in prose is not an implementation"
+        );
+        let literal = format!("const MAGIC: &[u8; 4] = b\"{word}\";\n");
+        assert_eq!(
+            pbs1_magic_spellings(&literal),
+            1,
+            "the quoted literal is a spelling"
+        );
+
+        // Assembled, never typed out, so that this file does not become a
+        // decoder site by describing one.
+        let leaf = "d74_grammar";
+        let alias = format!(
+            "use {leaf}::decode as parse_pbs1;\n\
+             fn second_reader(p: &[u8]) {{ let _ = parse_pbs1(p); }}\n"
+        );
+        assert_eq!(pbs1_leaf_decoder_calls(&alias), 1, "aliased decoder missed");
+
+        let grouped = format!(
+            "use {leaf}::{{decode as read_state, Payload}};\n\
+             fn second_reader(p: &[u8]) {{ let _ = read_state(p); let _ = read_state(p); }}\n"
+        );
+        assert_eq!(
+            pbs1_leaf_decoder_calls(&grouped),
+            2,
+            "grouped alias import missed"
+        );
+
+        let bare = format!(
+            "use {leaf}::decode;\n\
+             fn second_reader(p: &[u8]) {{ let _ = decode(p); }}\n"
+        );
+        assert_eq!(pbs1_leaf_decoder_calls(&bare), 1, "bare import missed");
+
+        let crate_alias = format!(
+            "use {leaf} as pbs;\n\
+             fn second_reader(p: &[u8]) {{ let _ = pbs::decode(p); }}\n"
+        );
+        assert_eq!(
+            pbs1_leaf_decoder_calls(&crate_alias),
+            1,
+            "a renamed CRATE names neither the crate nor the magic at the call"
+        );
+
+        let bound = format!("fn hand_it_on() {{ let reader = {leaf}::decode; take(reader); }}\n");
+        assert_eq!(
+            pbs1_leaf_decoder_calls(&bound),
+            1,
+            "a bound function pointer is still a way into the decoder"
+        );
+
+        let quoted_only = format!("const NAMES: &[&str] = &[\"{leaf}::decode\"];\n");
+        assert_eq!(
+            pbs1_leaf_decoder_calls(&quoted_only),
+            0,
+            "quoting the decoder's name is not calling it"
+        );
+
+        assert_eq!(
+            pbs1_leaf_decoder_calls("fn unrelated(bytes: &[u8]) -> usize { bytes.len() }\n"),
+            0,
+            "a clean file must be clean"
         );
     }
 

@@ -7,7 +7,7 @@
 
 - id: `59`
 - registry name: `templates_equipment_catalog_live`
-- status: `reserved`
+- status: `validated_slice`
 - schedulable: `False`
 
 ## Condensed knowledge
@@ -22,14 +22,37 @@
 
 
 
-D59 owns the recording's static templates/equipment catalog; live equipment-
-designer state and display order belong to d78. A d78 view may join the catalog
-only at the identical `frame_hour`, and every numeric variant id must resolve
-to the canonical d59 `id:70` identity. Each recording must contain its own d59
-catalog; a vanilla catalog or frozen asset is not a fallback.
 
-The catalog is one of exactly seven roles in the static bundle:
-`templates_equipment_catalog`. Production admission requires a finalized
+D59 owns the recording's AUTHORED STATIC templates/equipment catalog, and
+nothing else. Three domains split this subject and the split is exact:
+
+- **d59** — authored static definitions, derived from the certified effective
+  installed content at replay-pack time. Never scheduled, never a per-frame record.
+- **A27 `design_catalog_live`** — the mutable live definitions and their
+  lifecycle: equipment variants (owner/creator, origin override, obsolete
+  state, archetype, display and variant names, installed modules, upgrade
+  levels, cached stats), division templates (name, regiment grid and rows,
+  support rows, priority, lock regime, `is_locked`, obsolete) and the
+  create/edit/delete lifecycle. It is a separate MANDATORY host-owned live
+  artifact, packed by `recorder_host/src/main.rs` under the role
+  `design_catalog_live`, not a compact domain.
+- **d78 `design_catalog_context_live`** — same-hour designer-view context and
+  displayed row ORDER only. It carries no definitions, upserts or tombstones.
+
+A d78 view may join the catalog only at the identical `frame_hour`. Runtime
+numeric variant identities do NOT resolve through this static artifact: replay
+resolves them through the A27 live catalog, and the static consumer
+(`game_ui/src/static_unit_catalogs.rs` `bind_frame`) joins authored templates by
+NAME and authored variants by ARCHETYPE, deliberately leaving player-created
+rows unresolved and explicit rather than substituting a similar definition.
+Each recording must contain its own d59 catalog; a vanilla catalog or frozen
+asset is not a fallback.
+
+The catalog is one of eight roles in the static bundle
+(`extractor/game_defs/build_runtime_static_bundle.py`): `templates_equipment_catalog`,
+`localisation_join`, `idea_tech_loc_xref_static`, `decisions_static_definitions`,
+`ship_definitions_static`, `gfx_icon_asset_manifest_static`,
+`technology_sharing_static`, `focus_defs_static`. Production admission requires a finalized
 static-bundle-v3 source join with `unknown=0`, an exact
 `extractor.product_modset_key.v1`, and the same capture/session/stream identity.
 Retained bundles lacking a finalized token join are evidence only. Effective
@@ -72,25 +95,29 @@ The live strings are UTF-8. The save oracle misdecoded 31 variant names and 59
 template names as Latin-1; repairing those counts is oracle-side normalisation,
 not permission to reinterpret engine bytes.
 
-See also d78.
+d59 is `schedulable: false` and `requires_data_record: false` permanently: it is
+an authored artifact packed at replay-pack time and emits no per-frame record.
+That is not a gap to be closed, it is the shape of the domain.
+
+See also d78 and the A27 `design_catalog_live` artifact.
 
 
 ## Files about this domain
 
-38 tracked files name this domain.
+37 tracked files name this domain.
 
-### Prose evidence (6) — mergeable
+### Prose evidence (7) — mergeable
 
 - `extractor/documents/EXTRACTION_ATLAS.md`
 - `extractor/documents/MASTER_EXTRACTION_CONTRACT.md`
+- `extractor/documents/SIZE_FLOOR_50MB.md`
 - `extractor/documents/domains/d59_templates_equipment_catalog_live.md`
 - `extractor/documents/domains/d66_occupation_state_extras_live.md`
 - `extractor/documents/domains/d78_design_catalog_context_live.md`
 - `extractor/native/lanes/templates_equipment_catalog_live/README.md`
 
-### Data evidence (11) — mergeable
+### Data evidence (10) — mergeable
 
-- `extractor/coverage_audit/reference_ledger/domain_file_map.csv`
 - `extractor/native/c0_registry_golden.json`
 - `extractor/native/domain_registry.json`
 - `extractor/native/lanes/country_economy_counters_live/wave2_ire_oracle/economy.json`
@@ -102,7 +129,7 @@ See also d78.
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/raids.json`
 - `replay_interface/re_evidence/rendering_laws/XUI14/save_oracle/strategic_air.json`
 
-### Code (21)
+### Code (20)
 
 - `extractor/game_defs/build_runtime_static_bundle.py`
 - `extractor/game_defs/localisation_gate.py`
@@ -119,8 +146,7 @@ See also d78.
 - `extractor/native/scripts/ProductionCapture.Validation.ps1`
 - `extractor/native/scripts/Start-Hoi4ProductionSpeed5Capture.ps1`
 - `extractor/native/scripts/c0_domain_census.py`
-- `replay_interface/native/game_ui/src/design_catalog.rs`
-- `replay_interface/native/game_ui/src/readonly_design_peace.rs`
+- `extractor/native/wire_format/src/d26.rs`
 - `replay_interface/native/game_ui/src/static_unit_catalogs.rs`
 - `replay_interface/native/replay_core/src/rollover_package_set.rs`
 - `replay_interface/native/replay_core/src/source.rs`

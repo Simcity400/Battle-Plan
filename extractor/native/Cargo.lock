@@ -154,6 +154,7 @@ dependencies = [
  "d24_grammar",
  "d43_grammar",
  "d68_grammar",
+ "d74_grammar",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
@@ -176,7 +177,6 @@ dependencies = [
  "portable_render_stream",
  "portable_test_fs_retry",
  "postfx_exposure",
- "power_balance_presentation_live_lane",
  "production_hook_receipt",
  "production_render_catalog_live_lane",
  "production_render_submit_live_lane",
@@ -337,6 +337,10 @@ version = "0.1.0"
 
 [[package]]
 name = "d68_grammar"
+version = "0.1.0"
+
+[[package]]
+name = "d74_grammar"
 version = "0.1.0"
 
 [[package]]
@@ -826,16 +830,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "power_balance_presentation_live_lane"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
- "inline_detour",
- "minhook_h4",
- "windows-sys",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -928,6 +922,7 @@ dependencies = [
  "d24_grammar",
  "d43_grammar",
  "d68_grammar",
+ "d74_grammar",
  "decision_panel_live_lane",
  "design_catalog_context_live_lane",
  "diplomacy_intel_operatives_live",
@@ -946,7 +941,6 @@ dependencies = [
  "portable_content_manifest",
  "portable_render_stream",
  "portable_test_fs_retry",
- "power_balance_presentation_live_lane",
  "production_render_submit_live_lane",
  "resolved_tooltip_instances_live_lane",
  "scientists_live_lane",

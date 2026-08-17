@@ -107,7 +107,7 @@ ROSTER = {
     "sunk_convoy_history_live": (70, False),
     "dynamic_collection_trace_live": (71, True),
     "resolved_tooltip_instances_live": (72, False),
-    "power_balance_presentation_live": (74, False),
+    "power_balance_state_live": (74, False),
     "fired_event_popups_live": (75, False),
     "production_render_submits_live": (77, False),
     "design_catalog_context_live": (78, True),

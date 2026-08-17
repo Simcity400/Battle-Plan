@@ -196,7 +196,7 @@ CACHE_SCHEMA = "battle-plan.citation_integrity_cache.v1"
 # cannot read, which turned a landing gate red over content that is not ours.
 SKIP_DIRS = frozenset(
     {"target", ".git", ".claude", "node_modules", ".cargo-target", ".venv",
-     ".pnpm-store", ".reference", ".t3-worktrees"}
+     ".pnpm-store", ".reference", ".t3-worktrees", "captures"}
 )
 # Append-only evidence.  Named as directory components, matched at any depth.
 FROZEN_DIRS = frozenset({"runs", "re_evidence"})

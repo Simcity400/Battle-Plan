@@ -38,6 +38,7 @@ d24_grammar = { path = "../d24_grammar" }
 # duplicated layout facts across four shipping walk sites, nine trailer magics
 # and four live version families whose VERSION WORD decides a row's width.
 d43_grammar = { path = "../d43_grammar" }
+d74_grammar = { path = "../d74_grammar" }
 compact_contract = { path = "../compact_contract" }
 # The admission bounds this fold shares with the replay consumer. Both cargo
 # workspaces path-depend on this crate so each bound has one home; see
@@ -61,7 +62,6 @@ naval_missions_status_live_lane = { path = "../lanes/naval_missions_status_live"
 session_multiplayer_metadata_live = { path = "../lanes/session_multiplayer_metadata_live" }
 dynamic_collection_trace_live_lane = { path = "../lanes/dynamic_collection_trace_live" }
 resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_instances_live" }
-power_balance_presentation_live_lane = { path = "../lanes/power_balance_presentation_live" }
 fired_event_popups_live_lane = { path = "../lanes/fired_event_popups_live" }
 design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_live" }
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }

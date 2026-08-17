@@ -35,6 +35,7 @@ members = [
     # facts across four shipping walk sites, nine trailer magics and four
     # live version families (MTRF v1-v3, MTRR v1-v4, MTRD v1-v4).
     "d43_grammar",
+    "d74_grammar",
     # D11's payload grammar (lane KX, phase 2 of the same ruling). This is the
     # compile-error win: ten additive trailer families and five shipping sites
     # already shared constants but did not share one structural walk/encoder.
@@ -81,7 +82,6 @@ members = [
     "lanes/dynamic_collection_trace_live",
     "lanes/active_command_abilities_live",
     "lanes/resolved_tooltip_instances_live",
-    "lanes/power_balance_presentation_live",
     "lanes/fired_event_popups_live",
     "lanes/runtime_text_inputs_live",
     "lanes/production_render_submit_live",

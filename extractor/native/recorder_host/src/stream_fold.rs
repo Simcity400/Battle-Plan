@@ -304,10 +304,26 @@ pub fn fold_compact_stream_file_with_identity_mode(
     snapshot_dir: &Path,
     identity_mode: StreamIdentityMode,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
+    fold_compact_stream_file_with_identity_mode_and_content_manifest(
+        stream_path, game_id, snapshot_dir, identity_mode, None,
+    )
+}
+
+pub fn fold_compact_stream_file_with_identity_mode_and_content_manifest(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    identity_mode: StreamIdentityMode,
+    effective_content_manifest_sha256: Option<&str>,
+) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     let reader = compact_stream::open(stream_path)?;
     let compressed = reader.compression() == compact_stream::StreamCompression::Zstd;
     let total_len = if compressed { 0 } else { reader.encoded_len() };
     let mut fold = WorldFold::new_file_backed(game_id, snapshot_dir)?;
+    if let Some(digest) = effective_content_manifest_sha256 {
+        fold.set_effective_content_manifest_sha256(digest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    }
     let outcome = drive_fold_compressed_with_identity_mode(
         reader,
         total_len,
@@ -2250,12 +2266,26 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode(
     workers: usize,
     identity_mode: StreamIdentityMode,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
+    fold_compact_stream_file_parallel_with_identity_mode_and_content_manifest(
+        stream_path, game_id, snapshot_dir, workers, identity_mode, None,
+    )
+}
+
+pub fn fold_compact_stream_file_parallel_with_identity_mode_and_content_manifest(
+    stream_path: &Path,
+    game_id: &str,
+    snapshot_dir: &Path,
+    workers: usize,
+    identity_mode: StreamIdentityMode,
+    effective_content_manifest_sha256: Option<&str>,
+) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     if workers <= 1 {
-        return fold_compact_stream_file_with_identity_mode(
+        return fold_compact_stream_file_with_identity_mode_and_content_manifest(
             stream_path,
             game_id,
             snapshot_dir,
             identity_mode,
+            effective_content_manifest_sha256,
         );
     }
     // A worker that ends up owning zero hours is only wasted CPU, never a
@@ -2276,6 +2306,11 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode(
                                 workers as u64,
                                 k as u64,
                             )?;
+                            if let Some(digest) = effective_content_manifest_sha256 {
+                                fold.set_effective_content_manifest_sha256(digest).map_err(
+                                    |error| io::Error::new(io::ErrorKind::InvalidInput, error),
+                                )?;
+                            }
                             let outcome = drive_fold_compressed_with_identity_mode(
                                 reader,
                                 total_len,
