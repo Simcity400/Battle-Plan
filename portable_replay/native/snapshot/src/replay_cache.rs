@@ -141,7 +141,7 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// [`PATCH_NUMBER_DELTA`]. Every recording of an earlier version stops opening,
 /// which is what pre-production means: the header carries this number and a
 /// reader refuses a cache that does not state it.
-const FORMAT_VERSION: u16 = 7;
+const FORMAT_VERSION: u16 = 8;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
@@ -256,6 +256,22 @@ const PATCH_NUMBER_DELTA: u8 = 6;
 /// `fraction_digits` from asking for a power of ten nobody can hold. The widest
 /// fraction the fold actually mints is five (`FIXED_SCALE` is 100,000).
 const MAX_NUMBER_DELTA_DIGITS: u32 = 30;
+
+/// How many RAW bytes a number delta may cost over the `Replace` it displaces
+/// and still be the spelling both sides must use.
+///
+/// Zero is "strictly shorter", which is the rule the delta shipped with. It is
+/// a constant rather than a bare `<` because the two spellings do not compress
+/// alike -- a delta stream is a column of small signed numbers and a replace
+/// stream is a column of absolute ones -- so the raw comparison is a PROXY for
+/// the sealed one and the size of the gap between them is a measured question,
+/// not an obvious one. Lane MG measured it on the four sealed captures; see
+/// `extractor/native/runs/mg_size_numeric/NUMBER_DELTA_SLACK.txt`.
+///
+/// Whatever it is, it is a total function of the two tokens, so `diff_value`
+/// and `apply_patch` reach the same verdict and a recording still has exactly
+/// one legal spelling.
+const NUMBER_DELTA_SLACK: usize = 0;
 /// An array whose LENGTH changed, aligned by a key its own rows carry, as a
 /// left-to-right edit script over the old array.
 ///
@@ -285,6 +301,132 @@ const ARRAY_EDIT_PATCH: u64 = 2;
 const ARRAY_EDIT_INSERT: u64 = 3;
 /// Smallest encoded edit op: its kind and one varint or value byte.
 const MIN_ARRAY_EDIT_OP_BYTES: usize = 1 + 1;
+
+// ---------------------------------------------------------------------------
+// A DELTA RECORD IS SEVERAL BYTE STREAMS, NOT ONE
+//
+// The patch grammar above says WHAT a delta is. This says where its bytes SIT,
+// and it is a size lever rather than an information one: no delta changes, no
+// value moves, and the traversal both sides run is the same walk it always was.
+// What changes is adjacency. A record used to interleave, for every one of
+// thousands of rows, a member name, a patch tag, a fraction width and a signed
+// difference; each of those is a different kind of byte with a different
+// distribution, and zstd at level 3 had to model all four at once.
+//
+// Written instead as one stream per KIND, and -- for anything sitting under a
+// member name -- one stream per NAME, an hour's 13,414 `temperature_raw`
+// differences land next to each other instead of next to 13,414 `water_raw`
+// differences and everything else. Measured on capture t53's whole 219-hour
+// shipping artifact by THIS encoder and reader, every hour reconstructed and
+// required to hash to the digest the original recording published: 60,215 ->
+// 45,695 sealed bytes per game hour, 6.33 -> 4.81 GB over a full campaign. See
+// `extractor/native/runs/mg_size_numeric/MG_FMT8_t53.json`.
+//
+// THE ONE STRUCTURAL RULE that keeps the two sides symmetric: the leading
+// DISCRIMINATOR byte of a patch is routed by information the reader already
+// has (its class and the member name it sits under), never by what the byte
+// turns out to say. Everything after it may be routed by what it said.
+//
+// Reordering was measured against the alternatives rather than assumed. A
+// finer fixed split -- six or seven streams instead of four -- is WORSE
+// (53,270 and 53,287 against 52,602), because cutting the record more ways
+// loses more compound matches than the extra homogeneity buys. Transposing the
+// difference varints by BYTE POSITION loses outright (61,818, +2.2%).
+/// Patch tags, object member counts, array scripts: the record's shape, for
+/// anything not sitting under a member name.
+const STREAM_STRUCTURE: u32 = 0;
+/// Member names, as dictionary tokens. Always its own stream, never columnar:
+/// the name is what SELECTS a column, so the reader must be able to read it
+/// before it knows which column anything else belongs to.
+const STREAM_NAMES: u32 = 1;
+/// Number deltas not under a member name.
+const STREAM_NUMBERS: u32 = 2;
+/// Whole values -- a `Replace` or an array-edit insert -- not under a member
+/// name.
+const STREAM_VALUES: u32 = 3;
+/// The first per-member-name column. Kept clear of the fixed streams with room
+/// to spare, so a later class can be added without renumbering a format.
+const STREAM_COLUMN_BASE: u32 = 16;
+/// How many streams one member name owns: its fraction widths and its
+/// differences.
+///
+/// ONLY THE NUMBERS ARE COLUMNAR, and that is measured rather than chosen for
+/// simplicity. Giving every class its own per-name stream costs a directory
+/// entry per name per record for streams that often hold a byte or two, and on
+/// t53 it is WORSE than columnar numbers alone (46,447 against 45,901 sealed
+/// bytes per game hour). It only wins once a minimum-occupancy rule keeps the
+/// long tail out (44,913 at a threshold of eight), and that rule needs a
+/// counting pass over the record before it can be written and a list of the
+/// admitted names inside it. That is the next lever, priced, not this one.
+const STREAM_COLUMNS_PER_NAME: u32 = 2;
+
+/// How many times over its own byte length one delta record may REPEAT the
+/// window's member names.
+///
+/// This is only half the budget, and the half that governs REPETITION. See
+/// [`NameDictionary::begin_record`] for the other half and for why a plain
+/// ratio is the wrong instrument on its own.
+const MAX_NAME_REPETITION: u64 = 64;
+
+/// What KIND of byte this is, which is half of where it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByteClass {
+    /// A patch's leading tag, and a value's leading tag inside a replace.
+    Structure,
+    /// A `PATCH_OBJECT`'s removal and change counts.
+    Frame,
+    /// `PATCH_ARRAY` gaps, `PATCH_ARRAY_EDIT` op kinds and run lengths.
+    Script,
+    /// A number delta's fraction width.
+    NumberFraction,
+    /// A number delta's zigzag difference.
+    NumberDelta,
+    /// A member name.
+    Name,
+    /// Everything inside a replaced or inserted value.
+    Value,
+}
+
+impl ByteClass {
+    /// This class's slot within one member name's block of columns, or `None`
+    /// for a class that is never columnar and always uses [`Self::plain_stream`].
+    fn column_slot(self) -> Option<u32> {
+        match self {
+            Self::NumberFraction => Some(0),
+            Self::NumberDelta => Some(1),
+            // The name is what NAMES the column, so it cannot live in one: the
+            // reader has to read it before it knows which column anything else
+            // is in. The rest are not columnar because measuring said so.
+            Self::Name | Self::Structure | Self::Frame | Self::Script | Self::Value => None,
+        }
+    }
+
+    /// The stream for this class when no member name is in scope.
+    fn plain_stream(self) -> u32 {
+        match self {
+            Self::Name => STREAM_NAMES,
+            Self::NumberFraction | Self::NumberDelta => STREAM_NUMBERS,
+            Self::Value => STREAM_VALUES,
+            Self::Structure | Self::Frame | Self::Script => STREAM_STRUCTURE,
+        }
+    }
+}
+
+/// WHERE A BYTE GOES: a total function of its class and the member name it sits
+/// under, computed identically by the encoder and the reader.
+fn stream_key(class: ByteClass, column: Option<u32>) -> Result<u32, ReplayCacheError> {
+    let Some(name_id) = column else {
+        return Ok(class.plain_stream());
+    };
+    let Some(slot) = class.column_slot() else {
+        return Ok(class.plain_stream());
+    };
+    name_id
+        .checked_mul(STREAM_COLUMNS_PER_NAME)
+        .and_then(|base| base.checked_add(STREAM_COLUMN_BASE))
+        .and_then(|base| base.checked_add(slot))
+        .ok_or_else(|| ReplayCacheError::new("member name column does not fit a stream key"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheIdentityMode {
@@ -1359,6 +1501,22 @@ pub struct ReplayCacheEncoder<W: Write> {
     /// -- each hour reconstructed by the production reader and required to hash
     /// to the digest the original recording published.
     revive_enabled: bool,
+    /// The member names THIS CHECKPOINT WINDOW has introduced, numbered in the
+    /// order its deltas first spell them. Emptied at every checkpoint, for the
+    /// reason [`NameDictionary`] gives.
+    names: NameDictionary,
+    /// Set when a record could not be written after the encoder had already
+    /// advanced past the hour it belonged to.
+    ///
+    /// The delta base, the revive shadow and the window's name table all move
+    /// as a record is built, and they move BEFORE the bytes reach the writer.
+    /// If the write then fails, the caller still holds an unwritten hour and
+    /// nothing says it may not offer the next one -- but the encoder's state is
+    /// now one hour ahead of the artifact, so every later record would be a
+    /// delta against a world no reader can reach. This was true of the delta
+    /// base long before the name table existed; naming it is what makes it
+    /// refuse instead of continue (Codex review round 3, defect 3).
+    write_failed: bool,
     /// What each currently-null path last held, since the open checkpoint.
     shadow: Shadow,
     /// What that has cost, against the ceiling one window may spend.
@@ -1406,6 +1564,8 @@ impl<W: Write> ReplayCacheEncoder<W> {
         }
         let mut encoder = Self {
             revive_enabled: true,
+            names: NameDictionary::default(),
+            write_failed: false,
             shadow: Shadow::default(),
             shadow_budget: ShadowBudget::default(),
             writer,
@@ -1430,6 +1590,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
     }
 
     pub fn push(&mut self, hour: CacheBuildHour) -> Result<(), ReplayCacheError> {
+        self.refuse_after_a_failed_write()?;
         let CacheBuildHour {
             hour_index,
             date,
@@ -1459,8 +1620,23 @@ impl<W: Write> ReplayCacheEncoder<W> {
         meta: CacheBuildHourMeta,
         prepared: CanonicalWorldHour,
     ) -> Result<(), ReplayCacheError> {
+        self.refuse_after_a_failed_write()?;
         self.check_ordered_and_contiguous(&meta)?;
         self.encode_prepared(meta, prepared)
+    }
+
+    /// An encoder that could not write a record has nothing left to offer.
+    ///
+    /// See [`Self::write_failed`]: the delta base, the shadow and the name
+    /// table are one hour ahead of the artifact, and no later record can be
+    /// made to mean anything against them.
+    fn refuse_after_a_failed_write(&self) -> Result<(), ReplayCacheError> {
+        if self.write_failed {
+            return Err(ReplayCacheError::new(
+                "cache encoder advanced past an hour whose record could not be written",
+            ));
+        }
+        Ok(())
     }
 
     /// SKIP an hour this recording does not vouch for, naming why.
@@ -1476,6 +1652,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
     /// encoder cannot check that — it has never seen the coverage map — so the
     /// producer asserts it and the replay authority re-joins the two.
     pub fn exclude_hour(&mut self, hole: ReplayExcludedHour) -> Result<(), ReplayCacheError> {
+        self.refuse_after_a_failed_write()?;
         if hole.reason.trim().is_empty() {
             return Err(ReplayCacheError::new(format!(
                 "game hour {} cannot be excluded without a named reason",
@@ -1559,6 +1736,10 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // revives no reader could resolve.
             self.shadow = Shadow::default();
             self.shadow_budget = ShadowBudget::default();
+            // A CHECKPOINT OPENS A NEW WINDOW, so the name table starts empty
+            // again: the record itself spells every name in full and a reader
+            // that seeks here has read nothing before it.
+            self.names = NameDictionary::default();
             (RECORD_CHECKPOINT, encode_value(&value)?, 0)
         } else {
             let previous = self
@@ -1571,12 +1752,29 @@ impl<W: Write> ReplayCacheEncoder<W> {
                 self.revive_enabled.then_some(&self.shadow),
                 0,
             )?;
-            let payload = encode_patch(&patch)?;
+            // THE NAME TABLE MOVES ONLY WHEN THE RECORD DOES. Everything from
+            // here to the write is fallible, no record is written if any of it
+            // fails, and the hour stays retryable -- so a name introduced by a
+            // failed attempt has to be forgotten again, or the retry spells it
+            // as an id whose literal no reader ever saw.
+            let mark = self.names.mark();
+            let payload = match encode_patch(&patch, &mut self.names) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.names.rollback(mark);
+                    return Err(error);
+                }
+            };
             // CARRY THE SHADOW over the step the reader is about to take, using
             // the reader's own function, over the previous hour this encoder is
             // about to drop anyway. It costs a walk of what CHANGED -- not a
             // clone of the world, which is what the note below refuses.
-            apply_patch(previous, &patch, &mut self.shadow, &mut self.shadow_budget, 0)?;
+            if let Err(error) =
+                apply_patch(previous, &patch, &mut self.shadow, &mut self.shadow_budget, 0)
+            {
+                self.names.rollback(mark);
+                return Err(error);
+            }
             // No in-memory replay of the patch here. The delta a reader will
             // actually follow is the one DECODED from `payload`, applied to a
             // value decoded from the cache -- and that is exactly what
@@ -1588,14 +1786,19 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // whole-world `CanonValue` -- tens of megabytes of `String`
             // allocations -- once per delta hour. The seal path runs
             // `verify_every_hour` unconditionally, so nothing is left unproved.
-            (
-                RECORD_DELTA,
-                payload,
-                u32::try_from(position - self.checkpoint_position)
-                    .map_err(|_| ReplayCacheError::new("delta distance does not fit u32"))?,
-            )
+            let steps = match u32::try_from(position - self.checkpoint_position) {
+                Ok(steps) => steps,
+                Err(_) => {
+                    self.names.rollback(mark);
+                    return Err(ReplayCacheError::new("delta distance does not fit u32"));
+                }
+            };
+            (RECORD_DELTA, payload, steps)
         };
         let record_offset = self.offset;
+        // From here the bytes go out; anything that fails past this point has
+        // moved the encoder without moving the artifact.
+        self.write_failed = true;
         let payload_len = u64::try_from(payload.len())
             .map_err(|_| ReplayCacheError::new("cache payload length does not fit u64"))?;
         let mut header = Vec::with_capacity(21);
@@ -1616,6 +1819,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
         record_digest.update(&payload);
         self.write_hashed(&header)?;
         self.write_hashed(&payload)?;
+        self.write_failed = false;
         let record_len = self.offset - record_offset;
         self.entries.push(ReplayHourEntry {
             hour_index: hour.hour_index,
@@ -1726,6 +1930,8 @@ impl<W: Write> ReplayCacheEncoder<W> {
         identity_mode: CacheIdentityMode,
         source_len: u64,
     ) -> Result<(W, ReplayHourIndex), ReplayCacheError> {
+        // AND A CACHE IS NOT SEALED OVER A HOUR THAT NEVER REACHED IT.
+        self.refuse_after_a_failed_write()?;
         if self.entries.is_empty() {
             return Err(ReplayCacheError::new(
                 "cannot finish an empty replay checkpoint cache",
@@ -2200,6 +2406,16 @@ struct ScrubCursor {
     value: CanonValue,
     shadow: Shadow,
     budget: ShadowBudget,
+    /// The window's member-name table AS OF `position`.
+    ///
+    /// It belongs here for exactly the reason the shadow does: it is state the
+    /// deltas walked so far have built, and the deltas still to walk are
+    /// spelled against it. A cursor that carried the value but not the table
+    /// would resume into a record whose first name is an id the resumed reader
+    /// never saw introduced. The resume condition below -- same checkpoint
+    /// window, at or before the target -- is what makes the carried table the
+    /// right one: what remains is a forward suffix of the same walk.
+    names: NameDictionary,
 }
 
 impl CertifiedReplayCache {
@@ -2498,6 +2714,7 @@ fn verify_every_hour_from(
     let mut value: Option<CanonValue> = None;
     let mut shadow = Shadow::default();
     let mut budget = ShadowBudget::default();
+    let mut names = NameDictionary::default();
     let mut max_seek_deltas = 0u32;
     for (position, entry) in index.hours.iter().enumerate() {
         let (kind, record_hour, payload) = cache_record(cache, entry)?;
@@ -2512,6 +2729,7 @@ fn verify_every_hour_from(
                 value = Some(decode_value_exact(payload.as_ref())?);
                 shadow = Shadow::default();
                 budget = ShadowBudget::default();
+                names = NameDictionary::default();
             }
             (RECORD_DELTA, steps) if steps != 0 => {
                 let running = value.as_mut().ok_or_else(|| {
@@ -2519,7 +2737,7 @@ fn verify_every_hour_from(
                 })?;
                 apply_patch(
                     running,
-                    &decode_patch_exact(payload.as_ref())?,
+                    &decode_patch_record(payload.as_ref(), &mut names)?,
                     &mut shadow,
                     &mut budget,
                     0,
@@ -2574,6 +2792,10 @@ fn reconstruct_json_from(
     // may only ever name a value recorded since one.
     let mut shadow = Shadow::default();
     let mut budget = ShadowBudget::default();
+    // AND SO IS THE NAME TABLE, for the same reason: a seek starts at this
+    // checkpoint having read nothing before it, so the window's names are
+    // exactly the ones the deltas from here on introduce.
+    let mut names = NameDictionary::default();
     for entry in &index.hours[checkpoint_position + 1..=target_position] {
         let (kind, record_hour, payload) = cache_record(cache, entry)?;
         if kind != RECORD_DELTA || record_hour != entry.hour_index {
@@ -2581,7 +2803,7 @@ fn reconstruct_json_from(
                 "delta index points at an invalid cache record",
             ));
         }
-        let patch = decode_patch_exact(payload.as_ref())?;
+        let patch = decode_patch_record(payload.as_ref(), &mut names)?;
         drop(payload);
         apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
     }
@@ -2657,8 +2879,14 @@ fn reconstruct_json_cursored(
     let resumed = cursor.take().filter(|held| {
         held.checkpoint_position == checkpoint_position && held.position <= target_position
     });
-    let (mut value, mut shadow, mut budget, start_position) = match resumed {
-        Some(held) => (held.value, held.shadow, held.budget, held.position),
+    let (mut value, mut shadow, mut budget, mut names, start_position) = match resumed {
+        Some(held) => (
+            held.value,
+            held.shadow,
+            held.budget,
+            held.names,
+            held.position,
+        ),
         None => {
             let (kind, checkpoint_hour, payload) = cache_record(cache, checkpoint)?;
             if kind != RECORD_CHECKPOINT || checkpoint_hour != checkpoint.hour_index {
@@ -2672,6 +2900,7 @@ fn reconstruct_json_cursored(
                 value,
                 Shadow::default(),
                 ShadowBudget::default(),
+                NameDictionary::default(),
                 checkpoint_position,
             )
         }
@@ -2690,6 +2919,7 @@ fn reconstruct_json_cursored(
                 value,
                 shadow,
                 budget,
+                names,
             });
             return Ok(ScrubOutcome::Abandoned {
                 reached_hour: index.hours[position].hour_index,
@@ -2702,7 +2932,7 @@ fn reconstruct_json_cursored(
                 "delta index points at an invalid cache record",
             ));
         }
-        let patch = decode_patch_exact(payload.as_ref())?;
+        let patch = decode_patch_record(payload.as_ref(), &mut names)?;
         drop(payload);
         apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
         walked += 1;
@@ -2734,6 +2964,7 @@ fn reconstruct_json_cursored(
         value,
         shadow,
         budget,
+        names,
     });
     Ok(ScrubOutcome::Reconstructed { json, receipt })
 }
@@ -3139,7 +3370,7 @@ fn number_delta_between(old: &CanonValue, new: &CanonValue) -> Option<(u32, i64)
     }
     let cost = 1 + varint_len(u64::from(new_fraction)) + varint_len(zigzag(delta));
     let replace_cost = 1 + encoded_number_len(new_token)?;
-    (cost < replace_cost).then_some((new_fraction, delta))
+    (cost < replace_cost + NUMBER_DELTA_SLACK).then_some((new_fraction, delta))
 }
 
 /// Bytes [`encode_value_into`] spends on this number token, without building
@@ -3443,7 +3674,7 @@ fn diff_value(
             if let Some(ops) = array_edit_between(old_rows, new_rows, shadow, depth)? {
                 let edit = Patch::ArrayEdit(ops);
                 let replace = Patch::Replace(new.clone());
-                if encoded_patch_len(&edit, depth)? < encoded_patch_len(&replace, depth)? {
+                if grammar_cost(&edit, depth)? < grammar_cost(&replace, depth)? {
                     return Ok(edit);
                 }
             }
@@ -3848,82 +4079,576 @@ fn apply_patch(
 /// It BUILDS them rather than pricing them from a formula, because a formula
 /// that drifted from [`encode_patch_into`] would pick the longer spelling and
 /// nothing would say so.
-fn encoded_patch_len(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
-    let mut out = Vec::new();
-    encode_patch_into(patch, &mut out, depth)?;
-    Ok(out.len())
+/// THE MEMBER NAMES OF ONE CHECKPOINT WINDOW, numbered in the order the deltas
+/// first spell them.
+///
+/// A name is written once, literally, the first time a delta in this window
+/// uses it; every later use is the small integer it was given. The names are
+/// the fold's own spelling and they repeat thousands of times an hour
+/// (`construction_buildings_state_damage_live` is 40 bytes before its value),
+/// and the same table serves both the member names of a `PATCH_OBJECT` and the
+/// object keys inside a REPLACED value -- which is where most of them are, and
+/// is the half MB's `member_names` class did not count.
+///
+/// IT IS WINDOW-LOCAL, NOT RECORDING-WIDE, and that is a correctness condition
+/// rather than a tuning choice (Codex design round, D3): the reader opens a
+/// recording by decoding one CHECKPOINT and applying the deltas after it, so a
+/// table built across a checkpoint would make every window but the first
+/// unreadable without replaying the ones before it. It is emptied at each
+/// checkpoint and rebuilt by that window's own deltas. The checkpoint record
+/// itself spells every name in full and uses no table at all, so it still
+/// decodes entirely on its own.
+///
+/// The re-learning costs one literal per distinct name per window: about 40 KB
+/// once per 744 game hours, against the 427,807 raw bytes an hour the names
+/// cost before.
+#[derive(Default)]
+struct NameDictionary {
+    /// The table, ONCE. `ids` and `names` share each name's bytes rather than
+    /// holding two copies of them: a literal introduction is already paid for
+    /// in the record, and copying it twice more on the way in is an
+    /// amplification the record never asked for.
+    ids: std::collections::HashMap<std::sync::Arc<str>, u32>,
+    names: Vec<std::sync::Arc<str>>,
+    /// Which record each name was last materialised in, by
+    /// [`Self::record_serial`], so the FIRST use of a name in a record can be
+    /// free and every later one charged. Parallel to `names`.
+    last_used_in: Vec<u64>,
+    /// Counts records, so `last_used_in` needs no clearing between them.
+    record_serial: u64,
+    /// Name bytes this RECORD has REPEATED so far, against
+    /// [`Self::repetition_ceiling`].
+    repeated: u64,
+    /// What this record is allowed to repeat. See [`Self::begin_record`].
+    repetition_ceiling: u64,
 }
 
-fn encode_patch(patch: &Patch) -> Result<Vec<u8>, ReplayCacheError> {
-    let mut out = Vec::new();
-    encode_patch_into(patch, &mut out, 0)?;
-    Ok(out)
+impl NameDictionary {
+    /// Open a record and set what its names may cost.
+    ///
+    /// WHAT IS BEING BOUNDED. A name reference is one byte and can name a long
+    /// string, so a record could otherwise materialise a document orders of
+    /// magnitude larger than itself -- introduce a one-megabyte name once, then
+    /// reference it a million times.
+    ///
+    /// A PLAIN RATIO IS THE WRONG INSTRUMENT (Codex review round 3): a record
+    /// that REMOVES a hundred mod-authored scripted-state members spends about
+    /// one byte on each, because a removal carries no patch, and materialises
+    /// every one of those names in full. Mod names are not the fold's short
+    /// identifiers and have no ceiling, so a fixed multiple of the record's
+    /// length refuses an ordinary recording -- a worse failure than the one the
+    /// budget exists to prevent.
+    ///
+    /// A POOL OF CREDIT IS ALSO THE WRONG INSTRUMENT, which the second cut of
+    /// this was (Codex review round 4): giving a record an allowance equal to
+    /// what the window had spent introducing its names let an attacker PAD the
+    /// dictionary with distinct long names and then spend the whole allowance
+    /// repeating one of them, in every record, for ever.
+    ///
+    /// What is actually free is naming each member ONCE, which is the shape the
+    /// mass removal has and the shape the attack does not. So the FIRST time a
+    /// record materialises a given name it is not charged at all, and every
+    /// later use of that same name in that same record is charged against the
+    /// record's own length times [`MAX_NAME_REPETITION`]. A record can name
+    /// every member the window ever introduced and pay nothing; it cannot say
+    /// one of them twenty thousand times.
+    fn begin_record(&mut self, payload_len: usize) {
+        self.repeated = 0;
+        self.repetition_ceiling = (payload_len as u64).saturating_mul(MAX_NAME_REPETITION);
+        self.record_serial = self.record_serial.wrapping_add(1);
+    }
+
+    /// Charge one materialised name against this record's budget, and refuse
+    /// BEFORE the copy because `String` allocation is not fallible.
+    ///
+    /// The first use of `id` in this record is free; see [`Self::begin_record`]
+    /// for why that is the right line to draw.
+    fn charge(&mut self, id: u32, bytes: usize) -> Result<(), ReplayCacheError> {
+        let slot = self
+            .last_used_in
+            .get_mut(id as usize)
+            .ok_or_else(|| ReplayCacheError::new("member name id is not in the table"))?;
+        if *slot == self.record_serial {
+            self.repeated = self.repeated.saturating_add(bytes as u64);
+            if self.repeated > self.repetition_ceiling {
+                return Err(ReplayCacheError::new(
+                    "delta record repeats its member names past what its own length allows",
+                ));
+            }
+        } else {
+            *slot = self.record_serial;
+        }
+        Ok(())
+    }
+
+    /// How many names this window holds, so a FAILED encode can put the table
+    /// back the way it found it.
+    fn mark(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Forget every name introduced since `mark`.
+    ///
+    /// An encode that fails writes no record, and the hour stays retryable --
+    /// but a name it had already introduced would then be spelled as an id on
+    /// the retry, and a reader starting from the checkpoint never saw that id's
+    /// literal (Codex review round 2, defect 2). The table has to move only
+    /// when the record does.
+    fn rollback(&mut self, mark: usize) {
+        for name in self.names.drain(mark..) {
+            self.ids.remove(&name);
+        }
+        self.last_used_in.truncate(mark);
+    }
+    /// Write `name` and return the id it now has.
+    ///
+    /// `0` introduces a name and is followed by its literal text; anything else
+    /// is `id + 1`. A name that is already known has exactly one spelling --
+    /// its id -- so a second literal for it is refused on the way back in.
+    fn write(&mut self, out: &mut Vec<u8>, name: &str) -> Result<u32, ReplayCacheError> {
+        if let Some(id) = self.ids.get(name) {
+            put_varint(out, u64::from(*id) + 1);
+            return Ok(*id);
+        }
+        let id = u32::try_from(self.names.len())
+            .map_err(|_| ReplayCacheError::new("member name dictionary is full"))?;
+        put_varint(out, 0);
+        put_text(out, name)?;
+        self.introduce(std::sync::Arc::from(name));
+        Ok(id)
+    }
+
+    /// Take a name into the table, once, under one allocation.
+    ///
+    /// It counts as used in the current record: a name is introduced by being
+    /// spelled, and that spelling is the record's own bytes.
+    fn introduce(&mut self, name: std::sync::Arc<str>) {
+        self.ids
+            .insert(std::sync::Arc::clone(&name), self.names.len() as u32);
+        self.names.push(name);
+        self.last_used_in.push(self.record_serial);
+    }
+
+    fn read(&mut self, reader: &mut ByteReader<'_>) -> Result<(String, u32), ReplayCacheError> {
+        let token = reader.varint()?;
+        if token != 0 {
+            let id = u32::try_from(token - 1)
+                .map_err(|_| ReplayCacheError::new("member name id does not fit u32"))?;
+            let length = self
+                .names
+                .get(id as usize)
+                .ok_or_else(|| {
+                    ReplayCacheError::new("member name id names nothing this window introduced")
+                })?
+                .len();
+            // Charged BEFORE the copy, because the copy is not fallible.
+            self.charge(id, length)?;
+            let name = self.names[id as usize].to_string();
+            return Ok((name, id));
+        }
+        let name = reader.text()?;
+        if !is_valid_object_key(&name) {
+            return Err(ReplayCacheError::new(
+                "binary JSON object member name does not decode",
+            ));
+        }
+        if self.ids.contains_key(name.as_str()) {
+            return Err(ReplayCacheError::new(
+                "member name already introduced must be spelled as its id",
+            ));
+        }
+        let id = u32::try_from(self.names.len())
+            .map_err(|_| ReplayCacheError::new("member name dictionary is full"))?;
+        self.introduce(std::sync::Arc::from(name.as_str()));
+        Ok((name, id))
+    }
+}
+
+/// The streams one delta record is being written into.
+#[derive(Default)]
+struct PatchStreams {
+    streams: std::collections::BTreeMap<u32, Vec<u8>>,
+}
+
+impl PatchStreams {
+    fn at(
+        &mut self,
+        class: ByteClass,
+        column: Option<u32>,
+    ) -> Result<&mut Vec<u8>, ReplayCacheError> {
+        Ok(self.streams.entry(stream_key(class, column)?).or_default())
+    }
+
+    /// `[varint count][per stream: varint key gap, varint length][bodies]`,
+    /// streams in ascending key order.
+    ///
+    /// Keys are gap-coded from the previous key MINUS ONE, so a repeated or
+    /// out-of-order key cannot be spelled at all, and an empty stream is
+    /// dropped rather than declared -- both so one record has one encoding.
+    fn finish(mut self) -> Result<Vec<u8>, ReplayCacheError> {
+        self.streams.retain(|_, body| !body.is_empty());
+        let mut out = Vec::new();
+        put_varint(&mut out, self.streams.len() as u64);
+        let mut previous: Option<u32> = None;
+        for (key, body) in &self.streams {
+            let gap = match previous {
+                None => u64::from(*key),
+                Some(previous) => u64::from(*key - previous - 1),
+            };
+            put_varint(&mut out, gap);
+            put_varint(
+                &mut out,
+                u64::try_from(body.len())
+                    .map_err(|_| ReplayCacheError::new("stream length does not fit u64"))?,
+            );
+            previous = Some(*key);
+        }
+        for body in self.streams.values() {
+            out.extend_from_slice(body);
+        }
+        Ok(out)
+    }
+}
+
+/// The same streams, on the way back.
+struct PatchReaders<'a> {
+    streams: std::collections::BTreeMap<u32, ByteReader<'a>>,
+}
+
+impl<'a> PatchReaders<'a> {
+    /// Smallest a declared stream can be: one directory gap byte, one length
+    /// byte, one body byte.
+    const MIN_STREAM_BYTES: usize = 3;
+
+    fn open(bytes: &'a [u8]) -> Result<Self, ReplayCacheError> {
+        let mut directory = ByteReader::new(bytes);
+        let count = directory.count(Self::MIN_STREAM_BYTES)?;
+        let mut keys = Vec::new();
+        reserve_exact(&mut keys, count)?;
+        let mut lengths = Vec::new();
+        reserve_exact(&mut lengths, count)?;
+        let mut previous: Option<u32> = None;
+        for _ in 0..count {
+            let gap = u32::try_from(directory.varint()?)
+                .map_err(|_| ReplayCacheError::new("stream key gap does not fit u32"))?;
+            let key = match previous {
+                None => gap,
+                Some(previous) => previous
+                    .checked_add(1)
+                    .and_then(|next| next.checked_add(gap))
+                    .ok_or_else(|| ReplayCacheError::new("stream keys leave u32"))?,
+            };
+            previous = Some(key);
+            let length = usize::try_from(directory.varint()?)
+                .map_err(|_| ReplayCacheError::new("stream length does not fit usize"))?;
+            if length == 0 {
+                return Err(ReplayCacheError::new(
+                    "an empty stream is dropped, never declared",
+                ));
+            }
+            keys.push(key);
+            lengths.push(length);
+        }
+        let mut streams = std::collections::BTreeMap::new();
+        for (key, length) in keys.into_iter().zip(lengths) {
+            streams.insert(key, ByteReader::new(directory.take(length)?));
+        }
+        directory.finish()?;
+        Ok(Self { streams })
+    }
+
+    /// Bytes still unread across every stream, which is what bounds a declared
+    /// element count: a record's collection cannot need more elements than the
+    /// whole record has bytes left, wherever those bytes sit.
+    fn remaining(&self) -> usize {
+        self.streams.values().map(ByteReader::remaining).sum()
+    }
+
+    fn stream(
+        &mut self,
+        class: ByteClass,
+        column: Option<u32>,
+    ) -> Result<&mut ByteReader<'a>, ReplayCacheError> {
+        let key = stream_key(class, column)?;
+        self.streams
+            .get_mut(&key)
+            .ok_or_else(|| ReplayCacheError::new("patch reads a stream the record does not carry"))
+    }
+
+    fn u8(&mut self, class: ByteClass, column: Option<u32>) -> Result<u8, ReplayCacheError> {
+        self.stream(class, column)?.u8()
+    }
+
+    fn varint(&mut self, class: ByteClass, column: Option<u32>) -> Result<u64, ReplayCacheError> {
+        self.stream(class, column)?.varint()
+    }
+
+    /// Read a declared element count and refuse one the record cannot possibly
+    /// carry, BEFORE anything reserves memory for it.
+    ///
+    /// Two bounds, and the second is why this is not just the old one renamed.
+    /// `min_bytes_per_element` against the whole record is what a single-stream
+    /// reader could check and is kept. But once a record is several streams,
+    /// "the record still has a hundred megabytes left" can be true because of
+    /// bytes in a stream these elements never read from -- a huge replaced
+    /// value would pay for a huge declared member count that the name stream
+    /// has one byte for. So each element is also charged against the streams
+    /// its SHAPE must touch: a changed member owes a byte of the name stream
+    /// and a byte of the structure stream whatever else it does. A stream the
+    /// record does not carry has no bytes left, so a count above zero against
+    /// it is refused rather than treated as unbounded.
+    fn count(
+        &mut self,
+        class: ByteClass,
+        column: Option<u32>,
+        min_bytes_per_element: usize,
+        floors: &[(ByteClass, usize)],
+    ) -> Result<usize, ReplayCacheError> {
+        let value = self.varint(class, column)?;
+        let count = usize::try_from(value)
+            .map_err(|_| ReplayCacheError::new("binary collection count does not fit usize"))?;
+        bound_count_by_remaining(count, min_bytes_per_element, self.remaining())?;
+        for (floor_class, per_element) in floors {
+            let key = stream_key(*floor_class, None)?;
+            let available = self
+                .streams
+                .get(&key)
+                .map_or(0, |reader| reader.remaining());
+            bound_count_by_remaining(count, *per_element, available)?;
+        }
+        Ok(count)
+    }
+
+    fn finish(&self) -> Result<(), ReplayCacheError> {
+        if self.streams.values().all(|reader| reader.remaining() == 0) {
+            Ok(())
+        } else {
+            Err(ReplayCacheError::new(
+                "binary replay artifact has trailing bytes",
+            ))
+        }
+    }
+}
+
+/// WHAT AN ARRAY EDIT SCRIPT IS COMPARED AGAINST, and the one thing in this
+/// file that is a cost model rather than an encoder.
+///
+/// `diff_value` offers a keyed edit script only where it is shorter than
+/// restating the array, and that comparison has to be a total function of the
+/// two values or the same recording could have two spellings. It therefore
+/// CANNOT be the size of the bytes actually written: which stream a byte lands
+/// in depends on the member name it sits under, whether a length prefix crosses
+/// a varint boundary depends on the rest of the record, and whether a name is
+/// already in the dictionary depends on every record before it. A subtree has
+/// no marginal physical size (Codex design round, question 4).
+///
+/// So the rule stays what it has always been -- the flat grammar's own byte
+/// count -- stated here once, arithmetically, as the definition rather than as
+/// a measurement of a second encoder.
+fn grammar_cost(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
+    require_depth(depth)?;
+    Ok(match patch {
+        Patch::Keep | Patch::ReviveSame => 1,
+        Patch::Revive(inner) => 1 + grammar_cost(inner, depth + 1)?,
+        Patch::Replace(value) => 1 + value_grammar_cost(value, depth + 1)?,
+        Patch::NumberDelta {
+            fraction_digits,
+            delta,
+        } => 1 + varint_len(u64::from(*fraction_digits)) + varint_len(zigzag(*delta)),
+        Patch::Object { removals, changes } => {
+            let mut cost = 1 + varint_len(removals.len() as u64) + varint_len(changes.len() as u64);
+            for key in removals {
+                cost += text_grammar_cost(key)?;
+            }
+            for (key, change) in changes {
+                cost += text_grammar_cost(key)? + grammar_cost(change, depth + 1)?;
+            }
+            cost
+        }
+        Patch::ArrayEdit(ops) => {
+            let mut cost = 1 + varint_len(ops.len() as u64);
+            for op in ops {
+                cost += match op {
+                    ArrayEditOp::Copy(run) => {
+                        varint_len(ARRAY_EDIT_COPY) + varint_len(u64::from(*run))
+                    }
+                    ArrayEditOp::Skip(run) => {
+                        varint_len(ARRAY_EDIT_SKIP) + varint_len(u64::from(*run))
+                    }
+                    ArrayEditOp::Patch(patch) => {
+                        varint_len(ARRAY_EDIT_PATCH) + grammar_cost(patch, depth + 1)?
+                    }
+                    ArrayEditOp::Insert(value) => {
+                        varint_len(ARRAY_EDIT_INSERT) + value_grammar_cost(value, depth + 1)?
+                    }
+                };
+            }
+            cost
+        }
+        Patch::Array(changes) => {
+            let mut cost = 1 + varint_len(changes.len() as u64);
+            let mut previous: Option<u32> = None;
+            for (index, change) in changes {
+                let gap = match previous {
+                    None => u64::from(*index),
+                    Some(previous) => u64::from(
+                        index
+                            .checked_sub(previous)
+                            .and_then(|delta| delta.checked_sub(1))
+                            .ok_or_else(|| {
+                                ReplayCacheError::new(
+                                    "array patch indices are not strictly increasing",
+                                )
+                            })?,
+                    ),
+                };
+                cost += varint_len(gap) + grammar_cost(change, depth + 1)?;
+                previous = Some(*index);
+            }
+            cost
+        }
+    })
+}
+
+/// REFUSES WHAT `put_text` REFUSES. A cost model that prices a spelling the
+/// encoder would reject is not a model of the encoder (Codex review round 2,
+/// defect 3): `diff_value` would compare an edit script against a restatement
+/// that cannot be written at all.
+fn text_grammar_cost(text: &str) -> Result<usize, ReplayCacheError> {
+    if text.len() > MAX_STRING_BYTES {
+        return Err(ReplayCacheError::new("binary string exceeds the size bound"));
+    }
+    Ok(varint_len(text.len() as u64) + text.len())
+}
+
+fn value_grammar_cost(value: &CanonValue, depth: usize) -> Result<usize, ReplayCacheError> {
+    require_depth(depth)?;
+    Ok(match value {
+        CanonValue::Null | CanonValue::Bool(_) => 1,
+        CanonValue::Number(token) => encoded_number_len(token)
+            .ok_or_else(|| ReplayCacheError::new("number token exceeds the size bound"))?,
+        CanonValue::String(body) => 1 + text_grammar_cost(body)?,
+        CanonValue::Array(values) => {
+            let mut cost = 1 + varint_len(values.len() as u64);
+            for value in values {
+                cost += value_grammar_cost(value, depth + 1)?;
+            }
+            cost
+        }
+        CanonValue::Object(members) => {
+            let mut cost = 1 + varint_len(members.len() as u64);
+            for (key, value) in members {
+                cost += text_grammar_cost(key)? + value_grammar_cost(value, depth + 1)?;
+            }
+            cost
+        }
+    })
+}
+
+fn encode_patch(
+    patch: &Patch,
+    names: &mut NameDictionary,
+) -> Result<Vec<u8>, ReplayCacheError> {
+    let mut streams = PatchStreams::default();
+    encode_patch_into(patch, &mut streams, names, 0, None)?;
+    streams.finish()
 }
 
 fn encode_patch_into(
     patch: &Patch,
-    out: &mut Vec<u8>,
+    streams: &mut PatchStreams,
+    names: &mut NameDictionary,
     depth: usize,
+    column: Option<u32>,
 ) -> Result<(), ReplayCacheError> {
     require_depth(depth)?;
     match patch {
-        Patch::Keep => out.push(PATCH_KEEP),
-        Patch::ReviveSame => out.push(PATCH_REVIVE_SAME),
+        Patch::Keep => streams.at(ByteClass::Structure, column)?.push(PATCH_KEEP),
+        Patch::ReviveSame => streams
+            .at(ByteClass::Structure, column)?
+            .push(PATCH_REVIVE_SAME),
         Patch::Revive(inner) => {
-            out.push(PATCH_REVIVE_PATCH);
-            encode_patch_into(inner, out, depth + 1)?;
+            streams
+                .at(ByteClass::Structure, column)?
+                .push(PATCH_REVIVE_PATCH);
+            encode_patch_into(inner, streams, names, depth + 1, column)?;
         }
         Patch::Replace(value) => {
-            out.push(PATCH_REPLACE);
-            encode_value_into(value, out, depth + 1)?;
+            streams
+                .at(ByteClass::Structure, column)?
+                .push(PATCH_REPLACE);
+            encode_value_into(
+                value,
+                streams.at(ByteClass::Value, column)?,
+                depth + 1,
+                Some(names),
+            )?;
         }
         Patch::NumberDelta {
             fraction_digits,
             delta,
         } => {
-            out.push(PATCH_NUMBER_DELTA);
-            put_varint(out, u64::from(*fraction_digits));
-            put_varint(out, zigzag(*delta));
+            streams
+                .at(ByteClass::Structure, column)?
+                .push(PATCH_NUMBER_DELTA);
+            put_varint(
+                streams.at(ByteClass::NumberFraction, column)?,
+                u64::from(*fraction_digits),
+            );
+            put_varint(streams.at(ByteClass::NumberDelta, column)?, zigzag(*delta));
         }
         Patch::Object { removals, changes } => {
-            out.push(PATCH_OBJECT);
-            put_varint(out, removals.len() as u64);
+            streams.at(ByteClass::Structure, column)?.push(PATCH_OBJECT);
+            let frame = streams.at(ByteClass::Frame, column)?;
+            put_varint(frame, removals.len() as u64);
             for key in removals {
-                put_text(out, key)?;
+                names.write(streams.at(ByteClass::Name, None)?, key)?;
             }
-            put_varint(out, changes.len() as u64);
+            put_varint(
+                streams.at(ByteClass::Frame, column)?,
+                changes.len() as u64,
+            );
             for (key, change) in changes {
-                put_text(out, key)?;
-                encode_patch_into(change, out, depth + 1)?;
+                let child = names.write(streams.at(ByteClass::Name, None)?, key)?;
+                encode_patch_into(change, streams, names, depth + 1, Some(child))?;
             }
         }
         Patch::ArrayEdit(ops) => {
-            out.push(PATCH_ARRAY_EDIT);
-            put_varint(out, ops.len() as u64);
+            streams
+                .at(ByteClass::Structure, column)?
+                .push(PATCH_ARRAY_EDIT);
+            put_varint(streams.at(ByteClass::Script, column)?, ops.len() as u64);
             for op in ops {
                 match op {
                     ArrayEditOp::Copy(run) => {
-                        put_varint(out, ARRAY_EDIT_COPY);
-                        put_varint(out, u64::from(*run));
+                        let script = streams.at(ByteClass::Script, column)?;
+                        put_varint(script, ARRAY_EDIT_COPY);
+                        put_varint(script, u64::from(*run));
                     }
                     ArrayEditOp::Skip(run) => {
-                        put_varint(out, ARRAY_EDIT_SKIP);
-                        put_varint(out, u64::from(*run));
+                        let script = streams.at(ByteClass::Script, column)?;
+                        put_varint(script, ARRAY_EDIT_SKIP);
+                        put_varint(script, u64::from(*run));
                     }
                     ArrayEditOp::Patch(patch) => {
-                        put_varint(out, ARRAY_EDIT_PATCH);
-                        encode_patch_into(patch, out, depth + 1)?;
+                        put_varint(streams.at(ByteClass::Script, column)?, ARRAY_EDIT_PATCH);
+                        encode_patch_into(patch, streams, names, depth + 1, column)?;
                     }
                     ArrayEditOp::Insert(value) => {
-                        put_varint(out, ARRAY_EDIT_INSERT);
-                        encode_value_into(value, out, depth + 1)?;
+                        put_varint(streams.at(ByteClass::Script, column)?, ARRAY_EDIT_INSERT);
+                        encode_value_into(
+                            value,
+                            streams.at(ByteClass::Value, column)?,
+                            depth + 1,
+                            Some(names),
+                        )?;
                     }
                 }
             }
         }
         Patch::Array(changes) => {
-            out.push(PATCH_ARRAY);
-            put_varint(out, changes.len() as u64);
+            streams.at(ByteClass::Structure, column)?.push(PATCH_ARRAY);
+            put_varint(streams.at(ByteClass::Script, column)?, changes.len() as u64);
             // Indices are strictly increasing, so the gap is what carries
             // information; a dense run of touched slots costs one byte each.
             let mut previous: Option<u32> = None;
@@ -3941,8 +4666,8 @@ fn encode_patch_into(
                             })?,
                     ),
                 };
-                put_varint(out, gap);
-                encode_patch_into(change, out, depth + 1)?;
+                put_varint(streams.at(ByteClass::Script, column)?, gap);
+                encode_patch_into(change, streams, names, depth + 1, column)?;
                 previous = Some(*index);
             }
         }
@@ -3952,8 +4677,11 @@ fn encode_patch_into(
 
 /// A copy or skip run length: at least one element, and it must fit `u32` for
 /// the same reason an array index does.
-fn array_edit_run(reader: &mut ByteReader<'_>) -> Result<u32, ReplayCacheError> {
-    let run = u32::try_from(reader.varint()?)
+fn array_edit_run(
+    readers: &mut PatchReaders<'_>,
+    column: Option<u32>,
+) -> Result<u32, ReplayCacheError> {
+    let run = u32::try_from(readers.varint(ByteClass::Script, column)?)
         .map_err(|_| ReplayCacheError::new("array edit run does not fit u32"))?;
     if run == 0 {
         return Err(ReplayCacheError::new(
@@ -3963,16 +4691,26 @@ fn array_edit_run(reader: &mut ByteReader<'_>) -> Result<u32, ReplayCacheError> 
     Ok(run)
 }
 
-fn decode_patch_exact(bytes: &[u8]) -> Result<Patch, ReplayCacheError> {
-    let mut reader = ByteReader::new(bytes);
-    let patch = decode_patch(&mut reader, 0)?;
-    reader.finish()?;
+/// One delta record, and the window dictionary it both reads from and adds to.
+fn decode_patch_record(
+    bytes: &[u8],
+    names: &mut NameDictionary,
+) -> Result<Patch, ReplayCacheError> {
+    names.begin_record(bytes.len());
+    let mut readers = PatchReaders::open(bytes)?;
+    let patch = decode_patch(&mut readers, names, 0, None)?;
+    readers.finish()?;
     Ok(patch)
 }
 
-fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, ReplayCacheError> {
+fn decode_patch(
+    readers: &mut PatchReaders<'_>,
+    names: &mut NameDictionary,
+    depth: usize,
+    column: Option<u32>,
+) -> Result<Patch, ReplayCacheError> {
     require_depth(depth)?;
-    match reader.u8()? {
+    match readers.u8(ByteClass::Structure, column)? {
         PATCH_KEEP if depth == 0 => Ok(Patch::Keep),
         // A nested keep is redundant with omitting the member or element, which
         // is what `diff_value` does. Accepting it would be a second encoding of
@@ -3980,14 +4718,18 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
         PATCH_KEEP => Err(ReplayCacheError::new(
             "nested keep patch must be omitted, not encoded",
         )),
-        PATCH_REPLACE => Ok(Patch::Replace(decode_value(reader, depth + 1)?)),
+        PATCH_REPLACE => Ok(Patch::Replace(decode_value(
+            readers.stream(ByteClass::Value, column)?,
+            depth + 1,
+            Some(names),
+        )?)),
         // THE WORLD ROOT IS ALWAYS AN OBJECT, so a number delta can only ever
         // be nested; one at depth 0 is a shape the encoder cannot produce.
         PATCH_NUMBER_DELTA if depth == 0 => Err(ReplayCacheError::new(
             "number delta patch at the world root, which is never a number",
         )),
         PATCH_NUMBER_DELTA => {
-            let fraction_digits = reader.varint()?;
+            let fraction_digits = readers.varint(ByteClass::NumberFraction, column)?;
             if fraction_digits > u64::from(MAX_NUMBER_DELTA_DIGITS) {
                 return Err(ReplayCacheError::new(
                     "number delta patch states more fraction digits than a number may carry",
@@ -3995,7 +4737,7 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             }
             Ok(Patch::NumberDelta {
                 fraction_digits: fraction_digits as u32,
-                delta: unzigzag(reader.varint()?),
+                delta: unzigzag(readers.varint(ByteClass::NumberDelta, column)?),
             })
         }
         // THE WORLD ROOT IS NEVER NULL, so a revive can only ever be nested;
@@ -4005,7 +4747,7 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
         )),
         PATCH_REVIVE_SAME => Ok(Patch::ReviveSame),
         PATCH_REVIVE_PATCH => {
-            let inner = decode_patch(reader, depth + 1)?;
+            let inner = decode_patch(readers, names, depth + 1, column)?;
             // Spelled out here as well as in `apply_patch` so a patch that
             // never reaches a target is still rejected: a keep is
             // `PATCH_REVIVE_SAME`, an unfitting base is a plain replace, and a
@@ -4022,28 +4764,44 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             Ok(Patch::Revive(Box::new(inner)))
         }
         PATCH_OBJECT => {
-            let removal_count = reader.count(MIN_TEXT_BYTES)?;
+            // Each removal owes one byte of the NAME stream and nothing else.
+            let removal_count = readers.count(
+                ByteClass::Frame,
+                column,
+                MIN_TEXT_BYTES,
+                &[(ByteClass::Name, MIN_TEXT_BYTES)],
+            )?;
             let mut removals = Vec::new();
             reserve_exact(&mut removals, removal_count)?;
             for _ in 0..removal_count {
-                removals.push(reader.text()?);
+                let (key, _) = names.read(readers.stream(ByteClass::Name, None)?)?;
+                removals.push(key);
             }
             if !strictly_increasing_keys(&removals) {
                 return Err(ReplayCacheError::new(
                     "object patch removals are not strictly ordered",
                 ));
             }
-            let change_count = reader.count(MIN_KEYED_VALUE_BYTES)?;
+            // Each change owes a byte of the NAME stream for its name and a
+            // byte of the STRUCTURE stream for its patch tag, whatever shape
+            // the patch under it turns out to be.
+            let change_count = readers.count(
+                ByteClass::Frame,
+                column,
+                MIN_KEYED_VALUE_BYTES,
+                &[
+                    (ByteClass::Name, MIN_TEXT_BYTES),
+                    (ByteClass::Structure, MIN_VALUE_BYTES),
+                ],
+            )?;
             let mut changes = Vec::new();
             reserve_exact(&mut changes, change_count)?;
             for _ in 0..change_count {
-                let key = reader.text()?;
-                if !is_valid_object_key(&key) {
-                    return Err(ReplayCacheError::new(
-                        "object patch member name does not decode",
-                    ));
-                }
-                changes.push((key, decode_patch(reader, depth + 1)?));
+                // The NAME IS READ FIRST and it is what selects the column the
+                // rest of this member's bytes were written into -- which is why
+                // the names never live in a column themselves.
+                let (key, child) = names.read(readers.stream(ByteClass::Name, None)?)?;
+                changes.push((key, decode_patch(readers, names, depth + 1, Some(child))?));
             }
             if !changes
                 .windows(2)
@@ -4082,14 +4840,21 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             Ok(Patch::Object { removals, changes })
         }
         PATCH_ARRAY => {
-            let count = reader.count(MIN_INDEXED_PATCH_BYTES)?;
+            // An element owes its index gap and its patch tag, and both are
+            // in the structure stream.
+            let count = readers.count(
+                ByteClass::Script,
+                column,
+                MIN_INDEXED_PATCH_BYTES,
+                &[(ByteClass::Structure, MIN_INDEXED_PATCH_BYTES)],
+            )?;
             let mut changes: Vec<(u32, Patch)> = Vec::new();
             reserve_exact(&mut changes, count)?;
             let mut previous: Option<u32> = None;
             for _ in 0..count {
-                let gap = u32::try_from(reader.varint()?).map_err(|_| {
-                    ReplayCacheError::new("array patch index gap does not fit u32")
-                })?;
+                let gap = u32::try_from(readers.varint(ByteClass::Script, column)?).map_err(
+                    |_| ReplayCacheError::new("array patch index gap does not fit u32"),
+                )?;
                 let index = match previous {
                     None => gap,
                     Some(previous) => previous
@@ -4100,7 +4865,7 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
                         })?,
                 };
                 previous = Some(index);
-                changes.push((index, decode_patch(reader, depth + 1)?));
+                changes.push((index, decode_patch(readers, names, depth + 1, column)?));
             }
             if changes.is_empty() {
                 return Err(ReplayCacheError::new(
@@ -4116,13 +4881,21 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
             "array edit patch at the world root, which is never an array",
         )),
         PATCH_ARRAY_EDIT => {
-            let count = reader.count(MIN_ARRAY_EDIT_OP_BYTES)?;
+            // An op owes its kind byte in the structure stream. Only its
+            // SECOND byte can be elsewhere -- an insert's value -- so the
+            // per-stream floor is one and the whole-record floor stays two.
+            let count = readers.count(
+                ByteClass::Script,
+                column,
+                MIN_ARRAY_EDIT_OP_BYTES,
+                &[(ByteClass::Structure, 1)],
+            )?;
             let mut ops: Vec<ArrayEditOp> = Vec::new();
             reserve_exact(&mut ops, count)?;
             for _ in 0..count {
-                let op = match reader.varint()? {
-                    ARRAY_EDIT_COPY => ArrayEditOp::Copy(array_edit_run(reader)?),
-                    ARRAY_EDIT_SKIP => ArrayEditOp::Skip(array_edit_run(reader)?),
+                let op = match readers.varint(ByteClass::Script, column)? {
+                    ARRAY_EDIT_COPY => ArrayEditOp::Copy(array_edit_run(readers, column)?),
+                    ARRAY_EDIT_SKIP => ArrayEditOp::Skip(array_edit_run(readers, column)?),
                     // A nested keep is already refused by `decode_patch`, which
                     // is what stops a patch op standing in for a copy.
                     //
@@ -4135,7 +4908,7 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
                     // a change the encoder writes as a plain `Replace` of the
                     // whole array (Codex round 2, finding 2).
                     ARRAY_EDIT_PATCH => {
-                        let inner = decode_patch(reader, depth + 1)?;
+                        let inner = decode_patch(readers, names, depth + 1, column)?;
                         if !matches!(inner, Patch::Object { .. }) {
                             return Err(ReplayCacheError::new(
                                 "array edit row patch is not an object patch, which is the only \
@@ -4144,7 +4917,11 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
                         }
                         ArrayEditOp::Patch(inner)
                     }
-                    ARRAY_EDIT_INSERT => ArrayEditOp::Insert(decode_value(reader, depth + 1)?),
+                    ARRAY_EDIT_INSERT => ArrayEditOp::Insert(decode_value(
+                        readers.stream(ByteClass::Value, column)?,
+                        depth + 1,
+                        Some(names),
+                    )?),
                     kind => {
                         return Err(ReplayCacheError::new(format!(
                             "unknown array edit op {kind}"
@@ -4202,9 +4979,15 @@ fn decode_patch(reader: &mut ByteReader<'_>, depth: usize) -> Result<Patch, Repl
     }
 }
 
+/// A whole value with NO dictionary, which is what a checkpoint record is.
+///
+/// A checkpoint has to decode entirely on its own -- it is where a reader
+/// starts, so nothing before it may be needed to read it -- so it spells every
+/// member name in full and seeds nothing. The window's dictionary begins empty
+/// at each checkpoint and is built by the deltas that follow it.
 fn encode_value(value: &CanonValue) -> Result<Vec<u8>, ReplayCacheError> {
     let mut out = Vec::new();
-    encode_value_into(value, &mut out, 0)?;
+    encode_value_into(value, &mut out, 0, None)?;
     Ok(out)
 }
 
@@ -4212,8 +4995,10 @@ fn encode_value_into(
     value: &CanonValue,
     out: &mut Vec<u8>,
     depth: usize,
+    names: Option<&mut NameDictionary>,
 ) -> Result<(), ReplayCacheError> {
     require_depth(depth)?;
+    let mut names = names;
     match value {
         CanonValue::Null => out.push(TAG_NULL),
         CanonValue::Bool(false) => out.push(TAG_FALSE),
@@ -4243,24 +5028,34 @@ fn encode_value_into(
             out.push(TAG_ARRAY);
             put_varint(out, values.len() as u64);
             for value in values {
-                encode_value_into(value, out, depth + 1)?;
+                encode_value_into(value, out, depth + 1, names.as_deref_mut())?;
             }
         }
         CanonValue::Object(members) => {
             out.push(TAG_OBJECT);
             put_varint(out, members.len() as u64);
             for (key, value) in members {
-                put_text(out, key)?;
-                encode_value_into(value, out, depth + 1)?;
+                // THE SAME TABLE AS THE PATCH'S MEMBER NAMES, which is where
+                // most of this lever's bytes are: a replaced subtree restates
+                // every name it carries, and MB's `member_names` class counted
+                // only the ones in a `PATCH_OBJECT`.
+                match names.as_deref_mut() {
+                    Some(dictionary) => {
+                        dictionary.write(out, key)?;
+                    }
+                    None => put_text(out, key)?,
+                }
+                encode_value_into(value, out, depth + 1, names.as_deref_mut())?;
             }
         }
     }
     Ok(())
 }
 
+/// A CHECKPOINT record, which carries no dictionary and needs none.
 fn decode_value_exact(bytes: &[u8]) -> Result<CanonValue, ReplayCacheError> {
     let mut reader = ByteReader::new(bytes);
-    let value = decode_value(&mut reader, 0)?;
+    let value = decode_value(&mut reader, 0, None)?;
     reader.finish()?;
     Ok(value)
 }
@@ -4268,8 +5063,10 @@ fn decode_value_exact(bytes: &[u8]) -> Result<CanonValue, ReplayCacheError> {
 fn decode_value(
     reader: &mut ByteReader<'_>,
     depth: usize,
+    names: Option<&mut NameDictionary>,
 ) -> Result<CanonValue, ReplayCacheError> {
     require_depth(depth)?;
+    let mut names = names;
     let tag = reader.u8()?;
     if tag >= INLINE_UINT_BASE {
         return Ok(CanonValue::Number(
@@ -4326,7 +5123,7 @@ fn decode_value(
             let mut values = Vec::new();
             reserve_exact(&mut values, count)?;
             for _ in 0..count {
-                values.push(decode_value(reader, depth + 1)?);
+                values.push(decode_value(reader, depth + 1, names.as_deref_mut())?);
             }
             Ok(CanonValue::Array(values))
         }
@@ -4335,12 +5132,18 @@ fn decode_value(
             let mut members: Vec<(String, CanonValue)> = Vec::new();
             reserve_exact(&mut members, count)?;
             for _ in 0..count {
-                let key = reader.text()?;
-                if !is_valid_object_key(&key) {
-                    return Err(ReplayCacheError::new(
-                        "binary JSON object member name does not decode",
-                    ));
-                }
+                let key = match names.as_deref_mut() {
+                    Some(dictionary) => dictionary.read(reader)?.0,
+                    None => {
+                        let key = reader.text()?;
+                        if !is_valid_object_key(&key) {
+                            return Err(ReplayCacheError::new(
+                                "binary JSON object member name does not decode",
+                            ));
+                        }
+                        key
+                    }
+                };
                 if members
                     .last()
                     .is_some_and(|(previous, _)| key_cmp(previous, &key) != Ordering::Less)
@@ -4349,7 +5152,7 @@ fn decode_value(
                         "binary JSON object keys are not strictly ordered",
                     ));
                 }
-                let value = decode_value(reader, depth + 1)?;
+                let value = decode_value(reader, depth + 1, names.as_deref_mut())?;
                 members.push((key, value));
             }
             Ok(CanonValue::Object(members))
@@ -4714,7 +5517,9 @@ pub fn measure_section_patch_bytes(
     new: &CanonValue,
 ) -> Result<usize, ReplayCacheError> {
     let patch = diff_value(old, new, None, 0)?;
-    Ok(encode_patch(&patch)?.len())
+    // The GRAMMAR cost, not the physical one: a section has no marginal record
+    // of its own, and this instrument compares sections against each other.
+    grammar_cost(&patch, 0)
 }
 
 #[cfg(test)]
@@ -4722,6 +5527,75 @@ mod tests {
     use super::*;
     use crate::canon_value::NON_IDENTITY_TOKENS;
     use serde_json::Value;
+
+    /// HAND-BUILD ONE DELTA RECORD from its streams, so a test can spell a
+    /// patch the ENCODER would never write and still hand it to the reader.
+    ///
+    /// Under this format's routing only the number delta's two varints are
+    /// columnar, so a patch's tags, its object counts and its array script all
+    /// land in one stream in exactly the order the flat grammar used to write
+    /// them; that is why most of these tests kept their byte literals and only
+    /// had to say WHICH stream each run of bytes belongs in.
+    fn record_of(streams: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut kept: Vec<(u32, &[u8])> = streams
+            .iter()
+            .copied()
+            .filter(|(_, body)| !body.is_empty())
+            .collect();
+        kept.sort_by_key(|(key, _)| *key);
+        let mut out = Vec::new();
+        put_varint(&mut out, kept.len() as u64);
+        let mut previous: Option<u32> = None;
+        for (key, body) in &kept {
+            let gap = match previous {
+                None => u64::from(*key),
+                Some(previous) => u64::from(*key - previous - 1),
+            };
+            put_varint(&mut out, gap);
+            put_varint(&mut out, body.len() as u64);
+            previous = Some(*key);
+        }
+        for (_, body) in &kept {
+            out.extend_from_slice(body);
+        }
+        out
+    }
+
+    /// The three streams nearly every one of these tests needs.
+    fn record(structure: &[u8], names: &[u8], values: &[u8]) -> Vec<u8> {
+        record_of(&[
+            (STREAM_STRUCTURE, structure),
+            (STREAM_NAMES, names),
+            (STREAM_VALUES, values),
+        ])
+    }
+
+    /// A member name as a record spells it the FIRST time: the `0` introducer,
+    /// then its literal text. A second use of the same name must be its id.
+    fn new_name(name: &str) -> Vec<u8> {
+        let mut out = vec![0u8];
+        put_text(&mut out, name).unwrap();
+        out
+    }
+
+    /// A name already introduced, by the id it was given.
+    fn known_name(id: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_varint(&mut out, u64::from(id) + 1);
+        out
+    }
+
+    /// The stream a class takes under the FIRST member name a record
+    /// introduces, which is the only column these tests need.
+    fn first_column(class: ByteClass) -> u32 {
+        stream_key(class, Some(0)).unwrap()
+    }
+
+    /// Decode one record with a dictionary that has learnt nothing, which is
+    /// what a reader holds at the first delta after a checkpoint.
+    fn decode_patch_exact(bytes: &[u8]) -> Result<Patch, ReplayCacheError> {
+        decode_patch_record(bytes, &mut NameDictionary::default())
+    }
 
     /// The recorded per-hour digest is of the SOURCE body, and it stayed that
     /// way when the body stopped being retained.
@@ -5055,9 +5929,13 @@ mod tests {
     fn every_unresolvable_revive_is_refused() {
         // A revive wrapping a keep is `PATCH_REVIVE_SAME`; one wrapping a
         // replace is a plain replace. Both are refused at decode.
-        for inner in [vec![PATCH_KEEP], vec![PATCH_REPLACE, TAG_NULL]] {
-            let mut bytes = vec![PATCH_OBJECT, 0, 1, 1, b'x', PATCH_REVIVE_PATCH];
-            bytes.extend_from_slice(&inner);
+        for (inner_structure, inner_values) in [
+            (vec![PATCH_KEEP], Vec::new()),
+            (vec![PATCH_REPLACE], vec![TAG_NULL]),
+        ] {
+            let mut structure = vec![PATCH_OBJECT, 0, 1, PATCH_REVIVE_PATCH];
+            structure.extend_from_slice(&inner_structure);
+            let bytes = record(&structure, &new_name("x"), &inner_values);
             let error = decode_patch_exact(&bytes)
                 .expect_err("a revive with a shorter spelling must be refused");
             // A wrapped keep trips the nested-keep rule one level down before
@@ -5071,7 +5949,7 @@ mod tests {
 
         // The world root is never null.
         for tag in [PATCH_REVIVE_SAME, PATCH_REVIVE_PATCH] {
-            let error = decode_patch_exact(&[tag])
+            let error = decode_patch_exact(&record(&[tag], &[], &[]))
                 .expect_err("a revive at the root must be refused");
             assert!(error.to_string().contains("world root"), "{error}");
         }
@@ -5384,8 +6262,15 @@ mod tests {
 
         // One row was added to an array of eight. A replace would carry all
         // nine; the row itself is about 45 bytes.
+        //
+        // THE BOUND IS 150 AND NOT 100 because a record now carries a stream
+        // directory and introduces each member name once with a marker byte,
+        // and on a two-hour toy that fixed cost is a large share of a very
+        // small record. It is a fixed cost, not a per-row one, which is exactly
+        // what the wide half below measures: the same insertion into an array
+        // fifty times longer costs the same.
         assert!(
-            delta < 100,
+            delta < 150,
             "an added row must cost about the row, not the array: {delta} bytes"
         );
         ReplayCacheReader::open(&index.to_bytes().unwrap(), &cache, 200, &sha)
@@ -5517,13 +6402,16 @@ mod tests {
     fn array_edit_scripts_with_a_second_spelling_are_refused() {
         // [tag][ops][kind][arg]..., decoded one level down because the world
         // root is an object and the decoder refuses an edit at depth 0.
-        let nest = |script: &[u8]| {
-            let mut bytes = vec![PATCH_OBJECT, 0, 1, 1, b'x'];
-            bytes.extend_from_slice(script);
-            decode_patch_exact(&bytes)
+        // The script's bytes and the VALUE of anything it inserts are two
+        // different classes now and live in two different streams.
+        let nest_with = |script: &[u8], values: &[u8]| {
+            let mut structure = vec![PATCH_OBJECT, 0, 1];
+            structure.extend_from_slice(script);
+            decode_patch_exact(&record(&structure, &new_name("x"), values))
         };
+        let nest = |script: &[u8]| nest_with(script, &[]);
         assert!(
-            decode_patch_exact(&[PATCH_ARRAY_EDIT, 1, 1, 1])
+            decode_patch_exact(&record(&[PATCH_ARRAY_EDIT, 1, 1, 1], &[], &[]))
                 .unwrap_err()
                 .to_string()
                 .contains("world root"),
@@ -5610,9 +6498,9 @@ mod tests {
         // the bytes rather than at the target -- `SKIP 2; INSERT 3` over `[1,2]`
         // reconstructs `[3]` perfectly and is still not this format's spelling
         // of it (Codex round 1, finding 5).
-        let keeps_nothing = [PATCH_ARRAY_EDIT, 2, 1, 2, 3, INLINE_UINT_BASE + 3];
+        let keeps_nothing = [PATCH_ARRAY_EDIT, 2, 1, 2, 3];
         assert!(
-            nest(&keeps_nothing)
+            nest_with(&keeps_nothing, &[INLINE_UINT_BASE + 3])
                 .unwrap_err()
                 .to_string()
                 .contains("keeps no row"),
@@ -5624,9 +6512,9 @@ mod tests {
         // keeps a row by the letter of the rule above, and is still not this
         // format's spelling -- rows only align when they are objects (Codex
         // round 2, finding 2).
-        let scalar_row_patch = [PATCH_ARRAY_EDIT, 2, 2, PATCH_REPLACE, INLINE_UINT_BASE + 3, 1, 1];
+        let scalar_row_patch = [PATCH_ARRAY_EDIT, 2, 2, PATCH_REPLACE, 1, 1];
         assert!(
-            nest(&scalar_row_patch)
+            nest_with(&scalar_row_patch, &[INLINE_UINT_BASE + 3])
                 .unwrap_err()
                 .to_string()
                 .contains("not an object patch"),
@@ -6579,18 +7467,23 @@ mod tests {
                 &CanonValue::Number(to.into()),
             )
             .expect("eligible");
-            let as_delta = encode_patch(&Patch::NumberDelta {
-                fraction_digits,
-                delta,
-            })
+            // AGAINST THE GRAMMAR COST, which is the rule `number_delta_between`
+            // and `diff_value` both apply, and the only cost a subtree HAS: what
+            // a patch physically costs depends on which streams the rest of the
+            // record opened and on what the window's name table already holds.
+            let as_delta = grammar_cost(
+                &Patch::NumberDelta {
+                    fraction_digits,
+                    delta,
+                },
+                1,
+            )
             .unwrap();
             let as_replace =
-                encode_patch(&Patch::Replace(CanonValue::Number(to.into()))).unwrap();
+                grammar_cost(&Patch::Replace(CanonValue::Number(to.into())), 1).unwrap();
             assert!(
-                as_delta.len() < as_replace.len(),
-                "{from} -> {to}: {} vs {}",
-                as_delta.len(),
-                as_replace.len()
+                as_delta < as_replace,
+                "{from} -> {to}: {as_delta} vs {as_replace}"
             );
         }
 
@@ -6674,6 +7567,25 @@ mod tests {
         // rather than a length nothing would ever write.
         let past_bound = "0.".to_string() + &"1".repeat(MAX_STRING_BYTES);
         assert_eq!(encoded_number_len(&past_bound), None);
+        // AND SO DOES THE COST MODEL, for a string and for an object key as
+        // well as for a number: `grammar_cost` decides which spelling
+        // `diff_value` writes, so pricing one the encoder would refuse would
+        // have it choose between a script and a restatement that cannot be
+        // written at all.
+        assert!(value_grammar_cost(&CanonValue::String(past_bound.clone()), 1).is_err());
+        assert!(value_grammar_cost(
+            &CanonValue::Object(vec![(past_bound.clone(), CanonValue::Null)]),
+            1
+        )
+        .is_err());
+        assert!(grammar_cost(
+            &Patch::Object {
+                removals: vec![past_bound.clone()],
+                changes: Vec::new(),
+            },
+            1
+        )
+        .is_err());
         assert!(encode_value(&CanonValue::Number(past_bound)).is_err());
     }
 
@@ -6735,17 +7647,21 @@ mod tests {
         .contains("not the encoder's spelling"));
 
         // A number delta at the world root, which is always an object.
-        assert!(decode_patch_exact(&[PATCH_NUMBER_DELTA, 1, 2])
-            .unwrap_err()
-            .message()
-            .contains("world root"));
+        assert!(decode_patch_exact(&record_of(&[
+            (STREAM_STRUCTURE, &[PATCH_NUMBER_DELTA]),
+            (STREAM_NUMBERS, &[1, 2]),
+        ]))
+        .unwrap_err()
+        .message()
+        .contains("world root"));
 
         // A fraction width no number may carry.
-        let mut absurd = vec![PATCH_OBJECT, 0, 1];
-        put_text(&mut absurd, "a").unwrap();
-        absurd.push(PATCH_NUMBER_DELTA);
-        put_varint(&mut absurd, 31);
-        put_varint(&mut absurd, 2);
+        let absurd = record_of(&[
+            (STREAM_STRUCTURE, &[PATCH_OBJECT, 0, 1, PATCH_NUMBER_DELTA]),
+            (STREAM_NAMES, &new_name("a")),
+            (first_column(ByteClass::NumberFraction), &[31]),
+            (first_column(ByteClass::NumberDelta), &[2]),
+        ]);
         assert!(decode_patch_exact(&absurd)
             .unwrap_err()
             .message()
@@ -6753,9 +7669,12 @@ mod tests {
 
         // A padded varint is a second spelling of the same delta and the reader
         // must not admit it.
-        let mut padded = vec![PATCH_OBJECT, 0, 1];
-        put_text(&mut padded, "a").unwrap();
-        padded.extend_from_slice(&[PATCH_NUMBER_DELTA, 0x81, 0x00, 2]);
+        let padded = record_of(&[
+            (STREAM_STRUCTURE, &[PATCH_OBJECT, 0, 1, PATCH_NUMBER_DELTA]),
+            (STREAM_NAMES, &new_name("a")),
+            (first_column(ByteClass::NumberFraction), &[0x81, 0x00]),
+            (first_column(ByteClass::NumberDelta), &[2]),
+        ]);
         assert!(decode_patch_exact(&padded).is_err());
     }
 
@@ -6813,11 +7732,14 @@ mod tests {
         .contains("overflows its target"));
         // And the widest zigzag varint decodes to `i64::MIN` rather than
         // wrapping on the way in.
-        let mut widest = vec![PATCH_OBJECT, 0, 1];
-        put_text(&mut widest, "a").unwrap();
-        widest.push(PATCH_NUMBER_DELTA);
-        put_varint(&mut widest, 0);
-        put_varint(&mut widest, u64::MAX);
+        let mut widest_delta = Vec::new();
+        put_varint(&mut widest_delta, u64::MAX);
+        let widest = record_of(&[
+            (STREAM_STRUCTURE, &[PATCH_OBJECT, 0, 1, PATCH_NUMBER_DELTA]),
+            (STREAM_NAMES, &new_name("a")),
+            (first_column(ByteClass::NumberFraction), &[0]),
+            (first_column(ByteClass::NumberDelta), &widest_delta),
+        ]);
         let Patch::Object { changes, .. } = decode_patch_exact(&widest).unwrap() else {
             panic!("object patch");
         };
@@ -6846,16 +7768,567 @@ mod tests {
 
         // A revive's inner patch is never a number delta: a revivable scalar
         // memory EQUALS the new value, which is `PATCH_REVIVE_SAME`.
-        let mut revive = vec![PATCH_OBJECT, 0, 1];
-        put_text(&mut revive, "a").unwrap();
-        revive.push(PATCH_REVIVE_PATCH);
-        revive.push(PATCH_NUMBER_DELTA);
-        put_varint(&mut revive, 1);
-        put_varint(&mut revive, 4);
+        let revive = record_of(&[
+            (
+                STREAM_STRUCTURE,
+                &[PATCH_OBJECT, 0, 1, PATCH_REVIVE_PATCH, PATCH_NUMBER_DELTA],
+            ),
+            (STREAM_NAMES, &new_name("a")),
+            (first_column(ByteClass::NumberFraction), &[1]),
+            (first_column(ByteClass::NumberDelta), &[4]),
+        ]);
         assert!(decode_patch_exact(&revive)
             .unwrap_err()
             .message()
             .contains("shorter spelling"));
+    }
+
+
+    /// A DECLARED COUNT IS CHARGED AGAINST THE STREAMS ITS ELEMENTS READ FROM,
+    /// not against the record as a whole.
+    ///
+    /// This is the bound that had to be re-derived when a record stopped being
+    /// one blob. A single-stream reader could ask "are there enough bytes left
+    /// for this many elements?" and mean it. Across streams the same question
+    /// has a misleading answer: one megabyte of replaced value makes the record
+    /// look roomy enough for half a million changed members while the name
+    /// stream holds a single byte, and the reader would reserve for all of them
+    /// before reading the first.
+    ///
+    /// kills: dropping the `floors` argument from `PatchReaders::count`, or
+    /// passing an empty one at the object-patch call sites (the record below
+    /// stops being refused, because the whole-record bound alone admits it).
+    #[test]
+    fn a_declared_count_is_bounded_by_the_streams_its_elements_read() {
+        // Sixty-four kilobytes of replaced value, one byte of member name, and
+        // an object patch claiming twenty thousand changed members.
+        let filler = vec![TAG_NULL; 64 * 1024];
+        let mut structure = vec![PATCH_OBJECT, 0];
+        put_varint(&mut structure, 20_000);
+        let hostile = record_of(&[
+            (STREAM_STRUCTURE, &structure),
+            (STREAM_NAMES, &[0]),
+            (STREAM_VALUES, &filler),
+        ]);
+
+        // The whole-record bound alone would ADMIT this: twenty thousand
+        // members at two bytes each is forty thousand, and the record has more
+        // than sixty thousand bytes left. The per-stream floor is what refuses
+        // it.
+        assert!(20_000 * MIN_KEYED_VALUE_BYTES < filler.len());
+        let error = decode_patch_exact(&hostile)
+            .expect_err("a count no stream can satisfy must be refused");
+        assert!(
+            error.message().contains("input bytes remain"),
+            "{error}"
+        );
+
+        // The REMOVAL call site is charged the same way: a removal reads only
+        // the name stream, so nothing else in the record may pay for it.
+        let mut removals = vec![PATCH_OBJECT];
+        put_varint(&mut removals, 20_000);
+        removals.push(0);
+        let hostile_removals = record_of(&[
+            (STREAM_STRUCTURE, &removals),
+            (STREAM_NAMES, &[0]),
+            (STREAM_VALUES, &filler),
+        ]);
+        let error = decode_patch_exact(&hostile_removals)
+            .expect_err("a removal count no name stream can satisfy must be refused");
+        assert!(error.message().contains("input bytes remain"), "{error}");
+
+        // The same shape one level along: an array patch's elements live in the
+        // structure stream, so a fat value stream must not pay for them either.
+        let mut array = vec![PATCH_OBJECT, 0, 1, PATCH_ARRAY];
+        put_varint(&mut array, 20_000);
+        let hostile_array = record_of(&[
+            (STREAM_STRUCTURE, &array),
+            (STREAM_NAMES, &new_name("x")),
+            (STREAM_VALUES, &filler),
+        ]);
+        let error = decode_patch_exact(&hostile_array)
+            .expect_err("an array count no stream can satisfy must be refused");
+        assert!(error.message().contains("input bytes remain"), "{error}");
+    }
+
+    /// `grammar_cost` IS THE FLAT SPELLING IT STANDS FOR.
+    ///
+    /// The encoder does not write that spelling any more -- a record is streams
+    /// and a member name is a dictionary token -- but `diff_value`'s choice
+    /// between an edit script and a restatement is still DEFINED by it, and
+    /// `number_delta_between` prices a delta against it. A cost model with a
+    /// typo in it would quietly change which spelling every array in every
+    /// recording gets, so the arithmetic is checked against a second, naive
+    /// encoder written out here on purpose.
+    ///
+    /// kills: dropping the tag byte from any `grammar_cost` arm; costing a text
+    /// without its length prefix; costing an array patch's indices absolutely
+    /// instead of as gaps; costing an inline small integer as a varint.
+    #[test]
+    fn the_grammar_cost_is_the_flat_spelling_it_stands_for() {
+        fn flat_value(value: &CanonValue, out: &mut Vec<u8>) {
+            match value {
+                CanonValue::Null => out.push(TAG_NULL),
+                CanonValue::Bool(false) => out.push(TAG_FALSE),
+                CanonValue::Bool(true) => out.push(TAG_TRUE),
+                CanonValue::Number(token) => match canonical_integer(token) {
+                    Some(CanonicalInteger::NonNegative(v)) if v <= INLINE_UINT_MAX => {
+                        out.push(INLINE_UINT_BASE + v as u8)
+                    }
+                    Some(CanonicalInteger::NonNegative(v)) => {
+                        out.push(TAG_UINT);
+                        put_varint(out, v);
+                    }
+                    Some(CanonicalInteger::Negative(m)) => {
+                        out.push(TAG_NEGINT);
+                        put_varint(out, m);
+                    }
+                    None => {
+                        out.push(TAG_NUMBER_TOKEN);
+                        put_text(out, token).unwrap();
+                    }
+                },
+                CanonValue::String(body) => {
+                    out.push(TAG_STRING);
+                    put_text(out, body).unwrap();
+                }
+                CanonValue::Array(values) => {
+                    out.push(TAG_ARRAY);
+                    put_varint(out, values.len() as u64);
+                    for value in values {
+                        flat_value(value, out);
+                    }
+                }
+                CanonValue::Object(members) => {
+                    out.push(TAG_OBJECT);
+                    put_varint(out, members.len() as u64);
+                    for (key, value) in members {
+                        put_text(out, key).unwrap();
+                        flat_value(value, out);
+                    }
+                }
+            }
+        }
+
+        fn flat_patch(patch: &Patch, out: &mut Vec<u8>) {
+            match patch {
+                Patch::Keep => out.push(PATCH_KEEP),
+                Patch::ReviveSame => out.push(PATCH_REVIVE_SAME),
+                Patch::Revive(inner) => {
+                    out.push(PATCH_REVIVE_PATCH);
+                    flat_patch(inner, out);
+                }
+                Patch::Replace(value) => {
+                    out.push(PATCH_REPLACE);
+                    flat_value(value, out);
+                }
+                Patch::NumberDelta {
+                    fraction_digits,
+                    delta,
+                } => {
+                    out.push(PATCH_NUMBER_DELTA);
+                    put_varint(out, u64::from(*fraction_digits));
+                    put_varint(out, zigzag(*delta));
+                }
+                Patch::Object { removals, changes } => {
+                    out.push(PATCH_OBJECT);
+                    put_varint(out, removals.len() as u64);
+                    for key in removals {
+                        put_text(out, key).unwrap();
+                    }
+                    put_varint(out, changes.len() as u64);
+                    for (key, change) in changes {
+                        put_text(out, key).unwrap();
+                        flat_patch(change, out);
+                    }
+                }
+                Patch::ArrayEdit(ops) => {
+                    out.push(PATCH_ARRAY_EDIT);
+                    put_varint(out, ops.len() as u64);
+                    for op in ops {
+                        match op {
+                            ArrayEditOp::Copy(run) => {
+                                put_varint(out, ARRAY_EDIT_COPY);
+                                put_varint(out, u64::from(*run));
+                            }
+                            ArrayEditOp::Skip(run) => {
+                                put_varint(out, ARRAY_EDIT_SKIP);
+                                put_varint(out, u64::from(*run));
+                            }
+                            ArrayEditOp::Patch(patch) => {
+                                put_varint(out, ARRAY_EDIT_PATCH);
+                                flat_patch(patch, out);
+                            }
+                            ArrayEditOp::Insert(value) => {
+                                put_varint(out, ARRAY_EDIT_INSERT);
+                                flat_value(value, out);
+                            }
+                        }
+                    }
+                }
+                Patch::Array(changes) => {
+                    out.push(PATCH_ARRAY);
+                    put_varint(out, changes.len() as u64);
+                    let mut previous: Option<u32> = None;
+                    for (index, change) in changes {
+                        let gap = match previous {
+                            None => u64::from(*index),
+                            Some(previous) => u64::from(index - previous - 1),
+                        };
+                        put_varint(out, gap);
+                        flat_patch(change, out);
+                        previous = Some(*index);
+                    }
+                }
+            }
+        }
+
+        let wide = CanonValue::parse(br#"{"a":1,"bb":-9,"ccc":[1,2,{"d":"x"}],"e":1e9}"#).unwrap();
+        let row = CanonValue::parse(br#"{"id":7,"v":"row"}"#).unwrap();
+        let cases = vec![
+            Patch::Keep,
+            Patch::ReviveSame,
+            Patch::Revive(Box::new(Patch::Object {
+                removals: vec!["gone".to_string()],
+                changes: vec![("kept".to_string(), Patch::Replace(CanonValue::Null))],
+            })),
+            Patch::Replace(wide.clone()),
+            Patch::Replace(CanonValue::Number("127".into())),
+            Patch::Replace(CanonValue::Number("128".into())),
+            Patch::Replace(CanonValue::Number("-4000".into())),
+            Patch::Replace(CanonValue::Number("3e-05".into())),
+            Patch::Replace(CanonValue::String("a string with width".into())),
+            Patch::NumberDelta {
+                fraction_digits: 5,
+                delta: -123_456,
+            },
+            Patch::NumberDelta {
+                fraction_digits: 0,
+                delta: i64::MIN,
+            },
+            Patch::Object {
+                removals: vec!["one".to_string(), "two".to_string()],
+                changes: vec![
+                    ("aaa".to_string(), Patch::Replace(wide.clone())),
+                    (
+                        "bbb".to_string(),
+                        Patch::NumberDelta {
+                            fraction_digits: 2,
+                            delta: 3,
+                        },
+                    ),
+                ],
+            },
+            // Gaps, not absolute indices: 0, then 200, then 201.
+            Patch::Array(vec![
+                (0, Patch::Replace(CanonValue::Null)),
+                (200, Patch::Replace(CanonValue::Bool(true))),
+                (201, Patch::Replace(wide.clone())),
+            ]),
+            Patch::ArrayEdit(vec![
+                ArrayEditOp::Copy(300),
+                ArrayEditOp::Skip(2),
+                ArrayEditOp::Patch(Patch::Object {
+                    removals: Vec::new(),
+                    changes: vec![("v".to_string(), Patch::Replace(CanonValue::Null))],
+                }),
+                ArrayEditOp::Insert(row.clone()),
+            ]),
+        ];
+
+        for patch in &cases {
+            let mut flat = Vec::new();
+            flat_patch(patch, &mut flat);
+            assert_eq!(
+                grammar_cost(patch, 1).unwrap(),
+                flat.len(),
+                "{patch:?} costs {} but spells {} bytes",
+                grammar_cost(patch, 1).unwrap(),
+                flat.len()
+            );
+        }
+    }
+
+
+    /// A NAME REFERENCE COSTS A BYTE AND CAN NAME A LONG STRING, so a record
+    /// must not be able to ask for more name bytes than its own length allows.
+    ///
+    /// The old format had this property for free: every name was spelled in
+    /// full, so a record of N bytes produced at most N bytes of names. The
+    /// dictionary breaks that unless the bound is restated -- introduce one
+    /// long name, then reference it in one-byte tokens until the reconstruction
+    /// is orders of magnitude larger than the record. `String::clone` is not
+    /// fallible, so this has to be refused before the copy, not on it.
+    ///
+    /// kills: dropping `NameDictionary::charge`, or calling it only on the
+    /// introduction and not on the reference (the first case below stops being
+    /// refused); calling `begin_record` once per window instead of once per
+    /// record (the budget stops tracking the record it belongs to).
+    #[test]
+    fn a_record_cannot_expand_its_names_past_its_own_length() {
+        // One 4 KB name, then four hundred one-byte references to it. The
+        // record is about five kilobytes and the names it asks for are 1.6 MB.
+        let long = "n".repeat(4096);
+        let references = 400usize;
+        let mut structure = vec![PATCH_OBJECT, 0];
+        put_varint(&mut structure, references as u64);
+        let mut names = new_name(&long);
+        let mut values = Vec::new();
+        for _ in 0..references {
+            structure.push(PATCH_REPLACE);
+            names.extend_from_slice(&known_name(0));
+            values.push(TAG_NULL);
+        }
+        let hostile = record_of(&[
+            (STREAM_STRUCTURE, &structure),
+            (STREAM_NAMES, &names),
+            (STREAM_VALUES, &values),
+        ]);
+        assert!(
+            (references as u64 - 1) * (long.len() as u64)
+                > (hostile.len() as u64) * MAX_NAME_REPETITION,
+            "the fixture must actually exceed the budget"
+        );
+        let error = decode_patch_exact(&hostile)
+            .expect_err("a record that repeats a name past its own length must be refused");
+        assert!(error.message().contains("repeats its member names"), "{error}");
+
+        // THE BUDGET IS PER RECORD AND STARTS AGAIN AT EACH ONE, and the
+        // fixture is built to prove it: one record spends most of what it is
+        // allowed, so two of them would not fit inside one budget.
+        //
+        // The repeats are legitimate here -- four hundred rows of an array,
+        // each an object with the same member -- so the record DECODES, which
+        // is what makes the assertion about the budget rather than about some
+        // other rule refusing it first.
+        let wide_name = "w".repeat(400);
+        let rows = 400usize;
+        let mut structure = vec![PATCH_OBJECT, 0, 1, PATCH_ARRAY];
+        put_varint(&mut structure, rows as u64);
+        let mut row_names = new_name("arr");
+        row_names.extend_from_slice(&new_name(&wide_name));
+        let mut values = Vec::new();
+        for index in 0..rows {
+            structure.push(0); // the index gap: element 0, then each next one
+            structure.extend_from_slice(&[PATCH_OBJECT, 0, 1, PATCH_REPLACE]);
+            if index > 0 {
+                row_names.extend_from_slice(&known_name(1));
+            }
+            values.push(TAG_NULL);
+        }
+        let first = record_of(&[
+            (STREAM_STRUCTURE, &structure),
+            (STREAM_NAMES, &row_names),
+            (STREAM_VALUES, &values),
+        ]);
+        // The second record repeats the same rows without introducing anything.
+        let mut repeat_names = known_name(0);
+        for _ in 0..rows {
+            repeat_names.extend_from_slice(&known_name(1));
+        }
+        let second = record_of(&[
+            (STREAM_STRUCTURE, &structure),
+            (STREAM_NAMES, &repeat_names),
+            (STREAM_VALUES, &values),
+        ]);
+        let charged = (rows as u64 - 1) * wide_name.len() as u64;
+        assert!(
+            2 * charged > (second.len() as u64) * MAX_NAME_REPETITION,
+            "two of these must not fit in one record's budget, or the test \
+             proves nothing about the reset"
+        );
+
+        let mut names = NameDictionary::default();
+        decode_patch_record(&first, &mut names).expect("the first record");
+        decode_patch_record(&second, &mut names)
+            .expect("a second record starts with a fresh budget");
+
+        // AND A MASS REMOVAL OF LONG MOD-AUTHORED NAMES IS NOT REFUSED, which a
+        // plain ratio would have refused: a removal spends about one byte on
+        // each name and materialises all of it, so the window's own spelling
+        // cost is what has to pay for it.
+        let mut names = NameDictionary::default();
+        let mod_names: Vec<String> = (0..64)
+            .map(|i| format!("{}_{i:03}", "mod_scripted_variable_".repeat(8)))
+            .collect();
+        let mut introduce_structure = vec![PATCH_OBJECT, 0];
+        put_varint(&mut introduce_structure, mod_names.len() as u64);
+        let mut introduce_names = Vec::new();
+        let mut introduce_values = Vec::new();
+        for name in &mod_names {
+            introduce_structure.push(PATCH_REPLACE);
+            introduce_names.extend_from_slice(&new_name(name));
+            introduce_values.push(TAG_NULL);
+        }
+        decode_patch_record(
+            &record_of(&[
+                (STREAM_STRUCTURE, &introduce_structure),
+                (STREAM_NAMES, &introduce_names),
+                (STREAM_VALUES, &introduce_values),
+            ]),
+            &mut names,
+        )
+        .expect("introducing the mod's members");
+
+        let mut removal_structure = vec![PATCH_OBJECT];
+        put_varint(&mut removal_structure, mod_names.len() as u64);
+        removal_structure.push(0);
+        let mut removal_names = Vec::new();
+        for id in 0..mod_names.len() as u32 {
+            removal_names.extend_from_slice(&known_name(id));
+        }
+        let removal = record_of(&[
+            (STREAM_STRUCTURE, &removal_structure),
+            (STREAM_NAMES, &removal_names),
+        ]);
+        let materialised: usize = mod_names.iter().map(String::len).sum();
+        assert!(
+            materialised as u64 > (removal.len() as u64) * MAX_NAME_REPETITION,
+            "the fixture must be one a plain ratio would have refused"
+        );
+        decode_patch_record(&removal, &mut names)
+            .expect("a mod's own long member names must still be removable");
+
+        // AND THE BUDGET DOES NOT FIRE ON A REAL SHAPE. The same four hundred
+        // references to a name of ordinary length are well inside it, so this
+        // record gets as far as the ordering rule and is refused for the reason
+        // it deserves rather than for its size.
+        let ordinary = "temperature_raw";
+        let mut structure = vec![PATCH_OBJECT, 0];
+        put_varint(&mut structure, references as u64);
+        let mut names = new_name(ordinary);
+        let mut values = Vec::new();
+        for _ in 0..references {
+            structure.push(PATCH_REPLACE);
+            names.extend_from_slice(&known_name(0));
+            values.push(TAG_NULL);
+        }
+        let repeated = record_of(&[
+            (STREAM_STRUCTURE, &structure),
+            (STREAM_NAMES, &names),
+            (STREAM_VALUES, &values),
+        ]);
+        let error = decode_patch_exact(&repeated)
+            .expect_err("the same member four hundred times is not ordered");
+        assert!(
+            error.message().contains("strictly ordered"),
+            "the budget must not be what refuses this: {error}"
+        );
+    }
+
+    /// THE NAME TABLE MOVES ONLY WHEN THE RECORD DOES.
+    ///
+    /// An encode that fails writes no record and leaves the hour retryable. If
+    /// the names it had already introduced stayed in the table, the retry would
+    /// spell them as ids -- and a reader starting from the checkpoint would
+    /// never have seen those ids introduced, so the recording would not open.
+    ///
+    /// kills: dropping the `rollback` call on `encode_patch`'s or
+    /// `apply_patch`'s error path in `push_prepared`; making `rollback` truncate
+    /// `names` without also removing the entries from `ids` (the name is then
+    /// unknown to the reader but still known to the writer, which is the same
+    /// failure one step later).
+    #[test]
+    fn a_failed_encode_leaves_the_name_table_where_it_found_it() {
+        let mut names = NameDictionary::default();
+        let mut committed = Vec::new();
+        assert_eq!(names.write(&mut committed, "kept").unwrap(), 0);
+
+        let mark = names.mark();
+        let mut abandoned = Vec::new();
+        assert_eq!(names.write(&mut abandoned, "provisional").unwrap(), 1);
+        assert_eq!(names.write(&mut abandoned, "also").unwrap(), 2);
+        names.rollback(mark);
+
+        // The abandoned names are gone from BOTH halves of the table: the next
+        // write introduces one literally again and it takes the id the failed
+        // attempt had used.
+        let mut retry = Vec::new();
+        assert_eq!(names.write(&mut retry, "provisional").unwrap(), 1);
+        assert_eq!(retry[0], 0, "a forgotten name is introduced, not referenced");
+
+        // And the name that was already committed is still a reference.
+        let mut again = Vec::new();
+        assert_eq!(names.write(&mut again, "kept").unwrap(), 0);
+        assert_eq!(again, vec![1u8], "a committed name stays a reference");
+    }
+
+
+    /// AN ENCODER THAT COULD NOT WRITE A RECORD IS FINISHED.
+    ///
+    /// The delta base, the revive shadow and the window's name table all move
+    /// while a record is built, and they move before the bytes reach the
+    /// writer. A caller whose write failed still holds an unwritten hour and
+    /// nothing stops it offering the next one -- but the encoder is an hour
+    /// ahead of the artifact now, so every later record would be a delta
+    /// against a world no reader can reach, and the cache would seal over the
+    /// gap without a word.
+    ///
+    /// kills: dropping the `refuse_after_a_failed_write` guard from
+    /// `push`/`push_prepared`, `exclude_hour` or `finish` (the corresponding
+    /// assertion below stops erroring); clearing `write_failed` before the
+    /// second `write_hashed` rather than after it.
+    #[test]
+    fn an_encoder_that_could_not_write_a_record_refuses_to_continue() {
+        /// A writer that takes the checkpoint and then fails for good.
+        #[derive(Debug)]
+        struct FailsAfter {
+            broken: std::rc::Rc<std::cell::Cell<bool>>,
+        }
+        impl Write for FailsAfter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if self.broken.get() {
+                    return Err(std::io::Error::other("the disk went away"));
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let hour = |index: i64, body: &str| CacheBuildHour {
+            hour_index: index,
+            date: format!("1936.1.1.{}", index + 1),
+            h4cr_start_offset: index as u64 * 10,
+            h4cr_end_offset: (index as u64 + 1) * 10,
+            world_json: world_json(index, body),
+        };
+
+        // The checkpoint goes out; the first delta does not.
+        let broken = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut encoder = ReplayCacheEncoder::new(
+            FailsAfter {
+                broken: std::rc::Rc::clone(&broken),
+            },
+            &"0".repeat(64),
+            16,
+        )
+        .unwrap();
+        encoder.push(hour(0, r#"{"a":1}"#)).expect("the checkpoint is written");
+        broken.set(true);
+        let error = encoder
+            .push(hour(1, r#"{"a":2}"#))
+            .expect_err("the delta's write fails");
+        assert!(error.message().contains("the disk went away"), "{error}");
+
+        // From here nothing may be accepted and nothing may be sealed.
+        for outcome in [
+            encoder.push(hour(2, r#"{"a":3}"#)),
+            encoder.exclude_hour(ReplayExcludedHour {
+                hour_index: 2,
+                h4cr_start_offset: 20,
+                h4cr_end_offset: 30,
+                reason: "any".to_string(),
+            }),
+        ] {
+            let error = outcome.expect_err("an hour after a failed write must be refused");
+            assert!(error.message().contains("could not be written"), "{error}");
+        }
+        let error = encoder
+            .finish("g", "1", CacheIdentityMode::IdentityV1, 100)
+            .expect_err("a cache must not seal over an hour that never reached it");
+        assert!(error.message().contains("could not be written"), "{error}");
     }
 
     /// One delta series, one set of cache bytes. `diff_value` never emits a
@@ -6865,42 +8338,56 @@ mod tests {
     #[test]
     fn redundant_patch_spellings_are_rejected() {
         // An object patch with no removals and no changes.
-        let empty_object = [PATCH_OBJECT, 0, 0];
+        let empty_object = record(&[PATCH_OBJECT, 0, 0], &[], &[]);
         assert!(decode_patch_exact(&empty_object)
             .unwrap_err()
             .message()
             .contains("touches no member"));
 
         // An array patch with no touched elements.
-        assert!(decode_patch_exact(&[PATCH_ARRAY, 0])
+        assert!(decode_patch_exact(&record(&[PATCH_ARRAY, 0], &[], &[]))
             .unwrap_err()
             .message()
             .contains("touches no element"));
 
         // A keep nested inside an object patch, instead of omitting the member.
-        let mut nested_keep = vec![PATCH_OBJECT, 0, 1];
-        put_text(&mut nested_keep, "a").unwrap();
-        nested_keep.push(PATCH_KEEP);
+        let nested_keep = record(&[PATCH_OBJECT, 0, 1, PATCH_KEEP], &new_name("a"), &[]);
         assert!(decode_patch_exact(&nested_keep)
             .unwrap_err()
             .message()
             .contains("nested keep"));
 
         // A name that is both removed and changed, which is a replacement.
-        let mut remove_and_change = vec![PATCH_OBJECT, 1];
-        put_text(&mut remove_and_change, "a").unwrap();
-        put_varint(&mut remove_and_change, 1);
-        put_text(&mut remove_and_change, "a").unwrap();
-        remove_and_change.push(PATCH_REPLACE);
-        encode_value_into(&CanonValue::Null, &mut remove_and_change, 0).unwrap();
+        // The second mention is the DICTIONARY ID of the first, because a
+        // repeated literal is itself a second spelling and is refused earlier.
+        let mut removed_then_changed = new_name("a");
+        removed_then_changed.extend_from_slice(&known_name(0));
+        let remove_and_change = record(
+            &[PATCH_OBJECT, 1, 1, PATCH_REPLACE],
+            &removed_then_changed,
+            &[TAG_NULL],
+        );
         assert!(decode_patch_exact(&remove_and_change)
             .unwrap_err()
             .message()
             .contains("removes and changes the same member name"));
 
+        // AND A REPEATED LITERAL IS REFUSED IN ITS OWN RIGHT: once a name is in
+        // the window's table it has exactly one spelling, its id.
+        let mut twice = new_name("a");
+        twice.extend_from_slice(&new_name("a"));
+        assert!(decode_patch_exact(&record(
+            &[PATCH_OBJECT, 1, 1, PATCH_REPLACE],
+            &twice,
+            &[TAG_NULL]
+        ))
+        .unwrap_err()
+        .message()
+        .contains("must be spelled as its id"));
+
         // A whole hour that changed nothing still keeps, at the top level.
         assert!(matches!(
-            decode_patch_exact(&[PATCH_KEEP]).unwrap(),
+            decode_patch_exact(&record(&[PATCH_KEEP], &[], &[])).unwrap(),
             Patch::Keep
         ));
     }
