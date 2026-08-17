@@ -37,6 +37,7 @@
 //! quietly.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 /// Deepest nesting a canonical world body may use.
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
@@ -56,9 +57,71 @@ pub enum CanonValue {
     /// The exact source token BODY — the bytes between the quotes, with
     /// escapes left in their source spelling.
     String(String),
-    Array(Vec<CanonValue>),
-    /// `(name body, value)` in strictly increasing DECODED name order.
-    Object(Vec<(String, CanonValue)>),
+    /// SHARED, not owned: cloning this node bumps a refcount, so two hours of
+    /// one recording share every array they have in common. A writer takes
+    /// `Arc::make_mut`, which mutates in place while the array is uniquely
+    /// held and copies ONE level of element handles when it is not — each
+    /// element being another shared node, so the copy stops at that level.
+    Array(Arc<Vec<CanonValue>>),
+    /// `(name body, value)` in strictly increasing DECODED name order, shared
+    /// on the same terms as [`CanonValue::Array`].
+    Object(Arc<Vec<(String, CanonValue)>>),
+}
+
+impl CanonValue {
+    /// An array node from its elements.
+    pub fn array(items: Vec<CanonValue>) -> CanonValue {
+        CanonValue::Array(Arc::new(items))
+    }
+
+    /// An object node from its members, which the caller has already put in
+    /// strictly increasing decoded-name order.
+    pub fn object(members: Vec<(String, CanonValue)>) -> CanonValue {
+        CanonValue::Object(Arc::new(members))
+    }
+
+    /// Bytes the `Arc` around a shared container costs BEYOND the element
+    /// buffer it holds: two atomic reference counters and the `Vec` header
+    /// itself, which moved off the node and into that allocation when the
+    /// containers became shared.
+    ///
+    /// It is charged once per Array and per Object node, by both
+    /// [`CanonValue::heap_bytes`] and the parser's running count, because the
+    /// two must agree — `parse_counted_agrees_with_heap_bytes` requires it, and
+    /// they would agree just as happily on two wrong numbers if only one of
+    /// them were taught about this allocation (Codex review round 7,
+    /// finding 5).
+    ///
+    /// An ABI number, deliberately, like the rest of `heap_bytes`: this asks
+    /// what THIS process's allocator is holding. `content_bytes`, which two
+    /// processes must agree on independently, is a function of the document and
+    /// does not use it.
+    const fn shared_container_bytes<T>() -> u64 {
+        (std::mem::size_of::<usize>() * 2 + std::mem::size_of::<T>()) as u64
+    }
+
+    /// Do these two nodes stand on the SAME storage — the same allocation, not
+    /// merely equal contents?
+    ///
+    /// WHY THIS IS PUBLIC. It is the only way to observe the property the
+    /// shared containers exist for, and that property is invisible to every
+    /// value comparison: two hours that share a subtree and two hours that
+    /// each built their own are `==` in every respect. Without this, "hour h
+    /// and hour h+1 share everything they have in common" is an unfalsifiable
+    /// claim about an implementation — the day the tree starts copying itself
+    /// again, every existing test still passes and the recording merely gets
+    /// slower. `shared_subtrees_survive_a_patch` is what it exists for.
+    ///
+    /// Scalars answer `false`: they have no storage to share, so there is
+    /// nothing here to be right or wrong about, and answering `true` would let
+    /// a caller mistake "both are `Null`" for evidence about a container.
+    pub fn shares_storage_with(&self, other: &CanonValue) -> bool {
+        match (self, other) {
+            (CanonValue::Array(left), CanonValue::Array(right)) => Arc::ptr_eq(left, right),
+            (CanonValue::Object(left), CanonValue::Object(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,17 +269,24 @@ impl CanonValue {
                 Self::Number(token) | Self::String(token) => token.capacity() as u64,
                 Self::Array(items) => {
                     stack.extend(items.iter());
-                    (items.capacity() * std::mem::size_of::<CanonValue>()) as u64
+                    ((items.capacity() * std::mem::size_of::<CanonValue>()) as u64)
+                        .saturating_add(Self::shared_container_bytes::<Vec<CanonValue>>())
                 }
                 Self::Object(members) => {
                     let mut names = 0u64;
-                    for (name, member) in members {
+                    for (name, member) in members.iter() {
                         names = names.saturating_add(name.capacity() as u64);
                         stack.push(member);
                     }
-                    names.saturating_add(
-                        (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
-                    )
+                    names
+                        .saturating_add(
+                            (members.capacity()
+                                * std::mem::size_of::<(String, CanonValue)>())
+                                as u64,
+                        )
+                        .saturating_add(Self::shared_container_bytes::<
+                            Vec<(String, CanonValue)>,
+                        >())
                 }
             });
         }
@@ -655,8 +725,9 @@ impl<'a> Parser<'a> {
             self.position += 1;
             self.heap_bytes = self
                 .heap_bytes
-                .saturating_add((values.capacity() * std::mem::size_of::<CanonValue>()) as u64);
-            return Ok(CanonValue::Array(values));
+                .saturating_add((values.capacity() * std::mem::size_of::<CanonValue>()) as u64)
+                .saturating_add(CanonValue::shared_container_bytes::<Vec<CanonValue>>());
+            return Ok(CanonValue::array(values));
         }
         loop {
             self.skip_whitespace();
@@ -666,10 +737,15 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.position += 1,
                 Some(b']') => {
                     self.position += 1;
-                    self.heap_bytes = self.heap_bytes.saturating_add(
-                        (values.capacity() * std::mem::size_of::<CanonValue>()) as u64,
-                    );
-                    return Ok(CanonValue::Array(values));
+                    self.heap_bytes = self
+                        .heap_bytes
+                        .saturating_add(
+                            (values.capacity() * std::mem::size_of::<CanonValue>()) as u64,
+                        )
+                        .saturating_add(
+                            CanonValue::shared_container_bytes::<Vec<CanonValue>>(),
+                        );
+                    return Ok(CanonValue::array(values));
                 }
                 _ => return self.error("canonical world JSON array is malformed"),
             }
@@ -682,10 +758,15 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.bytes.get(self.position) == Some(&b'}') {
             self.position += 1;
-            self.heap_bytes = self.heap_bytes.saturating_add(
-                (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
-            );
-            return Ok(CanonValue::Object(members));
+            self.heap_bytes = self
+                .heap_bytes
+                .saturating_add(
+                    (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
+                )
+                .saturating_add(CanonValue::shared_container_bytes::<
+                    Vec<(String, CanonValue)>,
+                >());
+            return Ok(CanonValue::object(members));
         }
         loop {
             self.skip_whitespace();
@@ -722,10 +803,17 @@ impl<'a> Parser<'a> {
                 Some(b',') => self.position += 1,
                 Some(b'}') => {
                     self.position += 1;
-                    self.heap_bytes = self.heap_bytes.saturating_add(
-                        (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
-                    );
-                    return Ok(CanonValue::Object(members));
+                    self.heap_bytes = self
+                        .heap_bytes
+                        .saturating_add(
+                            (members.capacity()
+                                * std::mem::size_of::<(String, CanonValue)>())
+                                as u64,
+                        )
+                        .saturating_add(CanonValue::shared_container_bytes::<
+                            Vec<(String, CanonValue)>,
+                        >());
+                    return Ok(CanonValue::object(members));
                 }
                 _ => return self.error("canonical world JSON object is malformed"),
             }
@@ -752,16 +840,26 @@ mod heap_bytes_tests {
         items.push(CanonValue::Number("1".to_string()));
         items.push(CanonValue::Number("2".to_string()));
         let mut members = Vec::with_capacity(2);
-        members.push(("a".to_string(), CanonValue::Array(items)));
+        members.push(("a".to_string(), CanonValue::array(items)));
         members.push(("bb".to_string(), CanonValue::String("xyz".to_string())));
-        let value = CanonValue::Object(members);
+        let value = CanonValue::object(members);
 
         let member = std::mem::size_of::<(String, CanonValue)>() as u64;
         let element = std::mem::size_of::<CanonValue>() as u64;
-        // Root object: 2 member slots, names "a" (1) + "bb" (2).
-        // Array: 2 element slots, tokens "1" (1) + "2" (1).
+        // Root object: its own shared allocation, 2 member slots, names
+        //   "a" (1) + "bb" (2).
+        // Array: its own shared allocation, 2 element slots, tokens
+        //   "1" (1) + "2" (1).
         // String member: body "xyz" (3).
-        let expected = 2 * member + 1 + 2 + 2 * element + 1 + 1 + 3;
+        let expected = CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>()
+            + 2 * member
+            + 1
+            + 2
+            + CanonValue::shared_container_bytes::<Vec<CanonValue>>()
+            + 2 * element
+            + 1
+            + 1
+            + 3;
         assert_eq!(value.heap_bytes(), expected);
     }
 
@@ -772,10 +870,11 @@ mod heap_bytes_tests {
     fn heap_bytes_reports_reserved_capacity_not_occupied_length() {
         let mut items: Vec<CanonValue> = Vec::with_capacity(64);
         items.push(CanonValue::Null);
-        let value = CanonValue::Array(items);
+        let value = CanonValue::array(items);
         assert_eq!(
             value.heap_bytes(),
             64 * std::mem::size_of::<CanonValue>() as u64
+                + CanonValue::shared_container_bytes::<Vec<CanonValue>>()
         );
     }
 
@@ -815,12 +914,45 @@ mod heap_bytes_tests {
     /// per node regardless of ownership would inflate every world document by
     /// the node count and make the component table wrong in the safe-looking
     /// direction.
+    ///
+    /// An EMPTY CONTAINER is not in that class and no longer answers zero. It
+    /// owns one allocation — the `Arc` holding the reference counters and the
+    /// `Vec` header — from the moment it exists, empty or not, because that is
+    /// what made the containers shareable. Asserting zero here was the shape of
+    /// the omission Codex found: the two accounting implementations had drifted
+    /// together, so every array and object in a world went uncharged and every
+    /// test still passed.
+    ///
+    /// kills: dropping the `shared_container_bytes` charge from `heap_bytes`.
+    /// It takes BOTH tests to close the defect that was actually found, and
+    /// they close different halves of it: this one fails if the charge leaves
+    /// the traversal, and `parse_counted_matches_the_independent_walk` fails if
+    /// it leaves only ONE of the two counters. Removing it from both at once
+    /// passes that agreement test — the two implementations agree, on a number
+    /// short by one allocation per container, which on a 13.9 MB world is
+    /// hundreds of thousands of them — and this test is what stops it.
     #[test]
-    fn heap_bytes_of_ownerless_scalars_is_zero() {
+    fn heap_bytes_charges_ownership_and_nothing_else() {
         assert_eq!(CanonValue::Null.heap_bytes(), 0);
         assert_eq!(CanonValue::Bool(true).heap_bytes(), 0);
-        assert_eq!(CanonValue::Array(Vec::new()).heap_bytes(), 0);
-        assert_eq!(CanonValue::Object(Vec::new()).heap_bytes(), 0);
+        assert_eq!(
+            CanonValue::array(Vec::new()).heap_bytes(),
+            CanonValue::shared_container_bytes::<Vec<CanonValue>>(),
+            "an empty array still owns the allocation that makes it shareable"
+        );
+        assert_eq!(
+            CanonValue::object(Vec::new()).heap_bytes(),
+            CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>(),
+            "an empty object still owns the allocation that makes it shareable"
+        );
+        // And the charge is per CONTAINER, so nesting one inside another costs
+        // two of them plus the outer array's single element slot.
+        assert_eq!(
+            CanonValue::array(vec![CanonValue::array(Vec::new())]).heap_bytes(),
+            CanonValue::shared_container_bytes::<Vec<CanonValue>>() * 2
+                + std::mem::size_of::<CanonValue>() as u64,
+            "a nested container is charged its own allocation"
+        );
     }
 
     /// The walk is iterative on purpose: a recursive one overflows the stack
@@ -836,15 +968,21 @@ mod heap_bytes_tests {
         const DEPTH: usize = 200_000;
         let mut value = CanonValue::String("leaf".to_string());
         for _ in 0..DEPTH {
-            value = CanonValue::Array(vec![value]);
+            value = CanonValue::array(vec![value]);
         }
         let element = std::mem::size_of::<CanonValue>() as u64;
-        assert_eq!(value.heap_bytes(), DEPTH as u64 * element + 4);
+        let container = CanonValue::shared_container_bytes::<Vec<CanonValue>>();
+        assert_eq!(
+            value.heap_bytes(),
+            DEPTH as u64 * (element + container) + 4
+        );
 
         let mut unwind = value;
         loop {
             let next = match &mut unwind {
-                CanonValue::Array(items) if !items.is_empty() => items.pop(),
+                CanonValue::Array(items) if !items.is_empty() => {
+                    Arc::make_mut(items).pop()
+                }
                 _ => None,
             };
             match next {

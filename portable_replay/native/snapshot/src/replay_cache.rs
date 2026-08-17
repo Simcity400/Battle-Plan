@@ -3943,7 +3943,7 @@ fn diff_value(
         }
         (CanonValue::Array(old), CanonValue::Array(new)) if old.len() == new.len() => {
             let mut changes = Vec::new();
-            for (index, (old_value, new_value)) in old.iter().zip(new).enumerate() {
+            for (index, (old_value, new_value)) in old.iter().zip(new.iter()).enumerate() {
                 let element = u32::try_from(index)
                     .map_err(|_| ReplayCacheError::new("array index does not fit u32"))?;
                 let patch = diff_value(
@@ -4155,6 +4155,15 @@ fn apply_patch(
                 ));
             };
             let child_shadow = &mut shadow.members;
+            // THE ONE PLACE THIS OBJECT'S STORAGE IS TAKEN, and the place the
+            // sharing is paid for or not. `Arc::make_mut` hands back the
+            // existing member list untouched while this node is uniquely held
+            // — the ordinary forward step, where no earlier hour is still
+            // reachable through this path — and copies ONE level of member
+            // handles when an earlier hour does still reach it. The copy is
+            // shallow: each member's own subtree is another `Arc`, so it moves
+            // by refcount and the two hours go on sharing everything below.
+            let members = Arc::make_mut(members);
             // Removals first, then changes, both by merge walk over the
             // strictly increasing member list — the result stays sorted, so a
             // later delta in the same run still sees a canonical object.
@@ -4243,7 +4252,10 @@ fn apply_patch(
                     "array edit patch targets a non-array value",
                 ));
             };
-            let old = std::mem::take(array);
+            // Taken through `Arc::make_mut` for the reason the object arm
+            // gives: in place while this array is uniquely held, one shallow
+            // level of element handles when an earlier hour still reaches it.
+            let old = std::mem::take(Arc::make_mut(array));
             // THE MEMORIES MOVE WITH THEIR ROWS. An element shadow is keyed by
             // INDEX, and this is the one patch that changes what index a row
             // sits at, so a copied or patched row carries its memory to the
@@ -4337,7 +4349,7 @@ fn apply_patch(
                 stranded.release(budget);
             }
             shadow.elements = new_shadows;
-            *target = CanonValue::Array(out);
+            *target = CanonValue::array(out);
             Ok(())
         }
         Patch::Array(changes) => {
@@ -4346,6 +4358,10 @@ fn apply_patch(
                     "array patch targets a non-array value",
                 ));
             };
+            // Same rule as the two arms above. A fixed-length array patch
+            // rewrites only the slots it names, so once this node is unshared
+            // every untouched row keeps the `Arc` it already had.
+            let array = Arc::make_mut(array);
             let mut previous = None;
             for (slot, change) in changes {
                 let index = *slot as usize;
@@ -4823,14 +4839,14 @@ fn value_grammar_cost(value: &CanonValue, depth: usize) -> Result<usize, ReplayC
         CanonValue::String(body) => 1 + text_grammar_cost(body)?,
         CanonValue::Array(values) => {
             let mut cost = 1 + varint_len(values.len() as u64);
-            for value in values {
+            for value in values.iter() {
                 cost += value_grammar_cost(value, depth + 1)?;
             }
             cost
         }
         CanonValue::Object(members) => {
             let mut cost = 1 + varint_len(members.len() as u64);
-            for (key, value) in members {
+            for (key, value) in members.iter() {
                 cost += text_grammar_cost(key)? + value_grammar_cost(value, depth + 1)?;
             }
             cost
@@ -5320,14 +5336,14 @@ fn encode_value_into(
         CanonValue::Array(values) => {
             out.push(TAG_ARRAY);
             put_varint(out, values.len() as u64);
-            for value in values {
+            for value in values.iter() {
                 encode_value_into(value, out, depth + 1, names.as_deref_mut())?;
             }
         }
         CanonValue::Object(members) => {
             out.push(TAG_OBJECT);
             put_varint(out, members.len() as u64);
-            for (key, value) in members {
+            for (key, value) in members.iter() {
                 // THE SAME TABLE AS THE PATCH'S MEMBER NAMES, which is where
                 // most of this lever's bytes are: a replaced subtree restates
                 // every name it carries, and MB's `member_names` class counted
@@ -5418,7 +5434,7 @@ fn decode_value(
             for _ in 0..count {
                 values.push(decode_value(reader, depth + 1, names.as_deref_mut())?);
             }
-            Ok(CanonValue::Array(values))
+            Ok(CanonValue::array(values))
         }
         TAG_OBJECT => {
             let count = reader.count(MIN_KEYED_VALUE_BYTES)?;
@@ -5448,7 +5464,7 @@ fn decode_value(
                 let value = decode_value(reader, depth + 1, names.as_deref_mut())?;
                 members.push((key, value));
             }
-            Ok(CanonValue::Object(members))
+            Ok(CanonValue::object(members))
         }
         tag => Err(ReplayCacheError::new(format!(
             "unknown binary JSON value tag {tag}"
@@ -8121,7 +8137,7 @@ mod tests {
         // written at all.
         assert!(value_grammar_cost(&CanonValue::String(past_bound.clone()), 1).is_err());
         assert!(value_grammar_cost(
-            &CanonValue::Object(vec![(past_bound.clone(), CanonValue::Null)]),
+            &CanonValue::object(vec![(past_bound.clone(), CanonValue::Null)]),
             1
         )
         .is_err());
@@ -8450,14 +8466,14 @@ mod tests {
                 CanonValue::Array(values) => {
                     out.push(TAG_ARRAY);
                     put_varint(out, values.len() as u64);
-                    for value in values {
+                    for value in values.iter() {
                         flat_value(value, out);
                     }
                 }
                 CanonValue::Object(members) => {
                     out.push(TAG_OBJECT);
                     put_varint(out, members.len() as u64);
-                    for (key, value) in members {
+                    for (key, value) in members.iter() {
                         put_text(out, key).unwrap();
                         flat_value(value, out);
                     }
@@ -10013,5 +10029,157 @@ mod tests {
             original.walked_deltas, 1,
             "the original still holds its cursor and must resume where the clone rebuilt"
         );
+    }
+
+    /// THE PROPERTY THE SHARED CONTAINERS EXIST FOR, on every patch arm that
+    /// mutates one.
+    ///
+    /// A recording's hour h+1 is hour h with a few paths changed. Before the
+    /// containers were shared, producing h+1 while something still held h meant
+    /// copying the whole world -- measured on capture t53 at 220 ms for a deep
+    /// copy of a 13.9 MB hour, against 257 ms to rebuild it from scratch, which
+    /// is why "retain it and hand out a copy" was never going to be the answer
+    /// (`runs/my_replay_scrub4/READER_STAGES_t53_with_clone.txt`).
+    ///
+    /// So this requires all four halves of the claim at once, because each one
+    /// alone is satisfiable by a wrong implementation:
+    ///
+    ///   1. the retained hour h still reads as hour h AFTER h+1 exists
+    ///      (an implementation that mutated through the shared handle fails);
+    ///   2. h+1 is the document the patch says it is
+    ///      (an implementation that copied and then forgot to write fails);
+    ///   3. a subtree the patch did not touch is the SAME ALLOCATION in both
+    ///      (an implementation that deep-copied to be safe fails -- and that
+    ///      one passes 1 and 2, which is exactly why 3 has to be here);
+    ///   4. the subtree the patch DID touch is not
+    ///      (which is what makes 3 a statement about sharing rather than about
+    ///      an aliasing bug).
+    ///
+    /// kills: making `CanonValue::clone` deep again — which is what it was
+    /// before the containers were shared, since cloning a `Vec` cloned every
+    /// element. VERIFIED, not assumed: replacing the derived `Clone` with a
+    /// recursive one fails claim 3 at "an untouched subtree was copied instead
+    /// of shared", while every other test in this crate still passes.
+    ///
+    /// It does NOT kill an arm that copies its own node before writing to it
+    /// (`*members = Arc::new((**members).clone())` ahead of the `make_mut`) —
+    /// that was tried, and it passes, correctly: copying ONE node's handle
+    /// vector while its children stay shared is what path copying already
+    /// does, so it costs one allocation and no sharing. The claim this test
+    /// makes is about the SUBTREES, and that is the claim the 220 ms rides on.
+    #[test]
+    fn shared_subtrees_survive_a_patch() {
+        let before = CanonValue::parse(
+            br#"{"scalar":7,"touched":{"a":[1,2,3]},"untouched":{"b":[4,5,6]}}"#,
+        )
+        .expect("the before document parses");
+        let after_document =
+            br#"{"scalar":7,"touched":{"a":[1,2,9]},"untouched":{"b":[4,5,6]}}"#;
+        let after_expected = CanonValue::parse(after_document).expect("the after document parses");
+        let patch = diff_value(&before, &after_expected, None, 0).expect("the two hours diff");
+
+        // What a consumer holding hour h has: a clone, which is what makes the
+        // storage shared and therefore what makes this test mean anything.
+        let retained = before.clone();
+        let mut running = before;
+        apply_patch(
+            &mut running,
+            &patch,
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            0,
+        )
+        .expect("the patch applies");
+
+        // 1 and 2.
+        assert_eq!(
+            retained,
+            CanonValue::parse(
+                br#"{"scalar":7,"touched":{"a":[1,2,3]},"untouched":{"b":[4,5,6]}}"#
+            )
+            .expect("the before document parses"),
+            "the hour a consumer was still holding changed under it"
+        );
+        assert_eq!(running, after_expected, "the patched hour is not hour h+1");
+
+        // 3: the untouched subtree, at two levels, is one allocation.
+        let retained_untouched = retained.member("untouched").expect("untouched member");
+        let running_untouched = running.member("untouched").expect("untouched member");
+        assert!(
+            retained_untouched.shares_storage_with(running_untouched),
+            "an untouched subtree was copied instead of shared"
+        );
+        assert!(
+            retained_untouched
+                .member("b")
+                .expect("b")
+                .shares_storage_with(running_untouched.member("b").expect("b")),
+            "an untouched array one level down was copied instead of shared"
+        );
+
+        // 4: the touched path is not.
+        let retained_touched = retained.member("touched").expect("touched member");
+        let running_touched = running.member("touched").expect("touched member");
+        assert!(
+            !retained_touched.shares_storage_with(running_touched),
+            "the changed subtree is the same allocation in both hours, which \
+             means one of them is not the hour it claims to be"
+        );
+        assert!(
+            !retained_touched
+                .member("a")
+                .expect("a")
+                .shares_storage_with(running_touched.member("a").expect("a")),
+            "the changed array is the same allocation in both hours"
+        );
+
+        // The same four claims for the other two container-mutating arms: an
+        // array edit (length changes) and a whole-object member removal.
+        for (before_text, after_text, what) in [
+            (
+                &br#"{"touched":[1,2,3],"untouched":{"b":[4,5,6]}}"#[..],
+                &br#"{"touched":[1,2,3,4],"untouched":{"b":[4,5,6]}}"#[..],
+                "array edit",
+            ),
+            (
+                &br#"{"touched":{"a":1,"gone":2},"untouched":{"b":[4,5,6]}}"#[..],
+                &br#"{"touched":{"a":1},"untouched":{"b":[4,5,6]}}"#[..],
+                "member removal",
+            ),
+        ] {
+            let before = CanonValue::parse(before_text).expect("before parses");
+            let expected = CanonValue::parse(after_text).expect("after parses");
+            let patch = diff_value(&before, &expected, None, 0).expect("diffs");
+            let retained = before.clone();
+            let mut running = before;
+            apply_patch(
+                &mut running,
+                &patch,
+                &mut Shadow::default(),
+                &mut ShadowBudget::default(),
+                0,
+            )
+            .unwrap_or_else(|error| panic!("{what}: the patch applies: {error}"));
+            assert_eq!(
+                retained,
+                CanonValue::parse(before_text).expect("before parses"),
+                "{what}: the retained hour changed under its holder"
+            );
+            assert_eq!(running, expected, "{what}: the patched hour is wrong");
+            assert!(
+                retained
+                    .member("untouched")
+                    .expect("untouched")
+                    .shares_storage_with(running.member("untouched").expect("untouched")),
+                "{what}: an untouched subtree was copied instead of shared"
+            );
+            assert!(
+                !retained
+                    .member("touched")
+                    .expect("touched")
+                    .shares_storage_with(running.member("touched").expect("touched")),
+                "{what}: the changed subtree is the same allocation in both hours"
+            );
+        }
     }
 }

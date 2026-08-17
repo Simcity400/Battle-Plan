@@ -1803,7 +1803,7 @@ pub fn decompose_ref<'a>(
                 ));
             };
             let mut previous: Option<String> = None;
-            for item in items {
+            for item in items.iter() {
                 let CanonValue::Object(members) = item else {
                     return Err(FoldV3Error::new(
                         "a keyed-array element must be a JSON object",
@@ -1884,7 +1884,7 @@ fn decompose_into<'a>(
     }
     match value {
         CanonValue::Object(members) if !members.is_empty() => {
-            for (name, member) in members {
+            for (name, member) in members.iter() {
                 // Interned, not cloned. The corpus re-presents the same member
                 // names every hour, so after the first hour this is a hash
                 // lookup returning a `Copy` handle instead of an allocation and

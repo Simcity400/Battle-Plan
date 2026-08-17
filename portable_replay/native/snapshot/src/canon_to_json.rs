@@ -102,7 +102,7 @@ fn convert(value: &CanonValue, depth: usize) -> Result<Value, CanonToValueError>
         CanonValue::Array(items) => {
             let depth = enter(depth)?;
             let mut out = Vec::with_capacity(items.len());
-            for item in items {
+            for item in items.iter() {
                 out.push(convert(item, depth)?);
             }
             Ok(Value::Array(out))
@@ -110,7 +110,7 @@ fn convert(value: &CanonValue, depth: usize) -> Result<Value, CanonToValueError>
         CanonValue::Object(members) => {
             let depth = enter(depth)?;
             let mut out = Map::new();
-            for (name, member) in members {
+            for (name, member) in members.iter() {
                 let key = decode_json_string_body(name).ok_or_else(|| {
                     CanonToValueError::new("world JSON member name does not decode to text")
                 })?;

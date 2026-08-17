@@ -42,6 +42,112 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
+/// Lane MY: split the reader's stage into the three things it actually does.
+///
+/// WHY. MV's `NEXT.md` prices "the reader's world tree" as ONE 374 ms number
+/// covering the cursored delta walk, the whole-world `canon_to_json::to_value`
+/// projection, and `Snapshot::from_world_value`. Those three have completely
+/// different fixes, and the second design round has to know which one holds the
+/// milliseconds before it commits to an in-place canonical JSON tree.
+///
+/// The split needs no new instrument inside the shipped reader. Asking the
+/// cache for the hour it is ALREADY standing on resumes the cursor at
+/// `position == target_position`, walks zero delta records, and does nothing
+/// but re-validate the world identity and re-run the projection — so
+///
+/// ```text
+///   projection      = the same-hour call
+///   walk + decode   = the forward call - the same-hour call
+/// ```
+///
+/// and `Snapshot::from_world_value` is timed on its own. It asserts no budget
+/// and is `#[ignore]`d for the same reason the two below it are.
+#[test]
+#[ignore = "measurement: needs MN_FIXTURE pointing at a real index/cache pair"]
+fn price_the_readers_three_stages() {
+    let dir = std::env::var("MN_FIXTURE").expect("MN_FIXTURE names a directory");
+    let samples: usize = std::env::var("MN_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10);
+
+    let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
+    let index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
+    let source_len = index.source_len();
+    let source_sha = index.source_sha256().to_string();
+    let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index()).collect();
+    let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp")).expect("open cache");
+    let cache =
+        snapshot::CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
+            .expect("admit cache");
+
+    let start = hours.len().saturating_sub(samples + 1);
+    let mut forward_ms: Vec<f64> = Vec::new();
+    let mut same_hour_ms: Vec<f64> = Vec::new();
+    let mut body_ms: Vec<f64> = Vec::new();
+    let mut clone_ms: Vec<f64> = Vec::new();
+    for position in (start + 1)..hours.len() {
+        cache
+            .reconstruct_value(hours[position - 1])
+            .expect("prime the cursor");
+        let t0 = Instant::now();
+        let (world, _) = cache
+            .reconstruct_value(hours[position])
+            .expect("reconstruct the hour");
+        forward_ms.push(t0.elapsed().as_secs_f64() * 1e3);
+        drop(world);
+        // The cursor now stands ON this hour: zero delta records, projection only.
+        let t1 = Instant::now();
+        let (world, _) = cache
+            .reconstruct_value(hours[position])
+            .expect("re-project the hour");
+        same_hour_ms.push(t1.elapsed().as_secs_f64() * 1e3);
+        // What a DEEP COPY of the already-projected world costs. This is the
+        // price of the smallest correct alternative to rebuilding it: retain
+        // the projection, update it along the changed paths, and hand the
+        // consumer a clone. A clone allocates and copies; it does not decode a
+        // string body, parse a number token, or insert into a map one member at
+        // a time, which is what `canon_to_json::to_value` does.
+        let t2 = Instant::now();
+        let copy = world.clone();
+        clone_ms.push(t2.elapsed().as_secs_f64() * 1e3);
+        std::hint::black_box(&copy);
+        drop(copy);
+        let t3 = Instant::now();
+        let body = snapshot::Snapshot::from_world_value(world).expect("canonical body");
+        body_ms.push(t3.elapsed().as_secs_f64() * 1e3);
+        std::hint::black_box(&body);
+    }
+
+    let mut report = |label: &str, mut samples: Vec<f64>| {
+        samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+        println!(
+            "{{\"metric\":\"{label}\",\"n\":{},\"p50_ms\":{:.3},\"p95_ms\":{:.3},\"max_ms\":{:.3}}}",
+            samples.len(),
+            percentile(&samples, 50.0),
+            percentile(&samples, 95.0),
+            samples.last().copied().unwrap_or(f64::NAN),
+        );
+    };
+    println!(
+        "{{\"artifact\":\"{}\",\"hours\":{}}}",
+        dir.replace('\\', "/"),
+        hours.len()
+    );
+    report("reader_forward_walk_plus_projection", forward_ms.clone());
+    report("reader_projection_only_same_hour", same_hour_ms.clone());
+    report("projected_world_deep_clone", clone_ms.clone());
+    report("snapshot_from_world_value", body_ms.clone());
+    let mut f = forward_ms.clone();
+    let mut s = same_hour_ms.clone();
+    f.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+    s.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+    println!(
+        "{{\"metric\":\"reader_walk_and_decode_implied\",\"p50_ms\":{:.3}}}",
+        percentile(&f, 50.0) - percentile(&s, 50.0)
+    );
+}
+
 #[test]
 #[ignore = "measurement: needs MN_FIXTURE pointing at a real index/cache pair"]
 fn price_the_typed_frame_per_builder() {
