@@ -689,6 +689,7 @@ mod tests {
             experience: Leaf::Absent,
             manpower: Leaf::Absent,
             mission_kind: Leaf::Absent,
+            mission_mask: Leaf::Unobtained,
             strategic_region_id: Leaf::Measured(68),
             air_base: Leaf::Measured("39:65".into()),
             air_base_province: Leaf::Measured(6508),

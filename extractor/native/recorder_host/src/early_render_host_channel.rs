@@ -1708,7 +1708,10 @@ mod tests {
                 },
             effective_runtime_dlc_candidate_ids: Vec::new(),
             localisation_language: "english".into(),
-            required_settings: Default::default(),
+            recorder_local_settings: std::collections::BTreeMap::from([(
+                "display_mode".to_string(),
+                "borderless".to_string(),
+            )]),
             semantic_arguments: Vec::new(),
         };
         let host = PreparedEarlyRenderHostChannel {
@@ -1737,6 +1740,7 @@ mod tests {
                 integrated_dlc_layers: Default::default(),
                 localisation_language: "english".into(),
                 required_settings: Default::default(),
+                recorder_local_settings: std::collections::BTreeMap::new(),
             },
             runtime_dlc_descriptors: Vec::new(),
             launch_bind_sha256: Some(launch_bind_sha256),

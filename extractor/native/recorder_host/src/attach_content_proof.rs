@@ -438,6 +438,134 @@ impl AttachTimeContentProof {
     }
 }
 
+/// THE ONE RULE for turning a resolved layer stack into the proof rows the
+/// digest is taken over.
+///
+/// Shared so that a later re-derivation compares like with like. The
+/// attach-time content CENSUS re-resolves the layer stack after the proof's
+/// window has closed and then stamps the proof's `layer_stack_sha256` onto the
+/// result; without a common constructor that stamp is an assertion rather than
+/// a check, and a descriptor that changed in between would be published under
+/// the old certified digest (Codex review round 1, finding 1).
+pub fn proof_layers_from_bound(layers: &[BoundContentLayer]) -> Vec<ProofLayer> {
+    layers
+        .iter()
+        .map(|layer| ProofLayer {
+            ordinal: layer.recorded.ordinal,
+            kind: layer_kind_name(layer.recorded.layer_kind),
+            layer_id: layer.recorded.layer_id.clone(),
+            descriptor_sha256: layer.recorded.descriptor_sha256.clone(),
+            descriptor_file_sha256: layer.descriptor_file_sha256.clone(),
+            source_container_sha256: layer.recorded.source_container_sha256.clone(),
+        })
+        .collect()
+}
+
+/// Re-observe the proof's OWN bracket and require it to still hold.
+///
+/// The attach-time content census walks the corpus after the proof's window has
+/// closed and publishes the result under the proof's identity. Checking only
+/// the layer-stack digest left the bracket's other two sentinels unchecked:
+/// replacing `hoi4.exe` and base content while leaving every layer descriptor
+/// untouched passed the stack check and published a fresh census under the old
+/// certified executable (Codex review round 4). This is the SAME observation
+/// the proof's retry loop makes, against the SAME three things -- the
+/// executable, `dlc_load.json`, and every layer descriptor -- so a caller that
+/// runs it before and after its own work reaches the bracket the proof holds
+/// itself to, and no further.
+pub fn require_certified_bracket(
+    roots: &RuntimeContentRoots,
+    exe_path: &Path,
+    layers: &[BoundContentLayer],
+    proof: &AttachTimeContentProof,
+    phase: &str,
+) -> Result<(), String> {
+    let bracket = observe_world_bracket(roots, exe_path, layers)?;
+    if bracket.executable_sha256 != proof.executable_sha256
+        || bracket.executable_size_bytes != proof.executable_size_bytes
+    {
+        return Err(format!(
+            "the executable {phase} is {} ({} bytes), not the certified {} ({} bytes)",
+            bracket.executable_sha256,
+            bracket.executable_size_bytes,
+            proof.executable_sha256,
+            proof.executable_size_bytes
+        ));
+    }
+    if bracket.dlc_load_sha256 != proof.dlc_load_sha256 {
+        return Err(format!(
+            "dlc_load.json {phase} is {}, not the certified {}",
+            bracket.dlc_load_sha256, proof.dlc_load_sha256
+        ));
+    }
+    // The descriptors are compared as the BRACKET OBSERVED THEM, not as the
+    // `layers` snapshot remembers them. Digesting the snapshot would compare a
+    // reading taken before this call against the certified value and let a
+    // descriptor that changed between resolution and observation through --
+    // the bracket rehashed it and the comparison threw the reading away
+    // (Codex review round 5).
+    require_bracket_descriptors_match_certified(&bracket, proof, phase)?;
+    let observed = layer_stack_sha256(&proof_layers_from_bound(layers))?;
+    if observed != proof.layer_stack_sha256 {
+        return Err(format!(
+            "the layer stack {phase} is {observed}, not the certified {}",
+            proof.layer_stack_sha256
+        ));
+    }
+    Ok(())
+}
+
+/// Do the rows an attempt is about to publish agree with what its own bracket
+/// observed?
+///
+/// Same question as [`require_bracket_descriptors_match_certified`], asked one
+/// step earlier: there the certified stack is the reference, here the rows this
+/// attempt built are.
+fn published_layers_match_bracket(published: &[ProofLayer], bracket: &WorldBracket) -> bool {
+    let rows = published
+        .iter()
+        .filter_map(|layer| {
+            layer
+                .descriptor_file_sha256
+                .as_ref()
+                .map(|sha| (layer.layer_id.clone(), sha.clone()))
+        })
+        .collect::<Vec<_>>();
+    rows == bracket.layer_descriptors
+}
+
+/// The descriptor digests a [`WorldBracket`] just read, against the ones the
+/// certified layer stack carries.
+///
+/// `observe_world_bracket` skips a layer with no descriptor path (the base
+/// layer), so this compares the layers that HAVE one, in mount order, and
+/// requires the same set. A certified layer that has a `descriptor_file_sha256`
+/// and no observation, or an observation with no certified counterpart, is a
+/// changed stack and refuses.
+fn require_bracket_descriptors_match_certified(
+    bracket: &WorldBracket,
+    proof: &AttachTimeContentProof,
+    phase: &str,
+) -> Result<(), String> {
+    let certified = proof
+        .layer_stack
+        .iter()
+        .filter_map(|layer| {
+            layer
+                .descriptor_file_sha256
+                .as_ref()
+                .map(|sha| (layer.layer_id.clone(), sha.clone()))
+        })
+        .collect::<Vec<_>>();
+    if bracket.layer_descriptors != certified {
+        return Err(format!(
+            "the layer descriptors {phase} are {:?}, not the certified {certified:?}",
+            bracket.layer_descriptors
+        ));
+    }
+    Ok(())
+}
+
 /// Digest over the ordered layer stack.
 ///
 /// Taken over the same JSON rows the manifest carries, so a consumer
@@ -606,17 +734,7 @@ fn certify(
         let layers = ordered_content_layers_from_resolved_launch(&roots, &launch, report)?;
         let open = observe_world_bracket(&roots, &exe_path, &layers)?;
 
-        let proof_layers = layers
-            .iter()
-            .map(|layer| ProofLayer {
-                ordinal: layer.recorded.ordinal,
-                kind: layer_kind_name(layer.recorded.layer_kind),
-                layer_id: layer.recorded.layer_id.clone(),
-                descriptor_sha256: layer.recorded.descriptor_sha256.clone(),
-                descriptor_file_sha256: layer.descriptor_file_sha256.clone(),
-                source_container_sha256: layer.recorded.source_container_sha256.clone(),
-            })
-            .collect::<Vec<_>>();
+        let proof_layers = proof_layers_from_bound(&layers);
         let stack_sha256 = layer_stack_sha256(&proof_layers)?;
         let recorded = layers
             .iter()
@@ -631,7 +749,17 @@ fn certify(
         // install (Codex review round 1, finding 4).
         outcome.required_content = resolve_required_content(&vfs, &request.required_content);
         let close = observe_world_bracket(&roots, &exe_path, &layers)?;
-        let bracket_held = open == close;
+        // THE ROWS THIS ATTEMPT WILL PUBLISH MUST BE WHAT THE BRACKET SAW.
+        // `layers` is resolved (and its descriptors hashed) BEFORE `open`, so a
+        // descriptor rewritten in between left `open == close` true while
+        // `proof_layers` still carried the older digest -- the attempt settled
+        // and published a stack no observation in the window agreed with
+        // (Codex review round 5). Disagreement does not kill the proof: it
+        // simply does not settle this attempt, which is what the retry loop is
+        // for, and an install that never stops moving ends with
+        // `window_settled = false` and every artifact named unproven.
+        let published_matches_bracket = published_layers_match_bracket(&proof_layers, &open);
+        let bracket_held = open == close && published_matches_bracket;
         last = Some(WalkOutcome {
             bracket: open,
             proof_layers,
@@ -1772,5 +1900,125 @@ mod tests {
             forward, reversed,
             "load order decides which layer wins a path, so a reordered stack is a different world"
         );
+    }
+
+    fn published_layer(layer_id: &str, descriptor_file_sha256: Option<&str>) -> ProofLayer {
+        ProofLayer {
+            ordinal: 0,
+            kind: "mod",
+            layer_id: layer_id.to_string(),
+            descriptor_sha256: Some("s".repeat(64)),
+            descriptor_file_sha256: descriptor_file_sha256.map(str::to_string),
+            source_container_sha256: None,
+        }
+    }
+
+    fn bracket(layer_descriptors: &[(&str, &str)]) -> WorldBracket {
+        WorldBracket {
+            executable_sha256: "e".repeat(64),
+            executable_size_bytes: 1,
+            dlc_load_sha256: "d".repeat(64),
+            layer_descriptors: layer_descriptors
+                .iter()
+                .map(|(id, sha)| ((*id).to_string(), (*sha).to_string()))
+                .collect(),
+        }
+    }
+
+    /// The rows an attempt publishes and the rows its bracket observed are two
+    /// READINGS OF THE SAME DESCRIPTORS TAKEN AT DIFFERENT MOMENTS: the layer
+    /// stack is resolved (and hashed) before the bracket opens. A descriptor
+    /// rewritten in between left `open == close` true while the published rows
+    /// still carried the older digest, so the attempt settled and published a
+    /// stack no observation in the window agreed with.
+    ///
+    /// kills: comparing the published rows against anything other than
+    /// `WorldBracket::layer_descriptors` (re-digesting the same snapshot
+    /// compares a reading with itself and always agrees); dropping the base
+    /// layer's exemption (the base has no descriptor and the bracket skips it,
+    /// so requiring a row for it would make every real stack disagree).
+    #[test]
+    fn a_descriptor_that_changed_before_the_bracket_opened_does_not_settle() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let published = vec![
+            published_layer("base", None),
+            published_layer("mod/one.mod", Some(&a)),
+        ];
+
+        assert!(
+            published_layers_match_bracket(&published, &bracket(&[("mod/one.mod", &a)])),
+            "an unchanged descriptor agrees, and the base layer is exempt"
+        );
+        assert!(
+            !published_layers_match_bracket(&published, &bracket(&[("mod/one.mod", &b)])),
+            "a descriptor rewritten between resolution and the open observation must not settle"
+        );
+        assert!(
+            !published_layers_match_bracket(&published, &bracket(&[])),
+            "a descriptor the bracket never saw must not settle"
+        );
+        assert!(
+            !published_layers_match_bracket(
+                &published,
+                &bracket(&[("mod/one.mod", &a), ("mod/two.mod", &b)])
+            ),
+            "a layer the published rows do not name must not settle"
+        );
+    }
+
+    /// The same comparison one step later: the census re-observes the bracket
+    /// after the proof has sealed, and must compare what it JUST READ against
+    /// the certified stack rather than re-digesting its own snapshot.
+    ///
+    /// kills: comparing `layers` instead of `bracket.layer_descriptors` (the
+    /// changed descriptor passes); comparing against
+    /// `proof.layer_stack_sha256` alone (the digest is over the snapshot, not
+    /// over the observation).
+    #[test]
+    fn the_census_compares_the_descriptors_it_just_observed() {
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let mut proof = AttachTimeContentProof {
+            game_process_start_unix: None,
+            observed_at_unix: 0,
+            completed_at_unix: 0,
+            elapsed_ms: 0,
+            hashed_bytes: 0,
+            hashed_files: 0,
+            window_attempts: 1,
+            window_settled: true,
+            executable_sha256: "e".repeat(64),
+            executable_size_bytes: 1,
+            dlc_load_sha256: "d".repeat(64),
+            layer_stack: vec![
+                published_layer("base", None),
+                published_layer("mod/one.mod", Some(&a)),
+            ],
+            layer_stack_sha256: "f".repeat(64),
+            artifact_joins: Vec::new(),
+            refused_artifacts: Vec::new(),
+            required_content: Vec::new(),
+            refused_required_content: Vec::new(),
+        };
+
+        require_bracket_descriptors_match_certified(
+            &bracket(&[("mod/one.mod", &a)]),
+            &proof,
+            "before",
+        )
+        .expect("an unchanged descriptor is the certified one");
+
+        let error = require_bracket_descriptors_match_certified(
+            &bracket(&[("mod/one.mod", &b)]),
+            &proof,
+            "after",
+        )
+        .expect_err("a rewritten descriptor is not the certified one");
+        assert!(error.contains("after"), "the phase is named: {error}");
+
+        proof.layer_stack = vec![published_layer("base", None)];
+        require_bracket_descriptors_match_certified(&bracket(&[]), &proof, "before")
+            .expect("a stack of nothing but base observes no descriptors");
     }
 }

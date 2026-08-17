@@ -35,6 +35,15 @@ pub struct EffectiveVfsResolvedFile {
     pub bytes: Vec<u8>,
 }
 
+/// What one [`EffectiveVfs::walk_content_keys`] pass covered. Reported so a
+/// recording can state the size and cost of its own content census instead of
+/// leaving a reader to infer it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EffectiveVfsWalkStats {
+    pub files: u64,
+    pub payload_bytes: u64,
+}
+
 #[derive(Clone, Debug)]
 struct MountedLayer {
     ordinal: u32,
@@ -243,6 +252,47 @@ impl EffectiveVfs {
             resolved.push(file);
         }
         Ok(resolved)
+    }
+
+    /// Every logical path this VFS serves, winner-resolved, lowest to highest
+    /// priority — the identity half of [`list_all`] without its bytes.
+    ///
+    /// `list_all` materializes every payload into one `Vec`, which is fine for
+    /// a directory of catalogs and impossible for a whole install: the corpus
+    /// this walks on a stock the game with its DLC is 58,224 files and 10.01 GB.
+    /// This resolves one file at a time, hands its [`UsedContentKey`] to the
+    /// sink, and drops the bytes before reading the next, so peak memory is one
+    /// file rather than the install.
+    ///
+    /// The sink decides what to keep and may refuse (returning `Err`), which
+    /// stops the walk — that is how a caller enforces its own row/byte ceiling
+    /// without this function inventing one.
+    pub fn walk_content_keys(
+        &self,
+        mut sink: impl FnMut(&str, UsedContentKey) -> Result<(), String>,
+    ) -> Result<EffectiveVfsWalkStats, String> {
+        let mut effective = BTreeMap::<String, String>::new();
+        for layer in &self.layers {
+            if !layer.replace_paths.is_empty() {
+                effective.retain(|_, path| !layer.replace_paths.contains(&logical_parent(path)));
+            }
+            for path in list_layer_files(layer, "", None)? {
+                effective.insert(path.to_ascii_lowercase(), path);
+            }
+        }
+        let mut stats = EffectiveVfsWalkStats::default();
+        for path in effective.into_values() {
+            let file = self
+                .resolve(&path)?
+                .ok_or_else(|| format!("effective VFS winner disappeared for {path}"))?;
+            stats.files = stats.files.saturating_add(1);
+            stats.payload_bytes = stats
+                .payload_bytes
+                .checked_add(file.content.payload_bytes)
+                .ok_or_else(|| "effective VFS walk byte count overflowed".to_string())?;
+            sink(&file.logical_path, file.content)?;
+        }
+        Ok(stats)
     }
 
     pub fn list_all(

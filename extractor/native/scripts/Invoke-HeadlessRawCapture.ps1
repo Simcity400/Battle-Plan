@@ -713,7 +713,14 @@ function Invoke-BoundedNativeCapture {
             )
             if ($remainingMilliseconds -le 0) {
                 Stop-ExactProcess -Process $process -Purpose $Purpose
-                throw "$Purpose timed out after $TimeoutSeconds s; exact child PID $($process.Id) was terminated."
+                # TYPED, so a caller can tell "the bound was hit" apart from
+                # "the child failed" without matching this sentence. The
+                # latency ledger reads the distinction, and inferring it from
+                # elapsed time mislabelled any slow failure as a timeout
+                # (Codex review round 2). The wording is unchanged.
+                throw [System.TimeoutException]::new(
+                    "$Purpose timed out after $TimeoutSeconds s; exact child PID $($process.Id) was terminated."
+                )
             }
             $waitMilliseconds = [int][Math]::Min(1000, $remainingMilliseconds)
             if ($process.WaitForExit($waitMilliseconds)) {
@@ -829,11 +836,64 @@ if (`$null -eq `$result) { throw 'Control-Hoi4Game returned no state.' }
 `$result | ConvertTo-Json -Compress -Depth 8
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    $result = Invoke-BoundedNativeCapture `
-        -FilePath $windowsPowerShell `
-        -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
-        -TimeoutSeconds $TimeoutSeconds `
-        -Purpose "headless control for the game PID $TargetProcessId"
+    # WHAT THE 10 s BOUND IS WORTH, measured rather than assumed. Every control
+    # call records how long it actually took, so the default can be set from a
+    # distribution instead of from a round number; the file is append-only
+    # evidence and nothing reads it back.
+    #
+    # The row is written in `finally`, so a call that TIMED OUT or failed is
+    # recorded too -- those are the samples that decide the bound, and writing
+    # only after a successful return left them out of the distribution
+    # entirely (Codex review round 1). `outcome` says which kind of sample it
+    # is, taken from the EXCEPTION TYPE rather than from elapsed time, because
+    # a failure that happens to be slow is not a timeout.
+    #
+    # WRITING THE LEDGER MUST NEVER CHANGE WHAT THE CALLER SEES. Under
+    # `$ErrorActionPreference = 'Stop'` a failing `Add-Content` inside
+    # `finally` would REPLACE the pending timeout/control exception with a
+    # disk error, so the append has its own non-throwing guard and reports the
+    # logging failure as a warning (Codex review round 2).
+    $controlStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $controlOutcome = 'failed'
+    try {
+        $result = Invoke-BoundedNativeCapture `
+            -FilePath $windowsPowerShell `
+            -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
+            -TimeoutSeconds $TimeoutSeconds `
+            -Purpose "headless control for the game PID $TargetProcessId"
+        $controlOutcome = 'returned'
+    } catch [System.TimeoutException] {
+        $controlOutcome = 'timed_out'
+        throw
+    } finally {
+        $controlStopwatch.Stop()
+        if ($script:ControlLatencyLogPath) {
+            try {
+                $sample = [ordered]@{
+                    schema            = 'hoi4-bounded-control-latency-v1'
+                    observed_at_utc   = (Get-Date).ToUniversalTime().ToString('o')
+                    action            = $Action
+                    requested_speed   = $RequestedSpeed
+                    timeout_seconds   = $TimeoutSeconds
+                    elapsed_ms        = [int]$controlStopwatch.Elapsed.TotalMilliseconds
+                    outcome           = $controlOutcome
+                }
+                Add-Content -LiteralPath $script:ControlLatencyLogPath -Encoding utf8 `
+                    -Value ($sample | ConvertTo-Json -Compress -Depth 4)
+            } catch {
+                # Through the genuinely non-throwing helper: this script is an
+                # advanced script, so a plain `Write-Warning` terminates under
+                # `-WarningAction Stop` or an inherited
+                # `$WarningPreference = 'Stop'` -- which would put the
+                # diagnostic in place of the very exception it is reporting
+                # about, or fail a control call that had SUCCEEDED (Codex
+                # review round 3).
+                Write-SettingsGuardNonThrowingWarning -Message (
+                    "bounded control latency sample not recorded ({0}): {1}" -f `
+                        $controlOutcome, $_.Exception.Message)
+            }
+        }
+    }
     try {
         $state = $result.Stdout.Trim() | ConvertFrom-Json
     } catch {
@@ -1343,6 +1403,9 @@ $passiveWitnessPath = Join-Path $OutDir 'passive_speed5_witness.jsonl'
 # the witness so the verdict authority's schema and its stall policy stay
 # untouched by evidence that is deliberately not gated.
 $settleControlPath = Join-Path $OutDir 'settle_control.jsonl'
+# Append-only measurement of what every bounded control call costs, so the
+# 10 s default in Invoke-BoundedHoi4Control is a number with evidence.
+$script:ControlLatencyLogPath = Join-Path $OutDir 'bounded_control_latency.jsonl'
 # Consumer-facing split of the graded window into advancing, paused, and
 # tick-held intervals. A consumer averaging a rate over the capture must divide
 # by active time, and a paused world is not slow -- it is stopped, on purpose.

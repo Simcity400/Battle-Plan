@@ -290,6 +290,7 @@ fn manifest_envelope_bytes(effective_vfs_manifest_sha256: [u8; 32]) -> Vec<u8> {
         dlc_selection: Vec::new(),
         localisation_language: "english".into(),
         required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
         required_content: Vec::new(),
         manifest_digest_sha256: None,
     };

@@ -360,6 +360,7 @@ mod tests {
             integrated_dlc_layers: BTreeMap::new(),
             localisation_language: "english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
         }
     }
 

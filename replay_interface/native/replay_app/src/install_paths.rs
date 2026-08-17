@@ -514,37 +514,18 @@ fn source_game_identity(game_install: &Path) -> Result<replay_core::SourceGameId
         )
     })?;
     Ok(replay_core::SourceGameIdentity {
-        build_profile: format!("hoi4-{version}-{build}"),
+        build_profile: replay_core::build_profile_label(&version, &build),
         version,
         build,
         executable_sha256: format!("{:x}", Sha256::digest(executable_bytes)),
     })
 }
 
+/// Delegates to the ONE shared rule so the identity the viewer derives from a
+/// local install is the identity the recorder wrote into the manifest. Keeping
+/// a second copy here is what let the two spellings drift apart.
 fn parse_hoi4_version(full: &str, raw: Option<&str>) -> Result<(String, String)> {
-    let version = [Some(full), raw]
-        .into_iter()
-        .flatten()
-        .find_map(|value| {
-            value
-                .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-                .find(|part| {
-                    let pieces = part.split('.').collect::<Vec<_>>();
-                    pieces.len() == 4 && pieces.iter().all(|piece| !piece.is_empty())
-                })
-                .map(str::to_string)
-        })
-        .ok_or_else(|| format!("launcher metadata has no four-part the game version: {full:?}"))?;
-    let build = full
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|part| part.len() == 4)
-        .find(|part| {
-            part.chars().any(|ch| ch.is_ascii_alphabetic())
-                && part.chars().any(|ch| ch.is_ascii_digit())
-        })
-        .ok_or_else(|| format!("launcher metadata has no Paradox build token: {full:?}"))?
-        .to_ascii_lowercase();
-    Ok((version, build))
+    Ok(replay_core::parse_launcher_version_and_build(full, raw)?)
 }
 
 fn safe_relative_path(value: &str) -> Result<PathBuf> {

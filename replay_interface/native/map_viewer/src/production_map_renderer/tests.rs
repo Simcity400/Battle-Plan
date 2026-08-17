@@ -324,6 +324,7 @@ fn admitted_renderer_with_bindings(
         }],
         localisation_language: "l_english".into(),
         required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
         required_content,
         manifest_digest_sha256: None,
     };

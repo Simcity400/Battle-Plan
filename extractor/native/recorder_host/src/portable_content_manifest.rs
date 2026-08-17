@@ -57,6 +57,7 @@ pub struct RecorderContentTrace {
     pub dlc_selection: Vec<DlcSelection>,
     pub localisation_language: String,
     pub required_settings: BTreeMap<String, String>,
+    pub recorder_local_settings: BTreeMap<String, String>,
     /// One row per observed use. Repeated reads are intentionally allowed.
     pub observations: Vec<ContentUseObservation>,
 }
@@ -206,6 +207,9 @@ pub struct PortableLaunchBinding {
     pub integrated_dlc_layers: BTreeMap<String, BoundDlcLayer>,
     pub localisation_language: String,
     pub required_settings: BTreeMap<String, String>,
+    /// How well the settings above were proven. Kept beside them, never mixed
+    /// into them — see `portable_content_manifest::is_recorder_local_settings`.
+    pub recorder_local_settings: BTreeMap<String, String>,
 }
 
 /// Recording-local content roots obtained from the same corroborated
@@ -277,10 +281,10 @@ impl PortableLaunchBinding {
             .clone()
             .ok_or("resolved launch binding omitted executable SHA-256")?;
         // The settings must be READABLE, and how well they are proven travels
-        // WITH them as `settings_authority` below. A binding that published
-        // the numbers and dropped the provenance would let a consumer read a
-        // post-launch disk observation as a launch proof, which is exactly the
-        // silent-vanilla shape this module exists to prevent.
+        // WITH them, in its own map. A binding that published the numbers and
+        // dropped the provenance would let a consumer read a post-launch disk
+        // observation as a launch proof, which is exactly the silent-vanilla
+        // shape this module exists to prevent.
         let settings_authority = report
             .settings
             .authority
@@ -293,7 +297,20 @@ impl PortableLaunchBinding {
         let display = report
             .display_variant()
             .ok_or("resolved launch binding omitted display settings")?;
-        let required_settings = BTreeMap::from([
+        // WHAT THE REPLAY MUST REPRODUCE. Today: nothing. Every setting this
+        // recorder can read describes the machine that recorded — see the map
+        // below — so the honest value is an empty map, not a list of demands
+        // the viewer would refuse itself over. The field stays because the
+        // moment a setting is found that changes what content the game loads,
+        // it belongs here and nowhere else.
+        let required_settings = BTreeMap::new();
+        // WHAT THE RECORDER'S OWN MACHINE WAS SET TO, and how well that was
+        // proven. Recorded because a reader is entitled to both; never demanded
+        // of the machine playing back, which draws in its own window at its own
+        // scale and cannot reproduce a statement the recorder made about its
+        // own observation. See
+        // `portable_content_manifest::is_recorder_local_settings`.
+        let recorder_local_settings = BTreeMap::from([
             ("physical_width".into(), display.physical_width.to_string()),
             (
                 "physical_height".into(),
@@ -323,10 +340,6 @@ impl PortableLaunchBinding {
                 "settings_file_sha256".into(),
                 display.settings_file_sha256.clone(),
             ),
-            // How well the values above are proven, in the same map that
-            // carries them. A replay that reproduces these settings is
-            // entitled to know whether the recording PROVED the game read
-            // them or merely observed the disk while the game was running.
             (
                 "settings_authority".into(),
                 settings_authority.as_str().to_string(),
@@ -404,6 +417,7 @@ impl PortableLaunchBinding {
             integrated_dlc_layers,
             localisation_language,
             required_settings,
+            recorder_local_settings,
         })
     }
 
@@ -1795,6 +1809,7 @@ fn build_from_finalized_static_bundle_inner(
             .collect(),
         localisation_language: launch.localisation_language.clone(),
         required_settings: launch.required_settings.clone(),
+        recorder_local_settings: launch.recorder_local_settings.clone(),
         observations,
     };
     let manifest = build(trace, launch, product_modset_sha256)?;
@@ -2346,6 +2361,232 @@ fn verify_live_resolution_report(
     Ok(())
 }
 
+/// What one attach-time corpus census covered, so a recording can state the
+/// size and cost of its own content admission instead of leaving a reader to
+/// infer it from the row count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachCorpusCensusStats {
+    pub files: u64,
+    pub payload_bytes: u64,
+    pub elapsed_ms: u64,
+}
+
+/// The most content rows one recording may admit.
+///
+/// A stock the game with its DLC measures 58,224 files / 10.01 GB on this box, and
+/// a mod set can only add to that. The ceiling is deliberately well above the
+/// measured corpus and is a bound on a hostile or broken walk, not a budget:
+/// crossing it refuses the census by name rather than writing a manifest no
+/// reader can hold.
+const MAX_ATTACH_CORPUS_ROWS: usize = 400_000;
+
+/// Hash every file the effective VFS serves and turn the winners into the
+/// recording's `required_content`.
+///
+/// WHY THE WHOLE CORPUS. Replay's admission is a per-file whitelist — the
+/// resolver refuses any lookup whose path is not in `required_content`
+/// ("replay content admission rejects unrecorded/default lookup"). The
+/// early-launch path filled that list from `RecorderContentTrace`, the engine's
+/// own reads observed before `ResumeThread`. A late attach — the shipped
+/// capture mode — cannot observe those reads: the engine loaded its content
+/// before the recorder existed. Recording one file (the D81 province catalog)
+/// and its catalog joins, which is what the attach-time proof pins, admits a
+/// recording that then refuses the first terrain or shader lookup the renderer
+/// makes. So the recorder censuses what the VFS CAN serve, and replay verifies
+/// each file it opens against that census (owner ruling, option A).
+///
+/// `consumers` says `attach_time_effective_vfs_census` and nothing else: this
+/// is a statement about what the recording's content WAS, not a claim that the
+/// engine read the file. A reader must not mistake the two, and no consumer
+/// name here is a use observation.
+pub fn census_effective_vfs_corpus(
+    vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
+) -> Result<(Vec<RequiredContent>, AttachCorpusCensusStats), String> {
+    let started = std::time::Instant::now();
+    let mut rows: BTreeMap<String, RequiredContent> = BTreeMap::new();
+    let stats = vfs.walk_content_keys(|logical_path, content| {
+        if rows.len() >= MAX_ATTACH_CORPUS_ROWS {
+            return Err(format!(
+                "attach-time content census exceeded its {MAX_ATTACH_CORPUS_ROWS}-row ceiling"
+            ));
+        }
+        let normalized = normalize_game_relative_path(logical_path)?;
+        if normalized != content.normalized_game_relative_path {
+            return Err(format!(
+                "attach-time content census path is not canonical: {logical_path}"
+            ));
+        }
+        content.validate()?;
+        if rows
+            .insert(
+                normalized.clone(),
+                RequiredContent {
+                    content_key: normalized.clone(),
+                    kind: attach_census_content_kind(&normalized),
+                    content,
+                    observation_count: 1,
+                    consumers: vec![ATTACH_CENSUS_CONSUMER.to_string()],
+                },
+            )
+            .is_some()
+        {
+            return Err(format!(
+                "attach-time content census repeated path {normalized}"
+            ));
+        }
+        Ok(())
+    })?;
+    if rows.is_empty() {
+        return Err("attach-time content census found no content in the effective VFS".into());
+    }
+    Ok((
+        rows.into_values().collect(),
+        AttachCorpusCensusStats {
+            files: stats.files,
+            payload_bytes: stats.payload_bytes,
+            elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        },
+    ))
+}
+
+/// The one consumer name an attach-time census row may carry.
+pub const ATTACH_CENSUS_CONSUMER: &str = "attach_time_effective_vfs_census";
+
+/// Classify a censused path by its extension alone.
+///
+/// Deliberately mechanical: the census did not watch anything read the file, so
+/// it cannot say what consumed it. The kind is derived from the path the same
+/// way a reader would derive it, and everything unrecognized is `Other` rather
+/// than guessed.
+fn attach_census_content_kind(normalized_path: &str) -> RequiredContentKind {
+    let extension = normalized_path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "txt" | "lua" | "settings" | "info" | "csv" => RequiredContentKind::Definition,
+        "shader" | "fxh" | "hlsl" => RequiredContentKind::ShaderSource,
+        "bin" | "cso" => RequiredContentKind::CompiledShader,
+        "dds" | "tga" | "png" | "jpg" | "jpeg" => RequiredContentKind::Texture,
+        "mesh" => RequiredContentKind::Mesh,
+        "anim" | "asset" => RequiredContentKind::Geometry,
+        "yml" | "yaml" => RequiredContentKind::Localisation,
+        "gui" => RequiredContentKind::GuiDefinition,
+        "ttf" | "otf" | "fnt" => RequiredContentKind::Font,
+        "json" => RequiredContentKind::Catalog,
+        _ => RequiredContentKind::Other,
+    }
+}
+
+/// Assemble the portable content manifest a LATE ATTACH can produce.
+///
+/// The early-launch builders above need a `RecorderContentTrace` or the static
+/// bundle's v3 source inventory, and a late attach has neither. Everything else
+/// they use is already available: the launch binding carries the executable,
+/// the ordered mods, the DLC selection, the language and the required settings,
+/// and the census carries the content. The result is the same
+/// [`ContentManifest`] shape replay already admits, so no reader changes.
+pub fn build_from_attach_time_corpus(
+    ordered_layers: Vec<RecordedContentLayer>,
+    required_content: Vec<RequiredContent>,
+    launch: &PortableLaunchBinding,
+    effective_vfs_manifest_sha256: &str,
+    product_modset_sha256: &str,
+    source_game: SourceGameIdentity,
+    profile_id: &str,
+    playset_id: &str,
+) -> Result<ContentManifest, String> {
+    portable_content_manifest::hud_role::validate_sha256(
+        product_modset_sha256,
+        "product modset",
+    )?;
+    if source_game.executable_sha256 != launch.executable_sha256 {
+        return Err(
+            "attach-time content manifest executable differs from the attached process".into(),
+        );
+    }
+    if required_content.is_empty() {
+        return Err("attach-time content manifest has no required content".into());
+    }
+    if ordered_layers.is_empty() {
+        return Err("attach-time content manifest has no content layers".into());
+    }
+
+    // A layer is required when the census actually resolved a winner from it.
+    // Anything else is a recorded-but-unused selection, exactly as the
+    // early-launch path marks it, and replay mounts only the required ones.
+    let required_ordinals: BTreeSet<u32> = required_content
+        .iter()
+        .map(|row| row.content.winning_layer_ordinal)
+        .collect();
+    let mut ordered_layers = ordered_layers;
+    for (position, layer) in ordered_layers.iter_mut().enumerate() {
+        if layer.ordinal as usize != position {
+            return Err("attach-time content layer ordinals are not contiguous".into());
+        }
+
+        layer.required_for_playback = required_ordinals.contains(&layer.ordinal);
+    }
+    for row in &required_content {
+        if row.content.effective_vfs_manifest_sha256 != effective_vfs_manifest_sha256 {
+            return Err(format!(
+                "attach-time content census row {} names a different effective VFS",
+                row.content.normalized_game_relative_path
+            ));
+        }
+        let layer = ordered_layers
+            .get(row.content.winning_layer_ordinal as usize)
+            .ok_or_else(|| {
+                format!(
+                    "attach-time content census row {} names a missing layer",
+                    row.content.normalized_game_relative_path
+                )
+            })?;
+        if layer.layer_kind != row.content.layer_kind || layer.layer_id != row.content.layer_id {
+            return Err(format!(
+                "attach-time content census row {} disagrees with its winning layer",
+                row.content.normalized_game_relative_path
+            ));
+        }
+    }
+
+    let required_dlc_ids: BTreeSet<String> = ordered_layers
+        .iter()
+        .filter(|layer| layer.layer_kind == ContentLayerKind::Dlc && layer.required_for_playback)
+        .map(|layer| stable_dlc_id(&layer.layer_id))
+        .collect::<Result<_, _>>()?;
+    let dlc_selection = launch
+        .enabled_dlc_ids
+        .iter()
+        .map(|dlc_id| DlcSelection {
+            dlc_id: dlc_id.clone(),
+            enabled: true,
+            required_for_playback: required_dlc_ids.contains(dlc_id),
+        })
+        .collect::<Vec<_>>();
+
+    let mut manifest = ContentManifest {
+        schema: CONTENT_MANIFEST_SCHEMA.to_string(),
+        product_modset_sha256: product_modset_sha256.to_string(),
+        source_game,
+        source_profile: SourceProfileIdentity {
+            profile_id: profile_id.to_string(),
+            playset_id: playset_id.to_string(),
+            selection_sha256: "0".repeat(64),
+        },
+        effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.to_string(),
+        ordered_layers,
+        dlc_selection,
+        localisation_language: launch.localisation_language.clone(),
+        required_settings: launch.required_settings.clone(),
+        recorder_local_settings: launch.recorder_local_settings.clone(),
+        required_content,
+        manifest_digest_sha256: None,
+    };
+    manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
+    manifest.with_computed_digest()
+}
+
 pub fn build(
     trace: RecorderContentTrace,
     launch: &PortableLaunchBinding,
@@ -2483,6 +2724,7 @@ pub fn build(
         dlc_selection,
         localisation_language: trace.localisation_language,
         required_settings: trace.required_settings,
+        recorder_local_settings: trace.recorder_local_settings,
         required_content,
         manifest_digest_sha256: None,
     };
@@ -2505,6 +2747,11 @@ fn validate_launch_binding(
     }
     if trace.required_settings != launch.required_settings {
         return Err("portable content trace settings differ from launch binding".into());
+    }
+    if trace.recorder_local_settings != launch.recorder_local_settings {
+        return Err(
+            "portable content trace settings provenance differs from launch binding".into(),
+        );
     }
 
     let trace_mods: Vec<_> = trace
@@ -2920,7 +3167,8 @@ mod tests {
                 consumer: "script_interpreter".into(),
             },
         ];
-        let required_settings = BTreeMap::from([
+        let required_settings = BTreeMap::new();
+        let recorder_local_settings = BTreeMap::from([
             ("gui_scale_f32_bits".into(), "1065353216".into()),
             ("display_mode".into(), "borderless".into()),
         ]);
@@ -2953,6 +3201,7 @@ mod tests {
             ],
             localisation_language: "english".into(),
             required_settings: required_settings.clone(),
+            recorder_local_settings: recorder_local_settings.clone(),
             observations,
         };
         let launch = PortableLaunchBinding {
@@ -2987,6 +3236,7 @@ mod tests {
             integrated_dlc_layers: BTreeMap::new(),
             localisation_language: "english".into(),
             required_settings,
+            recorder_local_settings,
         };
         (trace, launch)
     }
@@ -3579,7 +3829,8 @@ mod tests {
             enabled_dlc_layers: BTreeMap::new(),
             integrated_dlc_layers: BTreeMap::new(),
             localisation_language: "english".into(),
-            required_settings: BTreeMap::from([("display_mode".into(), "borderless".into())]),
+            required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::from([("display_mode".into(), "borderless".into())]),
         };
         let build_at = |game, user| {
             build_from_finalized_static_bundle_with_runtime_stream(
@@ -3995,6 +4246,38 @@ mod tests {
             ]),
         };
         let portable = PortableLaunchBinding::from_modset(&report).unwrap();
+        // THE PRODUCER SIDE OF THE SETTINGS PARTITION. The shared crate's
+        // `settings_provenance_and_material_settings_are_a_partition` proves
+        // that a MIXED manifest is refused, but it builds its manifest by hand
+        // and so does not cover this constructor: moving a display or
+        // provenance row back into `required_settings` here would not have
+        // failed anything (Codex review round 1). It fails this now.
+        //
+        // kills: emitting any `recorder_local_settings` row into
+        // `required_settings` in `from_modset`, or dropping the display /
+        // provenance rows from `recorder_local_settings` altogether.
+        assert!(
+            portable.required_settings.is_empty(),
+            "the recorder demands no setting of the replaying install: {:?}",
+            portable.required_settings
+        );
+        for key in portable.recorder_local_settings.keys() {
+            assert!(
+                portable_content_manifest::is_recorder_local_settings(key),
+                "{key:?} is a material setting hiding in recorder_local_settings"
+            );
+        }
+        for key in [
+            "settings_authority",
+            "settings_file_sha256",
+            "display_mode",
+            "gui_scale_f32_bits",
+        ] {
+            assert!(
+                portable.recorder_local_settings.contains_key(key),
+                "{key} must be recorded as the recorder's own local setting"
+            );
+        }
         let serialized = format!("{portable:?}");
         assert!(!serialized.contains("C:\\"));
         assert!(!serialized.contains("D:\\"));

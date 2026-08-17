@@ -61,6 +61,39 @@ pub fn filesystem_case_key(value: &str) -> String {
         .collect()
 }
 
+/// THE PARTITION RULE: is this setting a property of the MACHINE THAT
+/// RECORDED, rather than something the machine that plays back must reproduce?
+///
+/// Two families answer yes, for the same reason:
+///
+/// * **Presentation** ([`is_playback_local_presentation_setting`]) — the
+///   recorder's window size, refresh rate and GUI scale. The viewer draws in
+///   its own window and admits its own UI profile from its own `settings.txt`
+///   ([`replay_app::install_paths::playback_ui_profile_from_paths`]), so
+///   demanding these would mean "you may only watch this replay on a monitor
+///   like the recorder's".
+/// * **Proof provenance** — `settings_authority` and `settings_file_sha256`
+///   describe how well the recording proved its settings. A replayer can never
+///   reproduce a statement the recorder made about its own observation; asking
+///   refuses playback with "replay requires material setting
+///   \"settings_authority\", but this replayer has no proven parser for it".
+///
+/// Both therefore live in [`ContentManifest::recorder_local_settings`], which
+/// nothing compares against the local install and nothing feeds into the
+/// selection digest, while [`ContentManifest::required_settings`] is exactly
+/// the settings a replay must reproduce. This is a PARTITION enforced by
+/// [`ContentManifest::validate`] on both sides of the wire — not a filter each
+/// consumer must remember to apply. Before the split the two disagreed: the
+/// binder filtered these keys out of what it asked the local install for, and
+/// the comparison then reported every one of them missing, so a recording of a
+/// clean vanilla install refused to open on the very machine that made it
+/// (measured on t82: 12 of 15 refusals, plus the selection-digest mismatch they
+/// caused).
+pub fn is_recorder_local_settings(key: &str) -> bool {
+    is_playback_local_presentation_setting(key)
+        || matches!(key, "settings_authority" | "settings_file_sha256")
+}
+
 pub fn is_playback_local_presentation_setting(key: &str) -> bool {
     matches!(
         key,
@@ -95,8 +128,16 @@ pub struct ContentManifest {
     pub ordered_layers: Vec<RecordedContentLayer>,
     pub dlc_selection: Vec<DlcSelection>,
     pub localisation_language: String,
-    /// Only settings that affect admitted replay content or rendering.
+    /// Only settings that affect admitted replay content or rendering — i.e.
+    /// exactly the settings a replay must reproduce. Every key here is asked of
+    /// the local install and feeds the portable selection digest.
     pub required_settings: BTreeMap<String, String>,
+    /// What the RECORDER's own machine was set to, and how well the recorder
+    /// proved it (see [`is_recorder_local_settings`]). A reader is entitled to
+    /// know both; neither is something the machine playing back can or should
+    /// reproduce, so nothing here is demanded of the local install and nothing
+    /// here is hashed into the selection digest.
+    pub recorder_local_settings: BTreeMap<String, String>,
     /// Exactly the files/catalog payloads consumed by the recording.
     pub required_content: Vec<RequiredContent>,
     /// SHA-256 of this manifest encoded with this field set to null.
@@ -477,9 +518,36 @@ impl ContentManifest {
                 return Err(format!("required DLC {} was not enabled", dlc.dlc_id));
             }
         }
+        // THE PARTITION, enforced rather than remembered (see
+        // [`is_recorder_local_settings`]). `required_settings` is what a replay
+        // must REPRODUCE, so a recorder-local row in it is demanded of an
+        // install that cannot supply it; `recorder_local_settings` is never
+        // compared and never hashed, so a material setting hidden in it escapes
+        // both the local comparison and the selection digest. Refusing both
+        // directions here means no consumer has to filter, and a hand-edited
+        // manifest that moves a row across the line is refused rather than
+        // silently honoured.
         for (key, value) in &self.required_settings {
             if key.trim().is_empty() || value.trim().is_empty() {
                 return Err("required setting has a blank key/value".into());
+            }
+            if is_recorder_local_settings(key) {
+                return Err(format!(
+                    "required setting {key:?} is a property of the machine that recorded, not \
+                     something the machine playing back reproduces; it belongs in \
+                     recorder_local_settings"
+                ));
+            }
+        }
+        for (key, value) in &self.recorder_local_settings {
+            if key.trim().is_empty() || value.trim().is_empty() {
+                return Err("recorder-local setting has a blank key/value".into());
+            }
+            if !is_recorder_local_settings(key) {
+                return Err(format!(
+                    "recorder-local settings carry {key:?}, which is a material setting a replay \
+                     must reproduce; it belongs in required_settings"
+                ));
             }
         }
         let layers: BTreeMap<_, _> = self
@@ -1359,6 +1427,88 @@ pub fn content_layer_identity_sha256(layer: &RecordedContentLayer) -> Result<Str
     });
     let bytes = serde_json::to_vec(&canonical).map_err(|err| err.to_string())?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// THE ONE RULE for turning `launcher-settings.json`'s version text into the
+/// `(version, build)` pair that [`SourceGameIdentity`] carries, shared by the
+/// recorder that writes the manifest and the viewer that checks it against a
+/// local install.
+///
+/// It lives here because the two sides JOIN on the result. They did not: the
+/// attach-time census route stamped the launcher's display string
+/// (`"Operation Postern v1.19.2.0.a729 (d245)"`) and a route label
+/// (`"hoi4-attach-time-effective-vfs-census-v1"`), while the viewer parsed the
+/// same file into `"1.19.2.0"` / `"a729"` / `"hoi4-1.19.2.0-a729"` — so a
+/// recording refused to open against the very install that produced it, over
+/// two different spellings of one agreed fact (measured on t82).
+///
+/// `full` is `gameVersion`/`version`; `raw` is the optional `rawVersion`. The
+/// version is the first four-part dotted numeral found in either; the build is
+/// the first four-character alphanumeric token in `full` that mixes letters and
+/// digits (`a729`), lowercased.
+///
+/// `rawVersion` is OPTIONAL, so `full` alone has to yield the version. In the
+/// shipped spelling the version and the build are one dotted run
+/// (`v1.19.2.0.a729`), and splitting on "not a digit and not a dot" leaves the
+/// separating dot attached: `"1.19.2.0."`. Requiring exactly four pieces
+/// refused that token, so a launcher file without `rawVersion` refused
+/// altogether even though the version was right there (Codex review round 1).
+/// A candidate therefore matches when it has exactly four dot-pieces, or
+/// exactly five whose fifth is empty, and the first four are non-empty
+/// numerals. That accepts `1.19.2.0` and the `1.19.2.0.` left by a `.a729`
+/// suffix, and rejects both a five-part numeral such as `1.19.2.0.5` and a RUN
+/// of separating dots such as `1.19.2.0..a729`, which is malformed metadata
+/// rather than a version (Codex review round 2).
+pub fn parse_launcher_version_and_build(
+    full: &str,
+    raw: Option<&str>,
+) -> Result<(String, String), String> {
+    fn four_part_version(part: &str) -> Option<String> {
+        let pieces = part.split('.').collect::<Vec<_>>();
+        // Exactly four numeric pieces, or exactly five where the fifth is the
+        // empty tail left by the single separating dot before the build token
+        // (`1.19.2.0` + `.a729` -> `"1.19.2.0."`). A RUN of dots is malformed
+        // and stays refused: allowing every trailing piece to be empty turned
+        // `1.19.2.0..a729` into a valid version, which the strict rule had
+        // rejected (Codex review round 2).
+        if pieces.len() != 4 && pieces.len() != 5 {
+            return None;
+        }
+        if pieces.len() == 5 && !pieces[4].is_empty() {
+            return None;
+        }
+        if !pieces[..4]
+            .iter()
+            .all(|piece| !piece.is_empty() && piece.bytes().all(|byte| byte.is_ascii_digit()))
+        {
+            return None;
+        }
+        Some(pieces[..4].join("."))
+    }
+    let version = [Some(full), raw]
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            value
+                .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+                .find_map(four_part_version)
+        })
+        .ok_or_else(|| format!("launcher metadata has no four-part the game version: {full:?}"))?;
+    let build = full
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| part.len() == 4)
+        .find(|part| {
+            part.chars().any(|ch| ch.is_ascii_alphabetic())
+                && part.chars().any(|ch| ch.is_ascii_digit())
+        })
+        .ok_or_else(|| format!("launcher metadata has no Paradox build token: {full:?}"))?
+        .to_ascii_lowercase();
+    Ok((version, build))
+}
+
+/// The `build_profile` spelling both sides must produce from the same pair.
+pub fn build_profile_label(version: &str, build: &str) -> String {
+    format!("hoi4-{version}-{build}")
 }
 
 pub fn compute_selection_sha256(
@@ -2590,6 +2740,7 @@ mod tests {
             ],
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::from([("graphics.texture_quality".into(), "high".into())]),
+            recorder_local_settings: BTreeMap::new(),
             required_content: vec![
                 required(
                     "entity-definition",
@@ -4300,11 +4451,32 @@ mod tests {
     /// The whole point of the collision key: `compute_selection_sha256` and
     /// every stored path keep the UNCHANGED canonical form. These digests are
     /// recorded identities -- a change here breaks every replay already on
-    /// disk, so they are pinned literally. Both values were READ OUT OF THE
-    /// BASE COMMIT (6a8e378f) before this change, not copied from the new
-    /// output; the 13190-row corpus in
+    /// disk, so they are pinned literally. The SELECTION digest was READ OUT OF
+    /// THE BASE COMMIT (6a8e378f), not copied from the new output; the
+    /// 13190-row corpus in
     /// extractor/native/runs/win_alias_key/digest_invariance.txt makes the
     /// same point across 8847 accepted inputs.
+    ///
+    /// The MANIFEST digest is a different claim and it DID change here, once,
+    /// on purpose: `recorder_local_settings` is a new manifest field, so
+    /// every manifest serializes one more key and every manifest digest moves.
+    /// (It moved from the base commit's
+    /// `0665684938524d16a2e9176da325c1d3445624daf5b83d595872e32457bc5766`. The
+    /// literal was re-derived once more here: the value this branch first
+    /// pinned had been computed before the field settled, so the pin was stale
+    /// and this test failed on the branch that introduced it. The SELECTION
+    /// digest above is untouched by both, which is the assertion that matters.)
+    /// Recordings made before that field stop opening, which the owner ruled
+    /// acceptable pre-production. What must NOT move is the selection digest
+    /// above -- it is the portable compatibility gate, it is computed from
+    /// layers/DLC/language/`required_settings` only, and moving the provenance
+    /// rows OUT of `required_settings` was chosen precisely so that a recording
+    /// and the install that plays it compute the same one.
+    ///
+    /// kills: putting `recorder_local_settings` into
+    /// `compute_selection_sha256`'s canonical document, or leaving the
+    /// provenance rows in `required_settings`, moves the selection digest and
+    /// fails the first assertion.
     #[test]
     fn recorded_selection_digests_are_unchanged() {
         let manifest = manifest();
@@ -4314,7 +4486,7 @@ mod tests {
         );
         assert_eq!(
             manifest.manifest_digest_sha256.as_deref().unwrap(),
-            "0665684938524d16a2e9176da325c1d3445624daf5b83d595872e32457bc5766"
+            "4a51d242fb80c722f31e50c5640a2424ec20dc220d19c58fa9a4aa4c857d4105"
         );
         // The canonical form itself is untouched by everything above.
         assert_eq!(
@@ -4329,6 +4501,139 @@ mod tests {
             normalize_game_relative_path("gfx/unit.asset.").unwrap(),
             "gfx/unit.asset."
         );
+    }
+
+    /// A replayer cannot obtain "how well the recorder proved the settings"
+    /// from its own install, so demanding it is a refusal nobody can satisfy.
+    /// The two maps are a PARTITION and the manifest enforces it in both
+    /// directions, so no consumer has to filter and a hand-edited manifest
+    /// cannot move a row across the line to change what is demanded.
+    ///
+    /// kills: dropping either half of the partition check in `validate` makes
+    /// one of these three assertions fail. This test builds its manifest by
+    /// hand, so it does NOT cover the producer; the assertions that catch
+    /// `PortableLaunchBinding::from_modset` putting a provenance or display row
+    /// back into `required_settings` live with that constructor, in
+    /// `recorder_host::portable_content_manifest`'s
+    /// `local_modset_paths_are_reduced_to_portable_launch_identity`
+    /// (Codex review round 1).
+    #[test]
+    fn settings_provenance_and_material_settings_are_a_partition() {
+        let mut manifest = manifest();
+        manifest.recorder_local_settings = BTreeMap::from([
+            ("settings_authority".into(), "pre_launch_bracketed".into()),
+            ("settings_file_sha256".into(), h('c')),
+        ]);
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+        manifest = manifest.with_computed_digest().unwrap();
+        manifest.validate().expect("a partitioned manifest is valid");
+
+        // Provenance in the map that is demanded of the local install.
+        let mut wrong = manifest.clone();
+        wrong
+            .required_settings
+            .insert("settings_authority".into(), "pre_launch_bracketed".into());
+        // Re-derive the selection identity and DROP the sealed digest, so the
+        // only thing left wrong with this manifest is the partition. Left
+        // stale, the digest comparison refuses first and the assertion below
+        // would pass for the wrong reason; recomputed, it cannot be, because
+        // `computed_digest` validates the partition itself.
+        wrong.source_profile.selection_sha256 = wrong.computed_selection_sha256().unwrap();
+        wrong.manifest_digest_sha256 = None;
+        let error = wrong.validate().expect_err("provenance is not a demand");
+        assert!(
+            error.contains("recorder_local_settings"),
+            "unexpected refusal: {error}"
+        );
+
+        // A material setting hidden in the map nothing compares or hashes.
+        // This case used to insert `display_mode` and leave the digest stale,
+        // so the partition passed and what it read as its refusal was the
+        // digest check firing -- it passed for the wrong reason, and then
+        // stopped passing at all.
+        let mut wrong = manifest.clone();
+        wrong
+            .recorder_local_settings
+            // A key that is neither presentation nor proof provenance, so the
+            // partition says it belongs in `required_settings`. `display_mode`
+            // would NOT work here: it is a recorder-local presentation row and
+            // living in this map is exactly where it belongs.
+            .insert("graphics.texture_quality".into(), "low".into());
+        wrong.manifest_digest_sha256 = None;
+        let error = wrong
+            .validate()
+            .expect_err("a material setting must not hide in provenance");
+        assert!(
+            error.contains("required_settings"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    /// Provenance rows are recorded, and they change nothing about what the
+    /// local install must reproduce: the portable selection digest is identical
+    /// with and without them, so two installs that agree on the material
+    /// settings agree on the gate however well either recording proved them.
+    ///
+    /// kills: hashing `recorder_local_settings` into
+    /// `compute_selection_sha256`'s canonical document.
+    #[test]
+    fn settings_provenance_never_moves_the_portable_selection_digest() {
+        let bare = manifest();
+        let mut with_provenance = bare.clone();
+        with_provenance.recorder_local_settings = BTreeMap::from([
+            ("settings_authority".into(), "pre_launch_bracketed".into()),
+            ("settings_file_sha256".into(), h('c')),
+        ]);
+        assert_eq!(
+            bare.computed_selection_sha256().unwrap(),
+            with_provenance.computed_selection_sha256().unwrap()
+        );
+    }
+
+    /// ONE RULE, both sides, and it must not need `rawVersion` to work.
+    ///
+    /// The shipped `launcher-settings.json` spells the version and the build as
+    /// one dotted run -- `"Operation Postern v1.19.2.0.a729 (d245)"` -- and
+    /// carries `"rawVersion": "1.19.2.0"` beside it. The parser leaned on that
+    /// second field: with `raw = None` the only candidate token is `"1.19.2.0."`
+    /// (the dot before `a729` stays attached), which a strict four-piece test
+    /// refused, so a launcher file without `rawVersion` refused a recording
+    /// whose version was right there in the display string.
+    ///
+    /// kills: requiring exactly four dot-pieces (the `raw = None` case
+    /// refuses); allowing every piece past the fourth to be empty (the
+    /// dot-run case `1.19.2.0..a729` is accepted); allowing a non-empty fifth
+    /// piece (the five-part numeral is truncated into a version); and dropping
+    /// the build requirement altogether (a display string with no build token
+    /// would produce an identity).
+    #[test]
+    fn the_launcher_version_parses_without_raw_version() {
+        let shipped = "Operation Postern v1.19.2.0.a729 (d245)";
+        assert_eq!(
+            parse_launcher_version_and_build(shipped, Some("1.19.2.0")).unwrap(),
+            ("1.19.2.0".to_string(), "a729".to_string())
+        );
+        assert_eq!(
+            parse_launcher_version_and_build(shipped, None).unwrap(),
+            ("1.19.2.0".to_string(), "a729".to_string())
+        );
+        assert_eq!(
+            parse_launcher_version_and_build("1.19.2.0.a729", None).unwrap(),
+            ("1.19.2.0".to_string(), "a729".to_string())
+        );
+        // A five-part numeral is not a the game version and must not be truncated
+        // into one.
+        assert!(parse_launcher_version_and_build("1.19.2.0.5 a729", None).is_err());
+        // ONE separating dot is the shipped spelling; a RUN of them is
+        // malformed metadata and must stay refused rather than be normalized
+        // into a version (Codex review round 2).
+        assert!(parse_launcher_version_and_build("v1.19.2.0..a729", None).is_err());
+        assert!(parse_launcher_version_and_build("v1.19.2.0...a729", None).is_err());
+        // A version with no build token anywhere is refused, whichever field
+        // the version came from.
+        assert!(parse_launcher_version_and_build("no build here", Some("1.19.2.0")).is_err());
+        // No four-part numeral anywhere is still a refusal.
+        assert!(parse_launcher_version_and_build("v1.19.2 a729", None).is_err());
     }
 
     /// The replay's manifest and the caller's inventory are opposite subjects

@@ -57,17 +57,50 @@ pub fn derive_bundle_content_authority(
                 .into(),
         );
     }
-    let recording_mod_count = manifest
+    // BOTH SIDES OF THIS COMPARISON MUST NAME THE SAME THING. The resolver
+    // reports every non-vanilla layer it mounted, and `resolver_for_manifest`
+    // mounts exactly the recording's required non-base layers -- so the
+    // recording's side is that same set, not the mod-kind subset of it.
+    // Counting mods against mounted layers was harmless only while DLC never
+    // arrived as its own mounted layer; on a recording whose content manifest
+    // enumerates the effective VFS (the attach-time census route) it refused a
+    // vanilla capture on its own install: "mounted resolver ... (24 mods) and
+    // recording (0 mods)", where the 24 were the recording's own DLC layers.
+    //
+    // The identities are compared, not just the count: two rosters of the same
+    // size that name different layers are a different content roster.
+    let recorded_layer_ids = manifest
         .ordered_layers
         .iter()
-        .filter(|layer| layer.layer_kind == replay_core::ContentLayerKind::Mod)
-        .count();
-    if resolver.bundle_mod_count() != recording_mod_count {
+        .filter(|layer| {
+            layer.required_for_playback && layer.layer_kind != replay_core::ContentLayerKind::Base
+        })
+        .map(|layer| layer.layer_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mounted_layer_ids = resolver
+        .active_sources()
+        .into_iter()
+        // The vanilla root and the base layer are the ground both sides stand
+        // on, never part of the roster either side enumerates.
+        .filter(|source| source.kind != "vanilla" && source.kind != "base")
+        .map(|source| source.source_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if mounted_layer_ids != recorded_layer_ids {
+        let missing = recorded_layer_ids
+            .difference(&mounted_layer_ids)
+            .cloned()
+            .collect::<Vec<_>>();
+        let extra = mounted_layer_ids
+            .difference(&recorded_layer_ids)
+            .cloned()
+            .collect::<Vec<_>>();
         return Err(format!(
-            "CONTENT INCOMPATIBLE: mounted resolver {} ({} mods) and recording ({} mods) do not name one exact content roster",
+            "CONTENT INCOMPATIBLE: mounted resolver {} and recording do not name one exact content roster:              {} mounted vs {} required; not mounted here: {:?}; mounted but not recorded: {:?}",
             resolver.bundle_modset_id(),
-            resolver.bundle_mod_count(),
-            recording_mod_count
+            mounted_layer_ids.len(),
+            recorded_layer_ids.len(),
+            missing,
+            extra
         ));
     }
     let mut ordered_inputs = Vec::new();
@@ -208,11 +241,12 @@ pub fn bind_provider_content(
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        manifest
-            .required_settings
-            .keys()
-            .filter(|key| !portable_content_manifest::is_playback_local_presentation_setting(key))
-            .cloned(),
+        // No filter: `required_settings` IS what this replay must reproduce.
+        // Anything the recorder merely observed about its own machine lives in
+        // `recorder_local_settings`, and the manifest refuses a recording that
+        // mixes the two -- so a key here is always one the local install is
+        // supposed to be able to answer.
+        manifest.required_settings.keys().cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
     let inventory = resolver
@@ -285,11 +319,12 @@ pub fn validate_timeline_content(
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        manifest
-            .required_settings
-            .keys()
-            .filter(|key| !portable_content_manifest::is_playback_local_presentation_setting(key))
-            .cloned(),
+        // No filter: `required_settings` IS what this replay must reproduce.
+        // Anything the recorder merely observed about its own machine lives in
+        // `recorder_local_settings`, and the manifest refuses a recording that
+        // mixes the two -- so a key here is always one the local install is
+        // supposed to be able to answer.
+        manifest.required_settings.keys().cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
     let inventory = resolver
@@ -481,6 +516,7 @@ mod tests {
             ],
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
         }
@@ -877,6 +913,7 @@ graphics={
             dlc_selection: Vec::new(),
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content: vec![replay_core::RequiredContent {
                 content_key: "non-ui-definition".into(),
                 kind: replay_core::RequiredContentKind::Definition,

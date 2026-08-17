@@ -889,6 +889,7 @@ fn build_stress_content(
         dlc_selection: Vec::new(),
         localisation_language: "l_english".into(),
         required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
         required_content: vec![RequiredContent {
             content_key: "f1-performance-stress-shader".into(),
             kind: RequiredContentKind::ShaderSource,

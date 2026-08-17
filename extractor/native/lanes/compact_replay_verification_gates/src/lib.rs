@@ -13360,6 +13360,7 @@ mod tests {
             dlc_selection: Vec::new(),
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
         };

@@ -3718,10 +3718,10 @@ fn validate_recorder_content_manifest_join(
                     "settings_file_sha256".into(),
                     display.settings_file_sha256,
                 ),
-                // HOW WELL the settings above are proven travels in the same
-                // map that carries them, so a replay reproducing them cannot
-                // miss that a recording only OBSERVED the disk while the game
-                // was running rather than proving the game read it.
+                // HOW WELL the settings above are proven travels beside them,
+                // in the SAME map -- these are all statements about the machine
+                // that recorded, none of them a demand on the machine playing
+                // back.
                 (
                     "settings_authority".into(),
                     settings_binding
@@ -3735,9 +3735,13 @@ fn validate_recorder_content_manifest_join(
                         .to_string(),
                 ),
             ]);
-            if container_manifest.required_settings != expected_settings {
+            // The recorder's own display/proof rows, joined against the
+            // recorder manifest that reported them. `required_settings` is a
+            // different subject entirely (what the LOCAL install must
+            // reproduce) and is not what this join is about.
+            if container_manifest.recorder_local_settings != expected_settings {
                 return Err(SourceError::Open(
-                    "recorder display variant disagrees with portable content required settings"
+                    "recorder display variant disagrees with the portable content manifest's                      recorder-local settings"
                         .into(),
                 ));
             }
@@ -6735,7 +6739,8 @@ mod tests {
             ordered_layers: Vec::new(),
             dlc_selection: Vec::new(),
             localisation_language: "english".into(),
-            required_settings: BTreeMap::from([
+            required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::from([
                 ("physical_width".into(), "1920".into()),
                 ("physical_height".into(), "1080".into()),
                 ("min_gui_width".into(), "1920".into()),
@@ -6747,10 +6752,11 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "e".repeat(64)),
-                // How well the settings are proven travels in the same map
-                // that carries them, so a replay reproducing them cannot miss
-                // that a recording only OBSERVED the settings on disk rather
-                // than proving the game read them.
+                // How well the settings are proven travels BESIDE them, in its
+                // own map, so a replay reproducing them cannot miss that a
+                // recording only OBSERVED the settings on disk rather than
+                // proving the game read them -- and is never asked to reproduce
+                // a statement the recorder made about itself.
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),

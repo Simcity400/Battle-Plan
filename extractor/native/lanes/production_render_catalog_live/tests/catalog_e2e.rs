@@ -135,6 +135,7 @@ fn manifest() -> ContentManifest {
         ],
         localisation_language: "l_english".into(),
         required_settings: BTreeMap::from([("graphics.texture_quality".into(), "high".into())]),
+        recorder_local_settings: BTreeMap::new(),
         required_content: vec![
             required(
                 "entity",

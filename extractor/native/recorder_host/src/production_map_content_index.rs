@@ -570,6 +570,7 @@ mod tests {
             dlc_selection: Vec::new(),
             localisation_language: "english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content,
             manifest_digest_sha256: None,
         }
@@ -1096,7 +1097,7 @@ mod tests {
                 },
             effective_runtime_dlc_candidate_ids: Vec::new(),
             localisation_language: "english".into(),
-            required_settings: BTreeMap::from([("multi_sampling".into(), "4".into())]),
+            recorder_local_settings: BTreeMap::from([("multi_sampling".into(), "4".into())]),
             semantic_arguments: Vec::new(),
         };
         manifest.validate().unwrap();

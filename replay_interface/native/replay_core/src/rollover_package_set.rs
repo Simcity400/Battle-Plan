@@ -1042,7 +1042,8 @@ mod tests {
             ordered_layers: Vec::new(),
             dlc_selection: Vec::new(),
             localisation_language: "l_english".into(),
-            required_settings: BTreeMap::from([
+            required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::from([
                 ("physical_width".into(), "1920".into()),
                 ("physical_height".into(), "1080".into()),
                 ("min_gui_width".into(), "1280".into()),
@@ -1054,9 +1055,9 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "aa".repeat(32)),
-                // The authority that proved these settings travels in the
-                // same map, so a replay cannot reproduce them without knowing
-                // how well they were proven.
+                // The authority that proved these settings travels beside them,
+                // in its own map: a reader is told how well they were proven and
+                // is never asked to reproduce that statement.
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
@@ -1716,3 +1717,4 @@ mod tests {
         assert!(validate_package_transitions(&streams, &[transition]).is_err());
     }
 }
+

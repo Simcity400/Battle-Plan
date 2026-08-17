@@ -39,7 +39,8 @@ pub use xmap17_player_labels::*;
 pub use xui26_frontend::*;
 
 pub use portable_content_manifest::{
-    compute_selection_sha256, normalize_dlc_selection_id, normalize_game_relative_path,
+    build_profile_label, compute_selection_sha256, normalize_dlc_selection_id,
+    normalize_game_relative_path, parse_launcher_version_and_build,
     ContentIssue, ContentIssueCode, ContentLayerKind, ContentManifest, ContentValidationReport,
     DlcSelection, LayerStorageKind, PlaybackContentInventory, PlaybackContentLayer,
     RecordedContentLayer, RequiredContent, RequiredContentKind, ResolvedPlaybackContent,

@@ -131,32 +131,12 @@ pub fn merge_localisation_source_exact(
                 line_index + 1
             )
         })?;
-        let mut escaped = false;
-        let mut closing = None;
-        for (index, character) in quoted.char_indices() {
-            if character == '"' && !escaped {
-                closing = Some(index);
-                break;
-            }
-            escaped = character == '\\' && !escaped;
-            if character != '\\' {
-                escaped = false;
-            }
-        }
-        let closing = closing.ok_or_else(|| {
+        let closing = closing_quote_index(quoted).ok_or_else(|| {
             format!(
-                "production localisation {origin}:{} key {key:?} has no closing quote",
+                "production localisation {origin}:{} key {key:?} has no closing quote, or text after the value that is neither a comment nor part of it",
                 line_index + 1
             )
         })?;
-        let trailing = quoted[closing + 1..].trim();
-        if !trailing.is_empty() && !trailing.starts_with('#') {
-            return Err(format!(
-                "production localisation {origin}:{} key {key:?} has trailing syntax",
-                line_index + 1
-            )
-            .into());
-        }
         if table
             .insert(key.to_string(), quoted[..closing].to_string())
             .is_some()
@@ -358,5 +338,83 @@ mod tests {
             "gate: vanilla localisation {} keys, DRAW_COUNTRY_NAMES_CUTOFF {cutoff}",
             table.len()
         );
+    }
+}
+
+
+/// Where the quoted value on one localisation line ends.
+///
+/// SHIPPED VANILLA CONTAINS UNESCAPED INNER QUOTES. `aat_events_l_english.yml`
+/// line 1886 is `iceland_events.23.t: "[ICE.GetName] Declares itself "Protector
+/// of the North Sea Passage""` -- the game loads it and shows the inner quotes.
+/// Taking the FIRST unescaped quote as the terminator made that line "trailing
+/// syntax" and refused the whole file, which refused the frame: a recording of
+/// a clean vanilla install could not be drawn because of a quotation mark in an
+/// event title (measured, t83).
+///
+/// So the terminator is the FIRST unescaped quote whose remainder is empty or
+/// a comment. On the vanilla line only the final quote qualifies -- every
+/// earlier one leaves prose behind -- so the whole title survives; on
+/// `key: "value" # see "this"` the quote before the comment qualifies first, so
+/// the comment is not swallowed (Codex review round 1); and a line with no
+/// closing quote at all is still refused.
+///
+/// kills: reverting to "first unescaped quote, then reject any trailing text"
+/// fails `unescaped_inner_quotes_are_a_value_not_a_syntax_error`, and fails the
+/// whole map frame on a vanilla install.
+pub(crate) fn closing_quote_index(quoted: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, character) in quoted.char_indices() {
+        if character == '"' && !escaped {
+            let trailing = quoted[index + 1..].trim();
+            if trailing.is_empty() || trailing.starts_with('#') {
+                // FIRST qualifying candidate, not the last: a real trailing
+                // comment can itself end in a quoted phrase
+                // (`key: "value" # see "this"`), and taking the last candidate
+                // swallowed the comment into the value. The vanilla
+                // inner-quote line is unaffected because only its final quote
+                // qualifies at all -- every earlier one leaves prose behind.
+                return Some(index);
+            }
+        }
+        escaped = character == '\\' && !escaped;
+        if character != '\\' {
+            escaped = false;
+        }
+    }
+    None
+}
+
+
+#[cfg(test)]
+mod value_terminator_tests {
+    use super::closing_quote_index;
+
+    /// Shipped vanilla (`aat_events_l_english.yml:1886`) puts an unescaped
+    /// quoted phrase inside an event title, and a real trailing comment can
+    /// itself end in a quoted phrase. One rule has to get both right.
+    ///
+    /// kills: returning the FIRST unescaped quote regardless of what follows
+    /// truncates the vanilla title; returning the LAST qualifying candidate
+    /// swallows the comment into the value (Codex review round 1); dropping the
+    /// `#` clause makes the commented line refuse.
+    #[test]
+    fn unescaped_inner_quotes_are_a_value_not_a_syntax_error() {
+        // The vanilla line, with the opening quote already stripped.
+        let vanilla = r#"[ICE.GetName] Declares itself "Protector of the North Sea Passage""#;
+        let end = closing_quote_index(vanilla).expect("vanilla title terminates");
+        assert_eq!(
+            &vanilla[..end],
+            r#"[ICE.GetName] Declares itself "Protector of the North Sea Passage"#
+        );
+
+        let commented = r#"value" # see "this""#;
+        let end = closing_quote_index(commented).expect("commented line terminates");
+        assert_eq!(&commented[..end], "value");
+
+        let plain = r#"value""#;
+        assert_eq!(&plain[..closing_quote_index(plain).unwrap()], "value");
+
+        assert_eq!(closing_quote_index("no closing quote at all"), None);
     }
 }

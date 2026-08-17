@@ -2480,6 +2480,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
         dlc_selection: vec![],
         localisation_language: "l_english".into(),
         required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
         required_content: vec![
             fixture_required_content(
                 "fixture-base-country-definition",

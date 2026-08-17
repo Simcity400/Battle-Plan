@@ -110,6 +110,7 @@ fn manifest_for(
         dlc_selection: dlc_selection.clone(),
         localisation_language: language.into(),
         required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
         required_content,
         manifest_digest_sha256: None,
     };

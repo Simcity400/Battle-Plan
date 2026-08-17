@@ -3,9 +3,9 @@
 //! assigned divisions, and the complete registered `COrdersGroup` census that
 //! authenticates the orders' typed owners.
 //!
-//! Derived from `world_fold.rs:28445`-`:28546`
+//! Derived from `world_fold.rs:28455`-`:28556`
 //! (`fold_army_battleplans_depth`, dispatched at `:4729`), its payload decoder
-// @world-fold-authority domain=54 functions=fold_army_battleplans_depth lines=28445-28546 sha256=5ee0c69ae21271799ce50e86479fb049f7e1c3e3b033533829c6a9173fcc1c50 closure=94466c3d24ae43f4b88e75456db69cdd505b19dad47fa5bdadd4202cddb0661a
+// @world-fold-authority domain=54 functions=fold_army_battleplans_depth lines=28455-28556 sha256=5ee0c69ae21271799ce50e86479fb049f7e1c3e3b033533829c6a9173fcc1c50 closure=94466c3d24ae43f4b88e75456db69cdd505b19dad47fa5bdadd4202cddb0661a
 //! `decode_army_battleplans_depth_payload` (`world_fold.rs::decode_army_battleplans_depth_payload`), the accumulator
 //! types at `:23877`-`:23917` and their JSON projection (`:8282`-`:8414`), the
 //! shipping row grammar in

@@ -1,10 +1,10 @@
 //! d67 `country_dynamic_modifiers_live` — the per-country active
 //! dynamic-modifier **instance** set, schema-v2 (`DMI2`) grammar only.
 //!
-//! Derived from `world_fold.rs:13367`-`:13820`
+//! Derived from `world_fold.rs:13372`-`:13825`
 //! (`fold_country_dynamic_modifiers` and the
 //! `fold_country_dynamic_modifier_instances` it delegates to), the payload codec
-// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=13367-13820 sha256=e7139ddd48b64d81eaabb1ef67183603160c15e33813bfcd8275d9b475d674b1 closure=25092ccac099010f8b4c904c8c8cd4dcc6362b3a3613a2b0e9cce4642c42bbc5
+// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=13372-13825 sha256=e7139ddd48b64d81eaabb1ef67183603160c15e33813bfcd8275d9b475d674b1 closure=25092ccac099010f8b4c904c8c8cd4dcc6362b3a3613a2b0e9cce4642c42bbc5
 //! `extractor/native/compact_contract/src/dynamic_modifiers.rs`, the collector
 //! read at `extractor/native/collector/src/attach_log.rs:61148`-`:61371`, and the
 //! entry decoder `extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs`.

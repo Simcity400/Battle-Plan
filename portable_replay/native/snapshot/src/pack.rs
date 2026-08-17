@@ -2196,6 +2196,7 @@ mod tests {
             dlc_selection: Vec::<DlcSelection>::new(),
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content: vec![RequiredContent {
                 content_key: "particle-shader".into(),
                 kind: RequiredContentKind::ShaderSource,

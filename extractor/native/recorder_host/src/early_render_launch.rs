@@ -183,7 +183,13 @@ pub struct EarlyRenderLaunchManifest {
     pub requested_profile_selection: RequestedProfileSelectionReceipt,
     pub effective_runtime_dlc_candidate_ids: Vec<String>,
     pub localisation_language: String,
-    pub required_settings: BTreeMap<String, String>,
+    /// The display/GUI settings of the machine that is recording, which is what
+    /// the early render host is being told to reproduce. They are NOT settings
+    /// a replay must reproduce -- see
+    /// `portable_content_manifest::is_recorder_local_settings` -- and taking
+    /// them from the portable manifest's `required_settings` (now empty by
+    /// construction) is what made this header read "incomplete".
+    pub recorder_local_settings: BTreeMap<String, String>,
     /// User-provided engine arguments only.  The recording-local absolute
     /// `-userdir` binding is injected by this module and is never serialized.
     pub semantic_arguments: Vec<String>,
@@ -330,7 +336,7 @@ impl EarlyRenderLaunchManifest {
             requested_profile_selection,
             effective_runtime_dlc_candidate_ids: launch.enabled_dlc_ids.iter().cloned().collect(),
             localisation_language: launch.localisation_language.clone(),
-            required_settings: launch.required_settings.clone(),
+            recorder_local_settings: launch.recorder_local_settings.clone(),
             semantic_arguments,
         };
         manifest.validate()?;
@@ -340,7 +346,7 @@ impl EarlyRenderLaunchManifest {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != EARLY_LAUNCH_MANIFEST_SCHEMA
             || self.localisation_language.trim().is_empty()
-            || self.required_settings.is_empty()
+            || self.recorder_local_settings.is_empty()
         {
             return Err("early render launch manifest header is incomplete".into());
         }
@@ -3126,7 +3132,8 @@ mod tests {
             )]),
             integrated_dlc_layers: BTreeMap::new(),
             localisation_language: "l_english".into(),
-            required_settings: BTreeMap::from([
+            required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::from([
                 ("settings_file_sha256".into(), sha(6)),
                 ("display_mode".into(), "borderless".into()),
             ]),

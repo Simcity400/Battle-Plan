@@ -124,9 +124,7 @@ fn snapshot_100() -> Value {
                     "infrastructure": 5
                 },
                 "province_buildings": {
-                    "1000": {
-                        "naval_base": { "level": 2.0, "healthy_level": 2.0, "damaged": false }
-                    }
+                    "naval_base": { "level": 2.0, "healthy_level": 2.0, "damaged": false }
                 }
             },
             "20": { "owner": "GER" },
@@ -977,8 +975,10 @@ fn dir_store_typed_views_and_trichotomy() {
         state_10_buildings.state_buildings["arms_factory"].damaged,
         Leaf::Measured(true)
     );
+    // `states.<id>.province_buildings` is the state's province-scope buildings
+    // summed BY TYPE, which is the shape the recorder emits.
     assert_eq!(
-        state_10_buildings.province_buildings[&1000]["naval_base"].healthy_level,
+        state_10_buildings.province_building_totals["naval_base"].healthy_level,
         Leaf::Measured(2.0)
     );
     assert_eq!(
@@ -1663,7 +1663,8 @@ fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
         ordered_layers: Vec::new(),
         dlc_selection: Vec::new(),
         localisation_language: "l_english".into(),
-        required_settings: std::collections::BTreeMap::from([
+        required_settings: std::collections::BTreeMap::new(),
+        recorder_local_settings: std::collections::BTreeMap::from([
             ("physical_width".into(), "2752".into()),
             ("physical_height".into(), "1152".into()),
             ("min_gui_width".into(), "1280".into()),
@@ -1675,9 +1676,9 @@ fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
             ("borderless".into(), "true".into()),
             ("display_mode".into(), "borderless_fullscreen".into()),
             ("settings_file_sha256".into(), "aa".repeat(32)),
-            // The authority that proved these settings travels in the same map,
-            // so a replay cannot reproduce them without knowing how well they
-            // were proven.
+            // The authority that proved these settings travels beside them, in
+            // its own map: a reader is told how well they were proven and is
+            // never asked to reproduce that statement.
             ("settings_authority".into(), "pre_launch_bracketed".into()),
         ]),
         required_content: Vec::new(),
@@ -4300,3 +4301,4 @@ fn wrong_typed_map_mirror_falls_back_with_warning() {
 
     let _ = fs::remove_dir_all(&root);
 }
+

@@ -2358,6 +2358,7 @@ mod tests {
             dlc_selection: vec![],
             localisation_language: "l_english".into(),
             required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
             required_content: vec![RequiredContent {
                 content_key: DEFINITION_PATH.into(),
                 kind: RequiredContentKind::Definition,
