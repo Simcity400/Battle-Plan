@@ -57,6 +57,7 @@ mod power_balance_runtime;
 mod prefold_worker;
 mod recorded_ui_owner;
 mod recording_open;
+mod recording_reach;
 mod scrub;
 mod special_projects_runtime;
 mod timeline;
@@ -108,10 +109,11 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all]] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
+--report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last); \
 --dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
 --benchmark-stress-output runs the checked-in non-semantic 1920x1080 stress workload; --benchmark-output requires --benchmark-contract only to select the logical stream/hour, executes and measures the complete packet-native map composition with GPU completion, and writes no benchmark receipt unless exhaustive map-family admission and native execution succeed; --benchmark-warmup-frames and --benchmark-sample-frames configure either benchmark profile; \
@@ -823,6 +825,16 @@ fn run(args: &[String]) -> Result<()> {
         let (path, logical_stream_id) = parse_validate_recording_args(args)?;
         return run_validate_recording(&path, logical_stream_id, |name| std::env::var_os(name));
     }
+    // Lane MH: the same product open, reported as data rather than a verdict —
+    // per hour, the frame's coverage warnings and the complete XMAP00
+    // map-authority projection. Intercepted here for the same reason
+    // `--validate-recording` is: it opens a recording and nothing else, and its
+    // own strict parser rejects every unrelated token.
+    if args.iter().any(|arg| arg == "--report-recording-reach") {
+        let (path, out, logical_stream_id, hours) = parse_report_recording_reach_args(args)?;
+        reject_env_overrides(|name| std::env::var_os(name))?;
+        return recording_reach::run(&path, &out, logical_stream_id, hours);
+    }
     // G3: emit the canonical product-blocker list mechanically for audits and
     // the definition-of-done. Intercepted before `parse_cli` so it needs no
     // map bundle.
@@ -1224,6 +1236,96 @@ fn parse_validate_recording_args(args: &[String]) -> Result<(PathBuf, Option<u64
     }
     let path = path.ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
     Ok((path, logical_stream_id))
+}
+
+/// Strict argument parser for the standalone `--report-recording-reach`
+/// command, held to the same rule as `--validate-recording`: an unrelated token
+/// is an error, never a silently ignored switch.
+fn parse_report_recording_reach_args(
+    args: &[String],
+) -> Result<(
+    PathBuf,
+    PathBuf,
+    Option<u64>,
+    recording_reach::HourSelection,
+)> {
+    let mut path = None;
+    let mut out = None;
+    let mut logical_stream_id = None;
+    let mut hours = recording_reach::HourSelection::Sample;
+    let mut hours_selected = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--report-recording-reach" => {
+                index += 1;
+                if path.is_some() {
+                    return Err(format!(
+                        "--report-recording-reach may be passed only once\n{USAGE}"
+                    )
+                    .into());
+                }
+                path = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--report-recording-reach requires a path\n{USAGE}")
+                })?));
+            }
+            "--report-out" => {
+                index += 1;
+                if out.is_some() {
+                    return Err(format!("--report-out may be passed only once\n{USAGE}").into());
+                }
+                out = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--report-out requires an output path\n{USAGE}")
+                })?));
+            }
+            "--report-hours" => {
+                index += 1;
+                if hours_selected {
+                    return Err(format!("--report-hours may be passed only once\n{USAGE}").into());
+                }
+                hours_selected = true;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("--report-hours requires sample|all\n{USAGE}"))?;
+                hours = match value.as_str() {
+                    "sample" => recording_reach::HourSelection::Sample,
+                    "all" => recording_reach::HourSelection::All,
+                    other => {
+                        return Err(format!(
+                            "--report-hours {other:?} is not sample or all\n{USAGE}"
+                        )
+                        .into())
+                    }
+                };
+            }
+            "--logical-stream" => {
+                index += 1;
+                if logical_stream_id.is_some() {
+                    return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+                }
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--logical-stream requires an unsigned id\n{USAGE}")
+                })?;
+                logical_stream_id = Some(value.parse::<u64>().map_err(|error| {
+                    format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+                })?);
+            }
+            "--non-interactive" => {}
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --report-recording-reach; use only --report-out, --report-hours, --logical-stream and --non-interactive\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    let path =
+        path.ok_or_else(|| format!("--report-recording-reach requires a path\n{USAGE}"))?;
+    let out = out.ok_or_else(|| {
+        format!("--report-recording-reach requires --report-out <report.json>\n{USAGE}")
+    })?;
+    Ok((path, out, logical_stream_id, hours))
 }
 
 /// Registry-driven gate for the production-recording-scoped CLI rows: every
