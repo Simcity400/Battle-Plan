@@ -76,10 +76,9 @@ use compact_contract::early_render_control::{
     canonical_early_diagnostic_liveness_response_binding_bytes,
     decode_early_commit_capture_receipt, decode_early_diagnostic_end,
     decode_early_diagnostic_liveness_request, decode_early_render_launch_bind_v2,
-    decode_early_g2_capture_arm, encode_early_diagnostic_liveness_response,
-    encode_early_first_game_d3d,
+    encode_early_diagnostic_liveness_response, encode_early_first_game_d3d,
     encode_early_hook_ready, EarlyCommitCaptureReceiptV1, EarlyDiagnosticLivenessResponseV1,
-    EarlyFirstGameD3dV1, EarlyG2CaptureArmV1, EarlyHookReadyV1, EarlyRenderCodecError,
+    EarlyFirstGameD3dV1, EarlyHookReadyV1, EarlyRenderCodecError,
     EARLY_DIAGNOSTIC_END_RECORDER_CANCEL, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
 };
 use compact_contract::early_render_runtime_dlc::{
@@ -163,7 +162,6 @@ pub struct EarlyRenderControlBinding {
     pub launch_bind_sha256: [u8; 32],
     pub executable_sha256: [u8; 32],
     pub collector_sha256: [u8; 32],
-    pub g2_capture_expected: bool,
 }
 
 /// Collector-side end receipt for the non-promotable staged-hook diagnostic.
@@ -1018,7 +1016,6 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             launch_bind_sha256: Sha256::digest(&frame.payload).into(),
             executable_sha256: wire.executable_sha256,
             collector_sha256: wire.collector_sha256,
-            g2_capture_expected: wire.g2_capture_expected,
         };
         self.early_render_binding = Some(binding.clone());
         Ok(binding)
@@ -1493,41 +1490,14 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         &mut self,
         expected_hook_epoch_nonce: u64,
         deadline: MonotonicDeadline,
-    ) -> Result<(EarlyCommitCaptureReceiptV1, Option<EarlyG2CaptureArmV1>), ClientError> {
+    ) -> Result<EarlyCommitCaptureReceiptV1, ClientError> {
         if !self.early_render_first_game_d3d_sent || !self.early_render_runtime_dlc_sent {
             return self.fail(ClientError::EarlyRenderBinding);
         }
         if self.early_render_diagnostic_stage_probe {
             return self.fail(ClientError::EarlyRenderBinding);
         }
-        let mut frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
-        let g2_arm = if frame.kind == MessageKind::EarlyRenderG2CaptureArm {
-            let arm = decode_early_g2_capture_arm(&frame.payload)?;
-            let binding = self
-                .early_render_binding
-                .as_ref()
-                .ok_or(ClientError::EarlyRenderBinding)?;
-            if arm.process_id != binding.process_id
-                || arm.process_start_nonce != binding.process_start_nonce
-                || arm.hook_epoch_nonce != expected_hook_epoch_nonce
-                || arm.launch_manifest_sha256 != binding.launch_manifest_sha256
-                || arm.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
-                || arm.authority_exe_sha256 != binding.executable_sha256
-            {
-                return self.fail(ClientError::EarlyRenderBinding);
-            }
-            frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
-            Some(arm)
-        } else {
-            None
-        };
-        if self
-            .early_render_binding
-            .as_ref()
-            .is_none_or(|binding| binding.g2_capture_expected != g2_arm.is_some())
-        {
-            return self.fail(ClientError::EarlyRenderBinding);
-        }
+        let frame = self.recv_frame(deadline)?.ok_or(ClientError::NotUsable)?;
         if frame.kind != MessageKind::EarlyRenderCommitReceipt {
             return self.fail(ClientError::Unsupported(frame.kind));
         }
@@ -1541,14 +1511,8 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         if commit.hook_epoch_nonce != expected_hook_epoch_nonce {
             return self.fail(ClientError::EarlyRenderBinding);
         }
-        if g2_arm
-            .as_ref()
-            .is_some_and(|arm| arm.capture_receipt_sha256 != commit.receipt_sha256)
-        {
-            return self.fail(ClientError::EarlyRenderBinding);
-        }
         self.early_render_capture_committed = true;
-        Ok((commit, g2_arm))
+        Ok(commit)
     }
 
     fn complete_authenticated_diagnostic_hold<F>(
@@ -1833,14 +1797,9 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             )?;
             return Err(ClientError::EarlyRenderDiagnosticHoldCompleted(proof));
         }
-        let (commit, g2_arm) =
-            self.receive_early_render_commit(hook_epoch_nonce, commit_deadline)?;
+        let commit = self.receive_early_render_commit(hook_epoch_nonce, commit_deadline)?;
         crate::early_render_capture_control::commit_capture_receipt(binding, &commit)
             .map_err(|_| ClientError::EarlyRenderBinding)?;
-        if let Some(arm) = g2_arm {
-            crate::early_render_capture_control::arm_g2_capture(binding, &commit, arm)
-                .map_err(|_| ClientError::EarlyRenderBinding)?;
-        }
         Ok(commit)
     }
 

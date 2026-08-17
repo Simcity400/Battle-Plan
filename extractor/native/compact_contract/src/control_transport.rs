@@ -365,10 +365,9 @@ pub enum MessageKind {
     EarlyRenderDiagnosticLivenessRequest = 30,
     EarlyRenderDiagnosticLivenessResponse = 31,
     EarlyRenderDiagnosticEnd = 32,
-    EarlyRenderG2CaptureArm = 33,
-    EarlyRenderStartupFailure = 34,
-    CaptureReady = 35,
-    CaptureReadyAck = 36,
+    EarlyRenderStartupFailure = 33,
+    CaptureReady = 34,
+    CaptureReadyAck = 35,
 }
 
 impl MessageKind {
@@ -391,8 +390,7 @@ impl MessageKind {
             | Self::EarlyRenderContentManifestChunk
             | Self::EarlyRenderContentManifestCommit
             | Self::EarlyRenderDiagnosticLivenessRequest
-            | Self::EarlyRenderDiagnosticEnd
-            | Self::EarlyRenderG2CaptureArm => EndpointRole::Recorder,
+            | Self::EarlyRenderDiagnosticEnd => EndpointRole::Recorder,
             Self::CollectorHello
             | Self::HeartbeatProof
             | Self::RolloverPropose
@@ -449,7 +447,6 @@ impl MessageKind {
             | Self::EarlyRenderDiagnosticLivenessRequest
             | Self::EarlyRenderDiagnosticLivenessResponse
             | Self::EarlyRenderDiagnosticEnd
-            | Self::EarlyRenderG2CaptureArm
             | Self::EarlyRenderStartupFailure => ControlCapabilities::EARLY_RENDER,
             Self::CaptureReady | Self::CaptureReadyAck => ControlCapabilities::CAPTURE_READY,
         }
@@ -489,10 +486,9 @@ impl MessageKind {
             30 => Ok(Self::EarlyRenderDiagnosticLivenessRequest),
             31 => Ok(Self::EarlyRenderDiagnosticLivenessResponse),
             32 => Ok(Self::EarlyRenderDiagnosticEnd),
-            33 => Ok(Self::EarlyRenderG2CaptureArm),
-            34 => Ok(Self::EarlyRenderStartupFailure),
-            35 => Ok(Self::CaptureReady),
-            36 => Ok(Self::CaptureReadyAck),
+            33 => Ok(Self::EarlyRenderStartupFailure),
+            34 => Ok(Self::CaptureReady),
+            35 => Ok(Self::CaptureReadyAck),
             other => Err(ControlError::UnknownMessageKind(other)),
         }
     }
@@ -1775,7 +1771,7 @@ mod tests {
         assert!(channel.is_poisoned());
     }
 
-    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 34] {
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 33] {
         [
             (
                 MessageKind::HeartbeatChallenge,
@@ -1928,11 +1924,6 @@ mod tests {
                 ControlCapabilities::EARLY_RENDER,
             ),
             (
-                MessageKind::EarlyRenderG2CaptureArm,
-                EndpointRole::Recorder,
-                ControlCapabilities::EARLY_RENDER,
-            ),
-            (
                 MessageKind::EarlyRenderStartupFailure,
                 EndpointRole::Collector,
                 ControlCapabilities::EARLY_RENDER,
@@ -1985,12 +1976,11 @@ mod tests {
             MessageKind::EarlyRenderDiagnosticLivenessRequest,
             MessageKind::EarlyRenderDiagnosticLivenessResponse,
             MessageKind::EarlyRenderDiagnosticEnd,
-            MessageKind::EarlyRenderG2CaptureArm,
             MessageKind::EarlyRenderStartupFailure,
             MessageKind::CaptureReady,
             MessageKind::CaptureReadyAck,
         ];
-        for (wire, kind) in (1u16..=36).zip(registry) {
+        for (wire, kind) in (1u16..=35).zip(registry) {
             assert_eq!(kind as u16, wire);
             assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
         }
@@ -2016,10 +2006,9 @@ mod tests {
             31
         );
         assert_eq!(MessageKind::EarlyRenderDiagnosticEnd as u16, 32);
-        assert_eq!(MessageKind::EarlyRenderG2CaptureArm as u16, 33);
-        assert_eq!(MessageKind::EarlyRenderStartupFailure as u16, 34);
-        assert_eq!(MessageKind::CaptureReady as u16, 35);
-        assert_eq!(MessageKind::CaptureReadyAck as u16, 36);
+        assert_eq!(MessageKind::EarlyRenderStartupFailure as u16, 33);
+        assert_eq!(MessageKind::CaptureReady as u16, 34);
+        assert_eq!(MessageKind::CaptureReadyAck as u16, 35);
     }
 
     fn wrong_capability(required: u32) -> u32 {

@@ -455,7 +455,6 @@ struct MetadataRoute {
     binding: Option<RecorderSessionBinding>,
     timeline: Option<Value>,
     recorder_manifest: Option<Map<String, Value>>,
-    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 impl MetadataRoute {
@@ -1124,9 +1123,6 @@ pub trait ReplaySource: Send + Sync {
     fn product_admission(&self) -> Option<&RecorderProductAdmission> {
         None
     }
-    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
-        None
-    }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         None
     }
@@ -1259,7 +1255,6 @@ pub fn open_prefolded_replay(
         decision_catalog: None,
         static_artifacts: BTreeMap::new(),
         prefold_receipt: None,
-        g2_engine_capture: None,
     }))
 }
 
@@ -1372,13 +1367,6 @@ fn open_store_impl(
     // explicit or inconsistent metadata signal can never be downgraded to
     // legacy/unsupported because an index or role entry is missing.
     let mut metadata = recorder_metadata_route(&store, &game_id)?;
-    metadata.g2_engine_capture = crate::g2_engine_capture::admit_from_store(
-        &store,
-        &game_id,
-        metadata.recorder_manifest.as_ref(),
-    )
-    .map_err(|error| SourceError::Open(format!("admit packaged G2 engine capture: {error}")))?;
-
     let index = store
         .index(&game_id)
         .map_err(|e| source_error_from_load(&e, format!("read index for game {game_id:?}: {e}")))?;
@@ -1537,7 +1525,6 @@ fn open_store_impl(
         design_catalog,
         decision_catalog,
         static_artifacts,
-        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -1657,7 +1644,6 @@ fn open_compact_stream_with_decoder(
         decision_catalog,
         static_artifacts,
         prefold_receipt,
-        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -2146,7 +2132,6 @@ fn open_packaged_replay_cache(
         decision_catalog,
         static_artifacts,
         prefold_receipt,
-        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -2422,7 +2407,6 @@ fn open_compact_stream_with_spooled_decoder(
         decision_catalog,
         static_artifacts,
         prefold_receipt,
-        g2_engine_capture: metadata.g2_engine_capture,
     }))
 }
 
@@ -4095,7 +4079,6 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                     binding: None,
                     timeline: None,
                     recorder_manifest: None,
-                    g2_engine_capture: None,
                             });
             }
             return Err(SourceError::Open(format!(
@@ -4119,7 +4102,6 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
                     binding: None,
                     timeline: Some(Value::Object(timeline)),
                     recorder_manifest: None,
-                    g2_engine_capture: None,
                             });
             }
             return Err(SourceError::Open(
@@ -4160,7 +4142,6 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
             binding: Some(binding),
             timeline: Some(Value::Object(timeline)),
             recorder_manifest: Some(recorder_manifest),
-            g2_engine_capture: None,
             });
     }
 
@@ -4192,7 +4173,6 @@ where
             binding: None,
             timeline: None,
             recorder_manifest: None,
-            g2_engine_capture: None,
             });
     };
     let Some(reference) = session_manifest_reference(&timeline)? else {
@@ -4200,7 +4180,6 @@ where
             binding: None,
             timeline: Some(Value::Object(timeline)),
             recorder_manifest: None,
-            g2_engine_capture: None,
             });
     };
     let manifest = read_optional_metadata_object_once(
@@ -4218,7 +4197,6 @@ where
         binding: Some(binding),
         timeline: Some(Value::Object(timeline)),
         recorder_manifest: Some(manifest),
-        g2_engine_capture: None,
     })
 }
 
@@ -5477,7 +5455,6 @@ struct StoreSource {
     design_catalog: Option<Arc<crate::design_catalog::PortableDesignCatalog>>,
     decision_catalog: Option<PackagedDecisionCatalog>,
     static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
-    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 struct IndexedReplaySource {
@@ -5495,7 +5472,6 @@ struct IndexedReplaySource {
     decision_catalog: Option<PackagedDecisionCatalog>,
     static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: snapshot::PrefoldSourceReceipt,
-    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 struct SpooledPrefoldedSource {
@@ -5509,7 +5485,6 @@ struct SpooledPrefoldedSource {
     decision_catalog: Option<PackagedDecisionCatalog>,
     static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: snapshot::PrefoldSourceReceipt,
-    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 /// Neutral, immutable already-folded backend. The portable contract owns the
@@ -5524,7 +5499,6 @@ struct PrefoldedSource {
     decision_catalog: Option<PackagedDecisionCatalog>,
     static_artifacts: BTreeMap<String, PackagedStaticArtifact>,
     prefold_receipt: Option<snapshot::PrefoldSourceReceipt>,
-    g2_engine_capture: Option<crate::g2_engine_capture::PackagedG2EngineCapture>,
 }
 
 impl ReplaySource for IndexedReplaySource {
@@ -5559,9 +5533,6 @@ impl ReplaySource for IndexedReplaySource {
     }
 
 
-    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
-        self.g2_engine_capture.as_ref()
-    }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
@@ -5684,9 +5655,6 @@ impl ReplaySource for SpooledPrefoldedSource {
     }
 
 
-    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
-        self.g2_engine_capture.as_ref()
-    }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
@@ -5797,9 +5765,6 @@ impl ReplaySource for PrefoldedSource {
     }
 
 
-    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
-        self.g2_engine_capture.as_ref()
-    }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         self.design_catalog.as_ref()
@@ -5897,9 +5862,6 @@ impl ReplaySource for StoreSource {
         self.recorder_binding
             .as_ref()
             .map(|binding| &binding.product_admission)
-    }
-    fn g2_engine_capture(&self) -> Option<&crate::g2_engine_capture::PackagedG2EngineCapture> {
-        self.g2_engine_capture.as_ref()
     }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {

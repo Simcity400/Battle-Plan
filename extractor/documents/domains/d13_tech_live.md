@@ -67,7 +67,9 @@ The portable record carries authority, branch, callback sequence/thread, game ho
 
 Raw callbacks are not authority. `seal_selected_present` accepts only callbacks preceding the authenticated Present at the same game hour/QPC frequency; late or stale observations cannot fabricate that boundary.
 
-On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Technology is 0.88 years ahead of time.` The late-attach fold correctly contained the active research census but no quartet; authenticating it requires the early-launch selected-Present path.
+On paused date `1944.2.11.18`, hovering 1945 Engineer Company IV displayed `Technology is 0.88 years ahead of time.` The late-attach fold correctly contained the active research census but no quartet.
+
+*Historical, retired 2026-08-18:* the sentence above used to continue "authenticating it requires the early-launch selected-Present path". It no longer does. The ordinary passive collector derives the quartet itself (`extractor/native/collector/src/attach_log.rs`, the double-read technology status/header window), so nothing in this domain depends on the recorder starting the game frozen.
 
 
 ## Files about this domain

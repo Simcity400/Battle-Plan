@@ -2,7 +2,7 @@
 
 use crate::duplex_client::EarlyRenderControlBinding;
 use compact_contract::early_render_control::{
-    EarlyCommitCaptureReceiptV1, EarlyFirstGameD3dV1, EarlyG2CaptureArmV1, EarlyHookReadyV1,
+    EarlyCommitCaptureReceiptV1, EarlyFirstGameD3dV1, EarlyHookReadyV1,
     EARLY_HOOK_COMPLETENESS_MASK,
 };
 use compact_contract::early_render_runtime_dlc::EarlyRenderRuntimeDlcRosterV1;
@@ -205,24 +205,6 @@ pub fn commit_capture_receipt(
         commit.hook_epoch_nonce,
         &encode_sha256(&commit.receipt_sha256),
     )
-}
-
-pub fn arm_g2_capture(
-    binding: &EarlyRenderControlBinding,
-    commit: &EarlyCommitCaptureReceiptV1,
-    arm: EarlyG2CaptureArmV1,
-) -> Result<(), String> {
-    if arm.process_id != binding.process_id
-        || arm.process_start_nonce != binding.process_start_nonce
-        || arm.hook_epoch_nonce != commit.hook_epoch_nonce
-        || arm.launch_manifest_sha256 != binding.launch_manifest_sha256
-        || arm.effective_vfs_manifest_sha256 != binding.effective_vfs_manifest_sha256
-        || arm.authority_exe_sha256 != binding.executable_sha256
-        || arm.capture_receipt_sha256 != commit.receipt_sha256
-    {
-        return Err("G2 arm differs from the authenticated launch/COMMIT binding".into());
-    }
-    a729_hook::arm_g2_capture(arm)
 }
 
 #[cfg(test)]

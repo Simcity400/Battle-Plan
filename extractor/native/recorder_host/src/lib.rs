@@ -20,10 +20,6 @@ pub mod early_render_host_channel;
 pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod finalize_progress;
-/// Waiting out a Windows real-time scanner on the FINALIZE path only. See the
-/// module header for the two preconditions a call site has to satisfy and for
-/// why the hourly, attach and suspended-launch paths may never use it.
-pub mod fs_sharing_retry;
 pub mod gap_ledger;
 /// What the supervising harness REFUSED, read by the process it supervised, so
 /// a capture whose READY custody was never established does not spend an hour

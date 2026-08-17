@@ -16,10 +16,9 @@ use std::time::{Duration, Instant};
 
 use replay_core::{
     CertifiedPrefoldSpoolDecoder, CertifiedPrefoldSpoolRequest, ContentManifest,
-    PackagedDecisionCatalog, PackagedG2EngineCapture, PackagedStaticArtifact,
-    PortableDesignCatalog, PrefoldDecodeError, PrefoldSourceReceipt, PrefoldStreamIdentityMode,
-    PrefoldedSpool, PrefoldedSpoolEntry, RawFrame, RecordedCampaignIdentity,
-    RecorderProductAdmission, ReplaySource, SourceError,
+    PackagedDecisionCatalog, PackagedStaticArtifact, PortableDesignCatalog, PrefoldDecodeError,
+    PrefoldSourceReceipt, PrefoldStreamIdentityMode, PrefoldedSpool, PrefoldedSpoolEntry, RawFrame,
+    RecordedCampaignIdentity, RecorderProductAdmission, ReplaySource, SourceError,
 };
 
 #[cfg(all(windows, not(test)))]
@@ -1398,13 +1397,6 @@ impl ReplaySource for ProductReplaySource {
     }
     fn product_admission(&self) -> Option<&RecorderProductAdmission> {
         self.inner.product_admission()
-    }
-    /// Found by the derived accessor list below the moment it replaced the
-    /// hand-maintained array: this one had never been forwarded, so the G2
-    /// engine capture admitted at ingest read as absent on the product route
-    /// while `replay_dump` saw it.
-    fn g2_engine_capture(&self) -> Option<&PackagedG2EngineCapture> {
-        self.inner.g2_engine_capture()
     }
     fn design_catalog(&self) -> Option<&Arc<PortableDesignCatalog>> {
         self.inner.design_catalog()

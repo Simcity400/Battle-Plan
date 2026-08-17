@@ -151,8 +151,16 @@ pub struct DecisionInput {
     pub target_tag_ref: Option<String>,
 }
 
-/// Pointer-free custody stamp for the production render frame which owns the
-/// panel pixels. PBP2 remains the typed companion to those pixels.
+/// Pointer-free custody stamp binding this observation to the production render
+/// frame it was sampled against.
+///
+/// Retired 2026-08-18: this stamp used to be described as belonging to the
+/// render frame that OWNS the panel pixels, with PBP2 as the companion to those
+/// pixels. The panel is now painted at replay by the passive/authored
+/// compositor (`replay_app::ui_runtime`'s `compose_xui18_power_balance_surface`)
+/// and the shipped viewer never consults selected-Present; presentation is
+/// rebuilt from the certified installed content. The stamp remains what it always
+/// mechanically was -- a custody binding -- and d74 remains reserved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedPresentStamp {
     pub frame_hour: u64,
@@ -208,7 +216,8 @@ pub struct PowerBalancePresentationFrame {
     pub status_flags: u32,
     pub frame_hour: u64,
     /// Sampled after terminal controller/grid materialization and before the
-    /// selected Present which owns this typed companion.
+    /// selected Present this observation is stamped against. (Retired
+    /// 2026-08-18: that Present no longer "owns" anything the replay draws.)
     pub materialization_qpc_ticks: u64,
     pub selected_present: SelectedPresentStamp,
     pub producer_manifest_sha256: [u8; 32],

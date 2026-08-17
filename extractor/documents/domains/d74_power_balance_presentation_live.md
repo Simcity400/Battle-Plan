@@ -22,9 +22,12 @@
 
 
 
-D74/PBP2 is an optional typed semantic companion. Exact visible power-balance
-pixels belong to the authenticated selected-Present UI carrier; absence of d74
-must remain explicit and must not be replaced by a semantic reconstruction.
+D74/PBP2 is an optional typed semantic companion. Visible power-balance pixels
+are painted at replay by the passive/authored compositor
+(`replay_interface/native/replay_app/src/ui_runtime.rs`); absence of d74 must
+remain explicit and must not be replaced by a semantic reconstruction.
+*Retired 2026-08-18: those pixels used to be attributed to the authenticated
+selected-Present UI carrier; the shipped viewer never consults selected-Present.*
 The batch source contains no d74 offset, structure layout, or independent
 acquisition law.
 

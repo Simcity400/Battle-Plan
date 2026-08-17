@@ -42,12 +42,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 png = "0.17"
 
-[dev-dependencies]
-# Waits out the Windows sharing violation a real-time scanner causes on a
-# freshly written file (lane KY). Test-only: nothing this package ships calls it.
-portable_test_fs_retry = { path = "../../../../portable_replay/native/test_fs_retry" }
-zip = { version = "2", default-features = false, features = ["deflate"] }
-
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = ["d3d11", "d3d11shader", "d3dcommon", "d3dcompiler", "minwindef", "winerror"] }
 windows-sys = { version = "0.61.2", features = [

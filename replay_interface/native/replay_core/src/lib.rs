@@ -16,7 +16,6 @@ pub mod decision_evaluation;
 pub mod decisions_live;
 pub mod design_catalog;
 pub mod frd_depth;
-pub mod g2_engine_capture;
 pub mod intelligence_controller_companion;
 pub mod intelligence_presentation;
 pub mod map_furniture;
@@ -33,10 +32,6 @@ pub mod theatre_selector;
 pub mod world;
 pub mod xmap17_player_labels;
 pub mod xui26_frontend;
-
-pub use g2_engine_capture::{
-    G2EnginePixelWitness, G2PostProcessBoundaryAuthentication, PackagedG2EngineCapture,
-};
 
 pub use character_presentation_g8::*;
 pub use combat_presentation::*;

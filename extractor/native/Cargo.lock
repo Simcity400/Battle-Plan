@@ -881,7 +881,6 @@ dependencies = [
  "png",
  "portable_content_manifest",
  "portable_render_stream",
- "portable_test_fs_retry",
  "production_render_catalog_capture_contract",
  "runtime_text_inputs_live_lane",
  "serde",
@@ -889,7 +888,6 @@ dependencies = [
  "sha2",
  "winapi",
  "windows-sys",
- "zip",
 ]
 
 [[package]]

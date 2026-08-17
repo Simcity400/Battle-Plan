@@ -751,10 +751,12 @@ CONST_REF_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{2,})(?![A-Za-z0-9_]
 #   let <bind> = <recv>.get("<field>").and_then(<accessor>);   ... <bind> == Some(v)
 #       -- `replay_core/src/source.rs`'s compact-stream admission.
 #   if let Some(<bind>) = <recv>.get("<field>") { ... <bind>.as_str() != Some(v) }
-#       -- `replay_core/src/g2_engine_capture.rs`'s packaged-witness join on
-#          `effective_vfs_manifest_sha256`, which review round 3 found still
-#          sitting in the census because the accessor is applied at the
-#          COMPARISON rather than at the binding.
+#       -- found in the (since-deleted) `replay_core/src/g2_engine_capture.rs`
+#          packaged-witness join on `effective_vfs_manifest_sha256`, which
+#          review round 3 found still sitting in the census because the
+#          accessor is applied at the COMPARISON rather than at the binding.
+#          The file is gone (lane MA, 2026-08-18); the binding FORM it taught
+#          this gate to recognise is not, so the branch and its self-test stay.
 BINDING_GET_RE = re.compile(
     r"(?:"
     r"let\s+(?P<bind>[a-z_][A-Za-z0-9_]*)\s*=\s*[^;=]*?"
@@ -784,7 +786,7 @@ def binding_comparisons(code: str, bind: str, start: int) -> list[tuple[str, str
     """
     window = code[start : start + 2000]
     # STOP AT A REBINDING of the same name. The character bound alone is not
-    # enough: `g2_engine_capture.rs` writes two consecutive
+    # enough: the since-deleted `g2_engine_capture.rs` wrote two consecutive
     # `if let Some(value) = content.get(...)` blocks, so the first binding's
     # window reached the SECOND block's comparison and the gate recorded
     # `effective_vfs_manifest_sha256` as being compared against
@@ -1711,7 +1713,7 @@ def self_test() -> int:
         '}\n'
     )
     im = BINDING_GET_RE.search(iflet)
-    check("g2_engine_capture.rs's if-let binding form is a recognised pin",
+    check("the if-let binding form is a recognised pin",
           im.group("field2") if im else None, "effective_vfs_manifest_sha256")
     check("its comparison, with the accessor at the COMPARISON, is paired",
           len(binding_comparisons(iflet, im.group("bind2"), im.end())) if im else 0, 1)

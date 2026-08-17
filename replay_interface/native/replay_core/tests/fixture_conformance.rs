@@ -348,7 +348,6 @@ struct RecordingReading {
     prefold_receipt: Option<String>,
     design_catalog: Option<String>,
     decision_catalog: Option<String>,
-    g2_engine_capture: Option<String>,
     dates: Vec<(i64, Option<String>)>,
     frames: Vec<RawFrameReading>,
     timeline_game_id: String,
@@ -435,11 +434,6 @@ impl RecordingReading {
             "decision_catalog",
             format!("{:?}", self.decision_catalog),
             format!("{:?}", other.decision_catalog),
-        );
-        scalar(
-            "g2_engine_capture",
-            format!("{:?}", self.g2_engine_capture),
-            format!("{:?}", other.g2_engine_capture),
         );
         scalar(
             "dates",
@@ -674,7 +668,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
     let prefold_receipt = source.prefold_receipt().map(|v| format!("{v:?}"));
     let design_catalog = source.design_catalog().map(|v| format!("{v:?}"));
     let decision_catalog = source.decision_catalog().map(|v| format!("{v:?}"));
-    let g2_engine_capture = source.g2_engine_capture().map(|v| format!("{v:?}"));
 
     let mut dates = Vec::new();
     let mut frames = Vec::new();
@@ -787,7 +780,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
         prefold_receipt,
         design_catalog,
         decision_catalog,
-        g2_engine_capture,
         dates,
         frames,
         timeline_game_id,
@@ -816,7 +808,7 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
 ///   * the opened path, or anything derived from it, reaching one of the
 ///     surfaces `read_recording` samples: `warnings`, `declared_coverage`, the
 ///     content manifest, campaign identity, product admission, prefold receipt,
-///     the design / decision / G2 catalogs, `date_at`, the raw decoded body of
+///     the design / decision catalogs, `date_at`, the raw decoded body of
 ///     every hour, the `WorldTimeline` read-back of every one of those
 ///     top-level domains, `WorldFrame::coverage_warnings`, and the typed views
 ///     `typed_views_debug` names. `open_store_impl` already threads
@@ -848,9 +840,9 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
 ///   * `ReplaySource::static_artifact` / `WorldTimeline::static_artifact`,
 ///     which take an artifact NAME and expose no enumeration, so nothing here
 ///     samples them; and the typed accessors `typed_views_debug` does not name.
-///     Note also that for the shipped corpus the design / decision / G2 /
-///     prefold options are all `None` — those four comparisons are real but
-///     currently compare absence to absence.
+///     Note also that for the shipped corpus the design / decision / prefold
+///     options are all `None` — those three comparisons are real but currently
+///     compare absence to absence.
 #[test]
 fn relocating_a_recording_changes_nothing_the_reader_answers() {
     let root = fixture_root();

@@ -16,8 +16,13 @@ Every rule is written so a reviewer can check a new domain against it without kn
 
 DECISIONS makes playback the game's own scene, redrawn from the player's own content — not a
 summary of what happened. So a domain's coverage is set by what the renderer consumes, not by what
-an analyst would find interesting. Position, progress, orientation, ownership, the draw state d77
-carries: if the viewer reads it to put something on screen, this domain owes it.
+an analyst would find interesting. Position, progress, orientation, ownership: if the viewer reads
+it to put something on screen, this domain owes it.
+
+What a domain does NOT owe is the map's LOOK. That is rebuilt at replay from the certified game
+files (owner, 2026-08-18), d77 and d80 stay reserved and unbuilt, and no recording carries pixels.
+*Retired 2026-08-18: this paragraph used to list "the draw state d77 carries" among the inputs a
+domain owes.*
 
 Two rules below exist only because of this, and they are the two most likely to be skipped:
 
