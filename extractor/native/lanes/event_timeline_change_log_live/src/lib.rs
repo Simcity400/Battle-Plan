@@ -1566,6 +1566,7 @@ pub fn summarize_compact_source_stream(raw: &[u8]) -> CompactSourceSummary {
                 }
             }
             compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused
@@ -1964,7 +1965,8 @@ pub fn gate_event_compact_stream(
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
-            compact_contract::KnownRecordType::StreamHeader
+            compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StreamHeader
             | compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused
             | compact_contract::KnownRecordType::FrameDegraded

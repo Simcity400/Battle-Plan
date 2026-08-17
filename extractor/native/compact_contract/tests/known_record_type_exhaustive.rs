@@ -1,6 +1,6 @@
 use compact_contract::KnownRecordType;
 
-// This match intentionally has no wildcard. Adding a twelfth variant makes
+// This match intentionally has no wildcard. Adding a thirteenth variant makes
 // this fixture and every migrated whole-stream consumer fail to compile until
 // each one states what the new record means.
 const fn consumer_action(record_type: KnownRecordType) -> &'static str {
@@ -16,6 +16,7 @@ const fn consumer_action(record_type: KnownRecordType) -> &'static str {
         KnownRecordType::ClockUnreadableInterval => "clock annotation",
         KnownRecordType::UntrustedClockRecovery => "clock annotation",
         KnownRecordType::FreezeCensus => "no coverage",
+        KnownRecordType::ContentIdentityCensus => "session identity",
     }
 }
 
@@ -26,5 +27,9 @@ fn public_record_type_vocabulary_is_exhaustively_matchable() {
     assert_eq!(
         consumer_action(KnownRecordType::FreezeCensus),
         "no coverage"
+    );
+    assert_eq!(
+        consumer_action(KnownRecordType::ContentIdentityCensus),
+        "session identity"
     );
 }

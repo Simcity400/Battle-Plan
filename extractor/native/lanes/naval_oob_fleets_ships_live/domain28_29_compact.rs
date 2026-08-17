@@ -503,7 +503,8 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
-            compact_contract::KnownRecordType::StreamHeader => {}
+            compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused
             | compact_contract::KnownRecordType::FrameDegraded

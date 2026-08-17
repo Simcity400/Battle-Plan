@@ -128,8 +128,30 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
         production
             .matches("publish_successor_install_census_after_rollover(")
             .count(),
-        3,
-        "campaign reset, function definition, and required-wrapper delegation are required"
+        4,
+        "campaign reset, the initial-H4CI rollover retry, the function definition          and the required-wrapper delegation are required"
+    );
+    // Every one of those call sites must hand over the RETAINED content
+    // identity census, not just the freeze census. A behavioural test cannot
+    // see this: it drives the shared helper directly, so changing one
+    // production site's argument to `None` leaves it - and the counts above -
+    // green while that rollover opens a stream with world records and no
+    // session identity.
+    //
+    // kills: replacing `content_identity_payload.as_deref()` with `None` at any
+    // production rollover site, or dropping the argument from one of them.
+    let freeze_arguments = production.matches("freeze_census_payload.as_deref(),").count();
+    let identity_arguments = production
+        .matches("content_identity_payload.as_deref(),")
+        .count();
+    assert_eq!(
+        identity_arguments,
+        freeze_arguments - 1,
+        "every rollover site that passes the install freeze census must pass the retained          content identity census with it; the one exception is the initial H4CI publication,          which IS the census and carries only the freeze payload"
+    );
+    assert!(
+        freeze_arguments >= 9,
+        "the rollover sites are named individually above; this is the floor they imply"
     );
 }
 

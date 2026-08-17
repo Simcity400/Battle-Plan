@@ -1198,6 +1198,7 @@ impl CompletenessAudit {
                     .map_err(|error| format!("UNTRUSTED_CLOCK_RECOVERY payload: {error}"))?;
             }
             compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => {
                 // Not a skip. A record type this audit has not been taught is
                 // exactly how a certifier drifts out of date while still

@@ -758,6 +758,7 @@ pub fn certify_canonical_stream(
                 data_roster.clear();
             }
             compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

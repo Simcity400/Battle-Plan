@@ -366,6 +366,10 @@ pub struct BoundaryTracker {
     /// True only after the optional, policy-gated phase-2 record. No further
     /// physical record is legal once this is set.
     release_freeze_census_seen: bool,
+    /// True once this LOGICAL STREAM has carried its content-identity census.
+    /// A second one would mean the session's building/resource identity changed
+    /// mid-recording, which the engine's lexer cannot do.
+    content_identity_census_seen: bool,
     terminal_outcome_domains: BTreeSet<u16>,
     gap_domains: BTreeSet<u16>,
     data_domains: BTreeSet<u16>,
@@ -1733,6 +1737,53 @@ impl BoundaryTracker {
             }
         }
     }
+            KnownRecordType::ContentIdentityCensus => {
+                // Same envelope rule as the freeze census, for the same
+                // reason: it closes no hour and claims no coverage, so a
+                // non-zero hour would name an hour it never observed and open
+                // a coverage span over frames it did not see.
+                if header.game_hour_raw != 0 {
+                    self.violation = Some(format!(
+                        "CONTENT_IDENTITY_CENSUS at byte {at_byte} is framed for hour {}, not the zero no-coverage sentinel",
+                        header.game_hour_raw
+                    ));
+                    return;
+                }
+                if let Err(reason) =
+                    compact_contract::content_identity_census::ContentIdentityCensusV1::decode(
+                        payload,
+                    )
+                {
+                    self.violation = Some(format!(
+                        "CONTENT_IDENTITY_CENSUS payload at byte {at_byte} is unreadable: {reason}"
+                    ));
+                    return;
+                }
+                // Ordinary records are numbered from one in both identity
+                // modes, so `sequence - 1` is how many ordinary records came
+                // before this one without the fold having to know which mode
+                // produced the stream. A census may be the first of them (late
+                // attach reads the identity before the first hour is
+                // published) or ride immediately behind a record that CLOSED
+                // an hour; anything else would sit inside a half-assembled
+                // hour, where a consumer could not tell whether that hour was
+                // folded with the census or without it.
+                let ordinary_before = header.sequence.saturating_sub(1);
+                match compact_contract::content_identity_census::
+                    validate_content_identity_census_placement(
+                        ordinary_before,
+                        previous_record_type,
+                        self.content_identity_census_seen,
+                    )
+                {
+                    Ok(()) => self.content_identity_census_seen = true,
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "CONTENT_IDENTITY_CENSUS placement at byte {at_byte} is invalid: {reason}"
+                        ));
+                    }
+                }
+            }
             // CID1 is validated and consumed by the identity state machine.
             KnownRecordType::StreamHeader => {}
         }
@@ -2804,6 +2855,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 Ok(KnownRecordType::FreezeCensus) => stats.freeze_census_records += 1,
                 Ok(
                     KnownRecordType::StreamHeader
+                    | KnownRecordType::ContentIdentityCensus
                     | KnownRecordType::DomainGap
                     | KnownRecordType::FrameRefused
                     | KnownRecordType::FrameDegraded

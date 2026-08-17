@@ -2197,7 +2197,8 @@ fn fold_compact_stream_file_identity_aware(
                     stats.freeze_census_records += 1
                 }
                 Ok(
-                    compact_contract::KnownRecordType::StreamHeader
+                    compact_contract::KnownRecordType::ContentIdentityCensus
+                    | compact_contract::KnownRecordType::StreamHeader
                     | compact_contract::KnownRecordType::DomainGap
                     | compact_contract::KnownRecordType::FrameRefused
                     | compact_contract::KnownRecordType::FrameDegraded
@@ -3378,7 +3379,8 @@ impl HourCursor {
                         self.stats.freeze_census_records += 1
                     }
                     Ok(
-                        compact_contract::KnownRecordType::StreamHeader
+                        compact_contract::KnownRecordType::ContentIdentityCensus
+                        | compact_contract::KnownRecordType::StreamHeader
                         | compact_contract::KnownRecordType::DomainGap
                         | compact_contract::KnownRecordType::FrameRefused
                         | compact_contract::KnownRecordType::FrameDegraded
@@ -3639,6 +3641,7 @@ impl HourCursor {
                 None
             }
             compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader
             | compact_contract::KnownRecordType::FrameDegraded
             | compact_contract::KnownRecordType::CaptureTerminated

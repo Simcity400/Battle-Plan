@@ -1354,7 +1354,8 @@ fn validate_authoritative_stream(
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
-            KnownRecordType::StreamHeader
+            KnownRecordType::ContentIdentityCensus
+            | KnownRecordType::StreamHeader
             | KnownRecordType::DomainGap
             | KnownRecordType::FrameRefused
             | KnownRecordType::FrameDegraded

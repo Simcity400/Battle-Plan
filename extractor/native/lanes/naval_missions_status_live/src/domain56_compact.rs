@@ -876,7 +876,11 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                     release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
-            compact_contract::KnownRecordType::StreamHeader => {}
+            // Session identity, not an hour: it names no domain and closes
+            // nothing, so a per-domain scanner passes over it exactly as it
+            // passes over the stream header.
+            compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused
             | compact_contract::KnownRecordType::FrameDegraded

@@ -92,3 +92,83 @@ fn capture_loop_result_and_panic_are_both_retained_as_abnormal() {
     assert!(!retain_capture_loop_outcome(Ok(Ok(())), &mut clean_error));
     assert!(clean_error.is_none());
 }
+
+/// kills: deleting the content-identity census publication from the BODY of
+/// `publish_capture_termination_record`. That path opens a successor logical
+/// stream of its own, and a reader may open that member without ever seeing its
+/// predecessor - so a preamble carrying only the install freeze census would
+/// give that stream a session with no content identity. Counting caller
+/// arguments cannot see this deletion; publishing through the production
+/// function and reading the bytes back can.
+#[test]
+fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice() {
+    let path = std::env::temp_dir().join(format!(
+        "collector_termination_preamble_{}_{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or_default()
+    ));
+    let file = std::fs::File::create(&path).unwrap();
+    let mut transport =
+        CaptureTransport::legacy(Some(file), None, SinkDeliveryState::new(true, false));
+    let mut sequence = PublishedSequence::start_on(Some(0));
+    transport.inject_current_logical_stream_id(Some(1));
+
+    // The freeze census's own payload grammar is pinned by its own tests; what
+    // this case is about is WHICH records the successor preamble contains and
+    // in what order, which the H4CR headers alone answer.
+    let freeze = vec![0u8; 8];
+    let census = compact_contract::content_identity_census::ContentIdentityCensusV1 {
+        buildings: vec![compact_contract::content_identity_census::ContentIdentityRow {
+            token_id: 0x4E22,
+            token: "arms_factory".to_string(),
+        }],
+        resources: Vec::new(),
+        buildings_declared: 1,
+        resources_declared: 0,
+        status: 0,
+    }
+    .encode()
+    .unwrap();
+    let reasons = compact_contract::capture_termination::CaptureTerminationReasons::from_bits(
+        compact_contract::capture_termination::CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED,
+    )
+    .unwrap();
+
+    publish_capture_termination_record(
+        &mut transport,
+        &mut sequence,
+        Some(&freeze),
+        Some(&census),
+        reasons,
+        1900,
+        "capture loop aborted",
+    )
+    .unwrap();
+    transport.finish().unwrap();
+
+    let bytes = std::fs::read(&path).unwrap();
+    portable_test_fs_retry::remove_file(&path).unwrap();
+    let mut at = 0;
+    let mut seen = Vec::new();
+    while at < bytes.len() {
+        let header = compact_contract::parse_compact_record_header(&bytes[at..]).unwrap();
+        seen.push((header.sequence, header.record_type, header.game_hour_raw));
+        at += header.record_len();
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (1, compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS, 0),
+            (
+                2,
+                compact_contract::COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS,
+                0
+            ),
+            (3, compact_contract::COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, 0),
+        ],
+        "the successor stream carries both preamble records, in order, before the notice"
+    );
+}

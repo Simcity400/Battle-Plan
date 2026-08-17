@@ -676,7 +676,10 @@ impl FirstCompactRecordGate {
                 self.pending_perf.clear();
                 Ok(false)
             }
+            // Neither proves nor disturbs a first world record: both are
+            // session-scoped and claim no hour and no domain.
             compact_contract::KnownRecordType::FreezeCensus
+            | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => Ok(false),
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

@@ -106,6 +106,18 @@ UntrustedClockRecovery => COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY = 10, "un
 /// Frame-independent freeze-census telemetry. It closes no game hour, claims
 /// no domain coverage, and uses domain 1000 with the game-hour sentinel zero.
 FreezeCensus => COMPACT_RECORD_TYPE_FREEZE_CENSUS = 11, "freeze_census";
+/// Frame-independent session CONTENT IDENTITY: what the loaded game calls each
+/// building and each strategic resource, read once from the engine's own
+/// databases (`crate::content_identity_census`).
+///
+/// Like the freeze census it closes no game hour and claims no domain
+/// coverage - domain 1000, game-hour sentinel zero - because it is a statement
+/// about the SESSION, not about an hour. It rides once per LOGICAL STREAM: a
+/// rolled or split stream can be opened without its predecessor, so each one
+/// carries the whole census or none of it, and hours in a stream that has none
+/// are named unavailable by the consumers that need it rather than counted
+/// with a table shipped in the binary.
+ContentIdentityCensus => COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS = 12, "content_identity_census";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -335,6 +347,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::freeze_census_record::FreezeCensusRecordV1::decode(payload).map(|_| ())
+        }
+        KnownRecordType::ContentIdentityCensus => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "CONTENT_IDENTITY_CENSUS domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::content_identity_census::ContentIdentityCensusV1::decode(payload).map(|_| ())
         }
         KnownRecordType::DomainGap => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
@@ -1094,11 +1114,38 @@ mod tests {
 
     /// kills: treating the next unassigned raw wire value as an ignorable
     /// record merely because the exhaustive enum has not learned it.
+    ///
+    /// Twelve is now `CONTENT_IDENTITY_CENSUS`, so the case moved to thirteen -
+    /// and it also pins that twelve is a real type with a real payload
+    /// grammar, rather than a value that merely stopped being rejected.
     #[test]
-    fn raw_unknown_record_type_twelve_rejects() {
-        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 12, 0, &[])
-            .expect_err("raw type 12 is not assigned");
-        assert_eq!(error, "unknown compact record type 12");
+    fn raw_unknown_record_type_thirteen_rejects() {
+        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &[])
+            .expect_err("raw type 13 is not assigned");
+        assert_eq!(error, "unknown compact record type 13");
+
+        let assigned = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 12, 0, &[])
+            .expect_err("an empty payload is not a census");
+        assert!(
+            assigned.contains("content identity census"),
+            "type 12 is assigned and validated by its own grammar: {assigned}"
+        );
+        let census = crate::content_identity_census::ContentIdentityCensusV1 {
+            buildings: vec![crate::content_identity_census::ContentIdentityRow {
+                token_id: 0x4E2D,
+                token: "industrial_complex".to_string(),
+            }],
+            resources: Vec::new(),
+            buildings_declared: 1,
+            resources_declared: 0,
+            status: 0,
+        }
+        .encode()
+        .expect("the census encodes");
+        validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 12, 0, &census)
+            .expect("a well-formed census is admitted on the frame control domain");
+        validate_compact_record_semantics(18, 12, 0, &census)
+            .expect_err("a census may not claim a domain");
     }
 
     #[test]
