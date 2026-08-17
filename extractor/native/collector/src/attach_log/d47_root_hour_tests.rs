@@ -418,7 +418,7 @@ fn clock(hour: i32, ordinal: u64) -> Option<ClockObservation> {
 /// kills: in `domain47_worker_clock_precheck`, delete the label check
 /// (`observation.hour != game_hour_raw => WrongHour`) — the "wrong hour" case
 /// fails here (left `InFrameHour`, right `WrongHour`) and
-/// `a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore` fails with
+/// `a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched` fails with
 /// it; make the `None` arm return `InFrameHour` and the "opening unreadable"
 /// case fails instead.
 #[test]
@@ -550,19 +550,24 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
 /// The `WrongHour` arm is the one the TEAR machinery cannot catch: opening ==
 /// closing, so a `CountOnly` reconciliation accepts it, and without the direct
 /// refusal the frame publishes the other hour's text CLEAN. Since lane HT the
-/// pre-check ALSO spares the ~34 ms discovery walk on such a frame — but the
-/// refusal, not the saving, is what this test pins. This drives the real
-/// production functions over the real root cache and the real frame builder.
+/// pre-check spares the discovery walk on such a frame; since lane MX (step
+/// 1b, Codex 01a00f9e) it ALSO leaves the discovery cache untouched — the
+/// refusal is the worker's rowless failure-status return, decided before
+/// discovery, and the next correctly-labelled frame's witness replay decides
+/// the cache. This test pins the helper half: the verdict is recorded and the
+/// cache (roots, poison, sweep words) is byte-for-byte what it was. The
+/// observer-level half — the production worker returns rowless on this
+/// verdict, with the cache unchanged — is
+/// `tests::state_fixture::a_wrong_hour_or_unreadable_precheck_refuses_the_frame_and_keeps_the_cache`,
+/// which drives `observe_compact_characters_leaders_cabinet_live` itself.
 ///
-/// MUTATION RUN (pre-HT shape, same arms): in
-/// `domain47_apply_prewarm_clock_verdict`, drop the poison for `WrongHour`.
-/// OBSERVED: `a prewarm that ran in another hour must not publish its text:
-/// row_count 3, status 128` (left 3, right 0) — three rows carrying the
-/// fixture's text published under a label the phase never observed, and status
-/// 128 does NOT include PARTIAL (512), so the hour went out CLEAN.
+/// kills: restoring `domain47_poison_prewarm_roots(cache)` inside
+/// `domain47_apply_prewarm_clock_verdict` fails `the cache must not be
+/// poisoned by a clock verdict` (left 1, right 0) — that poison cost the next
+/// frame a 75-85 ms full discovery of unchanged bytes.
 #[test]
-fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
-    let (mem, roots) = stale_root_world();
+fn a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched() {
+    let (_mem, roots) = stale_root_world();
     let mut cache = adopted_cache(roots);
     let mut summary = Domain47PrewarmSummary::default();
 
@@ -586,14 +591,12 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
             HourLabelMismatchPolicy::CountOnly,
         )
         .is_empty(),
-        "premise: nothing tore, so the tear machinery accepts this frame and \
-         the refusal below cannot have come from it"
+        "premise: nothing tore, so the tear machinery accepts this frame and          the refusal below cannot have come from it"
     );
     // With the rule ON, the frame-wide check reaches the same verdict d47
-    // reaches for itself below. Two independent statements of one rule that
-    // AGREE, which is the point of generalising it -- and d47 keeps its own,
-    // because the roots it refuses are built in a phase that runs before any
-    // worker bracket exists.
+    // reaches for itself. Two independent statements of one rule that AGREE,
+    // which is the point of generalising it -- and d47 keeps its own, because
+    // the worker can refuse the frame for free before discovery.
     assert_eq!(
         rejected_bracket_domains(
             &wrong_hour_bracket,
@@ -605,27 +608,21 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
         Some(compact_contract::domain_gap::DomainGapReason::HourLabelMismatch),
     );
 
-    domain47_apply_prewarm_clock_verdict(verdict, &mut cache, &mut summary);
+    let before_gen = cache.sweep_gen;
+    let before_epoch = cache.sweep_epoch;
+    domain47_apply_prewarm_clock_verdict(verdict, &mut summary);
 
     assert_eq!(summary.clock_verdict, Domain47PrewarmClockVerdict::WrongHour);
-    let (row_count, status_flags, rows) = emitted_row_text(&mem, &cache.roots);
+    assert!(summary.clock_verdict.roots_are_unpublishable());
     assert_eq!(
-        row_count, 0,
-        "a prewarm that ran in another hour must not publish its text: \
-         row_count {row_count}, status {status_flags}"
+        cache.roots.skipped_root_rows, 0,
+        "the cache must not be poisoned by a clock verdict"
     );
-    assert_ne!(
-        status_flags & COMPACT_STATUS_PARTIAL_DATA,
-        0,
-        "the refused hour must be VISIBLE as PARTIAL, not silently empty"
-    );
-    assert!(
-        !rows.contains(STALE_NAME) && !rows.contains(STALE_TOKEN) && !rows.contains(STALE_IDEA),
-        "no text read in another hour may reach a row: {rows}"
-    );
-    // The world survives: the next in-hour prewarm is a refresh, not a cold
-    // rebuild, so one wrong-hour frame costs one hour and not the domain.
     assert!(cache.roots.has_stable_roots());
+    assert_eq!(cache.sweep_gen, before_gen);
+    assert_eq!(cache.sweep_epoch, before_epoch);
+    // The world survives: the next in-hour frame REPLAYS or refreshes, so one
+    // wrong-hour frame costs one hour and not the domain.
 }
 
 /// An in-hour prewarm must change NOTHING. Without this, every assertion above
@@ -633,11 +630,12 @@ fn a_wrong_hour_prewarm_refuses_its_roots_although_nothing_tore() {
 /// lose every hour rather than the ones it cannot attribute.
 ///
 /// kills: in `roots_are_unpublishable`, move `InFrameHour` into the `true`
-/// arm — this test stops at `an in-hour prewarm must not poison its own
-/// roots` (left 1, right 0), and
-/// `the_precheck_separates_the_two_clock_failures` fails at
-/// `clean: publishability` with it. The blunt fix costs the whole domain,
-/// which is exactly the trade this lane was told not to make silently.
+/// arm — `the_precheck_separates_the_two_clock_failures` fails at
+/// `clean: publishability`, and the observer-level fixture test refuses the
+/// in-hour frame. The blunt fix costs the whole domain, which is exactly the
+/// trade this lane was told not to make silently. (Since lane MX no verdict
+/// poisons the cache, so this test's poison assertion is a control that the
+/// cache is untouched by the in-hour verdict too.)
 #[test]
 fn an_in_hour_prewarm_publishes_unchanged() {
     let (mem, roots) = stale_root_world();
@@ -646,7 +644,6 @@ fn an_in_hour_prewarm_publishes_unchanged() {
 
     domain47_apply_prewarm_clock_verdict(
         domain47_worker_clock_precheck(clock(FRAME_HOUR, 1), FRAME_HOUR),
-        &mut cache,
         &mut summary,
     );
 
@@ -671,7 +668,10 @@ fn an_in_hour_prewarm_publishes_unchanged() {
 /// anyway could not poison a domain that was never read.
 ///
 /// kills: move `NotScheduled` into `roots_are_unpublishable`'s `true` arm —
-/// the poison assertion below fails (left 1, right 0).
+/// `the_precheck_separates_the_two_clock_failures` fails at its
+/// `NotScheduled` publishability assertion (since lane MX no verdict poisons
+/// the cache, so the poison assertion below is a control that the recorded
+/// verdict touches nothing).
 #[test]
 fn an_unscheduled_prewarm_is_not_a_clock_failure() {
     let (_mem, roots) = stale_root_world();
@@ -683,7 +683,7 @@ fn an_unscheduled_prewarm_is_not_a_clock_failure() {
         summary.clock_verdict, verdict,
         "the default summary's verdict is NotScheduled"
     );
-    domain47_apply_prewarm_clock_verdict(verdict, &mut cache, &mut summary);
+    domain47_apply_prewarm_clock_verdict(verdict, &mut summary);
     assert_eq!(
         cache.roots.skipped_root_rows, 0,
         "a domain that was never read must not be refused"

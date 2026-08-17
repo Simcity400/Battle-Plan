@@ -82,7 +82,8 @@ impl NativeRootCache {
 /// The walk's own product can only be discarded, never published, whenever this
 /// holds: it is two of the three disjuncts of the post-walk gate below, and
 /// both of them are pure functions of the cache and the frame input. A torn
-/// root read or a clock-refused prewarm (`skipped_root_rows`) and a skipped
+/// root read, a refresh hold or a dead sweep epoch (`skipped_root_rows`; a
+/// clock-refused frame no longer poisons — lane MX) and a skipped
 /// country row (`skipped_input_rows`) are ROW-level loss inside families the
 /// frame did observe, which the family-presence mask cannot describe — so the
 /// gate replaces the built frame with a rowless `SOURCE_UNAVAILABLE |
@@ -100,10 +101,13 @@ impl NativeRootCache {
 /// orders every authenticated read — so those frames witnessed it at or before
 /// the prewarm's own two observations. That verdict is `Straddled` or
 /// `WrongHour` (`Unreadable` also produces a zero here, but t49 records no d47
-/// `clock_unreadable` gap at all), and all three poison the roots
-/// (`domain47_apply_prewarm_clock_verdict`) before the fan-out opens. At least
+/// `clock_unreadable` gap at all), and at t49 all three poisoned the roots
+/// (`domain47_apply_prewarm_clock_verdict`) before the fan-out opened. At least
 /// 163 of 334 frames therefore had d47's rowless outcome DECIDED before any
-/// worker started.
+/// worker started. (Since lane MX the clock verdict no longer poisons the
+/// cache: the worker refuses the FRAME before discovery and the next frame's
+/// witness replay decides the cache; the pre-decided arm here is reached by
+/// the hold / torn-root / dead-epoch poisons.)
 ///
 /// WHAT THAT COUNT IS NOT. It is not a count of walks removed. This arm skips a
 /// walk only where the cache also holds stable roots, and a cold blocked

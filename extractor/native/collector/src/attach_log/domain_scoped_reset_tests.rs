@@ -65,7 +65,10 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "characters_leaders_cabinet_live",
-        "d47 prewarm root cache, written outside any reader bracket; d47 emits no deltas",
+        "d47 discovery cache (roots + sealed byte witness + walk families), carried across the \
+         reset UNCONDITIONALLY by its own carve-out (lane MX): its validity is decided by the \
+         next frame's witness replay inside that frame's bracket, never by this bracket's \
+         verdict; d47 emits no deltas, so there is no staged half to roll back",
     ),
     (
         "acceptance_weather_fault_injected",
@@ -612,31 +615,71 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     );
 }
 
-/// Both exclusions must remain excluded for the stated reason: each is touched
-/// somewhere no single reader bracket covers, so no one tag can decide whether
-/// it survived.
+/// The division root cache must remain excluded for the stated reason: it is
+/// touched somewhere no single reader bracket covers, so no one tag can decide
+/// whether it survived.
 ///
-/// What production change makes this fail: moving d47's prewarm inside its
-/// worker, or making the division root cache a per-reader product — either of
-/// which would make the field eligible and this exclusion stale.
+/// What production change makes this fail: making the division root cache a
+/// per-reader product, which would make the field eligible and this exclusion
+/// stale.
 #[test]
-fn the_two_excluded_root_caches_are_touched_outside_every_reader_bracket() {
+fn the_division_root_cache_is_touched_outside_every_reader_bracket() {
     let source = attach_log_source();
     let body = frame_builder_body(&source);
     let derived = derive_field_tags_from_source(body);
 
-    for field in ["characters_leaders_cabinet_live", "division_roots"] {
-        let tags = derived
-            .get(field)
-            .unwrap_or_else(|| panic!("{field} is bound in the frame builder"));
-        assert!(
-            tags.iter()
-                .any(|tag| tag.starts_with("OUTSIDE-EVERY-READER-CALL")),
-            "{field} is excluded from the domain-scoped allowlist because it is written \
-             outside every reader bracket; the source now says its uses are {tags:?}, so the \
-             exclusion needs re-deciding rather than keeping"
-        );
-    }
+    let field = "division_roots";
+    let tags = derived
+        .get(field)
+        .unwrap_or_else(|| panic!("{field} is bound in the frame builder"));
+    assert!(
+        tags.iter()
+            .any(|tag| tag.starts_with("OUTSIDE-EVERY-READER-CALL")),
+        "{field} is excluded from the domain-scoped allowlist because it is written          outside every reader bracket; the source now says its uses are {tags:?}, so the          exclusion needs re-deciding rather than keeping"
+    );
+}
+
+/// d47's discovery cache is excluded from the allowlist for a DIFFERENT reason
+/// (lane MX): it is carried across the reset UNCONDITIONALLY by its own
+/// carve-out, whether or not its bracket survived, because its validity is
+/// decided by the next frame's witness replay and not by this bracket's
+/// verdict. Its discovery has run inside the worker's bracket since lane HT,
+/// so "written outside every reader bracket" stopped being the reason then.
+///
+/// What production change makes this fail: putting the field on the
+/// domain-scoped allowlist (a claim that bracket survival decides it), or
+/// removing the carve-out (the field would then be neither carried nor
+/// classified as such — `d47_cache_survives_refusal_tests` holds the runtime
+/// half of that).
+#[test]
+fn the_d47_discovery_cache_is_an_unconditional_carve_out_not_a_bracket_scoped_pin() {
+    let field = "characters_leaders_cabinet_live";
+    assert!(
+        !DOMAIN_SCOPED_TRACKER_RETENTION
+            .iter()
+            .any(|(name, _)| *name == field),
+        "`{field}` must stay off the bracket-scoped allowlist: the witness replay, not the          bracket verdict, decides it"
+    );
+    let (_, reason) = BLANKET_RESET_TRACKER_FIELDS
+        .iter()
+        .find(|(name, _)| *name == field)
+        .expect("d47's cache carries its classification reason");
+    assert!(
+        reason.contains("UNCONDITIONALLY") && reason.contains("carve-out"),
+        "the classification must state the unconditional carve-out: {reason}"
+    );
+    let source = attach_log_source();
+    let reset_start = source
+        .find("fn reset_trackers_after_rejected_bracket(")
+        .expect("the reset function is declared");
+    let reset_body = &source[reset_start..reset_start + source[reset_start..].find("
+}
+").expect("closed")];
+    assert!(
+        reset_body.contains("std::mem::take(&mut trackers.characters_leaders_cabinet_live)")
+            && reset_body.contains("trackers.characters_leaders_cabinet_live = d47_discovery_cache;"),
+        "the reset must take the d47 cache before the blanket `fresh` and reinstall it after"
+    );
 }
 
 /// d45 and d55 are held OUT of the allowlist deliberately, and re-adding either
