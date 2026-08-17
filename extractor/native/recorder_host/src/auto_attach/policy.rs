@@ -23,6 +23,20 @@ pub const DEGRADED_RECONCILE_MS: u64 = 2_000;
 /// attempt fails loudly and retains diagnostics.
 pub const HANDSHAKE_DEADLINE_MS: u64 = 30_000;
 
+/// A direct capture's collector spends its campaign-identity read budget BEFORE
+/// it connects to the capture-ready listener, so that budget is spent out of
+/// this deadline. It must leave the greater part of the window for the
+/// handshake itself, or a slow-loading world would expire the accept and cost
+/// the whole recording — the exact outcome the budget exists to avoid.
+///
+/// kills: raising `DIRECT_CAPTURE_IDENTITY_READ_BUDGET_MS` to or past this
+/// deadline, or lowering this deadline under it, stops the build here instead
+/// of at a capture that dies in the field.
+const _: () = assert!(
+    compact_contract::passive_ready::DIRECT_CAPTURE_IDENTITY_READ_BUDGET_MS * 2
+        < HANDSHAKE_DEADLINE_MS
+);
+
 /// Once the initial hello succeeds, the recorder solicits a fresh H4CT proof
 /// every five seconds. A proof never extends another operation's deadline.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 5_000;

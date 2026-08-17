@@ -727,7 +727,13 @@ def grade_passive_lifecycle(
         and ready.get("requested_duration_ms") == expected_duration
         and is_int(ready.get("readiness_flags"))
         and 0 <= ready.get("readiness_flags") <= 0xFFFFFFFF
-        and ready.get("readiness_flags") == 255
+        # 255 = the complete mandatory REQUIRED_PASSIVE_CAPTURE set. Bit 8 (256)
+        # is the OPTIONAL IDENTITY_V1_STREAM declaration, set only when the
+        # collector's stream already carries a CID1 campaign identity. Requiring
+        # exactly 255 refused every identity-bearing capture; require the
+        # mandatory bits and forbid anything outside the known mask instead.
+        and (ready.get("readiness_flags") & 255) == 255
+        and (ready.get("readiness_flags") & 511) == ready.get("readiness_flags")
         and is_int(ready.get("validated_domain_count"))
         and 0 < ready.get("validated_domain_count") <= 0xFFFFFFFF
         and ready.get("validated_domain_count") == len(expected_domain_names)

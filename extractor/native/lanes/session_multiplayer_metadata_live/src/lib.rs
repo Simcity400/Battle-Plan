@@ -80,6 +80,39 @@ pub const WORLD_TENSION_DETAILS_FLAG_INCREASED: u32 = 1;
 pub const WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK: u32 = WORLD_TENSION_DETAILS_FLAG_INCREASED;
 pub const MAX_WORLD_TENSION_LEDGER_ROWS: u32 = 100_000;
 
+/// THE key for a published player display name: an FNV-1a-SHAPED 64-bit hash
+/// over its exact UTF-8 bytes, no normalisation of any kind.
+///
+/// SHAPED, not equal to. The multiplier below is `0x1000_0000_01B3`, which is
+/// one hex group longer than the canonical FNV-1a 64 prime `0x100000001B3`.
+/// That is what this project has always computed and what every recorded key is
+/// -- t80's live row keys "Simcity400" as 10518238906223256613, which is this
+/// function and not canonical FNV -- so the constant stays and the description
+/// is corrected to match it. The key is an internal join key between the
+/// collector's rows and the fold's recomputation; nothing outside this codebase
+/// consumes it, and no consumer is entitled to reproduce it from a standard
+/// FNV implementation.
+///
+/// It lives here, in the domain's own contract crate, because BOTH sides must
+/// compute it: the collector stamps it onto every `player_key_hash` /
+/// `actor_key_hash` field it emits, and the fold RECOMPUTES it from the name
+/// carried in the same row and refuses the pair when the two disagree. With the
+/// routine private to the producer the fold could only check "nonzero", so a
+/// name and a key that contradicted each other were published as one fact.
+///
+/// kills: changing the offset basis, the prime, the byte order, or adding any
+/// case/whitespace folding here makes every collector-stamped key disagree with
+/// the fold's recomputation and the identity pair is refused rather than
+/// silently re-keyed.
+pub fn player_key_hash(name: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in name.as_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x1000_0000_01B3);
+    }
+    hash
+}
+
 pub const PLAYER_FLAG_HOST: u32 = 1;
 pub const PLAYER_FLAG_HUMAN: u32 = 1 << 1;
 pub const PLAYER_FLAG_CONNECTED: u32 = 1 << 2;

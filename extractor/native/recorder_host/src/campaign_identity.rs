@@ -217,6 +217,37 @@ impl CampaignIdentity {
         self.resolution_note.as_deref()
     }
 
+    /// Append a PRODUCER-NAMED reason to a non-`Known` identity's note.
+    ///
+    /// The recorder can say the identity is unavailable; only the collector can
+    /// say WHY -- an unrecognised build, a torn read, a world still loading.
+    /// That reason used to exist only in a sidecar file beside the DLL that
+    /// normal configuration does not even write, so a sealed recording said
+    /// "unavailable" and nothing else. This is how the reason reaches the
+    /// manifest.
+    ///
+    /// A `Known` identity is REFUSED, not silently ignored: its note is `null`
+    /// by grammar and its evidence proof is bound over the note, so writing one
+    /// would either break the grammar or invalidate the proof. There is also
+    /// nothing to explain about an identity that was obtained.
+    pub fn append_resolution_note(&mut self, reason: &str) -> Result<(), String> {
+        if self.state == CampaignIdentityState::Known {
+            return Err(
+                "a known campaign identity has no resolution note to append a refusal to"
+                    .to_string(),
+            );
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("campaign identity refusal reason is empty".to_string());
+        }
+        self.resolution_note = Some(match self.resolution_note.take() {
+            Some(existing) if !existing.trim().is_empty() => format!("{existing}; {reason}"),
+            _ => reason.to_string(),
+        });
+        Ok(())
+    }
+
     /// True only when the identity is fully bound (`state == Known`).
     pub fn is_bound(&self) -> bool {
         self.state == CampaignIdentityState::Known

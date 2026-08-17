@@ -76,14 +76,37 @@ and retains prior fields last-value-wins; it does not upgrade a field into ident
 d57's accepted slice is current human-country rows plus pause. Game speed, lobby/persona
 identity, player key, MP session slot, host/connected flags, hotjoin, chat, tag-switch, and
 session-event hooks are excluded
-(`extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md:8-17`). Its
+(`extractor/native/lanes/session_multiplayer_metadata_live/README.md`). Its
 schema leaves player key, session slot, host, and connected state `not_sourced`
-(`extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md:45-70`). The
+(`extractor/native/lanes/session_multiplayer_metadata_live/README.md`). The
 proof used a one-player SP fixture; multiple humans and lobby-only metadata remain unproved
-(`extractor/native/lanes/session_multiplayer_metadata_live/INTEGRATION_PACKET.md:341-350`).
+(`extractor/native/lanes/session_multiplayer_metadata_live/README.md`).
 
 d57 therefore provides change/observer witnesses, not durable identity. A roster hash changes
 on hotjoin, drop, tag switch, observer transition, or rehost.
+
+Since lane MI the accepted slice does name the humans: each human-held country row is joined to
+the engine's persistent player vector (`CGameState+0xF8`, count `+0x104`, stride `0xA0`, display
+name `+0x40`, country tag `+0x70`) and carries `player_name` and its FNV-1a key, with one row per
+(player, country) pair so co-op is not collapsed. A human country the vector does not name keeps
+its row with the name absent and counted; a player record that names no human-held country is
+counted and never invented into a row. `session_slot`, host and connected remain `not_sourced`.
+None of this makes d57 identity: it is still a roster, and a roster still changes within one
+campaign.
+
+The join is on `+0x70`, not `+0x98`, and lane MP proved the difference rather than assuming it.
+`[0, CGameState+0x394)`, takes each handle's `+0x08`, and scans the player vector comparing
+`record+0x70` — accepting either exact equality or the alias equivalence resolved through
+(`raw * 0x20 + *(CGameState+0x358)`), which is how a country's TAG is already read, so `tag_db_id`
+and `CChangeCountryControllerCommand` carries the country tag and `+0x98` in separate fields — the
+executor selects the player by `+0x98` and writes the command's tag into that player's `+0x70`. It
+is a session-side human/player key that survives a country change. The A15 join/leave and
+tag-switch event rows had been publishing it as `tag_db_id` since they were written; they now carry
+the tag.
+
+A direct capture whose identity read is refused names the collector's reason in the sealed
+manifest's `campaign_identity.resolution_note`, carried there from a capture-bound receipt the
+collector writes beside the DLL under this capture's authenticated session id.
 
 ### Save-format candidates
 
@@ -206,6 +229,62 @@ calendar-valid `game_hour_raw` from the later independently coherent observation
 non-empty control-free build-profile id, and a SHA-256 recomputed over the complete validated
 CID1 payload. The manifest carries that payload hash. If the active exact-build reader fails any
 prerequisite, state remains `unavailable` and no digest is authorized for stitching.
+
+### Direct captures carry the same identity, without the CFA1 barrier
+
+A **direct** capture is the recorder attaching to a running game with `--pid`/`--dll` and an
+authenticated capture-ready control pipe, and no auto-attach duplex. It is the shape every
+recording retained in this repository was made with, and until this was built every one of them
+sealed with `campaign_identity.state = "unavailable"`.
+
+The collector performs the same guarded double read at attach, writes the same CID1 as H4CR
+sequence 0 into every configured sink, and then opens the stream for ordinary records
+**without waiting for a CFA1**. Nothing about the identity's authority changes: `Known` is still
+minted only by `resolve_validated_cid1` over the CID1 record decoded from the sealed stream.
+
+The barrier a direct capture waits on instead is the **capture-ready ACK (`H4RA`)**. The collector
+writes CID1, holds the producer barrier at `AwaitingCfa1`, sends `H4RD`, and opens the stream for
+ordinary records only once the recorder's ACK has arrived and matched the authenticated session —
+which the recorder sends only after its own side of the capture is up. The freeze-census record,
+the first ordinary record on this path, is published after that open.
+
+An earlier version of this section claimed the property was structural, because the recorder
+creates its output and its control listener before it injects the collector. That was refuted: on
+the ordinary direct path the recorder signals "listening" as soon as the named pipe exists,
+injects, and creates the output `StreamWriter` only after the collector connects and
+authenticates, so CID1 and sequence 1 could both enter the pipe before any durable sink existed.
+`H4RA` is an acknowledgement, exactly as CFA1 is. What it does not do is bind the CID1 *bytes*
+the way CFA1 does — `H4RA` carries no record digest — so the identity authority still comes only
+from the CID1 record the recorder decodes out of the sealed stream.
+
+Once `H4RA` has been sent, a host-side failure no longer costs the recording: target revalidation
+and `CAPTURE_READY_V2.json` publication are named into the manifest
+(`capture_ready_post_ack_errors`) and the capture continues through pipe join and seal, because
+the collector is already publishing records by then and returning threw away a working recording
+over a receipt file.
+
+The mode is stated once, by the only side that can know it. The collector sets the optional
+`CaptureReadyFlags::IDENTITY_V1_STREAM` bit in the authenticated `H4RD` payload it sends *after*
+CID1 has already reached the sinks, and the recorder selects `StreamIdentityMode::IdentityV1`
+from that bit. A mismatch is therefore not expressible: there is one authority, and a set bit on
+a stream without a CID1 header is caught as "IdentityV1 stream ended without an accepted CID1
+header" rather than becoming a manifest claim.
+
+The bit is **optional**, and that is the whole fail-closed design. A read that does not validate
+— unrecognised build, torn read, world still loading — leaves the bit clear, the collector
+records a named refusal in a capture-bound receipt beside the collector DLL
+(`collector_campaign_identity_<session_id>.json`, one shared name definition in
+`compact_contract::passive_ready::direct_capture_identity_refusal_file_name`, which the recorder
+reads back into `campaign_identity.resolution_note`), the stream is
+Legacy, and the recording still seals with its identity unavailable. Making the identity
+mandatory would trade "we could not tell which campaign this was" for "there is no recording",
+which this product never does.
+
+A direct capture has no control channel to negotiate with, so it cannot roll over. A whole-pair
+change or an unrecoverable read at a later boundary is terminal by construction: every
+control-owning operation on the transport resolves its owner and returns a named error, so
+record admission stops and the recorder seals what it already has. No world record is ever
+admitted under a superseded identity.
 
 ### Stateful rollover on the duplex control transport
 
@@ -371,9 +450,9 @@ Legacy mode remains explicit and always identity-unavailable.
 
 Recorder main now permits a native-session `known` identity only when explicit IdentityV1
 pre-dispatch validation retained `ValidatedCid1`; it cannot derive authority from d68 or a parallel
-struct. An ordinary IdentityV1 collector/recorder route exists behind false product latches; the
-default active capture path therefore remains Legacy and production output remains
-identity-unavailable.
+struct. Both active capture shapes now select IdentityV1: the auto-attach duplex worker through
+its control challenge, and a direct capture through the authenticated capture-ready bit described
+above. A capture whose identity read fails remains Legacy and identity-unavailable, by design.
 The eventual native-session and embedded replay representation is:
 
 ```json

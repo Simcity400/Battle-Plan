@@ -960,6 +960,21 @@ pub struct PassiveSchedulerConfigV1 {
     pub proposal_pool_capacity_bytes: u64,
 }
 
+/// How long a DIRECT capture may wait at attach for the engine to present a
+/// readable campaign identity before it records without one.
+///
+/// SHARED because the bound is not a preference, it is a relationship: this
+/// wait happens BEFORE the collector connects to the recorder's capture-ready
+/// listener, so it is spent out of that listener's accept deadline
+/// (`recorder_host::auto_attach::policy::HANDSHAKE_DEADLINE_MS`). A budget at
+/// or near that deadline would turn "the world was still loading" into a failed
+/// capture, which is the opposite of what the wait is for -- the alternative to
+/// waiting is never a dead capture, it is a recording that cannot say which
+/// campaign it was.
+///
+/// `recorder_host::auto_attach::policy` asserts the two stay ordered.
+pub const DIRECT_CAPTURE_IDENTITY_READ_BUDGET_MS: u64 = 5_000;
+
 pub const PRODUCTION_DOMAIN_QUEUE_CAPACITY_V1: u32 = 1;
 pub const PRODUCTION_OUTPUT_QUEUE_CAPACITY_V1: u32 = 2;
 /// Zero means no client-blocking deadline. Stable closing-clock brackets, not
@@ -1439,6 +1454,25 @@ pub fn output_pipe_identity_sha256(
 /// Parse the only session-id spelling admitted by full-production passive
 /// READY: canonical lowercase UUID text. Hashing an arbitrary session label
 /// into 16 bytes is deliberately not an identity conversion.
+/// The file name a DIRECT capture's campaign-identity refusal receipt is
+/// written under, beside the collector DLL.
+///
+/// ONE definition for both sides. The collector writes the file (it is the only
+/// side that knows WHY the identity read failed) and the recorder reads it back
+/// when it builds the manifest, so a mismatch here would silently un-name every
+/// refusal. The session id is in the NAME, not only in the body: the DLL
+/// directory is shared across captures, and an unbound `collector_campaign_
+/// identity.jsonl` appended to by every capture cannot be attributed to one
+/// recording.
+///
+/// `None` when the session id is not a canonical UUID, which is also the only
+/// thing that can appear in the name -- so the name can never contain a path
+/// separator, a drive letter or a traversal segment.
+pub fn direct_capture_identity_refusal_file_name(session_id: &str) -> Option<String> {
+    canonical_session_uuid_bytes(session_id).ok()?;
+    Some(format!("collector_campaign_identity_{session_id}.json"))
+}
+
 pub fn canonical_session_uuid_bytes(value: &str) -> Result<[u8; 16], PassiveReadyDigestError> {
     let bytes = value.as_bytes();
     if bytes.len() != 36

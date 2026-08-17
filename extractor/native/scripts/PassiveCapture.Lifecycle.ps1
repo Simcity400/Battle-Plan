@@ -2125,8 +2125,17 @@ function Test-PassiveCaptureReadyReceipt {
     # harness here cannot bind to this host at all.
     Add-PassiveAdmissionFailure $custodyFailures 'requested_duration_ms' `
         ($duration -ne $RequestedDurationMs) $RequestedDurationMs $duration
+    # 255 is the complete REQUIRED_PASSIVE_CAPTURE set and every bit of it is
+    # mandatory. Bit 8 (256) is IDENTITY_V1_STREAM, which is OPTIONAL by design:
+    # the collector sets it only when the stream it has already begun carries a
+    # CID1 campaign identity, and a campaign identity that cannot be read must
+    # cost the identity, never the recording. Pinning this field to exactly 255
+    # refused every capture that DID obtain its identity -- observed live on
+    # t80, expected='255' actual='511' -- which is the opposite of what the
+    # optional bit is for. Required bits must all be present; no bit outside the
+    # known mask (511) may be.
     Add-PassiveAdmissionFailure $gradingFailures 'readiness_flags' `
-        ($flags -ne 255) 255 $flags
+        ((($flags -band 255) -ne 255) -or (($flags -band 511) -ne $flags)) 255 $flags
     Add-PassiveAdmissionFailure $gradingFailures 'validated_domain_count' `
         ($domainCount -ne [uint32]$ScheduledDomainNames.Count) `
         ([uint32]$ScheduledDomainNames.Count) $domainCount

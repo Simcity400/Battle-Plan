@@ -444,7 +444,27 @@ impl CaptureReadyFlags {
     pub const BOUNDED_SCHEDULER_ALLOCATED: u32 = 1 << 5;
     pub const OUTPUT_PIPE_CONNECTED: u32 = 1 << 6;
     pub const ZERO_MUTATION_POLICY_ENFORCED: u32 = 1 << 7;
-    pub const KNOWN_MASK: u32 = Self::TARGET_IDENTITY_VALIDATED
+    /// The stream this collector has already begun is an IdentityV1 stream: a
+    /// CID1 campaign-identity record is its sequence-zero record and every
+    /// ordinary record follows from sequence one.
+    ///
+    /// OPTIONAL, deliberately, and therefore NOT part of
+    /// [`Self::REQUIRED_PASSIVE_CAPTURE`]. The campaign identity is read from
+    /// live engine memory and can legitimately fail to validate -- an
+    /// unrecognised build, a torn read, a world that has not finished loading.
+    /// When it does, the collector clears this bit and produces a Legacy
+    /// stream, and the recording still seals with its identity named
+    /// unavailable. Making the bit mandatory would convert "we could not tell
+    /// which campaign this was" into "there is no recording", which is the one
+    /// trade this product never makes.
+    ///
+    /// It is a CLAIM ABOUT BYTES ALREADY WRITTEN, not a request: the collector
+    /// writes CID1 into every configured sink BEFORE it sends this payload, so
+    /// a set bit means the record is already in the stream. The recorder uses
+    /// it only to select the reader mode; the identity itself is decoded from
+    /// the stream bytes and nothing here can substitute for that.
+    pub const IDENTITY_V1_STREAM: u32 = 1 << 8;
+    pub const REQUIRED_PASSIVE_CAPTURE: u32 = Self::TARGET_IDENTITY_VALIDATED
         | Self::DLL_IDENTITY_VALIDATED
         | Self::HOOK_ALLOWLIST_VALIDATED
         | Self::DOMAIN_ROSTER_VALIDATED
@@ -452,7 +472,7 @@ impl CaptureReadyFlags {
         | Self::BOUNDED_SCHEDULER_ALLOCATED
         | Self::OUTPUT_PIPE_CONNECTED
         | Self::ZERO_MUTATION_POLICY_ENFORCED;
-    pub const REQUIRED_PASSIVE_CAPTURE: u32 = Self::KNOWN_MASK;
+    pub const KNOWN_MASK: u32 = Self::REQUIRED_PASSIVE_CAPTURE | Self::IDENTITY_V1_STREAM;
 
     pub fn from_bits(bits: u32) -> Result<Self, PayloadError> {
         let unknown = bits & !Self::KNOWN_MASK;
@@ -894,7 +914,13 @@ fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
     // last place an in-process construction can be caught before an unnameable
     // build claim is signed and shipped.
     CollectorFeatureBits::from_bits(value.collector_features.bits())?;
-    if value.flags.bits() != CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE {
+    // Every REQUIRED bit must be present; the optional identity bit may be
+    // present or absent. `from_bits` above has already refused anything outside
+    // KNOWN_MASK, so this cannot become a hole for an unnamed bit.
+    if !value
+        .flags
+        .contains(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)
+    {
         return Err(PayloadError::MissingRequiredStatusFlags {
             required: CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE,
             observed: value.flags.bits(),
@@ -1524,6 +1550,66 @@ mod tests {
         }
     }
 
+    /// The campaign identity is optional on the wire and mandatory nowhere:
+    /// a collector that established it says so, a collector that could not
+    /// still produces an admissible READY, and both round-trip.
+    ///
+    /// kills: folding IDENTITY_V1_STREAM into REQUIRED_PASSIVE_CAPTURE makes
+    /// the second half fail, which is the exact defect that would turn "we
+    /// could not tell which campaign this was" into a refused capture. Leaving
+    /// the bit out of KNOWN_MASK makes the first half fail at `from_bits`.
+    #[test]
+    fn capture_ready_identity_bit_is_optional_and_round_trips() {
+        let token = b"per-attach CSPRNG token";
+
+        let mut with_identity = ready_fields();
+        with_identity.flags = CaptureReadyFlags::from_bits(
+            CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE | CaptureReadyFlags::IDENTITY_V1_STREAM,
+        )
+        .unwrap();
+        let wire = with_identity.encode_authenticated(token).unwrap();
+        assert_eq!(wire.len(), CAPTURE_READY_LEN);
+        let decoded = CaptureReadyV2::decode_authenticated(&wire, token).unwrap();
+        assert_eq!(decoded, with_identity);
+        assert!(decoded
+            .flags
+            .contains(CaptureReadyFlags::IDENTITY_V1_STREAM));
+
+        let without_identity = ready_fields();
+        let wire = without_identity.encode_authenticated(token).unwrap();
+        let decoded = CaptureReadyV2::decode_authenticated(&wire, token).unwrap();
+        assert_eq!(decoded, without_identity);
+        assert!(!decoded
+            .flags
+            .contains(CaptureReadyFlags::IDENTITY_V1_STREAM));
+    }
+
+    /// Optional does not mean lax: a READY missing any required readiness bit
+    /// is still refused, and an unnamed bit is still refused.
+    ///
+    /// kills: relaxing the required check to "any known bits" admits a
+    /// collector that never validated the target, the DLL, or the hook
+    /// allowlist.
+    #[test]
+    fn capture_ready_still_refuses_a_missing_required_bit_and_an_unknown_bit() {
+        let token = b"per-attach CSPRNG token";
+        let mut short = ready_fields();
+        short.flags = CaptureReadyFlags::from_bits(
+            CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE
+                & !CaptureReadyFlags::ZERO_MUTATION_POLICY_ENFORCED,
+        )
+        .unwrap();
+        assert!(matches!(
+            short.encode_authenticated(token),
+            Err(PayloadError::MissingRequiredStatusFlags { .. })
+        ));
+
+        assert!(matches!(
+            CaptureReadyFlags::from_bits(CaptureReadyFlags::KNOWN_MASK | (1 << 9)),
+            Err(PayloadError::UnknownStatusFlags(_))
+        ));
+    }
+
     #[test]
     fn passive_capture_ready_fixed_layout_round_trips_with_optional_capture_id() {
         let token = b"per-attach CSPRNG token";
@@ -1534,7 +1620,12 @@ mod tests {
         assert_eq!(read_u16(&wire, 4), CAPTURE_READY_VERSION);
         assert_eq!(read_u16(&wire, 6) as usize, CAPTURE_READY_LEN);
         assert_eq!(read_u32(&wire, 8) as usize, CAPTURE_READY_LEN);
-        assert_eq!(read_u32(&wire, 12), CaptureReadyFlags::KNOWN_MASK);
+        // REQUIRED, not KNOWN_MASK: the optional IDENTITY_V1_STREAM bit is
+        // part of KNOWN_MASK and this fixture does not claim it.
+        assert_eq!(
+            read_u32(&wire, 12),
+            CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE
+        );
         assert_eq!(read_u32(&wire, 16), fields.pid);
         // The build declaration sits in what used to be reserved-must-be-zero,
         // at the same offset and the same width, so nothing after it moved.

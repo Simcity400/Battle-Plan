@@ -672,17 +672,34 @@ fn expected_profile_is_mandatory_and_only_production_is_authoritative() {
         parse_expected_profile(&["--expected-profile".to_string(), "production".to_string()])
             .expect("production roster");
     assert_eq!(production.profile, "production");
-    // The expectation is the PASSIVE-ADMISSIBLE production roster: the shipped
-    // passive product's collector refuses `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`
-    // at attach, so demanding the unfiltered profile refuses every real capture.
+    // The expectation is what a passive capture actually SCHEDULES: the
+    // passive-admissible production roster (the shipped collector refuses
+    // `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS` at attach, so demanding the
+    // unfiltered profile refuses every real capture) plus the scheduled-only
+    // members. Both have to be here or the FRAME_END counts cannot match.
     assert_eq!(
         production.domains.len(),
+        compact_contract::passive_capture_roster().len()
+    );
+    assert!(production.domains.contains_key(&18));
+
+    // ... but only the mandatory members may fail a capture by being absent.
+    // kills: marking the scheduled-only members mandatory makes a named d57
+    // DOMAIN_GAP refuse the whole recording, which its contract forbids.
+    for id in compact_contract::PASSIVE_CAPTURE_ONLY_DOMAIN_IDS {
+        assert!(
+            !production.domains[id].mandatory,
+            "scheduled-only domain {id} must not be mandatory"
+        );
+    }
+    assert!(production.domains[&18].mandatory);
+    assert_eq!(
+        production.domains.values().filter(|d| d.mandatory).count(),
         compact_contract::production_profile_domains()
             .into_iter()
             .filter(|d| compact_contract::passive_production_admits(d.id))
             .count()
     );
-    assert!(production.domains.contains_key(&18));
 }
 
 #[test]

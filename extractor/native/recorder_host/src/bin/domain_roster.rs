@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use compact_contract::{
     assigned_descriptor_by_id, domain_status_registry_key, is_descheduled_from_capture,
-    passive_production_roster, CompactDomainId,
+    passive_capture_roster, CompactDomainId,
 };
 
 fn usage() -> ! {
@@ -81,7 +81,7 @@ fn main() {
     // omit `is_optional_fail_closed_companion` while `fold_check`'s expected
     // roster applied it, so the tool that picks the roster and the tool that
     // certifies it could disagree by a domain.
-    let membership: BTreeMap<CompactDomainId, &'static str> = passive_production_roster()
+    let membership: BTreeMap<CompactDomainId, &'static str> = passive_capture_roster()
         .into_iter()
         .map(|descriptor| (descriptor.id, descriptor.wire_name))
         .collect();

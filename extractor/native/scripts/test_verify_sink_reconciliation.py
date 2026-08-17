@@ -194,5 +194,47 @@ class ReceiptRosterAdmitsWhatTheRecorderWrites(unittest.TestCase):
         self.assertIn('"install_freeze_count" in ready,', source)
 
 
+class ReadinessFlagsAdmission(unittest.TestCase):
+    """The OPTIONAL identity bit must not cost a capture its admission.
+
+    255 is the complete mandatory `REQUIRED_PASSIVE_CAPTURE` set. Bit 8 (256) is
+    `IDENTITY_V1_STREAM`, which the collector sets only when the stream it has
+    already begun carries a CID1 campaign identity -- and the whole point of the
+    bit being optional is that an unreadable identity costs the identity, never
+    the recording. Pinning the field to exactly 255 inverted that: it refused
+    every capture that DID obtain its campaign identity. Observed live on t80,
+    `readiness_flags (expected='255' actual='511')`.
+
+    kills: restoring `== 255` makes the 511 case below fail; dropping the
+    known-mask test makes the unknown-bit case pass.
+    """
+
+    def _readiness_source(self) -> str:
+        return (
+            Path(__file__)
+            .with_name("verify_sink_reconciliation.py")
+            .read_text(encoding="utf-8")
+        )
+
+    def test_the_mandatory_bits_are_required_and_unknown_bits_are_refused(self) -> None:
+        required = 255
+        identity = 511
+        unknown = 1023
+        for flags, admissible in ((required, True), (identity, True), (unknown, False), (254, False)):
+            with self.subTest(flags=flags):
+                mandatory_present = (flags & 255) == 255
+                inside_known_mask = (flags & 511) == flags
+                self.assertEqual(mandatory_present and inside_known_mask, admissible)
+
+    def test_the_rule_is_wired_into_the_receipt_verifier(self) -> None:
+        source = self._readiness_source()
+        self.assertIn('(ready.get("readiness_flags") & 255) == 255', source)
+        self.assertIn(
+            '(ready.get("readiness_flags") & 511) == ready.get("readiness_flags")',
+            source,
+        )
+        self.assertNotIn('ready.get("readiness_flags") == 255', source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

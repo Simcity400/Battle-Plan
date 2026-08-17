@@ -461,6 +461,22 @@ struct HourCompleteness {
 struct ExpectedDomain {
     wire_name: String,
     requires_data_record: bool,
+    /// Whether an EXTRACTED outcome is required, or a named absence is
+    /// acceptable.
+    ///
+    /// Two different questions live in one roster and used to be answered the
+    /// same way. A capture SCHEDULES the passive capture roster, so every
+    /// member of it is counted in the FRAME_END totals and must be validated
+    /// when it is present. Only the MANDATORY members must actually have
+    /// produced something: a domain the owner admitted to the schedule without
+    /// admitting to the mandatory production profile
+    /// (`compact_contract::PASSIVE_CAPTURE_ONLY_DOMAIN_IDS`) may record a named
+    /// DOMAIN_GAP without failing the whole capture's certification.
+    ///
+    /// Collapsing the two would make d57 — the domain that names the human
+    /// players, and the one whose contract says its absence must never fail a
+    /// recording — promotion-blocking the moment it was scheduled.
+    mandatory: bool,
 }
 
 /// A caller-selected authority that is independent of the stream being
@@ -493,7 +509,7 @@ impl ExpectedRoster {
         // If a non-passive product (authenticated early-render owners) ever
         // ships, its captures need their own expected profile rather than a
         // widening of this one.
-        let domains = compact_contract::passive_production_roster()
+        let domains = compact_contract::passive_capture_roster()
             .into_iter()
             .map(|descriptor| {
                 (
@@ -501,6 +517,11 @@ impl ExpectedRoster {
                     ExpectedDomain {
                         wire_name: descriptor.wire_name.to_string(),
                         requires_data_record: descriptor.requires_data_record,
+                        // Scheduled by every passive capture, but mandatory
+                        // only if the owner admitted it to the mandatory
+                        // production profile.
+                        mandatory: !compact_contract::PASSIVE_CAPTURE_ONLY_DOMAIN_IDS
+                            .contains(&descriptor.id),
                     },
                 )
             })
@@ -525,6 +546,7 @@ impl ExpectedRoster {
                                 .unwrap_or("test_domain")
                                 .to_string(),
                             requires_data_record: *requires_data_record,
+                            mandatory: true,
                         },
                     )
                 })
@@ -564,6 +586,13 @@ fn verify_expected_roster(
         // record. The hour still cannot certify: an accounted absence is an
         // absence, and the production profile requires an extracted outcome.
         if gap_records != 0 {
+            // A scheduled-but-not-mandatory domain is allowed to say, on the
+            // wire, that it had nothing this hour. That IS the accounted
+            // absence the contract asks for, and refusing the capture over it
+            // would make the optional member promotion-blocking.
+            if !expected_domain.mandatory {
+                continue;
+            }
             let (reason_mask, part_mask) = observed
                 .map(|domain| (domain.gap_reason_mask, domain.gap_part_mask))
                 .unwrap_or((0, 0));

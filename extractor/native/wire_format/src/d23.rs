@@ -1,9 +1,9 @@
 //! d23 `map_detail_live` — per-state resources and buildings, per-province
 //! buildings.
 //!
-//! Derived from `world_fold.rs:29289`-`:29512`
+//! Derived from `world_fold.rs:29343`-`:29566`
 //! (`fold_map_detail`), its payload constants at `:400`-`:403`, the shared row
-// @world-fold-authority domain=23 functions=fold_map_detail lines=29289-29512 sha256=cc05053702f50c19a32f93dbe8f89c8012b931affc32b5748eef1ab4e2c9bd87 closure=8dce3f597e601e1ed3d464440687e5a55b07f05ae1af7fbe96a1c9e44c981859
+// @world-fold-authority domain=23 functions=fold_map_detail lines=29343-29566 sha256=cc05053702f50c19a32f93dbe8f89c8012b931affc32b5748eef1ab4e2c9bd87 closure=8dce3f597e601e1ed3d464440687e5a55b07f05ae1af7fbe96a1c9e44c981859
 //! helpers at `:29977`-`:30044`, and the collector read and packer that produce
 //! the flags (`extractor/native/collector/src/attach_log.rs:58628`-`:58717`,
 //! `:59312`-`:59444`, `:71729`-`:71850`). d23 has no dossier
