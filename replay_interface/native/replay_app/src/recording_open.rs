@@ -1377,6 +1377,18 @@ impl ReplaySource for ProductReplaySource {
     fn game_id(&self) -> &str {
         self.inner.game_id()
     }
+    /// The stop switch has to reach the admitted source or it reaches nothing:
+    /// this wrapper IS the product route, so a scrub that has moved on would be
+    /// unable to abandon the walk it started on exactly the path players use.
+    /// (`the_product_source_wrapper_forwards_every_replay_source_accessor`
+    /// caught this the moment the trait grew the method, which is what that
+    /// test is for.)
+    fn set_scrub_interrupt(
+        &self,
+        interrupt: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) {
+        self.inner.set_scrub_interrupt(interrupt);
+    }
     fn hours(&self) -> &[i64] {
         self.inner.hours()
     }

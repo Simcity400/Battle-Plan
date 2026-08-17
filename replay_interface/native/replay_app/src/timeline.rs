@@ -205,7 +205,7 @@ fn reconcile_bundle_against_recording(
 pub fn build_provider(
     bundle: Option<&MapBundle>,
     mode: &TimelineMode,
-) -> Result<(Box<dyn OwnerProvider>, String)> {
+) -> Result<(Arc<dyn OwnerProvider>, String)> {
     match mode {
         TimelineMode::Recording {
             path,
@@ -261,14 +261,14 @@ pub fn build_provider(
                     recording.game_id()
                 )
             };
-            Ok((Box::new(recording), label))
+            Ok((Arc::new(recording), label))
         }
         TimelineMode::Static1936 => {
             let bundle = bundle.ok_or(
                 "static 1936 debug mode requires --bundle; production playback uses --recording and never requires a pre-generated map bundle",
             )?;
             Ok((
-                Box::new(Static1936::new(bundle.state_owner_1936.clone())),
+                Arc::new(Static1936::new(bundle.state_owner_1936.clone())),
                 String::from("static 1936"),
             ))
         }
@@ -283,7 +283,7 @@ pub fn build_recording_provider(
     source: Box<dyn ReplaySource>,
     config: replay_core::TimelineConfig,
     source_label: &str,
-) -> Result<(Box<dyn OwnerProvider>, String)> {
+) -> Result<(Arc<dyn OwnerProvider>, String)> {
     let timeline = replay_core::WorldTimeline::open_with_config(source, config)
         .map_err(|err| format!("open timeline {source_label}: {err}"))?;
     if let Some(receipt) = timeline.prefold_receipt() {
@@ -321,11 +321,11 @@ pub fn build_recording_provider(
             recording.game_id()
         )
     };
-    Ok((Box::new(recording), label))
+    Ok((Arc::new(recording), label))
 }
 
 /// Hour-indexed state ownership. Hours are ascending and non-empty.
-pub trait OwnerProvider {
+pub trait OwnerProvider: Send + Sync {
     fn hours(&self) -> &[i64];
     fn owners_at(&self, hour: i64) -> Result<Arc<BTreeMap<u32, String>>>;
     fn controllers_at(&self, hour: i64) -> Result<Arc<BTreeMap<u32, String>>>;
@@ -366,6 +366,11 @@ pub trait OwnerProvider {
     ) -> std::result::Result<Option<String>, TimelineSelectionError> {
         Ok(None)
     }
+
+    /// Install a stop switch the frame path may consult, so a scrub that has
+    /// moved on can abandon a reconstruction still in flight. Providers that do
+    /// no abandonable work ignore it, which is the default.
+    fn set_scrub_interrupt(&self, _interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {}
 
     fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
         None
@@ -699,6 +704,10 @@ impl RecordingTimeline {
 impl OwnerProvider for RecordingTimeline {
     fn hours(&self) -> &[i64] {
         self.timeline.hours()
+    }
+
+    fn set_scrub_interrupt(&self, interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
+        self.timeline.set_scrub_interrupt(interrupt);
     }
 
     fn owners_at(&self, hour: i64) -> Result<Arc<BTreeMap<u32, String>>> {

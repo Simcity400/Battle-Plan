@@ -1150,6 +1150,15 @@ pub trait ReplaySource: Send + Sync {
     }
     /// Raw snapshot frame for one canonical hour from [`ReplaySource::hours`].
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
+
+    /// Install a stop switch this source's reconstructions may consult, so a
+    /// caller that has moved on can abandon a walk that is still running.
+    ///
+    /// Default: ignore it. Only a source whose `frame` does bounded, resumable
+    /// work worth abandoning implements this; the rest answer from data they
+    /// already hold and there is nothing to stop. A source that ignores the
+    /// switch is not wrong, only uninterruptible.
+    fn set_scrub_interrupt(&self, _interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {}
 }
 
 /// Open a recording path. A regular file is opened as a `.battleplan`
@@ -5504,6 +5513,15 @@ struct PrefoldedSource {
 impl ReplaySource for IndexedReplaySource {
     fn game_id(&self) -> &str {
         self.cache.index().game_id()
+    }
+
+    /// This is the one source whose `frame` is worth abandoning: it decodes a
+    /// checkpoint and applies every delta to the wanted hour, which is seconds
+    /// of work at a 744-hour interval. The switch goes to the cache reader,
+    /// which consults it at every delta-record boundary and keeps the position
+    /// it reached.
+    fn set_scrub_interrupt(&self, interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
+        self.cache.set_scrub_interrupt(interrupt);
     }
 
     fn hours(&self) -> &[i64] {

@@ -11,6 +11,7 @@
 //! profile is evidence about the actual production map composition.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
@@ -608,7 +609,7 @@ pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
     Ok(())
 }
 
-fn open_provider(mode: &TimelineMode) -> Result<(Box<dyn OwnerProvider>, String)> {
+fn open_provider(mode: &TimelineMode) -> Result<(Arc<dyn OwnerProvider>, String)> {
     let TimelineMode::Recording {
         path,
         logical_stream_id,

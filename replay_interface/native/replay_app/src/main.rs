@@ -57,6 +57,7 @@ mod power_balance_runtime;
 mod prefold_worker;
 mod recorded_ui_owner;
 mod recording_open;
+mod scrub;
 mod special_projects_runtime;
 mod timeline;
 mod tooltip_runtime;

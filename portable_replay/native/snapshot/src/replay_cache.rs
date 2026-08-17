@@ -1764,8 +1764,38 @@ impl<W: Write> ReplayCacheEncoder<W> {
 pub struct ReplaySeekReceipt {
     pub checkpoint_hour: i64,
     pub target_hour: i64,
+    /// The index-declared distance from this hour's checkpoint to this hour.
+    /// This is the number the certified seek bound is about, and it does not
+    /// depend on how the reader chose to get here.
     pub applied_deltas: u32,
+    /// How many delta records this particular call actually applied. Equal to
+    /// `applied_deltas` for a reconstruction that started at the checkpoint,
+    /// and smaller for one that resumed a [`ScrubCursor`]. It carries no
+    /// authority — it is what the walk cost, not what the recording says.
+    pub walked_deltas: u32,
     pub configured_bound: u32,
+}
+
+/// What a reconstruction that was allowed to give up came back with.
+///
+/// There is no third arm on purpose. Either an hour was rebuilt and proved
+/// against its parity digest, or the caller's own stop switch ended the walk
+/// and NOTHING is claimed about any hour. A partially applied world is never a
+/// value this type can carry, so no consumer can mistake one for a frame.
+#[derive(Debug)]
+pub enum ScrubOutcome {
+    Reconstructed {
+        json: Vec<u8>,
+        receipt: ReplaySeekReceipt,
+    },
+    /// The walk stopped early. `reached_hour` is the hour the reader's cursor
+    /// now stands on — a real recorded hour, since a walk only ever gives up at
+    /// a record boundary — and asking again for the original target resumes
+    /// from there rather than starting over.
+    Abandoned {
+        reached_hour: i64,
+        walked_deltas: u32,
+    },
 }
 
 /// Where a certified cache's bytes live.
@@ -2077,7 +2107,6 @@ fn admit_cache(
 /// Construction hashes and binds the cache exactly once. Individual seeks
 /// still validate record structure, target identity, parity SHA, and the
 /// configured delta bound.
-#[derive(Clone)]
 pub struct CertifiedReplayCache {
     index: ReplayHourIndex,
     cache: CacheBacking,
@@ -2085,6 +2114,92 @@ pub struct CertifiedReplayCache {
     /// rotted after sealing. Empty for an intact cache, which is every cache
     /// the recorder writes.
     confined: Vec<ConfinedHour>,
+    /// The running reconstruction state left over from the previous seek. See
+    /// [`ScrubCursor`]. `Mutex` because [`Self::reconstruct_json`] takes
+    /// `&self` — the reader is shared, and two threads reconstructing at once
+    /// take turns rather than each keeping their own world.
+    cursor: Mutex<Option<ScrubCursor>>,
+    /// A stop switch the READER'S OWNER installs once, consulted by every
+    /// reconstruction. See [`Self::set_scrub_interrupt`].
+    interrupt: Mutex<Option<Arc<dyn Fn() -> bool + Send + Sync>>>,
+}
+
+/// A clone is a SECOND READER over the same authenticated bytes, not a copy of
+/// where the first one had got to.
+///
+/// The index, the backing and the confinement list are the artifact's own
+/// facts and are shared; the scrub cursor is one reader's position in it and is
+/// not. Carrying it across would double the memory a clone costs for a value
+/// the clone is about to overwrite on its first seek, and would be a silent
+/// second owner of a world nobody asked it to hold. (The derive this replaces
+/// could not express that, because [`Mutex`] is not `Clone`.)
+impl Clone for CertifiedReplayCache {
+    fn clone(&self) -> Self {
+        CertifiedReplayCache {
+            index: self.index.clone(),
+            cache: self.cache.clone(),
+            confined: self.confined.clone(),
+            cursor: Mutex::new(None),
+            interrupt: Mutex::new(None),
+        }
+    }
+}
+
+/// What the previous seek left behind, so the next one does not start over.
+///
+/// THE COST THIS EXISTS TO REMOVE. [`reconstruct_json_from`] rebuilds every
+/// answer from its checkpoint: decode a whole world, then apply every delta
+/// between that checkpoint and the wanted hour. That is correct and it is what
+/// makes the checkpoint interval a seek bound — but it means stepping from hour
+/// h to hour h+1 re-does all of h's work and one more patch. Playing a
+/// recording forward therefore costs O(interval) per hour, and the size lanes'
+/// move from a 168-hour interval to a 744-hour one multiplies that by 4.4 for
+/// every hour of playback, not merely for the one seek that lands in a new
+/// window.
+///
+/// `verify_every_hour_from` already proves the fix is sound: it computes
+/// exactly the same per-hour values by carrying the running value forward
+/// instead of rebuilding it, which is the difference between a linear pass and
+/// one that "did not finish in 46 minutes" (see its note). This is that same
+/// carry, made available to a reader that is asked for hours one at a time and
+/// in an order it does not choose.
+///
+/// WHAT IT MAY BE RESUMED FROM, EXACTLY. A cursor is resumable for a target
+/// only when it sits in the SAME checkpoint window and at or before the target
+/// position, because that is the only case where the remaining work is a
+/// forward suffix of the very walk `reconstruct_json_from` would have done.
+/// Anything else — a backward step, another window — drops it and decodes the
+/// checkpoint.
+///
+/// WHY A WRONG CURSOR CANNOT SERVE WRONG BYTES. Every reconstruction, cursored
+/// or not, ends by hashing the world JSON it produced against the parity digest
+/// `replay_decoder` published for that hour and refusing on a mismatch. A
+/// cursor that resumed from the wrong state changes those bytes and is caught
+/// there, at that hour, before anything crosses the reader's boundary.
+///
+/// MEMORY, STATED HONESTLY. A cursor is STRUCTURALLY one world value plus one
+/// window's [`Shadow`] — not one per hour and not one per window length — and
+/// that is the bound this design claims. It is NOT a claim that the cursor
+/// costs at most [`MAX_SHADOW_BYTES`] of resident memory: that cap is charged
+/// in [`CanonValue::content_bytes`], which counts the CONTENT a memory
+/// describes and not the heap a `CanonValue` tree, its maps or its keys
+/// actually occupy (Codex design review, finding 1). The number a 4-core/16 GB
+/// floor has to be set from is therefore a measured peak, not this constant,
+/// and it is measured in
+/// `replay_interface/native/replay_app/tests/soak_scrub.rs` rather than
+/// asserted here.
+///
+/// What a caller CAN rely on: holding a `CertifiedReplayCache` that has served
+/// an hour costs about one more world than holding one that has not, and
+/// [`CertifiedReplayCache::forget_scrub_cursor`] gives it back.
+struct ScrubCursor {
+    /// Index position of the checkpoint this running value was decoded from.
+    checkpoint_position: usize,
+    /// Index position the running value currently stands at.
+    position: usize,
+    value: CanonValue,
+    shadow: Shadow,
+    budget: ShadowBudget,
 }
 
 impl CertifiedReplayCache {
@@ -2105,6 +2220,8 @@ impl CertifiedReplayCache {
             index,
             cache: CacheBacking::Memory(cache),
             confined,
+            cursor: Mutex::new(None),
+            interrupt: Mutex::new(None),
         })
     }
 
@@ -2129,6 +2246,8 @@ impl CertifiedReplayCache {
             index,
             cache: CacheBacking::File(Arc::new(cache)),
             confined,
+            cursor: Mutex::new(None),
+            interrupt: Mutex::new(None),
         })
     }
 
@@ -2142,13 +2261,115 @@ impl CertifiedReplayCache {
         &self.confined
     }
 
+    /// The world JSON for one hour, byte for byte as `replay_decoder` sealed
+    /// it, together with the seek receipt for how it was reached.
+    ///
+    /// Reconstruction resumes from the previous call's running state whenever
+    /// that state is a prefix of this hour's own walk (see [`ScrubCursor`]),
+    /// and rebuilds from the checkpoint whenever it is not. Either way the
+    /// result is required to hash to this hour's published parity digest before
+    /// it is returned, so the two routes are indistinguishable in what they
+    /// serve and differ only in what they cost.
     pub fn reconstruct_json(
         &self,
         hour_index: i64,
     ) -> Result<(Vec<u8>, ReplaySeekReceipt), ReplayCacheError> {
+        let installed = self
+            .interrupt
+            .lock()
+            .ok()
+            .and_then(|held| held.clone());
+        let keep_going: Box<dyn Fn() -> bool> = match installed {
+            Some(switch) => Box::new(move || switch()),
+            None => Box::new(|| true),
+        };
+        match self.reconstruct_json_interruptible(hour_index, keep_going.as_ref())? {
+            ScrubOutcome::Reconstructed { json, receipt } => Ok((json, receipt)),
+            ScrubOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
+                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour}                  because the caller's stop switch asked it to stop"
+            ))),
+        }
+    }
+
+    /// The same reconstruction, with the caller holding a stop switch.
+    ///
+    /// WHY A SEEK MUST BE ABANDONABLE. A drag along the seek bar produces a new
+    /// wanted hour every few milliseconds, and a backward drag inside a
+    /// 744-hour window starts a walk of up to 743 delta records that takes
+    /// SECONDS (measured: 6.6 s at distance 743 on capture t55,
+    /// `runs/mc_replay_scrub/BENCH_t55_i744.jsonl`). Without a way to give up,
+    /// the newest position waits behind a walk towards a position the user has
+    /// already dragged past, and "latest request wins" is a claim about a queue
+    /// rather than about what is drawn.
+    ///
+    /// `keep_going` is consulted at every delta-record boundary. It is NOT
+    /// consulted inside a single record's decode or patch application, so the
+    /// worst-case latency of a stop is one record, not zero.
+    ///
+    /// ABANDONING IS NOT WASTED WORK. The walk gives up at a record boundary,
+    /// which is exactly a position the cursor may legitimately stand at, so the
+    /// progress made is KEPT: the next request towards the same window resumes
+    /// from where this one stopped. That is what makes a long drag converge
+    /// instead of restarting.
+    ///
+    /// An abandoned call returns no world and makes no claim about one; nothing
+    /// skips the parity digest, because nothing is returned to check.
+    pub fn reconstruct_json_interruptible(
+        &self,
+        hour_index: i64,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<ScrubOutcome, ReplayCacheError> {
         refuse_confined_hour(&self.confined, hour_index)?;
-        self.cache
-            .with_records(|records| reconstruct_json_from(&self.index, records, hour_index))
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        self.cache.with_records(|records| {
+            reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+        })
+    }
+
+    /// Install the stop switch every later reconstruction consults, so a caller
+    /// that cannot pass one down the call chain can still abandon a walk.
+    ///
+    /// WHY THIS IS SET ON THE READER RATHER THAN PASSED TO THE CALL. The viewer
+    /// reaches this reader through five layers that each take only an hour
+    /// number — a source, a timeline, a provider, a worker. Threading a
+    /// predicate through all of them would change four signatures for one
+    /// caller. The switch belongs to whoever OWNS the reader, is set once when
+    /// the recording is opened, and answers the same question every time: "is
+    /// the work in progress still the work that was asked for?"
+    ///
+    /// A reader with no switch installed — every caller but the viewer's scrub
+    /// worker — behaves exactly as before, because the default never says stop.
+    ///
+    /// An interrupted reconstruction reports a plain refusal rather than a
+    /// distinguished "cancelled": the only way the switch can say stop is that
+    /// the caller itself moved on, so the caller already knows to discard the
+    /// answer, and no other consumer can see one.
+    pub fn set_scrub_interrupt(&self, interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
+        if let Ok(mut held) = self.interrupt.lock() {
+            *held = interrupt;
+        }
+    }
+
+    /// Drop the running reconstruction state, so the next seek pays the full
+    /// checkpoint-and-deltas cost.
+    ///
+    /// Two callers: a measurement that wants the cold cost, and a test that
+    /// requires the cursored and cold routes to produce identical bytes. It is
+    /// never needed for correctness — a cursor is only ever resumed where
+    /// resuming it is the same walk — and it releases memory rather than
+    /// acquiring any, so it cannot fail.
+    ///
+    /// It is also the only way to give the memory back. A reader that has
+    /// served one hour holds that hour's world and shadow until it is dropped
+    /// or told to forget; a caller that is done scrubbing and means to keep the
+    /// reader around should say so.
+    pub fn forget_scrub_cursor(&self) {
+        if let Ok(mut cursor) = self.cursor.lock() {
+            *cursor = None;
+        }
     }
 
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
@@ -2376,6 +2597,7 @@ fn reconstruct_json_from(
         checkpoint_hour: checkpoint.hour_index,
         target_hour: target.hour_index,
         applied_deltas: target.delta_steps,
+        walked_deltas: target.delta_steps,
         configured_bound: index.checkpoint_interval_hours - 1,
     };
     if receipt.applied_deltas > receipt.configured_bound {
@@ -2384,6 +2606,136 @@ fn reconstruct_json_from(
         ));
     }
     Ok((json, receipt))
+}
+
+/// The same hour, reconstructed by RESUMING the previous seek's running state
+/// whenever that state is a prefix of this hour's own walk.
+///
+/// This is deliberately a SECOND implementation of the walk rather than a
+/// parameter on [`reconstruct_json_from`], for the reason `play_to` is a second
+/// implementation of `seek`: the claim being made is that two independently
+/// written walks over the same records produce the same bytes, and a shared
+/// walk could not make it. The one thing they must never disagree about — the
+/// parity digest each result is required to match — is not written here or
+/// there but published per hour by `replay_decoder` in the index.
+///
+/// WHAT HAPPENS TO THE CURSOR WHEN THIS FAILS, EXACTLY. Two classes, and the
+/// difference is which side of `cursor.take()` the failure is on. A request
+/// this function refuses BEFORE it takes the cursor — an hour the index does
+/// not carry — has consumed nothing, and the previously held state stays and
+/// stays resumable, which is correct: nothing about it was invalidated by
+/// someone asking for a hour that does not exist. A failure AFTER the take —
+/// a damaged record, a patch that will not apply, a parity mismatch — leaves
+/// the cursor EMPTY, so a half-walked value can never be resumed from.
+/// (Confinement is refused earlier still, in
+/// [`CertifiedReplayCache::reconstruct_json_interruptible`], and is in the
+/// first class.)
+fn reconstruct_json_cursored(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+    hour_index: i64,
+    cursor: &mut Option<ScrubCursor>,
+    keep_going: &dyn Fn() -> bool,
+) -> Result<ScrubOutcome, ReplayCacheError> {
+    let target_position = index
+        .hours
+        .binary_search_by_key(&hour_index, ReplayHourEntry::hour_index)
+        .map_err(|_| ReplayCacheError::new(format!("hour {hour_index} is not indexed")))?;
+    let target = &index.hours[target_position];
+    let checkpoint_position = target.checkpoint_position as usize;
+    let checkpoint = &index.hours[checkpoint_position];
+
+    // THE RESUME CONDITION, and nothing weaker. Same checkpoint window, and at
+    // or before the target: only then is what remains a forward suffix of the
+    // walk `reconstruct_json_from` would have performed from the checkpoint.
+    //
+    // kills: dropping either half of this condition serves an hour built from a
+    // running value that was never on that hour's path — a backward step would
+    // return a LATER world, a cross-window resume an unrelated one. Both change
+    // the JSON, and the parity digest below refuses the hour rather than
+    // returning it, so the defect surfaces as a refusal at that hour.
+    let resumed = cursor.take().filter(|held| {
+        held.checkpoint_position == checkpoint_position && held.position <= target_position
+    });
+    let (mut value, mut shadow, mut budget, start_position) = match resumed {
+        Some(held) => (held.value, held.shadow, held.budget, held.position),
+        None => {
+            let (kind, checkpoint_hour, payload) = cache_record(cache, checkpoint)?;
+            if kind != RECORD_CHECKPOINT || checkpoint_hour != checkpoint.hour_index {
+                return Err(ReplayCacheError::new(
+                    "checkpoint index points at a non-checkpoint cache record",
+                ));
+            }
+            let value = decode_value_exact(payload.as_ref())?;
+            drop(payload);
+            (
+                value,
+                Shadow::default(),
+                ShadowBudget::default(),
+                checkpoint_position,
+            )
+        }
+    };
+    let mut walked = 0u32;
+    let mut position = start_position;
+    for entry in &index.hours[start_position + 1..=target_position] {
+        // The stop switch is read HERE, between records, because a record
+        // boundary is the only place the running value is a state a cursor may
+        // legitimately hold. Giving up mid-patch would leave a value that is
+        // neither hour.
+        if !keep_going() {
+            *cursor = Some(ScrubCursor {
+                checkpoint_position,
+                position,
+                value,
+                shadow,
+                budget,
+            });
+            return Ok(ScrubOutcome::Abandoned {
+                reached_hour: index.hours[position].hour_index,
+                walked_deltas: walked,
+            });
+        }
+        let (kind, record_hour, payload) = cache_record(cache, entry)?;
+        if kind != RECORD_DELTA || record_hour != entry.hour_index {
+            return Err(ReplayCacheError::new(
+                "delta index points at an invalid cache record",
+            ));
+        }
+        let patch = decode_patch_exact(payload.as_ref())?;
+        drop(payload);
+        apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
+        walked += 1;
+        position += 1;
+    }
+    validate_world_identity(&value, target.hour_index, &target.date)?;
+    let json = value.to_json_bytes();
+    if Sha256::hex(&json) != target.world_json_sha256 {
+        return Err(ReplayCacheError::new(format!(
+            "reconstructed hour {} does not byte-match replay_decoder parity hash",
+            target.hour_index
+        )));
+    }
+    let receipt = ReplaySeekReceipt {
+        checkpoint_hour: checkpoint.hour_index,
+        target_hour: target.hour_index,
+        applied_deltas: target.delta_steps,
+        walked_deltas: walked,
+        configured_bound: index.checkpoint_interval_hours - 1,
+    };
+    if receipt.applied_deltas > receipt.configured_bound {
+        return Err(ReplayCacheError::new(
+            "reconstructed seek exceeded its certified checkpoint bound",
+        ));
+    }
+    *cursor = Some(ScrubCursor {
+        checkpoint_position,
+        position: target_position,
+        value,
+        shadow,
+        budget,
+    });
+    Ok(ScrubOutcome::Reconstructed { json, receipt })
 }
 
 /// Read one indexed record's kind, hour and payload.
@@ -7155,5 +7507,469 @@ mod tests {
             .expect_err("an oversized reason must refuse at the reader")
             .message()
             .contains("above the"));
+    }
+
+    // -----------------------------------------------------------------
+    // The scrub cursor. See `struct ScrubCursor`.
+    //
+    // Every one of these builds its cache at the 744-hour interval, because
+    // that is the interval the size lanes are moving to and the one a
+    // rebuild-per-request costs the most at. The fixture hours are shaped to
+    // exercise the state a cursor CARRIES rather than merely the value: a
+    // member that folds out to null and returns (which is what drives the
+    // revive Shadow), an array whose length changes (PATCH_ARRAY_EDIT), and a
+    // number that moves every hour. A cursor that carried the value but not the
+    // shadow, or the shadow but not its budget, decodes a revived subtree to
+    // different bytes and every one of these fails.
+    // -----------------------------------------------------------------
+
+    /// One fixture hour. `folds` decides whether the world has a member that
+    /// disappears and comes back; a fixture without it would never build a
+    /// revive memory and the cursor's hardest carried state would go untested.
+    fn scrub_body(hour: i64, folds: bool) -> String {
+        let n = hour * 7 + 3;
+        // Length changes every third hour, so the encoder is offered the
+        // keyed array edit as well as the plain array patch.
+        let rows: Vec<String> = (0..(3 + (hour % 3)))
+            .map(|row| format!(r#"{{"id":{row},"v":{}}}"#, n + row))
+            .collect();
+        // Folds out every fourth hour and returns the next, which is the
+        // cadence the revive exists for.
+        let folded = if folds && hour % 4 == 1 {
+            "null".to_string()
+        } else {
+            format!(r#"{{"deep":{{"x":{n},"y":"t{hour}"}}}}"#)
+        };
+        // Members in strictly increasing order: canonical world JSON is sorted,
+        // and `CanonicalWorldHour::parse` refuses anything else.
+        format!(
+            r#"{{"folder":{folded},"n":{n},"rows":[{}],"steady":"same every hour"}}"#,
+            rows.join(",")
+        )
+    }
+
+    fn scrub_fixture(hours: i64, folds: bool) -> (Vec<u8>, ReplayHourIndex, String) {
+        let bodies: Vec<(i64, String)> = (0..hours)
+            .map(|hour| (hour, scrub_body(hour, folds)))
+            .collect();
+        let borrowed: Vec<(i64, &str)> = bodies
+            .iter()
+            .map(|(hour, body)| (*hour, body.as_str()))
+            .collect();
+        build_revive(744, &borrowed)
+    }
+
+    /// THE EQUALITY THE CURSOR STANDS ON. `ReplayCacheReader` has no cursor and
+    /// rebuilds every hour from its checkpoint; `CertifiedReplayCache` resumes.
+    /// Over the same artifact the two must produce the same bytes for every
+    /// hour, and must keep producing them when the hours are asked for out of
+    /// order — forwards, backwards, and jumping.
+    ///
+    /// kills: relaxing `reconstruct_json_cursored`'s resume condition in either
+    /// direction. Dropping the `position <= target_position` half makes the
+    /// backward passes below serve a later world; dropping the
+    /// `checkpoint_position` half is invisible at this interval and is killed
+    /// by `a_cursor_never_resumes_across_a_checkpoint_window` instead.
+    #[test]
+    fn a_cursored_scrub_serves_exactly_the_bytes_the_cold_walk_serves() {
+        let (cache, index, source_sha) = scrub_fixture(240, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 240 * 100;
+        let cold = ReplayCacheReader::open(&index_bytes, &cache, source_len, &source_sha).unwrap();
+        let warm =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+        // Every hour, twice: once ascending (the cursor resumes almost always)
+        // and once descending (it almost never can).
+        let descending: Vec<i64> = hours.iter().rev().copied().collect();
+        // ...and once in an order that is neither, so a resume condition that
+        // happened to be right for monotone walks is still exercised. A fixed
+        // stride coprime with the hour count visits every hour exactly once.
+        let scattered: Vec<i64> = (0..hours.len())
+            .map(|step| hours[(step * 97) % hours.len()])
+            .collect();
+        // Byte equality alone would still hold if the cursor were never
+        // resumed at all -- the cold walk is what it is being compared to
+        // (Codex implementation review, finding 5). So this also counts the
+        // hours that were served by resuming, and requires the ascending pass
+        // to have resumed nearly all of them.
+        let mut resumed = 0usize;
+        for order in [&hours, &descending, &scattered] {
+            for hour in order.iter() {
+                let (want, want_receipt) = cold.reconstruct_json(*hour).unwrap();
+                let (got, got_receipt) = warm.reconstruct_json(*hour).unwrap();
+                if got_receipt.walked_deltas < got_receipt.applied_deltas {
+                    resumed += 1;
+                }
+                assert_eq!(
+                    got, want,
+                    "hour {hour} reconstructed differently with a live cursor"
+                );
+                // The receipt's authority half must not move with the route.
+                assert_eq!(got_receipt.applied_deltas, want_receipt.applied_deltas);
+                assert_eq!(got_receipt.checkpoint_hour, want_receipt.checkpoint_hour);
+                assert_eq!(got_receipt.configured_bound, want_receipt.configured_bound);
+            }
+        }
+        assert!(
+            resumed > hours.len(),
+            "only {resumed} of {} lookups resumed a cursor; the equality above would hold              even with the cursor deleted, so this test must see it working",
+            hours.len() * 3
+        );
+    }
+
+    /// The owner's requirement, spelled as bytes: scrubbing to an hour must
+    /// give the state playing linearly to it gives. A scrub is only "like a
+    /// video" if the frame you land on is the frame you would have arrived at.
+    ///
+    /// kills: any future shortcut that lets a seek skip a delta it should have
+    /// applied — a stride, a sampled walk, an interpolation.
+    #[test]
+    fn scrubbing_to_any_hour_matches_playing_linearly_to_it() {
+        let (cache, index, source_sha) = scrub_fixture(200, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 200 * 100;
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+
+        // Play: one reader, every hour in order, keeping what it produced.
+        let player =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+        // Byte equality against a scrubber alone would hold with the cursor
+        // deleted, so the linear play is also required to have RESUMED -- which
+        // is what "playing" means once the cursor exists (Codex round 3,
+        // finding 8).
+        let mut played_by_resuming = 0usize;
+        let played: Vec<Vec<u8>> = hours
+            .iter()
+            .map(|hour| {
+                let (json, receipt) = player.reconstruct_json(*hour).unwrap();
+                if receipt.walked_deltas < receipt.applied_deltas {
+                    played_by_resuming += 1;
+                }
+                json
+            })
+            .collect();
+        assert!(
+            played_by_resuming > hours.len() / 2,
+            "only {played_by_resuming} of {} played hours resumed a cursor",
+            hours.len()
+        );
+
+        // Scrub: a FRESH reader, the same hours, in a deliberately awkward
+        // order — far jumps alternating from the two ends towards the middle.
+        let scrubber =
+            CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+        let mut low = 0usize;
+        let mut high = hours.len() - 1;
+        while low <= high {
+            for position in [low, high] {
+                let (got, _) = scrubber.reconstruct_json(hours[position]).unwrap();
+                assert_eq!(
+                    got, played[position],
+                    "scrubbing to hour {} did not match playing to it",
+                    hours[position]
+                );
+            }
+            low += 1;
+            if high == 0 {
+                break;
+            }
+            high -= 1;
+        }
+    }
+
+    /// A cursor may only be resumed inside the window it was built in.
+    ///
+    /// At a 744-hour interval a fixture has to be longer than one window before
+    /// a second checkpoint exists at all, so this is the one test that can see
+    /// the window half of the resume condition. It steps ACROSS the boundary
+    /// and back: crossing must rebuild, and the bytes must stay right.
+    ///
+    /// kills: removing `held.checkpoint_position == checkpoint_position` from
+    /// the resume condition. Without it the first hour of window two resumes
+    /// window one's running value and is served a world the deltas of window
+    /// two were never diffed against.
+    #[test]
+    fn a_cursor_never_resumes_across_a_checkpoint_window() {
+        let (cache, index, source_sha) = scrub_fixture(800, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 800 * 100;
+        let checkpoints: Vec<i64> = index
+            .hours()
+            .iter()
+            .filter(|hour| hour.delta_steps == 0)
+            .map(|hour| hour.hour_index)
+            .collect();
+        assert_eq!(
+            checkpoints.len(),
+            2,
+            "800 hours at a 744-hour interval must hold exactly two checkpoints"
+        );
+        let boundary = checkpoints[1];
+
+        let cold = ReplayCacheReader::open(&index_bytes, &cache, source_len, &source_sha).unwrap();
+        let warm =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+
+        for hour in [boundary - 2, boundary - 1, boundary, boundary + 1, boundary - 1, boundary + 5]
+        {
+            let (want, _) = cold.reconstruct_json(hour).unwrap();
+            let (got, receipt) = warm.reconstruct_json(hour).unwrap();
+            assert_eq!(got, want, "hour {hour} differed across the window boundary");
+            if hour == boundary {
+                // Arrived from the last hour of the previous window: the cursor
+                // is in the wrong window, so this must be a fresh checkpoint
+                // decode with nothing walked.
+                assert_eq!(receipt.walked_deltas, 0);
+                assert_eq!(receipt.applied_deltas, 0);
+            }
+            if hour == boundary + 1 {
+                // ...and the very next hour DOES resume, inside the new window.
+                // Without this the test passed with the cursor deleted, since a
+                // cold walk also reports zero deltas at a checkpoint (Codex
+                // round 3, finding 8).
+                assert_eq!(receipt.applied_deltas, 1);
+                assert_eq!(
+                    receipt.walked_deltas, 1,
+                    "the hour after a checkpoint must resume that checkpoint's own decode"
+                );
+            }
+        }
+        // The last visit is `boundary + 5`, reached from `boundary - 1`: a
+        // window change, so a rebuild, and then nothing resumed. Prove the
+        // reader is back to resuming afterwards.
+        let (_, receipt) = warm.reconstruct_json(boundary + 6).unwrap();
+        assert_eq!(receipt.walked_deltas, 1);
+    }
+
+    /// What the cursor is FOR, asserted as work rather than as time: stepping
+    /// one hour forward applies one delta, where a rebuild-from-checkpoint
+    /// applies every delta in the window.
+    ///
+    /// This is the deterministic half of the latency claim. The timing half
+    /// (`a_forward_step_is_far_cheaper_than_a_rebuild_at_a_744_hour_interval`)
+    /// can only ever be a ratio with a noise floor; this one is exact.
+    ///
+    /// kills: deleting the resume in `reconstruct_json_cursored` — every
+    /// `walked_deltas` below becomes `applied_deltas` and the assertions fail
+    /// at the first step. It also kills a cursor that is stored but never
+    /// consulted.
+    #[test]
+    fn a_forward_step_walks_one_delta_where_a_rebuild_walks_the_whole_window() {
+        let (cache, index, source_sha) = scrub_fixture(600, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 600 * 100;
+        let cache_reader =
+            CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+
+        // A cold jump into the far end of the window walks the whole distance.
+        let deep = hours[550];
+        cache_reader.forget_scrub_cursor();
+        let (_, cold) = cache_reader.reconstruct_json(deep).unwrap();
+        assert_eq!(cold.applied_deltas, 550);
+        assert_eq!(
+            cold.walked_deltas, 550,
+            "a forgotten cursor must rebuild from the checkpoint"
+        );
+
+        // Every step forward from there walks exactly one.
+        for position in 551..600 {
+            let (_, receipt) = cache_reader.reconstruct_json(hours[position]).unwrap();
+            assert_eq!(receipt.applied_deltas, position as u32);
+            assert_eq!(
+                receipt.walked_deltas, 1,
+                "stepping to position {position} should apply one delta"
+            );
+        }
+
+        // Re-asking for the hour already stood on walks nothing at all.
+        let (_, receipt) = cache_reader.reconstruct_json(hours[599]).unwrap();
+        assert_eq!(receipt.walked_deltas, 0);
+
+        // A backward step cannot resume and pays the full distance again. This
+        // is the honest statement of what the cursor does NOT buy, and the
+        // reason the seek bar's backward drag is answered by the viewer's own
+        // frame cache rather than by this.
+        let (_, receipt) = cache_reader.reconstruct_json(hours[400]).unwrap();
+        assert_eq!(receipt.walked_deltas, 400);
+    }
+
+    /// The latency claim itself, at the interval the product is moving to.
+    ///
+    /// A timing assertion has to state its noise floor or it is a coin toss on
+    /// a shared box. This one measures the floor IN THE TEST — the same
+    /// cursored step, repeated, taking the median — and then requires the thing
+    /// under test to beat the rebuild by a margin far larger than that floor's
+    /// own spread. The margin is deliberately loose (8x) against a measured
+    /// advantage that is hundreds of times larger, so the gate fails on a lost
+    /// cursor and not on a busy machine.
+    ///
+    /// kills: deleting the resume in `reconstruct_json_cursored`, which makes
+    /// the two medians equal.
+    #[test]
+    fn a_forward_step_is_far_cheaper_than_a_rebuild_at_a_744_hour_interval() {
+        // A wider world than the correctness fixtures use: the cost this test
+        // is about is the walk, and a walk over a tiny document is dominated by
+        // the per-call fixed cost the two routes share.
+        let bodies: Vec<(i64, String)> = (0..600)
+            .map(|hour| {
+                // Zero-padded so the member names are in strictly increasing
+                // order as STRINGS, which is the order canonical world JSON is
+                // in ("m10" sorts before "m2").
+                let members: Vec<String> = (0..400)
+                    .map(|member| format!(r#""m{member:03}":{}"#, hour * 400 + member))
+                    .collect();
+                (hour, format!("{{{}}}", members.join(",")))
+            })
+            .collect();
+        let borrowed: Vec<(i64, &str)> = bodies
+            .iter()
+            .map(|(hour, body)| (*hour, body.as_str()))
+            .collect();
+        let (cache, index, source_sha) = build_revive(744, &borrowed);
+        let index_bytes = index.to_bytes().unwrap();
+        let reader =
+            CertifiedReplayCache::open(&index_bytes, cache, 600 * 100, &source_sha).unwrap();
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+        assert_eq!(index.checkpoint_interval_hours(), 744);
+
+        fn median(mut samples: Vec<std::time::Duration>) -> std::time::Duration {
+            samples.sort();
+            samples[samples.len() / 2]
+        }
+
+        // The floor: a cursored step, which is the cheapest thing this reader
+        // can be asked to do, sampled enough times to have a median.
+        reader.reconstruct_json(hours[500]).unwrap();
+        let mut steps = Vec::new();
+        for position in 501..540 {
+            let start = std::time::Instant::now();
+            let (_, receipt) = reader.reconstruct_json(hours[position]).unwrap();
+            steps.push(start.elapsed());
+            assert_eq!(receipt.walked_deltas, 1);
+        }
+        let step = median(steps);
+
+        // The rebuild: the same hours, with the cursor forgotten each time, so
+        // each pays its whole distance from the checkpoint.
+        let mut rebuilds = Vec::new();
+        for position in 501..540 {
+            reader.forget_scrub_cursor();
+            let start = std::time::Instant::now();
+            let (_, receipt) = reader.reconstruct_json(hours[position]).unwrap();
+            rebuilds.push(start.elapsed());
+            assert_eq!(receipt.walked_deltas, position as u32);
+        }
+        let rebuild = median(rebuilds);
+
+        assert!(
+            rebuild > step * 8,
+            "a rebuild from a 744-hour checkpoint ({rebuild:?}) should cost far more than a \
+             cursored step ({step:?}); if these are close the cursor is not being resumed"
+        );
+    }
+
+    /// A drag along the seek bar must be able to change its mind mid-walk, and
+    /// the walk it interrupted must not have been wasted.
+    ///
+    /// Two claims, both asserted here: an abandoned reconstruction returns NO
+    /// world (so nothing can be drawn from a half-applied value), and the
+    /// progress it made is kept, so the next request towards the same hour
+    /// finishes the remaining distance instead of starting over.
+    ///
+    /// kills: deleting the `*cursor = Some(..)` in the abandon arm of
+    /// `reconstruct_json_cursored` — the resumed walk below would cost 500
+    /// deltas instead of 400, which is the difference between a drag that
+    /// converges and one that restarts on every mouse-move. Deleting the
+    /// `keep_going()` check entirely fails the first assertion outright.
+    #[test]
+    fn an_abandoned_walk_claims_no_hour_and_keeps_its_progress() {
+        let (cache, index, source_sha) = scrub_fixture(600, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 600 * 100;
+        let cold = ReplayCacheReader::open(&index_bytes, &cache, source_len, &source_sha).unwrap();
+        let reader =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+
+        // Give up after 100 record boundaries on the way to position 500.
+        let seen = std::cell::Cell::new(0u32);
+        let outcome = reader
+            .reconstruct_json_interruptible(hours[500], &|| {
+                seen.set(seen.get() + 1);
+                seen.get() <= 100
+            })
+            .unwrap();
+        match outcome {
+            ScrubOutcome::Abandoned {
+                reached_hour,
+                walked_deltas,
+            } => {
+                assert_eq!(walked_deltas, 100);
+                assert_eq!(
+                    reached_hour, hours[100],
+                    "an abandoned walk stands on a real recorded hour"
+                );
+            }
+            ScrubOutcome::Reconstructed { .. } => {
+                panic!("a walk told to stop must not return a world")
+            }
+        }
+
+        // Asking again finishes the remaining 400, not the whole 500.
+        let ScrubOutcome::Reconstructed { json, receipt } = reader
+            .reconstruct_json_interruptible(hours[500], &|| true)
+            .unwrap()
+        else {
+            panic!("an uninterrupted walk must produce the hour");
+        };
+        assert_eq!(
+            receipt.walked_deltas, 400,
+            "the abandoned walk's progress must be resumed, not repeated"
+        );
+        assert_eq!(receipt.applied_deltas, 500);
+        // And it is the same world the cold walk builds.
+        assert_eq!(json, cold.reconstruct_json(hours[500]).unwrap().0);
+    }
+
+    /// A cursor is one reader's position, not a property of the artifact, so a
+    /// clone must start with none.
+    ///
+    /// kills: restoring `#[derive(Clone)]`-equivalent behaviour that copied the
+    /// cursor. A clone that inherited a cursor would hold a second whole world
+    /// the moment it was made, which is the memory bound this design states it
+    /// does not spend.
+    #[test]
+    fn a_cloned_reader_starts_with_no_cursor() {
+        let (cache, index, source_sha) = scrub_fixture(300, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let reader =
+            CertifiedReplayCache::open(&index_bytes, cache, 300 * 100, &source_sha).unwrap();
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+        reader.reconstruct_json(hours[200]).unwrap();
+
+        let clone = reader.clone();
+        let (cloned_bytes, cloned_receipt) = clone.reconstruct_json(hours[201]).unwrap();
+        assert_eq!(
+            cloned_receipt.walked_deltas, 201,
+            "a clone must rebuild rather than resume the original's position"
+        );
+        // And it is still the right hour, by the only test that matters --
+        // asked of the ORIGINAL, which must answer it by RESUMING from 200.
+        // Without that assertion this test passed with the cursor deleted,
+        // since then nobody resumes and the clone's rebuild is unremarkable
+        // (Codex round 3, finding 8).
+        let (want, original) = reader.reconstruct_json(hours[201]).unwrap();
+        assert_eq!(cloned_bytes, want);
+        assert_eq!(
+            original.walked_deltas, 1,
+            "the original still holds its cursor and must resume where the clone rebuilt"
+        );
     }
 }

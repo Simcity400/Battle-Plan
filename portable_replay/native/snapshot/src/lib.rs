@@ -67,7 +67,7 @@ pub use replay_cache::{
     CacheTruncation, CanonicalWorldHour, ConfinedHour,
     validate_checkpoint_cache_header, CertifiedCacheFile, CertifiedReplayCache, ReplayCacheEncoder,
     ReplayCacheError, ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex,
-    ReplaySeekReceipt,
+    ReplaySeekReceipt, ScrubOutcome,
     CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
     MAX_CHECKPOINT_INTERVAL_HOURS, PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,
