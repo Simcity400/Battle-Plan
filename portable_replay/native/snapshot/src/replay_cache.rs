@@ -260,18 +260,38 @@ const MAX_NUMBER_DELTA_DIGITS: u32 = 30;
 /// How many RAW bytes a number delta may cost over the `Replace` it displaces
 /// and still be the spelling both sides must use.
 ///
-/// Zero is "strictly shorter", which is the rule the delta shipped with. It is
-/// a constant rather than a bare `<` because the two spellings do not compress
-/// alike -- a delta stream is a column of small signed numbers and a replace
-/// stream is a column of absolute ones -- so the raw comparison is a PROXY for
-/// the sealed one and the size of the gap between them is a measured question,
-/// not an obvious one. Lane MG measured it on the four sealed captures; see
-/// `extractor/native/runs/mg_size_numeric/NUMBER_DELTA_SLACK.txt`.
+/// TWO IS NOT "ONE BYTE OF WASTE ALLOWED", it is the point where a raw
+/// comparison stops being a good proxy for a sealed one. The two spellings do
+/// not compress alike: a difference goes to its member's own numeric column,
+/// where thousands of small signed numbers of the same measurement sit
+/// together, while the absolute value it displaces goes to the general value
+/// stream among everything else. A delta that is one raw byte LONGER is still
+/// cheaper once both are sealed.
 ///
-/// Whatever it is, it is a total function of the two tokens, so `diff_value`
-/// and `apply_patch` reach the same verdict and a recording still has exactly
-/// one legal spelling.
-const NUMBER_DELTA_SLACK: usize = 0;
+/// MEASURED, on capture t53's whole 219-hour shipping artifact, by building
+/// this encoder four times and moving the constant one byte at a time; each row
+/// had every hour reconstructed and required to hash to the digest the original
+/// recording published (`MG_F8SLACK*_t53.json`, and each run independently
+/// reproduced byte for byte):
+///
+/// ```text
+/// 0  a delta must be strictly shorter   45,695 sealed B/game hour
+/// 1  ties admitted                      42,960   -6.0%
+/// 2  a delta may be one byte longer     42,347   -7.3%
+/// 3  a delta may be two bytes longer    42,326   -7.4%
+/// ```
+///
+/// Three buys 21 bytes an hour over two and admits a two-byte-longer spelling
+/// for it, so two is where this stops.
+///
+/// AND IT IS WORTH MORE THAN IT WAS. On the flat format that preceded the
+/// stream container the same sweep measured -5.3%; the columns are what make
+/// the extra differences cheap, which is why this constant was re-measured
+/// rather than carried over.
+///
+/// It is a total function of the two tokens, so `diff_value` and `apply_patch`
+/// reach the same verdict and a recording still has exactly one legal spelling.
+const NUMBER_DELTA_SLACK: usize = 2;
 /// An array whose LENGTH changed, aligned by a key its own rows carry, as a
 /// left-to-right edit script over the old array.
 ///
@@ -7454,7 +7474,12 @@ mod tests {
         let row = &index.hours()[1];
         let start = (row.cache_record_offset() + RECORD_HEADER_LEN) as usize;
         let payload = &cache[start..start + (row.cache_record_len() - RECORD_HEADER_LEN) as usize];
-        assert_eq!(count_number_deltas(&decode_patch_exact(payload).unwrap()), 3);
+        // FOUR, not three: the three measurements, AND the hour index itself,
+        // which moves 0 -> 1. Its delta spelling is three bytes against the
+        // replacement's two, so it only became a delta when
+        // `NUMBER_DELTA_SLACK` did -- and that is the whole of what the slack
+        // buys, a hundred thousand times an hour.
+        assert_eq!(count_number_deltas(&decode_patch_exact(payload).unwrap()), 4);
 
         // And each one is shorter than the replacement it stands in for.
         for (from, to) in [
@@ -7621,20 +7646,28 @@ mod tests {
         .message()
         .contains("shorter spelling"));
 
-        // A delta the encoder would NOT have chosen because it is not shorter:
-        // 1 -> 2 is one inline byte as a replacement and three as a delta, so
-        // the delta spelling of it is a second encoding and must not decode.
+        // A delta the encoder would NOT have chosen because it is too far from
+        // shorter: 0 -> 100 is two bytes as a replacement (the tag and one
+        // inline byte) and four as a delta (the tag, a fraction width and a
+        // two-byte zigzag), and `NUMBER_DELTA_SLACK` allows one byte of
+        // difference, not two. So the delta spelling of it is a second encoding
+        // and must not decode.
+        //
+        // kills: raising NUMBER_DELTA_SLACK without re-deriving this fixture
+        // (the delta becomes the encoder's own spelling and this stops
+        // erroring), which is what makes the constant's own documented sweep
+        // the thing that has to be re-run rather than quietly widened.
         let not_shorter = Patch::Object {
             removals: Vec::new(),
             changes: vec![(
                 "a".to_string(),
                 Patch::NumberDelta {
                     fraction_digits: 0,
-                    delta: 1,
+                    delta: 100,
                 },
             )],
         };
-        let mut target = CanonValue::parse(br#"{"a":1}"#).unwrap();
+        let mut target = CanonValue::parse(br#"{"a":0}"#).unwrap();
         assert!(apply_patch(
             &mut target,
             &not_shorter,
