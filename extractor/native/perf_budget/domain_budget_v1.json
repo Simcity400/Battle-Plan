@@ -20,6 +20,13 @@
     "baseline_ms": 70.364,
     "note": "lane LO's merged window index targets ~18 ms/record; tighten after the batch-1 measurement (t70)"
    }
+  },
+  "diplomacy_intel_operatives_live": {
+   "domain53_seg_payload_summary_opinions_us": {
+    "ms_max": 6.4,
+    "baseline_ms": 4.87,
+    "note": "lane ME batch 1 (t77_me_batch1, 2026-08-17, box saturated 14-15/16 cores): the encode-side gate twin's opinion pass after SeenKeyHasher+presize; t71 (SipHash, grown from empty) was 8.66 ms/record. Ratchet: 4.87 x 1.3; retighten on a quiet-box run"
+   }
   }
  },
  "domains": {
