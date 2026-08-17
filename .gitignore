@@ -168,3 +168,4 @@ extractor/native/runs/**/*.battleplan
 .t3-worktrees/
 .pnpm-store/
 .reference/
+captures/
