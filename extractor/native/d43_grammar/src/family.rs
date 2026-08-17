@@ -586,8 +586,8 @@ pub struct ResourceRowTrailer {
     /// It was `Limits::identity_stride()` at `read_body` time and the header's
     /// `+28` word was checked to equal it. Taking it a second time from a
     /// caller admitted a walk striding differently from the extent the grammar
-    /// computed: `identities()` would repeat or skip bytes and `discard_all`
-    /// would land somewhere other than `rows_at`. Zero for the versions that
+    /// computed: `identities()` would repeat or skip bytes and finish somewhere
+    /// other than `rows_at`. Zero for the versions that
     /// carry no identity block, whose `+28` must be zero.
     pub identity_stride: usize,
     /// Where the identity block starts, and how long it is. Zero-length for the
@@ -968,16 +968,6 @@ impl RowCursor {
         step
     }
 
-    /// Jump to this block's end in O(1).
-    ///
-    /// Reachable only through [`crate::BlockCursor::discard_all`], which is a
-    /// site's EXPLICIT statement that it reads this block structurally only.
-    /// The arithmetic is the same the extent was computed from, so this lands
-    /// on the offset the header already declared and never past it.
-    pub(crate) fn skip_all(&mut self) {
-        self.at += (self.count - self.index) * self.stride;
-        self.index = self.count;
-    }
 }
 
 fn read_flow_trailer(payload: &[u8], at: usize, limits: Limits) -> Result<FlowTrailer, Violation> {
@@ -2867,17 +2857,18 @@ const _: () = {
 // The non-advancing header preview
 // =============================================================================
 //
-// WHY THIS EXISTS, IN ONE SENTENCE: three sites check a semantic property of a
-// header WORD before they check the header's declared SHAPE, and `read_body`
+// WHY THIS EXISTS, IN ONE SENTENCE: a reader checks a semantic property of a
+// header WORD before it checks the header's declared SHAPE, and `read_body`
 // refuses a bad shape before it returns anything, so without a look-first there
-// is no way to rewire those sites onto the leaf and keep the diagnostic a
-// doubly-malformed payload carries.
+// is no way to keep the diagnostic a doubly-malformed payload carries.
 //
-// The fold's `MTRF` order is the measured case:
-// `world_fold.rs::parse_market_trade_resource_flow_trailer` tests the v1/v2
-// resource mask before it tests the header shape, and the authority repeats it
-// in
-// `domain_data_authority.rs::decode_compact_market_trade_resource_flow_trailer`.
+// The `MTRF` order is the measured case: the v1/v2 resource mask is tested
+// before the header shape. Lane LX made that this crate's own business --
+// `decode::decode_record` is the ONE caller of `peek_header`, and it is
+// `pub(crate)` now, so no site can look first on its own. Before that rewire the
+// order was transcribed at three sites; the one that survives as a
+// `#[cfg(test)]` adapter over the report is
+// `world_fold.rs::parse_market_trade_resource_flow_trailer`.
 //
 // NOTHING HERE IS VALIDATED. Every field is the word at its offset, cast and
 // named and no more. The names come from the same tables the bodies are built

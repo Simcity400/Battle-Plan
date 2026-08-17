@@ -28,12 +28,15 @@
 //! blocks, MTS1's two row segments, the flag/kind/direction/route vocabularies,
 //! and exact consumption.
 //!
-//! Semantics (each site): every range check on an id, the cross-family country
-//! witness agreement, the oil-row model, the deal half-join, the resource-name
-//! projection, the counted-header cross-checks, UTF-8 and token charset,
-//! and every diagnostic string. This crate reads no value it does not need in
-//! order to find the next byte boundary, except through the row readers, which
-//! are fixed offset arithmetic and validate nothing.
+//! Payload-only semantics are also single-source here: [`decode::decode_record`]
+//! evaluates the shared id ranges, row invariants, counted-header checks,
+//! identity-entry contract, oil-row model, deal half-join, and cross-family
+//! witness rules without letting any of them influence cursor advancement.
+//! Findings are data, and fatality plus fold-compatible policy order are stated
+//! once in [`decode`]. Sites still own text formatting, non-payload state
+//! application, and projection policy. In particular, mapping resource slots
+//! onto a game-file-derived resource-name table is not a payload fact and does
+//! not belong here.
 //!
 //! ## A version word is STRUCTURAL here, unlike d68
 //!
@@ -54,7 +57,7 @@
 //! whose width is undecidable), and adding a version is a compile error at every
 //! site that matches on one.
 //!
-//! # The one ceiling this crate does not own
+//! # Caller-owned budgets this crate does not own
 //!
 //! An MTRF v3 row's WIDTH is `16 + 8 * resource_count`, and MTRR's identity
 //! block is `resource_count * stride` bytes. The bound on `resource_count` and
@@ -67,21 +70,14 @@
 //! number this programme exists to have one of.
 //!
 //! They are therefore taken as an argument: [`Limits`], which every site builds
-//! from those two `compact_contract` constants. The value stays single-source in
-//! `compact_contract`; the LAYOUT ARITHMETIC over it is single-source here.
+//! from those two `compact_contract` constants. The eager decoder additionally
+//! takes [`decode::DecodeContext`] for all payload-policy ceilings. The values
+//! stay single-source in `compact_contract`; layout arithmetic and payload-rule
+//! evaluation are single-source here, and neither argument has a default.
 //!
-//! # Traversal is LAZY at BOTH levels, and that is a requirement
+//! # One eager decoder, enforced by lazy owned cursors
 //!
-//! The four sites interleave their semantics with the walk and do NOT agree
-//! about fatality: `fold_market_trade` returns on the first violated rule, while
-//! `decode_compact_market_trade_data_payload` records a diagnostic per violated
-//! row rule and keeps walking, stopping only when the bytes no longer delimit
-//! the next trailer. A function that computed a whole payload layout up front
-//! would discover a truncated MTS1 before the validator had recorded the first
-//! MTD1 row's rule violation, changing which diagnostics a malformed capture
-//! carries.
-//!
-//! So the trailer walk is a two-step PULL cursor:
+//! The low-level trailer walk remains a two-step PULL cursor:
 //!
 //! 1. [`TrailerCursor::next`] delimits and NAMES the next magic and reads
 //!    nothing else;
@@ -94,6 +90,15 @@
 //! that parsed the header first would move that refusal behind a header
 //! diagnostic the site never emitted. `End` carries the finishing offset rather
 //! than a separate `finish()`, which would need a misuse state.
+//!
+//! [`decode::decode_record`] is the one eager structural driver layered on top
+//! of those cursors. It consumes every declared block to obtain each
+//! [`TrailerResume`], retains all semantic findings already available, and
+//! stops only when a later byte boundary is unknowable. Its report therefore
+//! supports partial decode. [`decode::select_first_fatal`] selects the record
+//! verdict by explicit site-compatible policy order rather than discovery or
+//! wire order; sites may apply their non-payload gates at the documented staged
+//! boundary without restating a payload rule.
 //!
 //! # Violations are data, never text
 //!
@@ -119,6 +124,7 @@
 
 extern crate alloc;
 
+pub mod decode;
 pub mod encode;
 
 #[cfg(test)]
@@ -1038,27 +1044,18 @@ impl TrailerCursor {
     /// Read the shared header prefix and this family's own header words, apply
     /// NO family rule, and do not advance.
     ///
-    /// This exists for one measured reason and it is diagnostic ORDER. Three
-    /// sites check a semantic property of a header word BEFORE they check the
-    /// header's declared shape:
-    /// `world_fold.rs::parse_market_trade_resource_flow_trailer` tests an
-    /// `MTRF` v1/v2 resource mask and only then the header shape, and
-    /// `domain_data_authority.rs::decode_compact_market_trade_resource_flow_trailer`
-    /// does the same. [`TrailerCursor::read_body`]
-    /// refuses a bad declared `header_len` before it returns anything, so a
-    /// payload with both fields wrong would change which diagnostic it carries
-    /// if a site had no way to look first. This is that way.
+    /// This exists for one measured reason and it is diagnostic ORDER. The
+    /// shared eager driver preserves the historical MTRF value-before-shape
+    /// order. [`TrailerCursor::read_body`] refuses a bad declared `header_len`
+    /// before it returns anything, so the driver previews that header first.
     ///
     /// It reads nothing outside the family's own declared header, and it is
     /// callable only after [`TrailerCursor::next`] named a magic — so a site
     /// that refuses an unaccepted magic still refuses it before any header word
     /// is read.
-    pub fn peek_header(&self, payload: &[u8]) -> Result<HeaderPreview, Violation> {
+    pub(crate) fn peek_header(&self, payload: &[u8]) -> Result<HeaderPreview, Violation> {
         let Some((at, trailer)) = self.pending else {
-            return Err(Violation::caller(
-                self.at,
-                CallerDefect::BodyNotDelimited,
-            ));
+            return Err(Violation::caller(self.at, CallerDefect::BodyNotDelimited));
         };
         read_header_preview(payload, at, trailer)
     }
@@ -1137,10 +1134,7 @@ impl TrailerCursor {
     /// ```
     pub fn read_body(self, payload: &[u8], limits: Limits) -> Result<TrailerBody, Violation> {
         let Some((at, trailer)) = self.pending else {
-            return Err(Violation::caller(
-                self.at,
-                CallerDefect::BodyNotDelimited,
-            ));
+            return Err(Violation::caller(self.at, CallerDefect::BodyNotDelimited));
         };
         let headers = read_trailer_body(payload, at, trailer, limits)?;
         Ok(match headers {

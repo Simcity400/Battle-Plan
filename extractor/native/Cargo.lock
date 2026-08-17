@@ -670,6 +670,7 @@ name = "market_trade_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "d43_grammar",
  "serde_json",
  "snapshot",
 ]

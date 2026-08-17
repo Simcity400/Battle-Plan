@@ -27,6 +27,7 @@
       "root": "extractor/native/d43_grammar",
       "files": [
         "extractor/native/d43_grammar/Cargo.toml",
+        "extractor/native/d43_grammar/src/decode.rs",
         "extractor/native/d43_grammar/src/encode.rs",
         "extractor/native/d43_grammar/src/family.rs",
         "extractor/native/d43_grammar/src/lib.rs",

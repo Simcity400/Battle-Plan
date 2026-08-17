@@ -391,17 +391,20 @@ REQUIRED_LEAF_AUTHORITIES = {
             "extractor/native/collector/src/attach_log.rs",
             "extractor/native/recorder_host/src/domain_data_authority.rs",
             "extractor/native/recorder_host/src/world_fold.rs",
+            "extractor/native/lanes/market_trade_live/src/lib.rs",
+            "extractor/native/lanes/market_trade_live/src/leaf_decode.rs",
         ),
-        # No `const_only` entry. The three sites above each read DOZENS of the
+        # No `const_only` entry. The sites above each read DOZENS of the
         # leaf's facts and read them through `fixed_row_len(Trailer::…)` and
         # `Trailer::….header_len()` as well as through bare constants, which is
         # not the `crate::CONST` shape a const_only entry may carry -- and they
         # are the sites that hold d43's semantic layer, so they are consumers.
         #
         # The lane gate (`extractor/native/lanes/market_trade_live`) is d43's
-        # FOURTH site and is deliberately absent: as of lane KW it does not
-        # depend on this crate at all, so there is nothing to attest there yet.
-        # It is registered when it is converted, and until then this registry
+        # FOURTH site. It was deliberately absent while it did not depend on
+        # this crate at all; lane LX converted it, so it is registered now, in
+        # both halves: `lib.rs` holds the gate's own policy over the decoded
+        # report and `leaf_decode.rs` executes the shared walk. This registry
         # states what is true rather than what is intended.
     ),
 }

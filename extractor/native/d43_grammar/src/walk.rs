@@ -35,26 +35,12 @@
 //! is not a refusal, and the proof is that the continuation is private and the
 //! parent is gone.
 //!
-//! # Not inspecting a block is a DECISION, not an omission
+//! # Every block is consumed by the shared driver
 //!
-//! An absolute "every site consumes every block" rule contradicts the shipping
-//! code, and Codex measured where (design thread
-//! `01a007a9-1e92-7a82-8263-3c5b37bcacab`):
-//! `domain_data_authority.rs::decode_compact_market_trade_resource_flow_trailer`
-//! reads `MTRF` rows structurally only,
-//! `domain_data_authority.rs::decode_compact_market_trade_sized_trailer` sizes
-//! `MTRH` without inspecting its rows and reads `MTRR` identities but not its
-//! rows, and
-//! `domain_data_authority.rs::decode_compact_market_trade_classic_deal_trailer`
-//! inspects `MTRD` witnesses only from v3.
-//! So there are two ways to reach a block's end and they read
-//! differently at a site: walk it, or [`BlockCursor::discard_all`] it. What is
-//! refused is the third way — reaching the next magic having done neither —
-//! and [`BlockCursor::into_end`] is where that refusal lives.
-//!
-//! `discard_all` is O(1) and lands on exactly this block's end, never on an
-//! arbitrary later offset, so an unjustified one is a reviewable line rather
-//! than a silent skip.
+//! The eager decoder is now the only shipping walk. It visits every row of
+//! every declared block, records payload findings without stopping that walk,
+//! and reaches the continuation through [`BlockCursor::into_end`]. There is no
+//! structural-only bypass: a block left unconsumed is a caller defect.
 //!
 //! # Why refusal and not a compile error
 //!
@@ -170,7 +156,7 @@ pub enum CallerDefect {
     /// [`TrailerCursor::read_body`] was called without a delimited magic.
     BodyNotDelimited,
     /// A block was left with rows still undelimited and its end was asked for
-    /// anyway. Walk it, or [`BlockCursor::discard_all`] it.
+    /// anyway. Walk it before asking for its end.
     BlockNotConsumed {
         trailer: Trailer,
         block: TrailerBlock,
@@ -269,21 +255,6 @@ impl<N> BlockCursor<N> {
         })
     }
 
-    /// Decide, explicitly and in O(1), that this site reads this block
-    /// STRUCTURALLY ONLY.
-    ///
-    /// The end this produces is this block's own end — the offset the grammar
-    /// already computed from the header — never an arbitrary later one. The
-    /// authority takes this route for four blocks it deliberately does not
-    /// inspect; the point of it existing is that those four are four visible
-    /// lines rather than four absent calls.
-    pub fn discard_all(mut self) -> BlockEnd<N> {
-        self.rows.skip_all();
-        BlockEnd {
-            at: self.rows.offset(),
-            next: self.next,
-        }
-    }
 }
 
 // =============================================================================
@@ -599,8 +570,8 @@ impl ResourceRowCursor {
     ///
     /// It takes no `Limits`: the stride is the one the trailer was SIZED with,
     /// carried on the header. A second `Limits` here let a caller stride
-    /// differently from the extent the grammar computed, so `discard_all` could
-    /// land somewhere other than `rows_at`.
+    /// differently from the extent the grammar computed and finish somewhere
+    /// other than `rows_at`.
     pub fn identities(self) -> BlockCursor<ResourceRowsState> {
         let ResourceRowCursor { header, parent } = self;
         BlockCursor::new(

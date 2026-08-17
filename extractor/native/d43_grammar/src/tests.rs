@@ -34,6 +34,844 @@ use crate::*;
 /// without the gate noticing that a site stopped naming those identifiers.
 const TEST_LIMITS: Limits = Limits::new(64, 64);
 
+fn test_decode_context(
+    accepted_families: crate::decode::D43AcceptedFamilies,
+) -> crate::decode::DecodeContext {
+    crate::decode::DecodeContext::new(
+        accepted_families,
+        64,
+        64,
+        i32::MAX as u32,
+        62,
+        i32::MAX as u32,
+        i32::MAX as u32,
+        1_000_000,
+        MAX_AMOUNT_RAW,
+    )
+}
+
+// kills: making the eager entry point reject a structurally complete empty-core
+// payload, or failing to publish its canonical zero units.
+#[test]
+fn eager_decoder_accepts_the_minimal_payload() {
+    let payload = core_bytes(&[]).done();
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(report.structural_stop, None);
+    assert_eq!(crate::decode::select_first_fatal(&report), None);
+    assert_eq!(report.document.consumed, payload.len());
+    assert_eq!(report.units.market_trade_contract_rows, Some(0));
+}
+
+// kills: a driver arm that resumes without visiting any declared block, or
+// that visits a block without retaining its decoded rows.
+#[test]
+fn eager_decoder_walks_every_declared_block_of_every_family() {
+    for trailer in Trailer::ALL {
+        let payload = a_fixture_with_every_block_filled(trailer);
+        let report = crate::decode::decode_record(
+            &payload,
+            test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+        );
+        assert_eq!(report.structural_stop, None, "{}", trailer.label());
+        match trailer {
+            Trailer::Detail => assert!(!report.document.detail_rows.is_empty()),
+            Trailer::ResourceFlow => assert!(!report.document.flow_rows.is_empty()),
+            Trailer::FactoryHeader => assert!(!report.document.factory_rows.is_empty()),
+            Trailer::ResourceRow => {
+                assert!(!report.document.resource_identities.is_empty());
+                assert!(!report.document.resource_rows.is_empty());
+            }
+            Trailer::ClassicDeal => {
+                assert!(!report.document.deal_witnesses.is_empty());
+                assert!(!report.document.deal_incomplete_owners.is_empty());
+                assert!(!report.document.deal_rows.is_empty());
+            }
+            Trailer::Activation => assert!(report.document.activation_header.is_some()),
+            Trailer::Stockpile => {
+                assert!(!report.document.stockpile_countries.is_empty());
+                assert!(!report.document.stockpile_items.is_empty());
+            }
+            Trailer::Residual => assert!(!report.document.residual_rows.is_empty()),
+            Trailer::LendLease => assert!(!report.document.lend_lease_rows.is_empty()),
+        }
+    }
+}
+
+// kills: treating a semantic row refusal as an unreadable byte boundary, which
+// drops the bad family's structurally read count or a later decoded family.
+#[test]
+fn semantic_family_findings_do_not_cut_structurally_read_units() {
+    let append_resource = |builder: &mut Bytes| {
+        mtrr(
+            builder,
+            ResourceRowVersion::Identity,
+            2,
+            &["oil", "steel"],
+            &[21],
+            &[
+                (0, NeededType::CurrentMax.wire(), RESOURCE_FLAGS_OIL),
+                (1, NeededType::Surplus.wire(), 0),
+            ],
+        );
+    };
+
+    let mut builder = core_bytes(&[]);
+    mts1_v1(&mut builder);
+    append_resource(&mut builder);
+    let mut payload = builder.done();
+    let clean = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let resource_row = clean.document.resource_rows[0].at;
+    payload[resource_row + 56..resource_row + 60].copy_from_slice(&0u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(report.units.market_trade_stockpile_country_rows, Some(1));
+    assert_eq!(report.units.market_trade_resource_rows, Some(2));
+
+    let mut builder = core_bytes(&[]);
+    mts1_v1(&mut builder);
+    mtrf(
+        &mut builder,
+        FlowVersion::Fixed7,
+        FIXED7_RESOURCE_COUNT,
+        &[1, 2, 3, 4, 5, 6],
+    );
+    let mut payload = builder.done();
+    let clean = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let item = clean.document.stockpile_items[0].at;
+    payload[item + 4..item + 8].copy_from_slice(&9u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(report.units.market_trade_resource_flow_rows, Some(6));
+    assert_eq!(report.units.market_trade_stockpile_item_rows, Some(2));
+}
+
+// kills: storing only an MTRR token range and rereading the caller's payload
+// after decode_record, which would let later buffer mutation change the report.
+#[test]
+fn decoded_identity_text_is_self_contained() {
+    let mut payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let identity = &report.document.resource_identities[0];
+    assert_eq!(crate::decode::identity_token(identity), Some("oil"));
+    let token = identity.token.clone().expect("wire provenance");
+    payload[token].fill(b'x');
+    assert_eq!(crate::decode::identity_token(identity), Some("oil"));
+}
+
+// kills: returning immediately on a structural stop and thereby discarding a
+// semantic defect already available in the partial document.
+#[test]
+fn structural_stop_retains_an_earlier_semantic_finding() {
+    let mut payload = core_bytes(&[[1, 1 << 31, 0]]).done();
+    payload.extend_from_slice(b"MT");
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report.structural_stop.is_some());
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CoreUnknownFlags));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43StructuralViolation));
+}
+
+// kills: short-circuiting semantic evaluation after one bad core word, or
+// selecting by discovery order instead of the fold's historical rule order.
+#[test]
+fn multi_defect_core_retains_all_and_selects_the_historical_first() {
+    let mut payload = core_bytes(&[[0, 1 << 31, 0]]).done();
+    payload[CORE_HEADER_LEN + 44..CORE_HEADER_LEN + 48].copy_from_slice(&9u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CoreContractIdZero));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CoreUnknownFlags));
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CoreReserved));
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|f| f.rule),
+        Some(crate::decode::D43DecodeRule::D43CoreContractIdZero)
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal_through(
+            &report,
+            crate::decode::D43VerdictBoundary::D43TrailersAndCrossFamily,
+        ),
+        None
+    );
+}
+
+// kills: ordering fatal findings by rule kind before row index, which would
+// let a later row's zero contract id outrank an earlier row's unknown flags.
+#[test]
+fn fatal_selection_preserves_row_order_before_rule_order() {
+    let payload = core_bytes(&[[1, 1 << 31, 0], [0, 0, 0]]).done();
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43CoreUnknownFlags)
+    );
+}
+
+// kills: comparing row indexes across MTRR's identity and row blocks without
+// first ordering those blocks as the owned cursor walks them.
+#[test]
+fn fatal_selection_preserves_mtrr_block_order() {
+    let mut payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
+    let TrailerBody::ResourceRow(cursor) = only_body(&payload) else {
+        panic!("expected MTRR");
+    };
+    let header = *cursor.header();
+    let identity_one = header.identity_at + header.identity_stride;
+    payload[identity_one..identity_one + 2].copy_from_slice(&0u16.to_le_bytes());
+    payload[header.rows_at..header.rows_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43IdentityLength)
+    );
+}
+
+// kills: comparing row indexes across MTRD's witness and deal-row blocks
+// without first ordering witnesses, incomplete owners, then rows.
+#[test]
+fn fatal_selection_preserves_mtrd_block_order() {
+    let mut payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
+    let TrailerBody::ClassicDeal(cursor) = only_body(&payload) else {
+        panic!("expected MTRD");
+    };
+    let header = *cursor.header();
+    payload[header.witnesses_at + 4..header.witnesses_at + 8]
+        .copy_from_slice(&0u32.to_le_bytes());
+    payload[header.rows_at..header.rows_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43DealWitnessRange)
+    );
+}
+
+// kills: comparing row indexes across MTS1's country and item blocks without
+// first ordering the complete country block before the item block.
+#[test]
+fn fatal_selection_preserves_mts1_block_order() {
+    let mut payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
+    let TrailerBody::Stockpile(cursor) = only_body(&payload) else {
+        panic!("expected MTS1");
+    };
+    let header = *cursor.header();
+    payload[header.countries_at..header.countries_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    payload[header.items_at..header.items_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43StockpileCountryTagRange)
+    );
+}
+
+// kills: assigning aggregate MTS1 coverage to a later policy block than item
+// rows, which would make item 0's bad variant hide the historical coverage error.
+#[test]
+fn mts1_country_coverage_precedes_item_validation() {
+    let mut builder = core_bytes(&[]);
+    mts1_v1(&mut builder);
+    let mut payload = builder.done();
+    let TrailerBody::Stockpile(cursor) = only_body(&payload) else {
+        panic!("expected MTS1");
+    };
+    let header = *cursor.header();
+    payload[header.countries_at + 8..header.countries_at + 12]
+        .copy_from_slice(&1u32.to_le_bytes());
+    payload[header.items_at..header.items_at + 4].copy_from_slice(&0u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report.findings.iter().any(|finding| {
+        finding.rule == crate::decode::D43DecodeRule::D43StockpileVariantRange
+    }));
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43StockpileCountryCoverage)
+    );
+}
+
+// kills: ordering MTRD aggregate findings by predicate ordinal instead of the
+// BTree identity order the historical fold completed one identity at a time.
+#[test]
+fn mtrd_identity_order_precedes_half_predicate_order() {
+    fn row(
+        owner: u32,
+        counterpart: u32,
+        direction: DealDirection,
+        exporter: u32,
+        importer: u32,
+        requested_raw: i64,
+    ) -> DealRow {
+        DealRow {
+            owner_tag_db_id: owner,
+            counterpart_tag_db_id: counterpart,
+            resource_index: 0,
+            visible_order: 0,
+            direction: direction.wire(),
+            route_kind: DealRoute::Sea.wire(),
+            flags: DEAL_FLAG_EXACT,
+            route_status_or_reserved: 0,
+            identity_exporter_tag_db_id: exporter,
+            identity_importer_tag_db_id: importer,
+            identity_ordinal: 1,
+            packed_identity: None,
+            reserved_ordinal_word: None,
+            requested_raw,
+            delivered_raw: 0,
+            available_export_raw: 0,
+            factory_cost_raw: 0,
+            efficiency_raw: 0,
+            civilian_factories: 0,
+            convoys_assigned: 0,
+            convoys_required: 0,
+        }
+    }
+
+    let rows = [
+        row(1, 2, DealDirection::Export, 1, 2, FIXED_SCALE_RAW as i64),
+        row(2, 1, DealDirection::Import, 1, 2, 2 * FIXED_SCALE_RAW as i64),
+        row(3, 4, DealDirection::Export, 3, 4, FIXED_SCALE_RAW as i64),
+    ];
+    let mut payload = core_bytes(&[]).done();
+    payload.extend_from_slice(
+        &encode::encode_classic_deals(DealVersion::WideIdentity, &[1, 2, 3, 4], &[], &rows)
+            .expect("review fixture encodes"),
+    );
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let first = crate::decode::select_first_fatal(&report).expect("fatal deal finding");
+    assert_eq!(first.rule, crate::decode::D43DecodeRule::D43DealHalfMismatch);
+    assert_eq!(
+        first.deal_identity,
+        Some(crate::decode::D43DealIdentityOperands {
+            exporter_tag_db_id: 1,
+            importer_tag_db_id: 2,
+            resource_index: 0,
+            ordinal: 1,
+        })
+    );
+}
+
+// kills: labeling a valid core header whose declared rows are truncated as a
+// core-header finding instead of a core-rows finding.
+#[test]
+fn structural_core_row_truncation_names_the_core_rows_block() {
+    let mut payload = core_bytes(&[[1, 0, 0]]).done();
+    payload.truncate(CORE_HEADER_LEN);
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let structural = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule == crate::decode::D43DecodeRule::D43StructuralViolation)
+        .expect("structural finding");
+    assert_eq!(
+        structural.block,
+        crate::decode::D43DecodeBlock::D43CoreRows
+    );
+}
+
+// kills: selecting a bad core scale before proving the declared core-row
+// extent, contrary to the fold's length-before-scale prefix order.
+#[test]
+fn truncated_core_rows_outrank_a_bad_core_scale() {
+    let mut payload = core_bytes(&[[1, 0, 0]]).done();
+    payload[44..48].copy_from_slice(&9u32.to_le_bytes());
+    payload.truncate(CORE_HEADER_LEN);
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43StructuralViolation)
+    );
+}
+
+// kills: labeling the duplicate-family refusal discovered by `next()` at the
+// second magic as a trailer-header failure.
+#[test]
+fn duplicate_trailer_finding_names_the_magic_block() {
+    let mut b = core_bytes(&[]);
+    mtra_v1(&mut b);
+    mtra_v1(&mut b);
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    let structural = report
+        .findings
+        .iter()
+        .find(|finding| finding.rule == crate::decode::D43DecodeRule::D43StructuralViolation)
+        .expect("duplicate structural finding");
+    assert_eq!(
+        structural.block,
+        crate::decode::D43DecodeBlock::D43TrailerMagic
+    );
+}
+
+// kills: dropping resource_index from the MTRD half-join identity, which would
+// merge two distinct deals sharing exporter/importer/ordinal into four halves.
+#[test]
+fn deal_half_join_keys_distinct_resources_separately() {
+    let mut b = core_bytes(&[]);
+    mtrd_two_resources_same_parties(&mut b);
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(!report.findings.iter().any(|finding| matches!(
+        finding.rule,
+        crate::decode::D43DecodeRule::D43DealHalfCount
+            | crate::decode::D43DecodeRule::D43DealHalfMismatch
+    )));
+}
+
+// kills: parsing an unaccepted shipping family header before refusing its
+// magic, or forgetting to expose that family to the all-family lane policy.
+#[test]
+fn lane_only_families_are_refused_at_magic_or_fully_walked_by_policy() {
+    for trailer in [Trailer::Residual, Trailer::LendLease] {
+        let payload = a_fixture_with_every_block_filled(trailer);
+        let shipping = crate::decode::decode_record(
+            &payload,
+            test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+        );
+        assert!(
+            matches!(shipping.structural_stop, Some(crate::decode::D43DecodeStop::D43RejectedFamily { trailer: found, .. }) if found == trailer)
+        );
+        match trailer {
+            Trailer::Residual => assert!(shipping.document.residual_header.is_none()),
+            Trailer::LendLease => assert!(shipping.document.lend_lease_header.is_none()),
+            _ => unreachable!(),
+        }
+        let lane = crate::decode::decode_record(
+            &payload,
+            test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+        );
+        assert_eq!(lane.structural_stop, None);
+    }
+}
+
+// kills: collapsing the lane-only MTRB/MTLL payload checks back into one
+// umbrella finding, or accidentally making those gate diagnostics record-fatal.
+#[test]
+fn lane_only_family_predicates_are_fine_grained_and_nonfatal() {
+    use crate::decode::{D43LaneRule, D43RuleFatality};
+
+    let residual = crate::decode::decode_record(
+        &a_fixture_with_every_block_filled(Trailer::Residual),
+        test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+    );
+    let lend_lease = crate::decode::decode_record(
+        &a_fixture_with_every_block_filled(Trailer::LendLease),
+        test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+    );
+    assert!(residual.findings.iter().any(|finding| {
+        finding.lane_rule == Some(D43LaneRule::D43LaneResidualGapIdZero)
+            && finding.fatality == D43RuleFatality::NonFatal
+    }));
+    assert!(lend_lease.findings.iter().any(|finding| {
+        finding.lane_rule == Some(D43LaneRule::D43LaneLendLeaseSourceRecordKind)
+            && finding.fatality == D43RuleFatality::NonFatal
+    }));
+}
+
+// kills: moving residual current-domain vocabulary or the row-width ceiling
+// back into the lane formatter, or accidentally making either payload finding fatal.
+#[test]
+fn residual_domain_and_row_width_predicates_are_leaf_owned_and_nonfatal() {
+    use crate::decode::{D43LaneRule, D43RuleFatality};
+
+    let mut payload = a_fixture_with_every_block_filled(Trailer::Residual);
+    let row = CORE_HEADER_LEN + 32;
+    payload[row + 16..row + 20].copy_from_slice(&999u32.to_le_bytes());
+    payload[row + 24..row + 28].copy_from_slice(&513u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+    );
+    for rule in [
+        D43LaneRule::D43LaneResidualCurrentDomainUnknown,
+        D43LaneRule::D43LaneResidualCurrentRowLenRange,
+    ] {
+        assert!(report.findings.iter().any(|finding| {
+            finding.lane_rule == Some(rule)
+                && finding.fatality == D43RuleFatality::NonFatal
+        }));
+    }
+}
+
+// kills: counting an invalid flow kind as a decoded lane country, which drops
+// the lane's historical country-count diagnostic when every row kind is unknown.
+#[test]
+fn lane_flow_country_count_ignores_unknown_kinds() {
+    let mut payload = core_bytes(&[]);
+    mtrf(
+        &mut payload,
+        FlowVersion::Variable,
+        3,
+        &[99, 99, 99, 99, 99, 99],
+    );
+    let report = crate::decode::decode_record(
+        &payload.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+    );
+    assert!(report.findings.iter().any(|finding| {
+        finding.lane_rule
+            == Some(crate::decode::D43LaneRule::D43LaneFlowDecodedCountryCount)
+            && finding.operand_a == 0
+            && finding.operand_b == 1
+    }));
+}
+
+// kills: leaving the lane's historical speed ceiling in the removed lane
+// decoder, or silently replacing its 100 ceiling with the fold's wider range.
+#[test]
+fn lane_detail_speed_ceiling_is_a_shared_leaf_finding() {
+    let mut b = core_bytes(&[]);
+    let detail_at = b.at();
+    mtd1_v1(&mut b);
+    let mut payload = b.done();
+    payload[detail_at + 32 + 24..detail_at + 32 + 28].copy_from_slice(&101i32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
+    );
+    assert!(report.findings.iter().any(|finding| {
+        finding.lane_rule == Some(crate::decode::D43LaneRule::D43LaneDetailSpeedRange)
+            && finding.operand_a == 101
+    }));
+}
+
+// kills: dropping country witnesses from one family, or comparing an MTRR
+// identity-only trailer as though it had witnessed a country set.
+#[test]
+fn cross_family_country_sets_are_compared_with_identity_only_exception() {
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Fixed7, 7, &[1, 2, 3, 4, 5, 6]);
+    let mtrh_at = b.at();
+    mtrh_v1(&mut b);
+    let mut payload = b.done();
+    payload[mtrh_at + 24..mtrh_at + 28].copy_from_slice(&22u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossCountrySetAgreement));
+
+    let mut b = core_bytes(&[]);
+    mtrh_v1(&mut b);
+    mtrr(
+        &mut b,
+        ResourceRowVersion::Identity,
+        2,
+        &["oil", "steel"],
+        &[],
+        &[],
+    );
+    let identity_only = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(!identity_only
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossCountrySetAgreement));
+}
+
+// kills: removing the MTRF-v3/MTRR-identity join rule or treating a count-only
+// MTRR as identity-bearing.
+#[test]
+fn variable_flow_requires_identity_bearing_resource_rows() {
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Variable, 2, &[1, 2, 3, 4, 5, 6]);
+    mtrr(&mut b, ResourceRowVersion::CountOnly, 2, &[], &[], &[]);
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossFlowV3NeedsIdentityResourceRows));
+
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Variable, 2, &[1, 2, 3, 4, 5, 6]);
+    mtrr(
+        &mut b,
+        ResourceRowVersion::Identity,
+        2,
+        &["oil", "steel"],
+        &[],
+        &[],
+    );
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(!report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossFlowV3NeedsIdentityResourceRows));
+}
+
+// kills: evaluating cross-family absence rules after a structural stop, which
+// would falsely claim a truncated later MTRR was absent from a complete record.
+#[test]
+fn cross_family_absence_rules_wait_for_exact_consumption() {
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Variable, 2, &[1, 2, 3, 4, 5, 6]);
+    b.magic(b"MTRR");
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report.structural_stop.is_some());
+    assert!(!report.findings.iter().any(|finding| {
+        finding.rule == crate::decode::D43DecodeRule::D43CrossFlowV3NeedsIdentityResourceRows
+    }));
+}
+
+// kills: letting read_body's header_len refusal outrank the owner-approved
+// MTRF resource-count diagnostic when both words are wrong.
+#[test]
+fn flow_v3_double_fault_selects_resource_count_before_header_len() {
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Variable, 65, &[1, 2, 3, 4, 5, 6]);
+    let mut payload = b.done();
+    payload[CORE_HEADER_LEN + 6..CORE_HEADER_LEN + 8].copy_from_slice(&31u16.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(report.structural_stop.is_some());
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|f| f.rule),
+        Some(crate::decode::D43DecodeRule::D43FlowHeaderResourceCount)
+    );
+}
+
+// kills: emitting both the previewed MTRF resource-count rule and a second
+// generic structural finding for the same rejected header word.
+#[test]
+fn flow_v3_bad_resource_count_is_reported_once() {
+    let mut b = core_bytes(&[]);
+    mtrf(&mut b, FlowVersion::Variable, 65, &[1, 2, 3, 4, 5, 6]);
+    let report = crate::decode::decode_record(
+        &b.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .filter(
+                |finding| finding.rule == crate::decode::D43DecodeRule::D43FlowHeaderResourceCount
+            )
+            .count(),
+        1
+    );
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.rule == crate::decode::D43DecodeRule::D43StructuralViolation));
+}
+
+// kills: collapsing an honestly published zero into "not reached", or
+// publishing authority units after its core-scale early-return boundary.
+#[test]
+fn authority_units_distinguish_zero_from_not_reached() {
+    let empty = crate::decode::decode_record(
+        &core_bytes(&[]).done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(empty.units.market_trade_detail_rows, Some(0));
+
+    let mut bad_scale = core_bytes(&[]).done();
+    bad_scale[44..48].copy_from_slice(&9u32.to_le_bytes());
+    let bad_scale = crate::decode::decode_record(
+        &bad_scale,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(bad_scale.units.market_trade_contract_rows, None);
+    assert_eq!(bad_scale.units.market_trade_detail_rows, None);
+
+    let mut refused_detail = core_bytes(&[]).done();
+    refused_detail.extend_from_slice(b"MTD1");
+    let refused_detail = crate::decode::decode_record(
+        &refused_detail,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(refused_detail.units.market_trade_contract_rows, Some(0));
+    assert_eq!(refused_detail.units.market_trade_detail_rows, None);
+}
+
+// kills: deriving the publication cut from a semantic family or cross-family
+// fatal verdict, which erases counts whose complete byte ranges were all read.
+#[test]
+fn cross_family_refusal_retains_fully_decoded_family_units() {
+    let mut payload = core_bytes(&[]);
+    mtrf(
+        &mut payload,
+        FlowVersion::Fixed7,
+        FIXED7_RESOURCE_COUNT,
+        &[1, 2, 3, 4, 5, 6],
+    );
+    let factory_at = payload.at();
+    mtrh_v1(&mut payload);
+    let mut payload = payload.done();
+    payload[CORE_HEADER_LEN + 32 + 4..CORE_HEADER_LEN + 32 + 8]
+        .copy_from_slice(&99u32.to_le_bytes());
+    payload[factory_at + 24..factory_at + 28].copy_from_slice(&22u32.to_le_bytes());
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(
+        crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
+        Some(crate::decode::D43DecodeRule::D43FlowKind)
+    );
+    assert!(report.findings.iter().any(|finding| {
+        finding.rule == crate::decode::D43DecodeRule::D43CrossCountrySetAgreement
+    }));
+    assert_eq!(report.units.market_trade_resource_flow_rows, Some(6));
+    assert_eq!(report.units.market_trade_factory_header_rows, Some(1));
+
+    let mut duplicate = core_bytes(&[]);
+    mtra_v1(&mut duplicate);
+    mtra_v1(&mut duplicate);
+    let duplicate = crate::decode::decode_record(
+        &duplicate.done(),
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(duplicate.structural_stop.is_some());
+    assert_eq!(duplicate.units.market_trade_activation_rows, Some(1));
+}
+
+// kills: retaining every malformed core-row finding or silently truncating
+// excess findings without an explicit per-rule suppression summary.
+#[test]
+fn large_malformed_core_bounds_findings_with_explicit_summaries() {
+    const ROWS: usize = 4_096;
+    let rows = vec![[0u64, 1u64 << 31, 0u64]; ROWS];
+    let payload = core_bytes(&rows).done();
+    let report = crate::decode::decode_record(
+        &payload,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert_eq!(report.document.core_rows.len(), ROWS);
+    assert!(report.findings.iter().any(|finding| {
+        finding.rule == crate::decode::D43DecodeRule::D43FindingsSuppressed
+            && finding.suppressed_rule
+                == Some(crate::decode::D43DecodeRule::D43CoreContractIdZero)
+            && finding.operand_a > 0
+    }));
+    for rule in [
+        crate::decode::D43DecodeRule::D43CoreContractIdZero,
+        crate::decode::D43DecodeRule::D43CoreDuplicateContractPair,
+        crate::decode::D43DecodeRule::D43CoreUnknownFlags,
+    ] {
+        assert!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule == rule)
+                .count()
+                <= crate::decode::D43_MAX_FINDINGS_PER_RULE
+        );
+    }
+    assert!(report.findings.len() < 1_000);
+}
+
+// kills: reversing the legacy MTRF all-zero predicate, which would reject the
+// producer's measured exported values and admit an empty observation.
+#[test]
+fn legacy_flow_requires_at_least_one_nonzero_resource_value() {
+    let mut b = core_bytes(&[]);
+    mtrf(
+        &mut b,
+        FlowVersion::Legacy,
+        FIXED7_RESOURCE_COUNT,
+        &[FlowKind::Exported.wire()],
+    );
+    let valid = b.done();
+    let valid_report = crate::decode::decode_record(
+        &valid,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(!valid_report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43FlowLegacyValuesAllZero));
+
+    let mut empty = valid;
+    let values_at = CORE_HEADER_LEN + 32 + FLOW_ROW_HEADER_LEN;
+    empty[values_at..values_at + FIXED7_RESOURCE_COUNT as usize * 8].fill(0);
+    let empty_report = crate::decode::decode_record(
+        &empty,
+        test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
+    );
+    assert!(empty_report
+        .findings
+        .iter()
+        .any(|f| f.rule == crate::decode::D43DecodeRule::D43FlowLegacyValuesAllZero));
+}
+
 // =============================================================================
 // A byte builder, so every fixture is written out rather than encoded
 // =============================================================================
@@ -117,39 +955,39 @@ fn core_bytes(rows: &[[u64; 3]]) -> Bytes {
     b
 }
 
-/// Every declared block of `body`, reached and explicitly discarded.
-///
-/// The only two routes past a trailer are walking every block and discarding
-/// every block, so a test that cares about one family has to say which it is
-/// doing for the rest. That is the property under test, exercised by the test
-/// harness itself.
-fn discard_body(body: TrailerBody) -> TrailerResume {
+trait WalkBlockToEndForTest<N> {
+    fn walk_to_end_for_test(self) -> BlockEnd<N>;
+}
+
+impl<N> WalkBlockToEndForTest<N> for BlockCursor<N> {
+    fn walk_to_end_for_test(mut self) -> BlockEnd<N> {
+        while let RowStep::Row { .. } = self.next() {}
+        self.into_end()
+            .expect("the test helper walked every declared row")
+    }
+}
+
+/// Every declared block of `body`, consumed through the production walk.
+fn walk_body_to_end_for_test(body: TrailerBody) -> TrailerResume {
     match body {
-        TrailerBody::Detail(c) => c.rows().discard_all().next,
-        TrailerBody::ResourceFlow(c) => c.rows().discard_all().next,
-        TrailerBody::FactoryHeader(c) => c.rows().discard_all().next,
-        TrailerBody::Residual(c) => c.rows().discard_all().next,
-        TrailerBody::LendLease(c) => c.rows().discard_all().next,
-        TrailerBody::ResourceRow(c) => {
-            c.identities()
-                .discard_all()
-                .next
-                .rows()
-                .discard_all()
-                .next
-        }
+        TrailerBody::Detail(c) => c.rows().walk_to_end_for_test().next,
+        TrailerBody::ResourceFlow(c) => c.rows().walk_to_end_for_test().next,
+        TrailerBody::FactoryHeader(c) => c.rows().walk_to_end_for_test().next,
+        TrailerBody::Residual(c) => c.rows().walk_to_end_for_test().next,
+        TrailerBody::LendLease(c) => c.rows().walk_to_end_for_test().next,
+        TrailerBody::ResourceRow(c) => c.identities().walk_to_end_for_test().next.rows().walk_to_end_for_test().next,
         TrailerBody::ClassicDeal(c) => {
             c.witnesses()
-                .discard_all()
+                .walk_to_end_for_test()
                 .next
                 .incomplete_owners()
-                .discard_all()
+                .walk_to_end_for_test()
                 .next
                 .rows()
-                .discard_all()
+                .walk_to_end_for_test()
                 .next
         }
-        TrailerBody::Stockpile(c) => c.countries().discard_all().next.items().discard_all().next,
+        TrailerBody::Stockpile(c) => c.countries().walk_to_end_for_test().next.items().walk_to_end_for_test().next,
         TrailerBody::Activation(c) => c.end().next,
     }
 }
@@ -179,7 +1017,7 @@ fn walk_all(payload: &[u8]) -> Result<Vec<(Trailer, usize, usize)>, Violation> {
     let mut seen = Vec::new();
     let end = visit_trailers(payload, |_, at, body| {
         let trailer = body.trailer();
-        let resume = discard_body(body);
+        let resume = walk_body_to_end_for_test(body);
         seen.push((trailer, at, resume.end()));
         Ok(resume)
     })?;
@@ -228,7 +1066,7 @@ fn every_declared_version_has_a_handwritten_fixture() {
                 TrailerBody::ClassicDeal(c) => deal.push(c.header().version),
                 _ => {}
             }
-            Ok(discard_body(body))
+            Ok(walk_body_to_end_for_test(body))
         })
         .expect("walk");
     }
@@ -270,7 +1108,7 @@ fn detail_flag_fixtures_cover_exactly_the_known_mask() {
     for (payload, _) in every_fixture() {
         visit_trailers(&payload, |payload, _, body| {
             let TrailerBody::Detail(c) = body else {
-                return Ok(discard_body(body));
+                return Ok(walk_body_to_end_for_test(body));
             };
             let mut rows = c.rows();
             while let RowStep::Row { at, .. } = rows.next() {
@@ -292,9 +1130,9 @@ fn resource_row_fixtures_cover_every_flag_and_needed_type() {
     for (payload, _) in every_fixture() {
         visit_trailers(&payload, |payload, _, body| {
             let TrailerBody::ResourceRow(c) = body else {
-                return Ok(discard_body(body));
+                return Ok(walk_body_to_end_for_test(body));
             };
-            let mut rows = c.identities().discard_all().next.rows();
+            let mut rows = c.identities().walk_to_end_for_test().next.rows();
             while let RowStep::Row { at, .. } = rows.next() {
                 let row = resource_row_at(payload, at);
                 union |= row.flags;
@@ -339,10 +1177,10 @@ fn deal_and_flow_vocabularies_are_covered() {
                 let version = c.header().version;
                 let mut rows = c
                     .witnesses()
-                    .discard_all()
+                    .walk_to_end_for_test()
                     .next
                     .incomplete_owners()
-                    .discard_all()
+                    .walk_to_end_for_test()
                     .next
                     .rows();
                 while let RowStep::Row { at, .. } = rows.next() {
@@ -363,7 +1201,7 @@ fn deal_and_flow_vocabularies_are_covered() {
                 }
                 Ok(rows.into_end()?.next)
             }
-            _ => Ok(discard_body(body)),
+            _ => Ok(walk_body_to_end_for_test(body)),
         })
         .expect("walk");
     }
@@ -636,6 +1474,48 @@ fn mtrd_with_routes(
         b.at() - start,
         32 + witnesses.len() * 4 + incomplete.len() * 4 + 2 * 96
     );
+}
+
+fn mtrd_two_resources_same_parties(b: &mut Bytes) {
+    let start = b.at();
+    b.magic(b"MTRD");
+    b.u16(DealVersion::WideIdentity.wire());
+    b.u16(32);
+    b.u16(96);
+    b.u16(0);
+    b.u32(4);
+    b.u32(2);
+    b.u32(FIXED_SCALE_RAW);
+    b.u32(2);
+    b.u32(0);
+    b.u32(21).u32(22);
+    for (visible_order, resource_index, owner, counterpart, direction) in [
+        (0, 0, 21, 22, DealDirection::Export.wire()),
+        (0, 0, 22, 21, DealDirection::Import.wire()),
+        (1, 1, 21, 22, DealDirection::Export.wire()),
+        (1, 1, 22, 21, DealDirection::Import.wire()),
+    ] {
+        b.u32(owner);
+        b.u32(counterpart);
+        b.u32(resource_index);
+        b.u32(visible_order);
+        b.u32(direction);
+        b.u32(DealRoute::Sea.wire());
+        b.u32(DEAL_FLAG_EXACT);
+        b.u32(0);
+        b.u32(21);
+        b.u32(22);
+        b.i64(FIXED_SCALE_RAW as i64);
+        b.i64(0);
+        b.i64(0);
+        b.i64(0);
+        b.i64(0);
+        b.i32(0);
+        b.i32(0);
+        b.i32(0);
+        b.u32(1);
+    }
+    assert_eq!(b.at() - start, 32 + 8 + 4 * 96);
 }
 
 fn mtra_v1(b: &mut Bytes) {
@@ -1488,10 +2368,10 @@ fn the_deal_identity_is_read_at_the_width_its_version_spells() {
     };
     let mut rows = c
         .witnesses()
-        .discard_all()
+        .walk_to_end_for_test()
         .next
         .incomplete_owners()
-        .discard_all()
+        .walk_to_end_for_test()
         .next
         .rows();
     let RowStep::Row { at, .. } = rows.next() else {
@@ -1919,7 +2799,7 @@ fn the_lane_only_families_have_row_readers() {
             assert_eq!(row.proof_status, 10);
             assert_eq!(row.reserved, 11);
             saw_residual = true;
-            Ok(rows.discard_all().next)
+            Ok(rows.walk_to_end_for_test().next)
         }
         TrailerBody::LendLease(c) => {
             let mut rows = c.rows();
@@ -1932,9 +2812,9 @@ fn the_lane_only_families_have_row_readers() {
             assert_eq!(row.amount_raw, FIXED_SCALE_RAW as i64);
             assert_eq!(row.reserved, 0);
             saw_lend_lease = true;
-            Ok(rows.discard_all().next)
+            Ok(rows.walk_to_end_for_test().next)
         }
-        _ => Ok(discard_body(body)),
+        _ => Ok(walk_body_to_end_for_test(body)),
     })
     .expect("walk");
     assert!(saw_residual && saw_lend_lease);
@@ -1952,7 +2832,6 @@ fn the_flow_masks_are_the_documented_literals() {
     assert_eq!(FLOW_KIND_MASK, 0x3F);
     assert_eq!(FLOW_RESOURCE_MASK, 0x7F);
 }
-
 
 // =============================================================================
 // 7. The owned walk: a skipped block is refused
@@ -2078,13 +2957,18 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     let err = identities
         .into_end()
         .unwrap_err_or_panic("MTRR identities skipped silently");
-    assert_not_consumed(err, Trailer::ResourceRow, TrailerBlock::Identities, remaining);
+    assert_not_consumed(
+        err,
+        Trailer::ResourceRow,
+        TrailerBlock::Identities,
+        remaining,
+    );
     note(Trailer::ResourceRow, TrailerBlock::Identities);
 
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
     };
-    let rows = c.identities().discard_all().next.rows();
+    let rows = c.identities().walk_to_end_for_test().next.rows();
     let remaining = rows.remaining();
     assert!(remaining > 0, "MTRR fixture has no rows");
     let err = rows
@@ -2104,13 +2988,18 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     let err = witnesses
         .into_end()
         .unwrap_err_or_panic("MTRD witnesses skipped silently");
-    assert_not_consumed(err, Trailer::ClassicDeal, TrailerBlock::Witnesses, remaining);
+    assert_not_consumed(
+        err,
+        Trailer::ClassicDeal,
+        TrailerBlock::Witnesses,
+        remaining,
+    );
     note(Trailer::ClassicDeal, TrailerBlock::Witnesses);
 
     let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
         panic!("expected MTRD");
     };
-    let incomplete = c.witnesses().discard_all().next.incomplete_owners();
+    let incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
     let remaining = incomplete.remaining();
     assert!(remaining > 0, "MTRD fixture has no incomplete owners");
     let err = incomplete
@@ -2129,10 +3018,10 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     };
     let rows = c
         .witnesses()
-        .discard_all()
+        .walk_to_end_for_test()
         .next
         .incomplete_owners()
-        .discard_all()
+        .walk_to_end_for_test()
         .next
         .rows();
     let remaining = rows.remaining();
@@ -2160,7 +3049,7 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     let TrailerBody::Stockpile(c) = only_body(&payload) else {
         panic!("expected MTS1");
     };
-    let items = c.countries().discard_all().next.items();
+    let items = c.countries().walk_to_end_for_test().next.items();
     let remaining = items.remaining();
     assert!(remaining > 0, "MTS1 fixture has no items");
     let err = items
@@ -2218,22 +3107,21 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     }
 }
 
-/// `discard_all` is the OTHER way past a block, and it lands on the block's own
-/// end -- the offset the header already declared -- never past it.
+/// Walking a block lands on the block's own end -- the offset the header
+/// declared -- never past it.
 ///
-/// kills: `discard_all` advancing by anything but `remaining * stride`, which
-/// would let a site that reads a block structurally-only resume at a wrong
-/// offset and still be accepted by the walk.
+/// kills: `RowCursor::next` advancing by the wrong stride, or `into_end`
+/// accepting an end other than the one reached after every declared row.
 #[test]
-fn discarding_a_block_lands_on_exactly_that_blocks_end() {
+fn walking_a_block_lands_on_exactly_that_blocks_end() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
     };
     let header = *c.header();
     let identities = c.identities();
-    let discarded = identities.discard_all();
-    assert_eq!(discarded.at, header.rows_at);
+    let walked = identities.walk_to_end_for_test();
+    assert_eq!(walked.at, header.rows_at);
 
     // And walking it reaches the same offset, which is what makes the two
     // routes interchangeable to the GRAMMAR and different only at the site.
@@ -2242,7 +3130,10 @@ fn discarding_a_block_lands_on_exactly_that_blocks_end() {
     };
     let mut identities = c.identities();
     while let RowStep::Row { .. } = identities.next() {}
-    assert_eq!(identities.into_end().expect("identities").at, header.rows_at);
+    assert_eq!(
+        identities.into_end().expect("identities").at,
+        header.rows_at
+    );
 }
 
 /// `read_body` without a delimited magic is a CALLER defect, not a payload one,
@@ -2293,7 +3184,8 @@ fn peeking_a_header_reads_the_bodys_words_and_moves_nothing() {
     assert_eq!(cursor.offset(), core);
     assert_eq!(words.sized.prefix.at, at);
 
-    let TrailerBody::ResourceFlow(c) = cursor.read_body(&payload, TEST_LIMITS).expect("body") else {
+    let TrailerBody::ResourceFlow(c) = cursor.read_body(&payload, TEST_LIMITS).expect("body")
+    else {
         panic!("expected MTRF");
     };
     let body = *c.header();
@@ -2340,15 +3232,12 @@ fn peeking_a_truncated_header_reports_what_reading_it_would() {
     );
 }
 
-
-/// `discard_all` after a PARTIAL walk still lands on the block's own end.
+/// Completing a PARTIAL walk still lands on the block's own end.
 ///
-/// kills: `RowCursor::skip_all` advancing by `count * stride` instead of
-/// `remaining * stride`. The zero-consumed case cannot tell those apart -- they
-/// are the same number there -- which is exactly the hole Codex found in the
-/// first version of this section.
+/// kills: `RowCursor::next` forgetting the already consumed index or advancing
+/// the remaining rows by any stride other than the declared one.
 #[test]
-fn discarding_a_partly_walked_block_still_lands_on_its_own_end() {
+fn completing_a_partly_walked_block_still_lands_on_its_own_end() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
@@ -2364,8 +3253,8 @@ fn discarding_a_partly_walked_block_still_lands_on_its_own_end() {
     };
     assert_eq!(index, 0);
     assert_eq!(identities.remaining(), 1);
-    let discarded = identities.discard_all();
-    assert_eq!(discarded.at, header.rows_at);
+    let walked = identities.walk_to_end_for_test();
+    assert_eq!(walked.at, header.rows_at);
 
     // Every intermediate consumed-count lands on the same end.
     for consume in 0..=2usize {
@@ -2376,22 +3265,26 @@ fn discarding_a_partly_walked_block_still_lands_on_its_own_end() {
         for _ in 0..consume {
             identities.next();
         }
-        assert_eq!(identities.discard_all().at, header.rows_at, "after {consume}");
+        assert_eq!(
+            identities.walk_to_end_for_test().at,
+            header.rows_at,
+            "after {consume}"
+        );
     }
 }
 
-/// A block a version declares NOTHING for is already at its end, and discarding
-/// it moves nothing.
+/// A block a version declares NOTHING for is already at its end, and walking it
+/// moves nothing.
 ///
-/// kills: `skip_all` on an empty cursor advancing at all, and a zero-length
-/// block whose `at` is not the next block's start.
+/// kills: `RowCursor::next` on an empty cursor advancing at all, and a
+/// zero-length block whose `at` is not the next block's start.
 ///
 /// It does NOT kill a wrong stride: zero rows advance zero bytes at every
-/// stride, so this case cannot observe one. `every_declared_block_discards_to_
+/// stride, so this case cannot observe one. `every_declared_block_walks_to_
 /// its_own_end_from_every_position` is what does (Codex round 3 called the
 /// earlier wording of this comment vacuous, and it was).
 #[test]
-fn discarding_a_version_absent_block_moves_nothing() {
+fn walking_a_version_absent_block_moves_nothing() {
     // MTRR v2 carries no identity block; MTRD v2 carries no incomplete owners.
     let mut b = core_bytes(&[]);
     mtrr(
@@ -2413,9 +3306,9 @@ fn discarding_a_version_absent_block_moves_nothing() {
     assert_eq!(header.identity_len, 0);
     let identities = c.identities();
     assert_eq!(identities.remaining(), 0);
-    let discarded = identities.discard_all();
-    assert_eq!(discarded.at, header.identity_at);
-    assert_eq!(discarded.at, header.rows_at);
+    let walked = identities.walk_to_end_for_test();
+    assert_eq!(walked.at, header.identity_at);
+    assert_eq!(walked.at, header.rows_at);
 
     let mut b = core_bytes(&[]);
     mtrd(&mut b, DealVersion::Statuses, &[21, 22], &[]);
@@ -2425,13 +3318,9 @@ fn discarding_a_version_absent_block_moves_nothing() {
     };
     let header = *c.header();
     assert_eq!(header.incomplete_count, 0);
-    let incomplete = c
-        .witnesses()
-        .discard_all()
-        .next
-        .incomplete_owners();
+    let incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
     assert_eq!(incomplete.remaining(), 0);
-    assert_eq!(incomplete.discard_all().at, header.rows_at);
+    assert_eq!(incomplete.walk_to_end_for_test().at, header.rows_at);
 }
 
 /// `peek_header` applies NO rule: it reports a header the body refuses, and
@@ -2445,9 +3334,11 @@ fn discarding_a_version_absent_block_moves_nothing() {
 #[test]
 fn peeking_reports_a_header_the_body_refuses() {
     // A declared header_len of 64 where MTD1's is 32, and an unknown version.
-    for (version, declared_header_len, declared_row_len) in
-        [(1u16, 64u16, 64u16), (9u16, 32u16, 64u16), (1u16, 32u16, 48u16)]
-    {
+    for (version, declared_header_len, declared_row_len) in [
+        (1u16, 64u16, 64u16),
+        (9u16, 32u16, 64u16),
+        (1u16, 32u16, 48u16),
+    ] {
         let mut b = core_bytes(&[]);
         b.magic(b"MTD1")
             .u16(version)
@@ -2462,9 +3353,10 @@ fn peeking_reports_a_header_the_body_refuses() {
         let mut cursor = TrailerCursor::new(core);
         cursor.next(&payload).expect("magic");
 
-        let HeaderPreview::Detail(words) = cursor.peek_header(&payload).expect(
-            "the preview applies no rule, so a header the body refuses still previews",
-        ) else {
+        let HeaderPreview::Detail(words) = cursor
+            .peek_header(&payload)
+            .expect("the preview applies no rule, so a header the body refuses still previews")
+        else {
             panic!("expected an MTD1 preview");
         };
         assert_eq!(words.sized.prefix.version, version);
@@ -2517,7 +3409,6 @@ fn every_family_previews_inside_its_own_header() {
             .unwrap_err_or_panic(&format!("{} previewed past its header", trailer.label()));
     }
 }
-
 
 // =============================================================================
 // 8. Round-3 review: the identity stride, and the proofs that were vacuous
@@ -2677,7 +3568,13 @@ fn every_familys_preview_reports_a_header_its_body_refuses() {
             .read_body(&payload, TEST_LIMITS)
             .unwrap_err_or_panic(&format!("{} accepted an unknown version", trailer.label()));
         assert!(
-            matches!(err.kind, ViolationKind::UnknownVersion { version: 0x00FE, .. }),
+            matches!(
+                err.kind,
+                ViolationKind::UnknownVersion {
+                    version: 0x00FE,
+                    ..
+                }
+            ),
             "{} produced {:?}",
             trailer.label(),
             err.kind
@@ -2688,13 +3585,11 @@ fn every_familys_preview_reports_a_header_its_body_refuses() {
 /// EVERY declared block lands on its own end from EVERY consumed-count, not
 /// only from zero.
 ///
-/// kills: `RowCursor::skip_all` using `count * stride` instead of
-/// `remaining * stride`. The zero-consumed case cannot tell those apart -- they
-/// are the same number there -- and the earlier version of this proof exercised
-/// a partial discard for MTRR identities alone, so eleven of the twelve blocks
-/// were unpinned (Codex round 3).
+/// kills: `RowCursor::next` using a wrong stride for any declared block, or a
+/// family transition starting its next block anywhere but the previous block's
+/// declared end.
 #[test]
-fn every_declared_block_discards_to_its_own_end_from_every_position() {
+fn every_declared_block_walks_to_its_own_end_from_every_position() {
     // (family, block, the block's own end, how to reach the block)
     for trailer in [
         Trailer::Detail,
@@ -2715,7 +3610,7 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
         assert!(total > 0, "{} has no rows", trailer.label());
         // The HEADER'S declared end, read off the grammar's own extent -- not
         // this loop's zero-consumed answer. Comparing the positions with each
-        // other passes a `skip_all` that lands one byte past the end from every
+        // other passes a cursor that lands one byte past the end from every
         // position, which is exactly the production change this test exists to
         // catch (Codex round 4).
         let declared_end = match only_body(&payload) {
@@ -2745,9 +3640,9 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
                 rows.next();
             }
             assert_eq!(
-                rows.discard_all().at,
+                rows.walk_to_end_for_test().at,
                 declared_end,
-                "{} rows discarded to the wrong end after {consume}",
+                "{} rows walked to the wrong end after {consume}",
                 trailer.label()
             );
         }
@@ -2767,17 +3662,25 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
         for _ in 0..consume {
             identities.next();
         }
-        assert_eq!(identities.discard_all().at, mtrr_header.rows_at, "MTRR identities after {consume}");
+        assert_eq!(
+            identities.walk_to_end_for_test().at,
+            mtrr_header.rows_at,
+            "MTRR identities after {consume}"
+        );
     }
     for consume in 0..=mtrr_header.row_count {
         let TrailerBody::ResourceRow(c) = only_body(&payload) else {
             panic!("expected MTRR");
         };
-        let mut rows = c.identities().discard_all().next.rows();
+        let mut rows = c.identities().walk_to_end_for_test().next.rows();
         for _ in 0..consume {
             rows.next();
         }
-        assert_eq!(rows.discard_all().at, mtrr_header.end, "MTRR rows after {consume}");
+        assert_eq!(
+            rows.walk_to_end_for_test().at,
+            mtrr_header.end,
+            "MTRR rows after {consume}"
+        );
     }
 
     // MTRD: witnesses, incomplete owners, rows.
@@ -2794,17 +3697,25 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
         for _ in 0..consume {
             witnesses.next();
         }
-        assert_eq!(witnesses.discard_all().at, mtrd.incomplete_at, "MTRD witnesses after {consume}");
+        assert_eq!(
+            witnesses.walk_to_end_for_test().at,
+            mtrd.incomplete_at,
+            "MTRD witnesses after {consume}"
+        );
     }
     for consume in 0..=mtrd.incomplete_count {
         let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
             panic!("expected MTRD");
         };
-        let mut incomplete = c.witnesses().discard_all().next.incomplete_owners();
+        let mut incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
         for _ in 0..consume {
             incomplete.next();
         }
-        assert_eq!(incomplete.discard_all().at, mtrd.rows_at, "MTRD incomplete after {consume}");
+        assert_eq!(
+            incomplete.walk_to_end_for_test().at,
+            mtrd.rows_at,
+            "MTRD incomplete after {consume}"
+        );
     }
     for consume in 0..=mtrd.row_count {
         let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
@@ -2812,16 +3723,16 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
         };
         let mut rows = c
             .witnesses()
-            .discard_all()
+            .walk_to_end_for_test()
             .next
             .incomplete_owners()
-            .discard_all()
+            .walk_to_end_for_test()
             .next
             .rows();
         for _ in 0..consume {
             rows.next();
         }
-        assert_eq!(rows.discard_all().at, mtrd.end, "MTRD rows after {consume}");
+        assert_eq!(rows.walk_to_end_for_test().at, mtrd.end, "MTRD rows after {consume}");
     }
 
     // MTS1: countries, items.
@@ -2838,20 +3749,27 @@ fn every_declared_block_discards_to_its_own_end_from_every_position() {
         for _ in 0..consume {
             countries.next();
         }
-        assert_eq!(countries.discard_all().at, mts1.items_at, "MTS1 countries after {consume}");
+        assert_eq!(
+            countries.walk_to_end_for_test().at,
+            mts1.items_at,
+            "MTS1 countries after {consume}"
+        );
     }
     for consume in 0..=mts1.item_count {
         let TrailerBody::Stockpile(c) = only_body(&payload) else {
             panic!("expected MTS1");
         };
-        let mut items = c.countries().discard_all().next.items();
+        let mut items = c.countries().walk_to_end_for_test().next.items();
         for _ in 0..consume {
             items.next();
         }
-        assert_eq!(items.discard_all().at, mts1.end, "MTS1 items after {consume}");
+        assert_eq!(
+            items.walk_to_end_for_test().at,
+            mts1.end,
+            "MTS1 items after {consume}"
+        );
     }
 }
-
 
 /// `identity_entry_at` refuses rather than panics for every argument a caller
 /// can invent, and it reads exactly the entry at the offset it was given.

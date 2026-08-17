@@ -11438,1612 +11438,539 @@ fn decode_compact_project_reward_history_trailer(
         aborted_countries,
     );
 }
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=6 sha256=2cadf9cc915f24941b238df3ebad6254323da085a5a487c3973e7b743dc5fac0
-/// What one D43 trailer did to the walk.
-///
-/// # The one rule, stated once
-///
-/// A `Refused` trailer is bytes this grammar CANNOT DELIMIT or cannot decide a
-/// width for. The walk stops there, the authority publishes nothing from that
-/// trailer and nothing after it, and the record is undecodable.
-/// `world_fold::parse_market_trade_trailers` returns `Err` for exactly the same
-/// bytes and discards the whole D43 record. **The two readers may never
-/// disagree about which bytes those are** -- an authority that reported a
-/// stream as decoded which the fold then rejects would report a lost hour as a
-/// good one, and an authority that refused a stream the fold accepts would
-/// report a good hour as lost.
-///
-/// Owner ruling 2026-08-16: a wrong VERSION word is one of those bytes, on both
-/// sides. Before it, `MTD1`'s version word and `MTRA`'s whole header were
-/// warnings here and refusals in the fold -- an `MTD1` carrying version 9
-/// published all fifteen D43 data units from a record the fold threw away
-/// (measured: `runs/lk_d43_one_site/authority_soft_structural_finding.md`).
-/// `runs/lr_mtd1_reject/` carries the differential that pins the two together.
-///
-/// A trailer that ends `At(end)` may still have pushed diagnostics: a ROW whose
-/// contents are wrong is not a trailer that cannot be delimited, and this
-/// reader's job is to name every one of those rather than stop at the first.
-/// The opening of the record-level verdict, as a constant so the differential
-/// test recognises the operator's own sentence rather than a copy of it.
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=fa52cc46d533f44061ac59034aae507a225696ea795d6a5270e647517bb27aa2
 const COMPACT_MARKET_TRADE_UNDECODABLE: &str = "market trade record is undecodable at byte ";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MarketTradeTrailerEnd {
-    /// The trailer was delimited; the next magic begins at this offset.
-    At(usize),
-    /// Structural refusal. The walk stops and the payload is undecodable.
-    Refused,
-}
+const D43_AUTHORITY_DECODE_CONTEXT: d43_grammar::decode::DecodeContext =
+    d43_grammar::decode::DecodeContext::new(
+        d43_grammar::decode::D43AcceptedFamilies::SHIPPING,
+        COMPACT_MAX_STRATEGIC_RESOURCE_COUNT,
+        COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize,
+        COMPACT_MARKET_TRADE_MAX_TAG_DB_ID,
+        compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN,
+        COMPACT_MARKET_TRADE_MAX_CONTRACT_ID,
+        COMPACT_MARKET_TRADE_MAX_VARIANT_ID,
+        compact_contract::build_profile::MAX_MARKET_TRADE_CLASSIC_DEAL_ORDINAL,
+        COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW,
+    );
 
-/// One payload states ONE resource set.
-///
-/// `MTRF` and `MTRR` each declare how many strategic resources their rows are
-/// numbered against. `world_fold.rs::parse_market_trade_trailers` refuses a
-/// payload whose two declarations disagree: two numbers describe two games, and
-/// publishing either family against the other's slot numbering names the wrong
-/// resource. This carries the first declaration so the second can be refused
-/// where it is read, instead of the authority publishing both.
-#[derive(Default)]
-struct MarketTradeResourceSetClaim {
-    declared: Option<(&'static str, u32)>,
-}
-
-impl MarketTradeResourceSetClaim {
-    /// `Err` spells the disagreement the way the fold spells it.
-    fn declare(&mut self, label: &'static str, count: u32) -> Result<(), String> {
-        match self.declared {
-            Some((first_label, first)) if first != count => Err(format!(
-                "market trade {first_label} resource_count {first} != {label} resource_count {count}"
-            )),
-            Some(_) => Ok(()),
-            None => {
-                self.declared = Some((label, count));
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Decode one D43 payload for the operator report.
-///
-/// The ONE record-level fact this wrapper adds is the verdict: when the reader
-/// could not read the record, it says so in as many words. Everything else it
-/// pushes describes a field. See [`MarketTradeTrailerEnd`] for the rule the
-/// verdict obeys and for why `world_fold` must reach the same one.
 fn decode_compact_market_trade_data_payload(
     offset: usize,
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
     if let Some(at) = decode_compact_market_trade_record(offset, payload, summary) {
-        // The named reason a bad hour costs that hour. Without it an operator
-        // had to infer a lost D43 record from counts that were not printed.
         summary.parse_errors.push(format!(
             "offset {offset}: {COMPACT_MARKET_TRADE_UNDECODABLE}{at}; the whole D43 record is discarded"
         ));
     }
 }
 
-/// The body. `Some(at)` is the offset the reader gave up at.
 fn decode_compact_market_trade_record(
     offset: usize,
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) -> Option<usize> {
-    if payload.len() < COMPACT_MARKET_TRADE_HEADER_LEN {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade data payload is {} byte(s), expected at least {}",
-            payload.len(),
-            COMPACT_MARKET_TRADE_HEADER_LEN
-        ));
-        return Some(payload.len());
+    let report = d43_grammar::decode::decode_record(payload, D43_AUTHORITY_DECODE_CONTEXT);
+    if let Some(header) = report.document.core_header {
+        add_decoder_status(summary, header.word(d43_grammar::CoreWord::StatusFlags));
     }
-    let row_count = read_u32_le(payload, 8) as usize;
-    let changed_rows = read_u32_le(payload, 12) as usize;
-    let status_flags = read_u32_le(payload, 16);
-    let observed_contract_rows = read_u32_le(payload, 20) as usize;
-    let emitted_contract_rows = read_u32_le(payload, 24) as usize;
-    let buyer_ptr_valid_rows = read_u32_le(payload, 28) as usize;
-    let variant_valid_rows = read_u32_le(payload, 32) as usize;
-    let amount_valid_rows = read_u32_le(payload, 36) as usize;
-    let partial_field_rows = read_u32_le(payload, 40) as usize;
-    let scale_raw = read_u32_le(payload, 44);
-    add_decoder_status(summary, status_flags);
-
-    if changed_rows > row_count {
+    for finding in &report.findings {
+        // A LANE-ONLY rule is the gate tool's stricter expectation, not this
+        // recorder's. `market_trade_live_lane` bounds an `MTD1` speed to
+        // `0..=100` where the fold and this reader bound it to
+        // `0..=1_000_000_000`; both readings are of the same byte, and only one
+        // of them is a statement about what the RECORDER accepts. Rendering the
+        // gate's here would put a new diagnostic on records both of the
+        // recorder's readers call clean, and it would print it under the SHARED
+        // rule's spelling with no field named -- "invalid value 125000" instead
+        // of naming the word. The verdict is unaffected either way: every
+        // lane-only rule is non-fatal, so this filter cannot make the two
+        // readers disagree about decodability, which is what the differential
+        // asserts.
+        if finding.lane_rule.is_some() {
+            continue;
+        }
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade changed_rows {changed_rows} > row_count {row_count}"
-        ));
-    }
-    if emitted_contract_rows != row_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade emitted_contract_rows {emitted_contract_rows} != row_count {row_count}"
+            "offset {offset}: {}",
+            format_market_trade_authority_finding(&report, finding)
         ));
     }
-    if observed_contract_rows < row_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade observed_contract_rows {observed_contract_rows} < row_count {row_count}"
-        ));
-    }
-    let omitted_candidate_rows = observed_contract_rows.saturating_sub(emitted_contract_rows);
-    for (name, count) in [
-        ("buyer_ptr_valid_rows", buyer_ptr_valid_rows),
-        ("variant_valid_rows", variant_valid_rows),
-        ("amount_valid_rows", amount_valid_rows),
-        ("partial_field_rows", partial_field_rows),
-    ] {
-        if count > row_count {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade {name} {count} > row_count {row_count}"
-            ));
+    if let (Some(row_count), Some(header)) = (
+        report.units.market_trade_contract_rows,
+        report.document.core_header,
+    ) {
+        let changed_rows = header.word(d43_grammar::CoreWord::ChangedRows) as usize;
+        let status_flags = header.word(d43_grammar::CoreWord::StatusFlags);
+        if let Some(domain) = summary.per_domain.get_mut(&43) {
+            domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
+            domain.data_changed_rows_total = domain
+                .data_changed_rows_total
+                .saturating_add(changed_rows as u64);
+            domain.status_flags_or |= status_flags;
         }
     }
-    // The CORE header's scale word, and the last one of its class.
-    //
-    // It states the denominator every fixed-point value in the record is
-    // expressed in, so a wrong one makes every price and amount a different
-    // quantity. `world_fold.rs::fold_market_trade` refuses it; this warned and
-    // read on,
-    // and published all seven core units plus every trailer's. Same shape as
-    // MTD1's version word, one level up -- owner ruling 2026-08-16.
-    if scale_raw != COMPACT_FIXED_SCALE_RAW {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
-        ));
-        return Some(d43_grammar::CoreWord::ScaleRaw.offset());
-    }
-    let core_end = COMPACT_MARKET_TRADE_HEADER_LEN
-        .saturating_add(row_count.saturating_mul(COMPACT_MARKET_TRADE_ROW_LEN));
-    if payload.len() < core_end {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade data payload is {} byte(s), expected at least {core_end}",
-            payload.len()
-        ));
-        return Some(payload.len());
-    }
-
-    if let Some(domain) = summary.per_domain.get_mut(&43) {
-        domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
-        domain.data_changed_rows_total = domain
-            .data_changed_rows_total
-            .saturating_add(changed_rows as u64);
-        domain.status_flags_or |= status_flags;
-    }
-    add_compact_domain_data_unit(summary, 43, "market_trade_contract_rows", row_count);
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_observed_contract_rows",
-        observed_contract_rows,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_omitted_candidate_rows",
-        omitted_candidate_rows,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_buyer_ptr_valid_rows",
-        buyer_ptr_valid_rows,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_variant_valid_rows",
-        variant_valid_rows,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_amount_valid_rows",
-        amount_valid_rows,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_partial_field_rows",
-        partial_field_rows,
-    );
-
-    let mut seen_contracts = BTreeSet::new();
-    let mut computed_buyer_valid = 0usize;
-    let mut computed_variant_valid = 0usize;
-    let mut computed_amount_valid = 0usize;
-    let mut computed_partial_fields = 0usize;
-    let known_flags = COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
-        | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
-        | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
-        | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
-        | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID;
-    let mut cursor = COMPACT_MARKET_TRADE_HEADER_LEN;
-    for row_index in 0..row_count {
-        if let Err(err) = require_compact_remaining(
-            payload,
-            cursor,
-            COMPACT_MARKET_TRADE_ROW_LEN,
-            "market trade row",
-        ) {
-            summary.parse_errors.push(format!("offset {offset}: {err}"));
-            return Some(cursor);
-        }
-        let contract_id = read_u32_le(payload, cursor);
-        let contract_type = read_u32_le(payload, cursor + 4);
-        let flags = read_u32_le(payload, cursor + 8);
-        let seller_tag_db_id = read_u32_le(payload, cursor + 12);
-        let buyer_tag_db_id = read_u32_le(payload, cursor + 16);
-        let equipment_variant_id = read_u32_le(payload, cursor + 20);
-        let amount_raw = read_i64_le(payload, cursor + 24);
-        let equipment_subbuf_status = read_u32_le(payload, cursor + 32);
-        let delivery_subbuf_status = read_u32_le(payload, cursor + 36);
-        let buyer_ptr_status = read_u32_le(payload, cursor + 40);
-        let reserved = read_u32_le(payload, cursor + 44);
-        cursor += COMPACT_MARKET_TRADE_ROW_LEN;
-
-        let buyer_ptr_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID != 0;
-        let equipment_subbuf_valid =
-            flags & COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID != 0;
-        let delivery_subbuf_valid =
-            flags & COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID != 0;
-        let variant_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID != 0;
-        let amount_valid = flags & COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID != 0;
-        if buyer_ptr_valid {
-            computed_buyer_valid = computed_buyer_valid.saturating_add(1);
-        }
-        if variant_valid {
-            computed_variant_valid = computed_variant_valid.saturating_add(1);
-        }
-        if amount_valid {
-            computed_amount_valid = computed_amount_valid.saturating_add(1);
-        }
-        if !buyer_ptr_valid
-            || !equipment_subbuf_valid
-            || !delivery_subbuf_valid
-            || !variant_valid
-            || !amount_valid
-        {
-            computed_partial_fields = computed_partial_fields.saturating_add(1);
-        }
-
-        if contract_id == 0 || contract_id > COMPACT_MARKET_TRADE_MAX_CONTRACT_ID {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has invalid contract_id {contract_id}"
-            ));
-        } else if !seen_contracts.insert(contract_id) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} duplicates contract_id {contract_id}"
-            ));
-        }
-        if contract_type != COMPACT_MARKET_TRADE_CONTRACT_TYPE {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has contract_type {contract_type}, expected {COMPACT_MARKET_TRADE_CONTRACT_TYPE}"
-            ));
-        }
-        for (name, tag_db_id) in [
-            ("seller_tag_db_id", seller_tag_db_id),
-            ("buyer_tag_db_id", buyer_tag_db_id),
-        ] {
-            if tag_db_id == 0 || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} has invalid {name} {tag_db_id}"
-                ));
-            }
-        }
-        if flags & !known_flags != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has unknown flags {flags}"
-            ));
-        }
-        if reserved != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} reserved field is nonzero"
-            ));
-        }
-        if buyer_ptr_status > 2 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has invalid buyer_ptr_status {buyer_ptr_status}"
-            ));
-        }
-        if buyer_ptr_valid != (buyer_ptr_status == 1) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} buyer_ptr_valid flag disagrees with status {buyer_ptr_status}"
-            ));
-        }
-        for (name, status) in [
-            ("equipment_subbuf_status", equipment_subbuf_status),
-            ("delivery_subbuf_status", delivery_subbuf_status),
-        ] {
-            if status > 2 {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} has invalid {name} {status}"
-                ));
-            }
-        }
-        if equipment_subbuf_valid != (equipment_subbuf_status == 1) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} equipment valid flag disagrees with status {equipment_subbuf_status}"
-            ));
-        }
-        if delivery_subbuf_valid != (delivery_subbuf_status == 1) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} delivery valid flag disagrees with status {delivery_subbuf_status}"
-            ));
-        }
-        if variant_valid {
-            if equipment_variant_id == 0
-                || equipment_variant_id > COMPACT_MARKET_TRADE_MAX_VARIANT_ID
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} has invalid equipment_variant_id {equipment_variant_id}"
-                ));
-            }
-            if !equipment_subbuf_valid {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} marks variant valid without valid equipment subbuffer"
-                ));
-            }
-        } else if equipment_variant_id != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has equipment_variant_id {equipment_variant_id} with variant flag unset"
-            ));
-        }
-        if amount_valid {
-            if amount_raw <= 0 || amount_raw > COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} has invalid amount_raw {amount_raw}"
-                ));
-            }
-            if !delivery_subbuf_valid {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade row {row_index} marks amount valid without valid delivery subbuffer"
-                ));
-            }
-        } else if amount_raw != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade row {row_index} has amount_raw {amount_raw} with amount flag unset"
-            ));
-        }
-    }
-
-    for (name, expected, actual) in [
-        (
-            "buyer_ptr_valid_rows",
-            buyer_ptr_valid_rows,
-            computed_buyer_valid,
-        ),
-        (
-            "variant_valid_rows",
-            variant_valid_rows,
-            computed_variant_valid,
-        ),
-        (
-            "amount_valid_rows",
-            amount_valid_rows,
-            computed_amount_valid,
-        ),
-        (
-            "partial_field_rows",
-            partial_field_rows,
-            computed_partial_fields,
-        ),
-    ] {
-        if expected != actual {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade header {name} {expected} != computed {actual}"
-            ));
-        }
-    }
-    // The core rows may be followed by an optional MTD1 detail trailer and/or an
-    // optional MTRF resource-flow trailer. The collector appends MTD1 only when
-    // there are detail rows and MTRF only when resource flow is present, and the
-    // two are independent — so MTRF can appear WITHOUT MTD1. Dispatch by trailer
-    // magic (mirroring the world_fold trailer walk) rather than assuming MTD1 is
-    // always first; otherwise an MTD1-absent/MTRF-present record false-fails.
-    let (detail_rows, refused_at) =
-        decode_compact_market_trade_trailers(offset, payload, cursor, &seen_contracts, summary);
-    // A REFUSED family publishes no unit of its own -- the same rule every
-    // other family follows, now that each of them returns before its
-    // `add_compact_domain_data_unit`. `None` is an `MTD1` that refused; a
-    // payload carrying no `MTD1` at all still publishes the pair at zero,
-    // because "no detail trailer" is a fact about a record that was read.
-    if let Some(detail_rows) = detail_rows {
-        add_compact_domain_data_unit(summary, 43, "market_trade_detail_rows", detail_rows);
-        add_compact_domain_data_unit(
-            summary,
-            43,
-            "market_trade_detail_omitted_rows",
-            row_count.saturating_sub(detail_rows),
-        );
-    }
-    refused_at
+    publish_market_trade_units(summary, &report.units);
+    d43_grammar::decode::select_first_fatal(&report).map(|finding| finding.at)
 }
 
-/// Walk the trailers behind the core rows.
-///
-/// Returns the `MTD1` row count and, when the walk refused, the offset it
-/// stopped at. See [`MarketTradeTrailerEnd`] for the rule that refusal obeys
-/// and for why it must be the same rule `world_fold` applies.
-///
-/// The duplicate rule is the FOLD's, for all seven families this authority
-/// accepts (`world_fold.rs::parse_market_trade_trailers`). It used to be stated
-/// for `MTD1`, `MTRA` and `MTS1` only, so a payload carrying two `MTRF`,
-/// `MTRH`, `MTRR` or `MTRD` trailers decoded here and was discarded there.
-fn decode_compact_market_trade_trailers(
-    offset: usize,
-    payload: &[u8],
-    mut cursor: usize,
-    seen_contracts: &BTreeSet<u32>,
+fn publish_market_trade_units(
     summary: &mut DomainDataDecodeSummary,
-) -> (Option<usize>, Option<usize>) {
-    let mut detail_rows = Some(0usize);
-    let mut seen = BTreeSet::new();
-    let mut resource_set = MarketTradeResourceSetClaim::default();
-    while cursor < payload.len() {
-        let Some(magic) = payload.get(cursor..cursor.saturating_add(4)) else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade trailer is too short to contain magic"
-            ));
-            return (detail_rows, Some(cursor));
-        };
-        // The ALPHABET of magics is the leaf grammar's, not this file's. All
-        // NINE families it defines, not the seven this authority decodes: an
-        // `MTRB` or `MTLL` trailer is a KNOWN family this decoder refuses,
-        // which is a different operator fact from four unrecognised bytes.
-        let Some(trailer) = compact_market_trade_trailer_of(magic) else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade trailing bytes have unknown trailer magic"
-            ));
-            return (detail_rows, Some(cursor));
-        };
-        let label = trailer.label();
-        if !seen.insert(trailer) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade has duplicate {label} trailer"
-            ));
-            return (detail_rows, Some(cursor));
+    units: &d43_grammar::decode::D43UnitCounts,
+) {
+    for (name, value) in [
+        ("market_trade_contract_rows", units.market_trade_contract_rows),
+        ("market_trade_observed_contract_rows", units.market_trade_observed_contract_rows),
+        ("market_trade_omitted_candidate_rows", units.market_trade_omitted_candidate_rows),
+        ("market_trade_buyer_ptr_valid_rows", units.market_trade_buyer_ptr_valid_rows),
+        ("market_trade_variant_valid_rows", units.market_trade_variant_valid_rows),
+        ("market_trade_amount_valid_rows", units.market_trade_amount_valid_rows),
+        ("market_trade_partial_field_rows", units.market_trade_partial_field_rows),
+        ("market_trade_detail_rows", units.market_trade_detail_rows),
+        ("market_trade_detail_omitted_rows", units.market_trade_detail_omitted_rows),
+        ("market_trade_detail_price_valid_rows", units.market_trade_detail_price_valid_rows),
+        ("market_trade_detail_speed_valid_rows", units.market_trade_detail_speed_valid_rows),
+        ("market_trade_detail_completed_valid_rows", units.market_trade_detail_completed_valid_rows),
+        ("market_trade_detail_days_valid_rows", units.market_trade_detail_days_valid_rows),
+        ("market_trade_detail_delivery_country_valid_rows", units.market_trade_detail_delivery_country_valid_rows),
+        ("market_trade_detail_convoy_valid_rows", units.market_trade_detail_convoy_valid_rows),
+        ("market_trade_detail_efficiency_valid_rows", units.market_trade_detail_efficiency_valid_rows),
+        ("market_trade_detail_delivery_route_valid_rows", units.market_trade_detail_delivery_route_valid_rows),
+        ("market_trade_detail_progress_valid_rows", units.market_trade_detail_progress_valid_rows),
+        ("market_trade_resource_flow_rows", units.market_trade_resource_flow_rows),
+        ("market_trade_factory_header_rows", units.market_trade_factory_header_rows),
+        ("market_trade_resource_rows", units.market_trade_resource_rows),
+        ("market_trade_classic_deal_country_witnesses", units.market_trade_classic_deal_country_witnesses),
+        ("market_trade_classic_deal_incomplete_owners", units.market_trade_classic_deal_incomplete_owners),
+        ("market_trade_classic_deal_rows", units.market_trade_classic_deal_rows),
+        ("market_trade_activation_rows", units.market_trade_activation_rows),
+        ("market_trade_stockpile_country_rows", units.market_trade_stockpile_country_rows),
+        ("market_trade_stockpile_item_rows", units.market_trade_stockpile_item_rows),
+    ] {
+        if let Some(value) = value {
+            add_compact_domain_data_unit(summary, 43, name, value);
         }
-        // Exhaustive over the leaf's alphabet ON PURPOSE: a tenth family added
-        // to `d43_grammar::Trailer` stops this file compiling, rather than
-        // reaching the walk as four bytes nobody decided about.
-        let end = match trailer {
-            d43_grammar::Trailer::Detail => {
-                let (rows, end) = decode_compact_market_trade_detail_trailer(
-                    offset,
-                    payload,
-                    cursor,
-                    seen_contracts,
-                    summary,
-                );
-                detail_rows = match end {
-                    MarketTradeTrailerEnd::At(_) => Some(rows),
-                    MarketTradeTrailerEnd::Refused => None,
-                };
-                end
-            }
-            d43_grammar::Trailer::ResourceFlow => {
-                decode_compact_market_trade_resource_flow_trailer(
-                    offset,
-                    payload,
-                    cursor,
-                    &mut resource_set,
-                    summary,
-                )
-            }
-            d43_grammar::Trailer::FactoryHeader => decode_compact_market_trade_sized_trailer(
-                offset,
-                payload,
-                cursor,
-                &mut resource_set,
-                &[COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION],
-                COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN,
-                COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN,
-                "MTRH",
-                "market_trade_factory_header_rows",
-                summary,
+    }
+}
+
+fn format_market_trade_authority_finding(
+    report: &d43_grammar::decode::DecodeReport,
+    finding: &d43_grammar::decode::Finding,
+) -> String {
+    use d43_grammar::decode::D43DecodeRule as Rule;
+    let row = finding.row_or_slot.unwrap_or(0);
+    match finding.rule {
+        Rule::D43FindingsSuppressed => format!(
+            "market trade omitted {} additional findings for {:?}",
+            finding.operand_a,
+            finding.suppressed_rule.unwrap_or(Rule::D43FindingsSuppressed)
+        ),
+        Rule::D43DocumentCapacity => format!(
+            "market trade cannot allocate {} decoded core row(s) of {} byte(s) each",
+            finding.operand_a, finding.operand_b
+        ),
+        Rule::D43StructuralViolation => format_d43_structural_finding(finding),
+        Rule::D43FamilyNotAccepted => format!(
+            "{} trailer is not a family this decoder accepts",
+            finding.family.map_or("unknown", d43_grammar::Trailer::label)
+        ),
+        Rule::D43CoreScale => format!("market trade scale_raw {} != {}", finding.operand_a, finding.operand_b),
+        Rule::D43CoreChangedRows => format!("market trade changed_rows {} > row_count {}", finding.operand_a, finding.operand_b),
+        Rule::D43CoreEmittedRows => format!("market trade emitted_contract_rows {} != row_count {}", finding.operand_a, finding.operand_b),
+        Rule::D43CoreObservedRows => format!("market trade observed_contract_rows {} < row_count {}", finding.operand_a, finding.operand_b),
+        Rule::D43CoreHeaderCountBound => format!(
+            "market trade {} {} > row_count {}",
+            d43_core_word_name(finding.at),
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43CoreContractIdZero => format!("market trade row {row} has zero contract_id"),
+        Rule::D43CoreContractIdAuthorityRange => format!("market trade row {row} has invalid contract_id {}", finding.operand_a),
+        Rule::D43CoreDuplicateContractId => format!("market trade row {row} duplicates contract_id {}", finding.operand_a),
+        Rule::D43CoreContractType => format!("market trade row {row} has contract_type {}, expected {}", finding.operand_a, finding.operand_b),
+        Rule::D43CoreZeroParty => format!("market trade row {row} has zero seller/buyer tag"),
+        Rule::D43CoreSellerAuthorityRange => format!("market trade row {row} has invalid seller_tag_db_id {}", finding.operand_a),
+        Rule::D43CoreBuyerAuthorityRange => format!("market trade row {row} has invalid buyer_tag_db_id {}", finding.operand_a),
+        Rule::D43CoreUnknownFlags => format!("market trade row {row} has unknown flags {}", finding.operand_a),
+        Rule::D43CoreReserved => format!("market trade row {row} reserved field is nonzero"),
+        Rule::D43CoreBuyerStatusRange => format!("market trade row {row} has invalid buyer_ptr_status {}", finding.operand_a),
+        Rule::D43CoreBuyerFlagStatus => format!("market trade row {row} buyer_ptr_valid flag disagrees with status {}", finding.operand_b),
+        Rule::D43CoreEquipmentStatusRange => format!("market trade row {row} has invalid equipment_subbuf_status {}", finding.operand_a),
+        Rule::D43CoreDeliveryStatusRange => format!("market trade row {row} has invalid delivery_subbuf_status {}", finding.operand_a),
+        Rule::D43CoreEquipmentFlagStatus => format!("market trade row {row} equipment valid flag disagrees with status {}", finding.operand_b),
+        Rule::D43CoreDeliveryFlagStatus => format!("market trade row {row} delivery valid flag disagrees with status {}", finding.operand_b),
+        Rule::D43CoreVariantRange => format!("market trade row {row} has invalid equipment_variant_id {}", finding.operand_a),
+        Rule::D43CoreVariantWithoutEquipment => format!("market trade row {row} marks variant valid without valid equipment subbuffer"),
+        Rule::D43CoreVariantWithoutFlag => format!("market trade row {row} has equipment_variant_id {} with variant flag unset", finding.operand_a),
+        Rule::D43CoreAmountRange => format!("market trade row {row} has invalid amount_raw {}", finding.operand_a),
+        Rule::D43CoreAmountWithoutDelivery => format!("market trade row {row} marks amount valid without valid delivery subbuffer"),
+        Rule::D43CoreAmountWithoutFlag => format!("market trade row {row} has amount_raw {} with amount flag unset", finding.operand_a),
+        Rule::D43CoreComputedCountMismatch => format!(
+            "market trade header {} {} != computed {}",
+            d43_core_word_name(finding.at),
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43CoreDuplicateContractPair => format!("market trade row {row} duplicates contract identity {}:{}", finding.operand_a, finding.operand_b),
+        Rule::D43DetailContractIdZero => format!("market trade MTD1 row {row} has invalid contract_id 0"),
+        Rule::D43DetailContractIdAuthorityRange => format!("market trade MTD1 row {row} has invalid contract_id {}", finding.operand_a),
+        Rule::D43DetailMissingCoreContract => format!("market trade MTD1 row {row} references missing contract_id {}", finding.operand_a),
+        Rule::D43DetailDuplicateContract => format!("market trade MTD1 row {row} duplicates contract_id {}", finding.operand_a),
+        Rule::D43DetailInvalidFlags => format!("market trade MTD1 row {row} has invalid flags {:#x}", finding.operand_a),
+        Rule::D43DetailReserved => format!("market trade MTD1 row {row} reserved field is nonzero"),
+        Rule::D43DetailPresentValueRange => format!(
+            "market trade MTD1 row {row} has invalid {} {}",
+            d43_value_field_name(finding.value_field),
+            finding.operand_a
+        ),
+        Rule::D43DetailAbsentValueNonzero => format!(
+            "market trade MTD1 row {row} has {} without flag",
+            d43_value_field_name(finding.value_field)
+        ),
+        Rule::D43DetailDeliveryCountryRange => format!(
+            "market trade MTD1 row {row} has invalid delivery_country_tag_db_id {}",
+            finding.operand_a
+        ),
+        Rule::D43DetailDeliveryCountryWithoutFlag => format!(
+            "market trade MTD1 row {row} has delivery_country_tag_db_id without flag"
+        ),
+        Rule::D43DetailConvoyRange => format!(
+            "market trade MTD1 row {row} has invalid convoy counts {}/{}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43DetailConvoyWithoutFlag => format!(
+            "market trade MTD1 row {row} has convoy counts without flag"
+        ),
+        Rule::D43DetailHeaderCountMismatch => {
+            let name = ["price_valid_rows", "speed_valid_rows", "delivery_route_valid_rows", "progress_valid_rows"]
+                .get(finding.operand_a as usize).copied().unwrap_or("count");
+            format!("market trade MTD1 {name} {} != computed {}", finding.operand_b, finding.operand_c)
+        }
+        Rule::D43SizedHeaderReserved0 => format!("market trade {} header shape is invalid", finding.family.map_or("unknown", d43_grammar::Trailer::label)),
+        Rule::D43FlowHeaderResourceCount => format!("market trade MTRF v3 resource_count {} is outside 1..={}", finding.operand_a, finding.operand_b),
+        Rule::D43FlowHeaderResourceMask => format!("market trade MTRF resource_mask {:#x} != {:#x}", finding.operand_a, finding.operand_b),
+        Rule::D43FlowHeaderKindMask => format!("market trade MTRF kind_mask {:#x} != {:#x}", finding.operand_a, finding.operand_b),
+        Rule::D43FlowHeaderRowCount | Rule::D43FlowDecodedCountryCount => "market trade MTRF country/kind shape is invalid".to_string(),
+        Rule::D43FlowHeaderScale => format!("market trade MTRF scale_raw {} != {}", finding.operand_a, finding.operand_b),
+        Rule::D43FlowTagRange => format!("market trade MTRF row {row} has invalid tag_db_id {}", finding.operand_a),
+        Rule::D43FlowKind => format!("market trade MTRF row {row} has unsupported flow_kind {}", finding.operand_a),
+        Rule::D43FlowRowMaskOrCount => format!("market trade MTRF row {row} states {:#x}, header states {:#x}", finding.operand_a, finding.operand_b),
+        Rule::D43FlowReserved => format!("market trade MTRF row {row} reserved field is nonzero"),
+        Rule::D43FlowLegacyValuesAllZero => format!("market trade MTRF legacy row {row} has no exported resources"),
+        Rule::D43FlowDuplicateCountryKind => format!(
+            "market trade MTRF row {row} duplicates tag_db_id {}/flow_kind {}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43FlowCountryKindsIncomplete => format!(
+            "market trade MTRF country {} has {} flow kind(s), expected {}",
+            finding.operand_a,
+            finding.operand_b,
+            finding.operand_c
+        ),
+        Rule::D43FactoryHeaderShape => "market trade MTRH count/shape fields are invalid".to_string(),
+        Rule::D43FactoryTagRange => format!("market trade MTRH row {row} has invalid tag_db_id {}", finding.operand_a),
+        Rule::D43FactoryDuplicateTag => format!("market trade MTRH row {row} duplicates tag_db_id {}", finding.operand_a),
+        Rule::D43IdentityLength => format!("market trade MTRR identity {row} token length {} is outside 1..={}", finding.operand_a, finding.operand_b),
+        Rule::D43IdentityPadding => format!("market trade MTRR identity {row} has non-zero padding"),
+        Rule::D43IdentityUtf8 => format!("market trade MTRR identity {row} is not UTF-8"),
+        Rule::D43IdentityCharset => format!("market trade MTRR identity {row} is not a resource token"),
+        Rule::D43IdentityDuplicateToken => {
+            let token = report.document.resource_identities.get(row)
+                .and_then(d43_grammar::decode::identity_token)
+                .unwrap_or("<unreadable>");
+            format!("market trade MTRR identity {row} repeats token {token}")
+        }
+        Rule::D43ResourceHeaderShape => "market trade MTRR count/shape fields are invalid".to_string(),
+        Rule::D43ResourceTagRange => format!("market trade MTRR row {row} has invalid tag_db_id {}", finding.operand_a),
+        Rule::D43ResourceIndexRange => format!(
+            "market trade MTRR row {row} resource_index {} is outside resource_count {}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43ResourceVisibleOrderRange => format!(
+            "market trade MTRR row {row} visible_order {} is outside resource_count {}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43ResourceIndexOrderMismatch => format!(
+            "market trade MTRR row {row} resource_index {} != visible_order {}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43ResourceDescriptorZero => format!("market trade MTRR row {row} has zero descriptor_db_index"),
+        Rule::D43ResourceReserved => format!("market trade MTRR row {row} reserved field is nonzero"),
+        Rule::D43ResourceUnavailableVersion => format!(
+            "market trade MTRR row {row} states an unobserved needed trio under version {}, which does not define one",
+            finding.operand_a
+        ),
+        Rule::D43ResourceUnavailableShape => format!(
+            "market trade MTRR row {row} unobserved-needed semantics are invalid"
+        ),
+        Rule::D43ResourceOilShape => format!("market trade MTRR row {row} oil needed semantics are invalid"),
+        Rule::D43ResourceNonOilFlags
+        | Rule::D43ResourceNonOilCurrentMax
+        | Rule::D43ResourceNonOilNeededBalance
+        | Rule::D43ResourceNonOilSign => format!(
+            "market trade MTRR row {row} non-oil needed semantics are invalid"
+        ),
+        Rule::D43ResourceNonOilNeededType => format!("market trade MTRR row {row} has invalid needed_type {}", finding.operand_a),
+        Rule::D43ResourceDuplicateCountrySlot => format!(
+            "market trade MTRR row {row} duplicates country/resource key {}/{}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43ResourceDescriptorChanged => format!(
+            "market trade MTRR resource {} changes descriptor identity from {} to {}",
+            finding.operand_a,
+            finding.operand_b,
+            finding.operand_c
+        ),
+        Rule::D43ResourceOilSlotCount => format!("market trade MTRR has {} oil slot(s), expected {}", finding.operand_a, finding.operand_b),
+        Rule::D43ResourceOilRowCount => format!("market trade MTRR has {} oil row(s), expected {}", finding.operand_a, finding.operand_b),
+        Rule::D43ResourceOilWithoutCountry => format!(
+            "market trade MTRR has {} oil row(s) but country_count is zero",
+            finding.operand_a
+        ),
+        Rule::D43ResourceDescriptorCoverage => format!(
+            "market trade MTRR descriptor coverage is {}/{} distinct, expected {}",
+            finding.operand_a,
+            finding.operand_b,
+            finding.operand_c
+        ),
+        Rule::D43ResourceCountryCount => format!(
+            "market trade MTRR decoded country count {} != header {}",
+            finding.operand_a,
+            finding.operand_b
+        ),
+        Rule::D43ResourceCountryCoverage => format!(
+            "market trade MTRR country {} visible order is incomplete ({}/{})",
+            finding.operand_a,
+            finding.operand_b,
+            finding.operand_c
+        ),
+        Rule::D43DealWitnessRange | Rule::D43DealWitnessDuplicate => {
+            format!("market trade MTRD witness {row} is invalid or duplicated")
+        }
+        Rule::D43DealIncompleteNotSubset | Rule::D43DealIncompleteNotAscending => {
+            format!("market trade MTRD incomplete owner {row} is not an ascending witness")
+        }
+        Rule::D43DealHeaderShape => "market trade MTRD header shape is invalid".to_string(),
+        Rule::D43DealOwnerNotWitnessed
+        | Rule::D43DealCounterpartNotWitnessed
+        | Rule::D43DealSameParty
+        | Rule::D43DealResourceIndexRange
+        | Rule::D43DealDirection
+        | Rule::D43DealRoute
+        | Rule::D43DealFlags
+        | Rule::D43DealLegacyReservedStatus
+        | Rule::D43DealStatusBits
+        | Rule::D43DealPackedReserved
+        | Rule::D43DealPackedResourceEcho
+        | Rule::D43DealIdentityOrdinal
+        | Rule::D43DealIdentityParties
+        | Rule::D43DealRequestedScale
+        | Rule::D43DealEfficiencyRange
+        | Rule::D43DealReservedOrdinal
+        | Rule::D43DealDuplicateVisibleOrder => {
+            format!("market trade MTRD row {row} shape is invalid")
+        }
+        Rule::D43DealHalfCount => format_d43_deal_identity(finding, "does not have two halves"),
+        Rule::D43DealHalfMismatch => format_d43_deal_identity(finding, "halves disagree"),
+        Rule::D43DealVisibleOrderCoverage => format!(
+            "market trade MTRD owner {} visible order is not contiguous",
+            finding.operand_a
+        ),
+        Rule::D43CrossResourceCountAgreement => format!(
+            "market trade MTRF resource_count {} != MTRR resource_count {}",
+            finding.operand_a, finding.operand_b
+        ),
+        Rule::D43CrossCountrySetAgreement => format!(
+            "market trade classic country witnesses disagree between {} and {}",
+            finding.family.map_or("unknown", d43_grammar::Trailer::label),
+            finding.other_family.map_or("unknown", d43_grammar::Trailer::label)
+        ),
+        Rule::D43CrossDealResourceSlot => format!(
+            "market trade MTRD tag {} names resource slot {} outside the {}-resource set",
+            finding.operand_a,
+            finding.operand_b,
+            finding.operand_c
+        ),
+        Rule::D43CrossFlowV3NeedsIdentityResourceRows => "market trade resource identity is not carried on the wire: an MTRF v3 payload states no resource identity, so its resource set has no identity to project under".to_string(),
+        Rule::D43ActivationFlags => format!("market trade MTRA flags {:#x} set bits outside {:#x}", finding.operand_a, finding.operand_b),
+        Rule::D43ActivationRootExact => format!("market trade MTRA flags {:#x} do not claim an exact root ({:#x})", finding.operand_a, finding.operand_b),
+        Rule::D43ActivationActiveCountry => format!("market trade MTRA active {} disagrees with country_tag_db_id {}", finding.operand_a != 0, finding.operand_b),
+        Rule::D43ActivationSequence => "market trade MTRA is active with observation_sequence 0".to_string(),
+        Rule::D43ActivationCountryRange => format!("market trade MTRA country_tag_db_id {} > {}", finding.operand_a, finding.operand_b),
+        Rule::D43ActivationRootKind => format!("market trade MTRA root_kind {} != {}", finding.operand_a, finding.operand_b),
+        Rule::D43ActivationOpenRva => format!("market trade MTRA open_rva {:#x} != {:#x}", finding.operand_a, finding.operand_b),
+        Rule::D43StockpileScale
+        | Rule::D43StockpileSegmentLength
+        | Rule::D43StockpileCountryCount
+        | Rule::D43StockpileExpectedCountryCount
+        | Rule::D43StockpileGlobalFlags
+        | Rule::D43StockpileReserved => "market trade MTS1 header/count/length is invalid".to_string(),
+        Rule::D43StockpileCountryTagRange
+        | Rule::D43StockpileCountryDuplicate
+        | Rule::D43StockpileCountryFirst
+        | Rule::D43StockpileCountryRange
+        | Rule::D43StockpileCountryFlags
+        | Rule::D43StockpileCountryReserved => format!("market trade MTS1 country row {row} has invalid tag/range/completeness"),
+        Rule::D43StockpileCountryCoverage => format!("market trade MTS1 country ranges cover {} item(s), expected {}", finding.operand_a, finding.operand_b),
+        Rule::D43StockpileVariantRange
+        | Rule::D43StockpileEquipmentType
+        | Rule::D43StockpileOrdinal
+        | Rule::D43StockpileItemReserved
+        | Rule::D43StockpileAmountRange
+        | Rule::D43StockpileDuplicateVariant => format!("market trade MTS1 item {row} has invalid identity/order/amount"),
+        Rule::D43ResidualHeaderCounts => "market trade MTRB header counts are invalid".to_string(),
+        Rule::D43ResidualReserved => format!("market trade MTRB row {row} reserved field is nonzero"),
+        Rule::D43LendLeaseHeaderCounts => "market trade MTLL header counts are invalid".to_string(),
+        Rule::D43LendLeaseRowShape => format!("market trade MTLL row {row} shape is invalid"),
+    }
+}
+
+fn d43_core_word_name(at: usize) -> &'static str {
+    d43_grammar::CoreWord::ALL
+        .iter()
+        .copied()
+        .find(|word| word.offset() == at)
+        .map_or("count", d43_grammar::CoreWord::diagnostic_name)
+}
+
+fn d43_value_field_name(field: Option<d43_grammar::decode::D43ValueField>) -> &'static str {
+    use d43_grammar::decode::D43ValueField;
+    match field {
+        Some(D43ValueField::D43PriceRaw) => "price_raw",
+        Some(D43ValueField::D43AmountRaw) => "amount_raw",
+        Some(D43ValueField::D43SpeedRaw) => "speed_raw",
+        Some(D43ValueField::D43CompletedRaw) => "completed_raw",
+        Some(D43ValueField::D43Days) => "days",
+        Some(D43ValueField::D43EfficiencyRaw) => "efficiency_raw",
+        Some(D43ValueField::D43FactoryCicProgressRaw) => "factory_cic_progress_raw",
+        Some(D43ValueField::D43EquipmentTransferProgressRaw) => "equipment_transfer_progress_raw",
+        None => "value",
+    }
+}
+
+fn format_d43_deal_identity(
+    finding: &d43_grammar::decode::Finding,
+    suffix: &str,
+) -> String {
+    let Some(identity) = finding.deal_identity else {
+        return format!("market trade MTRD deal at row {} {suffix}", finding.row_or_slot.unwrap_or(0));
+    };
+    format!(
+        "market trade MTRD deal {}->{} resource {} ordinal {} {suffix}",
+        identity.exporter_tag_db_id,
+        identity.importer_tag_db_id,
+        identity.resource_index,
+        identity.ordinal
+    )
+}
+
+fn format_d43_structural_finding(finding: &d43_grammar::decode::Finding) -> String {
+    use d43_grammar::{Section, ViolationKind};
+    let Some(violation) = finding.structural else {
+        return "market trade structural violation".to_string();
+    };
+    match violation.kind {
+        ViolationKind::Need { section, needed, available } => match section {
+            Section::CoreHeader => format!("market trade data payload is {available} byte(s), expected at least {needed}"),
+            Section::CoreRows => format!("market trade data payload is {available} byte(s), expected at least {needed}"),
+            Section::TrailerMagic => "market trade trailer is too short to contain magic".to_string(),
+            Section::TrailerHeader(trailer) => format!(
+                "market trade {} {} overruns payload at cursor {}: need {}, remaining {}",
+                trailer.label(),
+                if trailer == d43_grammar::Trailer::Activation { "activation header" } else { "trailer header" },
+                violation.at,
+                needed.saturating_sub(violation.at),
+                available.saturating_sub(violation.at)
             ),
-            d43_grammar::Trailer::ResourceRow => decode_compact_market_trade_sized_trailer(
-                offset,
-                payload,
-                cursor,
-                &mut resource_set,
-                &[
-                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
-                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
-                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION,
-                    COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION,
-                ],
-                COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN,
-                COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN,
-                "MTRR",
-                "market_trade_resource_rows",
-                summary,
-            ),
-            d43_grammar::Trailer::ClassicDeal => {
-                decode_compact_market_trade_classic_deal_trailer(offset, payload, cursor, summary)
-            }
-            d43_grammar::Trailer::Activation => {
-                decode_compact_market_trade_activation_trailer(offset, payload, cursor, summary)
-            }
-            d43_grammar::Trailer::Stockpile => {
-                decode_compact_market_trade_stockpile_trailer(offset, payload, cursor, summary)
-            }
-            // The two families no shipping site accepts. The fold refuses them
-            // the same way, by falling through its own dispatch
-            // (`world_fold.rs::parse_market_trade_trailers`).
-            d43_grammar::Trailer::Residual | d43_grammar::Trailer::LendLease => {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade {label} trailer is not a family this decoder accepts"
-                ));
-                MarketTradeTrailerEnd::Refused
-            }
-        };
-        let MarketTradeTrailerEnd::At(next) = end else {
-            return (detail_rows, Some(cursor));
-        };
-        // A family that ended where it began has not delimited itself. Every
-        // decoder above returns `Refused` rather than a standing-still end, so
-        // reaching this is a defect in THIS file and not in the payload -- but a
-        // walk that fails closed does not get to loop forever over one trailer.
-        if next <= cursor {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade {label} trailer did not advance the walk"
-            ));
-            return (detail_rows, Some(cursor));
-        }
-        cursor = next;
+            Section::TrailerBody(trailer) => format!("market trade {} len {available} < {needed}", trailer.label()),
+        },
+        ViolationKind::UnknownTrailerMagic { .. } | ViolationKind::TrailingBytes { .. } => "market trade unknown trailer magic".to_string(),
+        ViolationKind::DuplicateTrailer { trailer, .. } => format!("market trade duplicate {} trailer", trailer.label()),
+        ViolationKind::UnknownVersion { trailer, version } => format!("market trade {} version {version} is unsupported", trailer.label()),
+        ViolationKind::HeaderLen { trailer, declared, expected } => format!("market trade {} header_len {declared} != {expected}", trailer.label()),
+        ViolationKind::RowLen { trailer, declared, expected } => format!("market trade {} row_len {declared} != {expected}", trailer.label()),
+        ViolationKind::ResourceCount { trailer, declared, max } => format!("market trade {} resource_count {declared} is outside 1..={max}", trailer.label()),
+        ViolationKind::IdentityStride { trailer, stride } => format!("market trade {} identity stride {stride} is invalid", trailer.label()),
+        ViolationKind::AbsentBlockDeclared { trailer: d43_grammar::Trailer::ClassicDeal, .. } => "market trade MTRD header shape is invalid".to_string(),
+        ViolationKind::AbsentBlockDeclared { trailer, declared } => format!("market trade {} absent block count is {declared}", trailer.label()),
+        ViolationKind::OffsetOverflow { .. } => "market trade payload extent overflow".to_string(),
+        ViolationKind::CallerDefect(_) => "market trade decoder cursor defect".to_string(),
     }
-    (detail_rows, None)
 }
 
-/// Name the family four bytes belong to, from the LEAF's alphabet.
-///
-/// `d43_grammar::Trailer::from_magic` is private to that crate, so this walks
-/// `Trailer::ALL` and compares `magic()`. Both are public, both are the leaf's,
-/// and the leaf's own const assertion proves the alphabet is distinct and that
-/// every `label()` spells its `magic()` -- so this file states no magic of its
-/// own.
-fn compact_market_trade_trailer_of(magic: &[u8]) -> Option<d43_grammar::Trailer> {
-    d43_grammar::Trailer::ALL
-        .into_iter()
-        .find(|trailer| magic == trailer.magic().as_slice())
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum D43TestTrailerEnd {
+    At(usize),
+    Refused,
 }
 
-fn decode_compact_market_trade_detail_trailer(
+#[cfg(test)]
+fn d43_test_decode_trailer(payload: &[u8]) -> d43_grammar::decode::DecodeReport {
+    let mut record = vec![0u8; d43_grammar::CORE_HEADER_LEN];
+    record[d43_grammar::CoreWord::ScaleRaw.offset()..d43_grammar::CoreWord::ScaleRaw.offset() + 4]
+        .copy_from_slice(&d43_grammar::FIXED_SCALE_RAW.to_le_bytes());
+    record.extend_from_slice(payload);
+    d43_grammar::decode::decode_record(&record, D43_AUTHORITY_DECODE_CONTEXT)
+}
+
+#[cfg(test)]
+fn d43_test_decode_classic_deal_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
-    core_contracts: &BTreeSet<u32>,
+    _trailer_offset: usize,
     summary: &mut DomainDataDecodeSummary,
-) -> (usize, MarketTradeTrailerEnd) {
-    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
-        != Some(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC.as_slice())
-    {
+) -> D43TestTrailerEnd {
+    let report = d43_test_decode_trailer(payload);
+    for finding in &report.findings {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade trailing bytes are not MTD1 detail trailer"
+            "offset {offset}: {}",
+            format_market_trade_authority_finding(&report, finding)
         ));
-        return (0, MarketTradeTrailerEnd::Refused);
     }
-    if let Err(err) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN,
-        "market trade MTD1 trailer header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return (0, MarketTradeTrailerEnd::Refused);
-    }
-
-    let version = read_u16_le(payload, trailer_offset + 4);
-    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
-    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
-    let reserved0 = read_u16_le(payload, trailer_offset + 10);
-    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    let price_valid_rows = read_u32_le(payload, trailer_offset + 16) as usize;
-    let speed_valid_rows = read_u32_le(payload, trailer_offset + 20) as usize;
-    let delivery_route_valid_rows = read_u32_le(payload, trailer_offset + 24) as usize;
-    let progress_valid_rows = read_u32_le(payload, trailer_offset + 28) as usize;
-
-    // The version word is STRUCTURAL and it REFUSES.
-    //
-    // Owner ruling 2026-08-16. Until it, this pushed and read on: an `MTD1`
-    // carrying version 9 published every detail row and every following
-    // trailer, while `world_fold.rs::parse_market_trade_detail_trailer` folded
-    // the same word into one fatal `||` and discarded the record. The word
-    // names WHICH GRAMMAR the bytes behind it are written in, so a decoder that
-    // reads them anyway is reading a stream under a grammar it did not declare.
-    // The diagnostic keeps naming the family, the offset and the exact word.
-    if version != COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 version {version} != {}",
-            COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION
-        ));
-        return (0, MarketTradeTrailerEnd::Refused);
-    }
-    if header_len != COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN
-        || row_len != COMPACT_MARKET_TRADE_DETAIL_ROW_LEN
-        || reserved0 != 0
-    {
-        // Return early: the fixed-offset row reads below assume the canonical
-        // 32-byte header and 64-byte rows. A crafted header claiming a different
-        // header_len/row_len (e.g. row_len=0) would otherwise let mtd1_end pass
-        // the bounds check yet index past each short row and panic. The fold
-        // likewise bails on a bad MTD1 header shape.
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 header shape is invalid"
-        ));
-        return (0, MarketTradeTrailerEnd::Refused);
-    }
-
-    // The MTD1 detail trailer occupies exactly `header_len + row_count*row_len`
-    // bytes starting at `trailer_offset`. It may be followed by an optional MTRF
-    // resource-flow trailer, so the MTD1 block must fit WITHIN the payload (its
-    // end is a running cursor the caller resumes from) rather than consume the
-    // payload to its very end. Requiring `== payload.len()` here would false-fail
-    // every record that carries the resource-flow trailer (the observed
-    // "MTD1 len 10904 != 6912" is exactly this: 6912 is the MTD1 end, the extra
-    // 3992 bytes are the trailing MTRF block).
-    let mtd1_end = trailer_offset
-        .saturating_add(header_len)
-        .saturating_add(row_count.saturating_mul(row_len));
-    if mtd1_end > payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 end {mtd1_end} exceeds payload len {}",
-            payload.len()
-        ));
-        return (0, MarketTradeTrailerEnd::Refused);
-    }
-
-    let mut seen_detail_contracts = BTreeSet::new();
-    let mut computed_price = 0usize;
-    let mut computed_speed = 0usize;
-    let mut computed_completed = 0usize;
-    let mut computed_days = 0usize;
-    let mut computed_delivery_country = 0usize;
-    let mut computed_convoys = 0usize;
-    let mut computed_efficiency = 0usize;
-    let mut computed_delivery_route = 0usize;
-    let mut computed_progress = 0usize;
-    let mut cursor = trailer_offset + header_len;
-    for row_index in 0..row_count {
-        let contract_id = read_u32_le(payload, cursor);
-        let flags = read_u32_le(payload, cursor + 4);
-        let price_raw = read_i64_le(payload, cursor + 8);
-        let amount_raw = read_i64_le(payload, cursor + 16);
-        let speed_raw = read_i32_le(payload, cursor + 24);
-        let completed_raw = read_i32_le(payload, cursor + 28);
-        let days = read_i32_le(payload, cursor + 32);
-        let delivery_country_tag_db_id = read_u32_le(payload, cursor + 36);
-        let convoys_assigned = read_i32_le(payload, cursor + 40);
-        let convoys_total = read_i32_le(payload, cursor + 44);
-        let efficiency_raw = read_i32_le(payload, cursor + 48);
-        let factory_cic_progress_raw = read_i32_le(payload, cursor + 52);
-        let equipment_transfer_progress_raw = read_i32_le(payload, cursor + 56);
-        let reserved = read_u32_le(payload, cursor + 60);
-        cursor += row_len;
-
-        if contract_id == 0 || contract_id > COMPACT_MARKET_TRADE_MAX_CONTRACT_ID {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has invalid contract_id {contract_id}"
-            ));
-        } else if !core_contracts.contains(&contract_id) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} references missing contract_id {contract_id}"
-            ));
-        } else if !seen_detail_contracts.insert(contract_id) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} duplicates contract_id {contract_id}"
-            ));
-        }
-        if flags == 0 || flags & !COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has invalid flags {flags:#x}"
-            ));
-        }
-        if reserved != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} reserved field is nonzero"
-            ));
-        }
-        validate_market_trade_detail_presence_i64(
-            summary,
-            offset,
-            row_index,
-            "price_raw",
-            price_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0,
-            1,
-            COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW,
-        );
-        validate_market_trade_detail_presence_i64(
-            summary,
-            offset,
-            row_index,
-            "amount_raw",
-            amount_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID != 0,
-            1,
-            COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW,
-        );
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "speed_raw",
-            speed_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0,
-            0,
-            1_000_000_000,
-        );
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "completed_raw",
-            completed_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0,
-            0,
-            1,
-        );
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "days",
-            days,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0,
-            -1,
-            100_000,
-        );
-        if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0 {
-            if delivery_country_tag_db_id == 0
-                || delivery_country_tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade MTD1 row {row_index} has invalid delivery_country_tag_db_id {delivery_country_tag_db_id}"
-                ));
-            }
-        } else if delivery_country_tag_db_id != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has delivery_country_tag_db_id without flag"
-            ));
-        }
-        if flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0 {
-            if convoys_assigned < 0 || convoys_total < 0 || convoys_assigned > convoys_total {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade MTD1 row {row_index} has invalid convoy counts {convoys_assigned}/{convoys_total}"
-                ));
-            }
-        } else if convoys_assigned != 0 || convoys_total != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has convoy counts without flag"
-            ));
-        }
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "efficiency_raw",
-            efficiency_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0,
-            0,
-            COMPACT_FIXED_SCALE_RAW as i32,
-        );
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "factory_cic_progress_raw",
-            factory_cic_progress_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID != 0,
-            0,
-            COMPACT_FIXED_SCALE_RAW as i32,
-        );
-        validate_market_trade_detail_presence_i32(
-            summary,
-            offset,
-            row_index,
-            "equipment_transfer_progress_raw",
-            equipment_transfer_progress_raw,
-            flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID != 0,
-            0,
-            COMPACT_FIXED_SCALE_RAW as i32,
-        );
-
-        computed_price += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID != 0);
-        computed_speed += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID != 0);
-        computed_completed +=
-            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID != 0);
-        computed_days += usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID != 0);
-        computed_delivery_country +=
-            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID != 0);
-        computed_convoys +=
-            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID != 0);
-        computed_efficiency +=
-            usize::from(flags & COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID != 0);
-        computed_delivery_route += usize::from(
-            flags
-                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID
-                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID
-                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID)
-                != 0,
-        );
-        computed_progress += usize::from(
-            flags
-                & (COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
-                    | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID)
-                != 0,
-        );
-    }
-
-    for (name, expected, actual) in [
-        ("price_valid_rows", price_valid_rows, computed_price),
-        ("speed_valid_rows", speed_valid_rows, computed_speed),
-        (
-            "delivery_route_valid_rows",
-            delivery_route_valid_rows,
-            computed_delivery_route,
-        ),
-        (
-            "progress_valid_rows",
-            progress_valid_rows,
-            computed_progress,
-        ),
-    ] {
-        if expected != actual {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 {name} {expected} != computed {actual}"
-            ));
-        }
-    }
-
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_price_valid_rows",
-        computed_price,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_speed_valid_rows",
-        computed_speed,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_completed_valid_rows",
-        computed_completed,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_days_valid_rows",
-        computed_days,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_delivery_country_valid_rows",
-        computed_delivery_country,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_convoy_valid_rows",
-        computed_convoys,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_efficiency_valid_rows",
-        computed_efficiency,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_delivery_route_valid_rows",
-        computed_delivery_route,
-    );
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_detail_progress_valid_rows",
-        computed_progress,
-    );
-    (row_count, MarketTradeTrailerEnd::At(mtd1_end))
-}
-
-fn decode_compact_market_trade_activation_trailer(
-    offset: usize,
-    payload: &[u8],
-    trailer_offset: usize,
-    summary: &mut DomainDataDecodeSummary,
-) -> MarketTradeTrailerEnd {
-    if let Err(error) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN,
-        "market trade MTRA activation header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {error}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    let trailer = &payload[trailer_offset..trailer_offset + COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN];
-    let version = read_u16_le(trailer, 4);
-    let header_len = read_u16_le(trailer, 6) as usize;
-    let flags = read_u32_le(trailer, 8);
-    let country_tag_db_id = read_u32_le(trailer, 12);
-    let observation_sequence = read_u64_le(trailer, 16);
-    let root_kind = read_u32_le(trailer, 24);
-    let open_rva = read_u32_le(trailer, 28);
-    let active = flags & COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE != 0;
-    // `MTRA` is a header and nothing else, so every PREDICATE below is
-    // structural and a failed one REFUSES -- owner ruling 2026-08-16. Predicate,
-    // not word: the nine below span seven fields, and `observation_sequence` is
-    // judged as a whole `u64` rather than per half. Until this ruling, this pushed
-    // one blob diagnostic, published `market_trade_activation_rows = 1` and
-    // advanced the walk, for a trailer
-    // `world_fold.rs::parse_market_trade_activation_trailer` rejects outright.
-    //
-    // Stated one predicate at a time rather than as one `||`, because "identity
-    // or shape is invalid" told an operator nothing about which of nine
-    // predicates failed or what it held. The ORDER is the fold's, so the two
-    // readers refuse the same trailer for the same reason.
-    let failed_word = if version != COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION {
-        Some(format!(
-            "version {version} != {}",
-            COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION
-        ))
-    } else if header_len != COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN {
-        Some(format!(
-            "header_len {header_len} != {}",
-            COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN
-        ))
-    } else if flags & !COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN != 0 {
-        Some(format!(
-            "flags {flags:#x} set bits outside {:#x}",
-            COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN
-        ))
-    } else if flags & d43_grammar::ACTIVATION_FLAG_ROOT_EXACT == 0 {
-        Some(format!(
-            "flags {flags:#x} do not claim an exact root ({:#x})",
-            d43_grammar::ACTIVATION_FLAG_ROOT_EXACT
-        ))
-    } else if active != (country_tag_db_id != 0) {
-        Some(format!(
-            "active {active} disagrees with country_tag_db_id {country_tag_db_id}"
-        ))
-    } else if active && observation_sequence == 0 {
-        Some("is active with observation_sequence 0".to_string())
-    } else if country_tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID {
-        Some(format!(
-            "country_tag_db_id {country_tag_db_id} > {COMPACT_MAX_OWNER_TAG_DB_ID}"
-        ))
-    } else if root_kind != COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW {
-        Some(format!(
-            "root_kind {root_kind} != {COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW}"
-        ))
-    } else if open_rva != COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA {
-        Some(format!(
-            "open_rva {open_rva:#x} != {COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA:#x}"
-        ))
+    if d43_grammar::decode::select_first_fatal(&report).is_some() {
+        D43TestTrailerEnd::Refused
     } else {
-        None
-    };
-    if let Some(word) = failed_word {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: market trade MTRA {word}"));
-        return MarketTradeTrailerEnd::Refused;
+        D43TestTrailerEnd::At(payload.len())
     }
-    add_compact_domain_data_unit(summary, 43, "market_trade_activation_rows", 1);
-    MarketTradeTrailerEnd::At(trailer_offset + COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN)
 }
 
-// Decode the optional MTRF resource-flow trailer that follows the MTD1 detail
-// trailer. Validates the magic, header shape, and that the trailer's fixed-width
-// rows consume the payload EXACTLY to its end (any residual bytes are a torn
-// payload). Structural-only: it accounts for the bytes and surfaces the row
-// count as a data unit; it does not re-derive per-resource semantics (those are
-// folded by world_fold, not the summarizer).
-fn decode_compact_market_trade_resource_flow_trailer(
+#[cfg(test)]
+#[derive(Default)]
+struct D43TestResourceSetClaim;
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn d43_test_decode_sized_trailer(
     offset: usize,
     payload: &[u8],
-    trailer_offset: usize,
-    resource_set: &mut MarketTradeResourceSetClaim,
+    _trailer_offset: usize,
+    _resource_set: &mut D43TestResourceSetClaim,
+    _accepted_versions: &[u16],
+    _expected_header_len: usize,
+    _expected_row_len: usize,
+    _label: &str,
+    _unit_name: &str,
     summary: &mut DomainDataDecodeSummary,
-) -> MarketTradeTrailerEnd {
-    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
-        != Some(COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC.as_slice())
-    {
+) -> D43TestTrailerEnd {
+    let report = d43_test_decode_trailer(payload);
+    for finding in &report.findings {
         summary.parse_errors.push(format!(
-            "offset {offset}: market trade trailing bytes are not MTRF resource-flow trailer"
+            "offset {offset}: {}",
+            format_market_trade_authority_finding(&report, finding)
         ));
-        return MarketTradeTrailerEnd::Refused;
     }
-    if let Err(err) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN,
-        "market trade MTRF trailer header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let version = read_u16_le(payload, trailer_offset + 4);
-    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
-    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
-    let reserved0 = read_u16_le(payload, trailer_offset + 10);
-    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    let count_or_country_count = read_u32_le(payload, trailer_offset + 16) as usize;
-    let scale_raw = read_u32_le(payload, trailer_offset + 20);
-    // `+24` is a seven-bit resource MASK in v1/v2 and the resource COUNT in v3.
-    // The version decides which reading applies; a stream is never read under a
-    // grammar it did not declare.
-    let mask_or_count = read_u32_le(payload, trailer_offset + 24);
-    let reserved_or_kind_mask = read_u32_le(payload, trailer_offset + 28);
-
-    let resource_count = match version {
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION
-        | COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION => {
-            if mask_or_count != COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK {
-                // The mask names WHICH seven resources the rows behind it are
-                // numbered against.
-                // `world_fold.rs::parse_market_trade_resource_flow_trailer`
-                // refuses it, so this must too, or the authority publishes flow
-                // rows read against a set the record never declared.
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade MTRF resource_mask {mask_or_count:#x} != {:#x}",
-                    COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK
-                ));
-                return MarketTradeTrailerEnd::Refused;
-            }
-            COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT
-        }
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION => {
-            if !(1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&mask_or_count) {
-                // Return early: `expected_len` below multiplies by a row length
-                // derived from this count, so an out-of-bound count must not be
-                // trusted to size anything.
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade MTRF v3 resource_count {mask_or_count} is outside 1..={COMPACT_MAX_STRATEGIC_RESOURCE_COUNT}"
-                ));
-                return MarketTradeTrailerEnd::Refused;
-            }
-            mask_or_count
-        }
-        _ => {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTRF version {version} is unsupported"
-            ));
-            return MarketTradeTrailerEnd::Refused;
-        }
-    };
-    let expected_row_len = if version == COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION {
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN
-            .saturating_add((resource_count as usize).saturating_mul(8))
+    if d43_grammar::decode::select_first_fatal(&report).is_some() {
+        D43TestTrailerEnd::Refused
     } else {
-        COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN
-    };
-    if header_len != COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN
-        || row_len != expected_row_len
-        || reserved0 != 0
-    {
-        // Return early: `expected_len` below multiplies by the attacker-supplied
-        // row_len, so a bad header shape must not be trusted to derive the length.
-        // Mirrors the fold, which rejects a torn MTRF header (incl. nonzero
-        // reserved fields).
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF header shape is invalid"
-        ));
-        return MarketTradeTrailerEnd::Refused;
+        D43TestTrailerEnd::At(payload.len())
     }
-    // The three header claims below said what the rows MEAN -- which countries,
-    // which flow kinds, which fixed-point scale.
-    // `world_fold.rs::parse_market_trade_resource_flow_trailer` refuses each of
-    // them, so a warning here published `market_trade_resource_flow_rows` for a
-    // record the fold threw away. Owner ruling 2026-08-16: the two readers
-    // agree, and they agree by refusing.
-    if version == COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION {
-        if count_or_country_count != row_count || reserved_or_kind_mask != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade legacy MTRF count/reserved fields are invalid"
-            ));
-            return MarketTradeTrailerEnd::Refused;
-        }
-    } else if row_count
-        != count_or_country_count
-            .saturating_mul(COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK.count_ones() as usize)
-        || reserved_or_kind_mask != COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF country/kind shape is invalid"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    if scale_raw != COMPACT_FIXED_SCALE_RAW {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    if let Err(disagreement) = resource_set.declare("MTRF", resource_count) {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: {disagreement}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let expected_len = trailer_offset
-        .saturating_add(header_len)
-        .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() < expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRF len {} < {expected_len}",
-            payload.len()
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    add_compact_domain_data_unit(summary, 43, "market_trade_resource_flow_rows", row_count);
-    MarketTradeTrailerEnd::At(expected_len)
-}
-
-fn decode_compact_market_trade_sized_trailer(
-    offset: usize,
-    payload: &[u8],
-    trailer_offset: usize,
-    resource_set: &mut MarketTradeResourceSetClaim,
-    accepted_versions: &[u16],
-    expected_header_len: usize,
-    expected_row_len: usize,
-    label: &str,
-    unit_name: &str,
-    summary: &mut DomainDataDecodeSummary,
-) -> MarketTradeTrailerEnd {
-    if payload.get(trailer_offset..trailer_offset.saturating_add(4)) != Some(label.as_bytes()) {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade trailing bytes are not {label} trailer"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    if let Err(err) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        expected_header_len,
-        "market trade sized trailer header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let version = read_u16_le(payload, trailer_offset + 4);
-    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
-    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
-    let reserved0 = read_u16_le(payload, trailer_offset + 10);
-    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    if !accepted_versions.contains(&version)
-        || header_len != expected_header_len
-        || row_len != expected_row_len
-        || reserved0 != 0
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade {label} header shape is invalid (version {version})"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let mut identity_len = 0usize;
-    // `MTRR` states the size of the payload's resource set; `MTRH` states none.
-    let mut declared_resource_count: Option<u32> = None;
-    let shape_valid = if label == "MTRH" {
-        let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
-        let reserved1 = read_u32_le(payload, trailer_offset + 20);
-        country_count == row_count && reserved1 == 0
-    } else if label == "MTRR" {
-        let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
-        let resource_count = read_u32_le(payload, trailer_offset + 20);
-        let display_scale = read_u32_le(payload, trailer_offset + 24);
-        let reserved1 = read_u32_le(payload, trailer_offset + 28);
-        // The count is a wire field. v1 pinned it to seven; v2 and v3 admit
-        // whatever the live resource database reported, under the one shared
-        // ceiling. This is the SAME predicate the fold applies -- both sides
-        // bound the count by `MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`, so neither
-        // can admit a stream the other refuses.
-        let count_admitted = if version == COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION
-        {
-            resource_count == COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT
-        } else {
-            (1..=COMPACT_MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count)
-        };
-        // `+28` is reserved zero in v1/v2 and the identity stride in v3 and v4.
-        // The VERSION selects the reading, never the value -- which is what
-        // stops an older decoder from sizing an identity-bearing trailer as
-        // though the identity block were rows.
-        let carries_identity = matches!(
-            version,
-            COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION
-                | COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION
-        );
-        let identity_field_valid = if carries_identity {
-            reserved1 == COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE
-        } else {
-            reserved1 == 0
-        };
-        if carries_identity {
-            identity_len = (resource_count as usize)
-                .saturating_mul(COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize);
-        }
-        declared_resource_count = Some(resource_count);
-        count_admitted
-            && display_scale == 1
-            && identity_field_valid
-            && row_count == country_count.saturating_mul(resource_count as usize)
-    } else {
-        false
-    };
-    if !shape_valid {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade {label} count/shape fields are invalid"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    if let Some(declared_resources) = declared_resource_count {
-        if let Err(disagreement) = resource_set.declare("MTRR", declared_resources) {
-            summary
-                .parse_errors
-                .push(format!("offset {offset}: {disagreement}"));
-            return MarketTradeTrailerEnd::Refused;
-        }
-    }
-
-    let expected_len = trailer_offset
-        .saturating_add(header_len)
-        .saturating_add(identity_len)
-        .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() < expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade {label} len {} < {expected_len}",
-            payload.len()
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    // Sizing the identity block is not reading it. This authority applies the
-    // SAME per-entry contract the fold and the lane decoder do -- bound, UTF-8,
-    // token charset, zero padding, distinct -- so a trailer one side refuses
-    // cannot be accepted by another. An authority that only skipped the block
-    // would report a stream as decoded that the fold then rejects.
-    //
-    // And it REFUSES on the first bad entry, as
-    // `world_fold.rs::parse_market_trade_resource_row_trailer` does.
-    // Reporting the entry and reading on published `market_trade_resource_rows`
-    // against a resource set the record never legibly named -- the same defect
-    // shape the owner's 2026-08-16 ruling closed for the version word.
-    if identity_len > 0 {
-        let mut distinct = BTreeSet::new();
-        let mut cursor = trailer_offset.saturating_add(header_len);
-        for slot in 0..(identity_len / COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize) {
-            match decode_compact_strategic_resource_identity(payload, cursor, slot) {
-                Ok(token) => {
-                    if !distinct.insert(token.clone()) {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: market trade MTRR identity {slot} repeats token {token}"
-                        ));
-                        return MarketTradeTrailerEnd::Refused;
-                    }
-                }
-                Err(reason) => {
-                    summary
-                        .parse_errors
-                        .push(format!("offset {offset}: market trade {reason}"));
-                    return MarketTradeTrailerEnd::Refused;
-                }
-            }
-            cursor = cursor.saturating_add(COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize);
-        }
-    }
-    add_compact_domain_data_unit(summary, 43, unit_name, row_count);
-    MarketTradeTrailerEnd::At(expected_len)
-}
-
-/// Decode one `MTRR` v3 identity entry, fail-closed on every field.
-///
-/// Deliberately a charset rule and not a list of names: which resources exist
-/// is the mod's to decide, and a decoder that knows the answer in advance is
-/// the defect the identity block removes.
-fn decode_compact_strategic_resource_identity(
-    payload: &[u8],
-    cursor: usize,
-    slot: usize,
-) -> Result<String, String> {
-    let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
-    let token_len = read_u16_le(payload, cursor) as usize;
-    if token_len == 0 || token_len > max_len {
-        return Err(format!(
-            "MTRR identity {slot} token length {token_len} is outside 1..={max_len}"
-        ));
-    }
-    let body_start = cursor.saturating_add(2);
-    let body = payload
-        .get(body_start..body_start.saturating_add(max_len))
-        .ok_or_else(|| format!("MTRR identity {slot} is truncated"))?;
-    let (token_bytes, padding) = body.split_at(token_len);
-    if padding.iter().any(|byte| *byte != 0) {
-        return Err(format!("MTRR identity {slot} has non-zero padding"));
-    }
-    let token = std::str::from_utf8(token_bytes)
-        .map_err(|_| format!("MTRR identity {slot} is not UTF-8"))?;
-    if !token.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.' || byte == b':'
-    }) {
-        return Err(format!("MTRR identity {slot} is not a resource token"));
-    }
-    Ok(token.to_string())
-}
-
-fn decode_compact_market_trade_classic_deal_trailer(
-    offset: usize,
-    payload: &[u8],
-    trailer_offset: usize,
-    summary: &mut DomainDataDecodeSummary,
-) -> MarketTradeTrailerEnd {
-    if payload.get(trailer_offset..trailer_offset.saturating_add(4))
-        != Some(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC.as_slice())
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade trailing bytes are not MTRD classic-deal trailer"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    if let Err(err) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN,
-        "market trade MTRD trailer header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let version = read_u16_le(payload, trailer_offset + 4);
-    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
-    let row_len = read_u16_le(payload, trailer_offset + 8) as usize;
-    let reserved0 = read_u16_le(payload, trailer_offset + 10);
-    let row_count = read_u32_le(payload, trailer_offset + 12) as usize;
-    let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
-    let scale_raw = read_u32_le(payload, trailer_offset + 20);
-    let witness_count = read_u32_le(payload, trailer_offset + 24) as usize;
-    // v3's and v4's incomplete-owner count. v1/v2 hold this word at zero, so a
-    // v3 or v4 payload that lost its version word still fails here rather than
-    // reading its completeness block as deal rows.
-    let per_owner = version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION
-        || version == COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION;
-    let incomplete_count = read_u32_le(payload, trailer_offset + 28) as usize;
-    if ![
-        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
-        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
-        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
-        COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION,
-    ]
-    .contains(&version)
-        || header_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN
-        || row_len != COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN
-        || reserved0 != 0
-        || (!per_owner && incomplete_count != 0)
-        || (per_owner && incomplete_count > witness_count)
-        || scale_raw != COMPACT_FIXED_SCALE_RAW
-        || witness_count != country_count
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRD header shape is invalid"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let expected_len = trailer_offset
-        .saturating_add(header_len)
-        .saturating_add(witness_count.saturating_mul(4))
-        .saturating_add(incomplete_count.saturating_mul(4))
-        .saturating_add(row_count.saturating_mul(row_len));
-    if payload.len() < expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTRD len {} < {expected_len}",
-            payload.len()
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    // v3's country blocks are READ, not merely counted.
-    //
-    // This decoder is structural: it advances a cursor and counts units, and it
-    // deliberately does not restate the fold's ROW-level semantics. But the
-    // incomplete block is a statement about which owners are exact, and it is
-    // only meaningful against a witness list that is itself well formed. A
-    // decoder that admits `[99]` where 99 is not a witness, `[67, 34]` out of
-    // order, or witnesses `[34, 34]` -- where the duplicate collapses in the set
-    // and lets `[34]` pass the subset check -- would report the payload
-    // decodable while `world_fold` rejects the whole D43 record. That is three
-    // decoders disagreeing about one grammar.
-    //
-    // EVERY version's witnesses, not v3/v4's.
-    //
-    // This used to be gated on `per_owner`, so a v1 or v2 trailer whose witness
-    // list held a zero, an out-of-range tag or the same owner twice decoded
-    // here and was refused by
-    // `world_fold.rs::parse_market_trade_classic_deal_trailer`, which has never
-    // gated the check on a version. Nothing about an older version makes its
-    // witness list mean less: the incomplete-owner block and every deal row are
-    // numbered against it. A v1/v2 payload with a well-formed list is decoded
-    // exactly as before -- the change is visible only to a payload the fold
-    // already threw away. `incomplete_count` is held at zero for v1/v2 by the
-    // header condition above, so the second loop is empty there.
-    let mut witnesses = std::collections::BTreeSet::new();
-    let mut cursor = trailer_offset.saturating_add(header_len);
-    for witness_index in 0..witness_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        cursor = cursor.saturating_add(4);
-        if tag_db_id == 0
-            || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
-            || !witnesses.insert(tag_db_id)
-        {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTRD witness {witness_index} is invalid or duplicated"
-            ));
-            return MarketTradeTrailerEnd::Refused;
-        }
-    }
-    let mut previous: Option<u32> = None;
-    for incomplete_index in 0..incomplete_count {
-        let tag_db_id = read_u32_le(payload, cursor);
-        cursor = cursor.saturating_add(4);
-        if !witnesses.contains(&tag_db_id) || previous.is_some_and(|previous| previous >= tag_db_id)
-        {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTRD incomplete owner {incomplete_index} is not an ascending witness"
-            ));
-            return MarketTradeTrailerEnd::Refused;
-        }
-        previous = Some(tag_db_id);
-    }
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_classic_deal_country_witnesses",
-        witness_count,
-    );
-    // Counted separately from the witnesses: this is the number of owners the
-    // hour published WITHOUT an exactness claim, and it is zero for every
-    // archived v1/v2 payload.
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_classic_deal_incomplete_owners",
-        incomplete_count,
-    );
-    add_compact_domain_data_unit(summary, 43, "market_trade_classic_deal_rows", row_count);
-    MarketTradeTrailerEnd::At(expected_len)
-}
-
-fn decode_compact_market_trade_stockpile_trailer(
-    offset: usize,
-    payload: &[u8],
-    trailer_offset: usize,
-    summary: &mut DomainDataDecodeSummary,
-) -> MarketTradeTrailerEnd {
-    if let Err(err) = require_compact_remaining(
-        payload,
-        trailer_offset,
-        COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN,
-        "market trade MTS1 trailer header",
-    ) {
-        summary.parse_errors.push(format!("offset {offset}: {err}"));
-        return MarketTradeTrailerEnd::Refused;
-    }
-    let version = read_u16_le(payload, trailer_offset + 4);
-    let header_len = read_u16_le(payload, trailer_offset + 6) as usize;
-    let country_row_len = read_u16_le(payload, trailer_offset + 8) as usize;
-    let item_row_len = read_u16_le(payload, trailer_offset + 10) as usize;
-    let segment_len = read_u32_le(payload, trailer_offset + 12) as usize;
-    let country_count = read_u32_le(payload, trailer_offset + 16) as usize;
-    let item_count = read_u32_le(payload, trailer_offset + 20) as usize;
-    let expected_country_count = read_u32_le(payload, trailer_offset + 24) as usize;
-    let scale_raw = read_u32_le(payload, trailer_offset + 28);
-    let flags = read_u32_le(payload, trailer_offset + 32);
-    let reserved = read_u32_le(payload, trailer_offset + 36);
-    let expected_segment_len = COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN
-        .saturating_add(
-            country_count.saturating_mul(COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN),
-        )
-        .saturating_add(item_count.saturating_mul(COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN));
-    if version != COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION
-        || header_len != COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN
-        || country_row_len != COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN
-        || item_row_len != COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN
-        || segment_len != expected_segment_len
-        || country_count == 0
-        || country_count != expected_country_count
-        || scale_raw != COMPACT_FIXED_SCALE_RAW
-        || flags != COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS
-        || reserved != 0
-        || trailer_offset.saturating_add(segment_len) > payload.len()
-    {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTS1 header/count/length is invalid"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let mut seen_tags = BTreeSet::new();
-    let mut expected_first = 0usize;
-    for row_index in 0..country_count {
-        let cursor = trailer_offset + header_len + row_index * country_row_len;
-        let tag_db_id = read_u32_le(payload, cursor);
-        let item_first = read_u32_le(payload, cursor + 4) as usize;
-        let row_item_count = read_u32_le(payload, cursor + 8) as usize;
-        let row_flags = read_u32_le(payload, cursor + 12);
-        let row_reserved = read_u32_le(payload, cursor + 16);
-        let item_end = item_first.saturating_add(row_item_count);
-        if tag_db_id == 0
-            || tag_db_id > COMPACT_MARKET_TRADE_MAX_TAG_DB_ID
-            || !seen_tags.insert(tag_db_id)
-            || item_first != expected_first
-            || item_end > item_count
-            || row_flags != COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE
-            || row_reserved != 0
-        {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTS1 country row {row_index} has invalid tag/range/completeness"
-            ));
-            return MarketTradeTrailerEnd::Refused;
-        }
-        expected_first = item_end;
-    }
-    if expected_first != item_count {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTS1 country ranges cover {expected_first} item(s), expected {item_count}"
-        ));
-        return MarketTradeTrailerEnd::Refused;
-    }
-
-    let item_base = trailer_offset + header_len + country_count * country_row_len;
-    let mut seen_items = BTreeSet::new();
-    for country_index in 0..country_count {
-        let country_cursor = trailer_offset + header_len + country_index * country_row_len;
-        let tag_db_id = read_u32_le(payload, country_cursor);
-        let item_first = read_u32_le(payload, country_cursor + 4) as usize;
-        let row_item_count = read_u32_le(payload, country_cursor + 8) as usize;
-        for ordinal in 0..row_item_count {
-            let item_index = item_first + ordinal;
-            let cursor = item_base + item_index * item_row_len;
-            let variant_id = read_u32_le(payload, cursor);
-            let equipment_type = read_u32_le(payload, cursor + 4);
-            let row_ordinal = read_u32_le(payload, cursor + 8) as usize;
-            let item_reserved = read_u32_le(payload, cursor + 12);
-            let amount_raw = read_i64_le(payload, cursor + 16);
-            if variant_id == 0
-                || variant_id > COMPACT_MARKET_TRADE_MAX_VARIANT_ID
-                || equipment_type != COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE
-                || row_ordinal != ordinal
-                || item_reserved != 0
-                || !(0..=COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW).contains(&amount_raw)
-                || !seen_items.insert((tag_db_id, variant_id, equipment_type))
-            {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: market trade MTS1 item {item_index} has invalid identity/order/amount"
-                ));
-                return MarketTradeTrailerEnd::Refused;
-            }
-        }
-    }
-    add_compact_domain_data_unit(
-        summary,
-        43,
-        "market_trade_stockpile_country_rows",
-        country_count,
-    );
-    add_compact_domain_data_unit(summary, 43, "market_trade_stockpile_item_rows", item_count);
-    MarketTradeTrailerEnd::At(trailer_offset + segment_len)
 }
 
 // --- W1 domain 63 country_core_scalars_live -------------------------------
@@ -15245,52 +14172,6 @@ fn validate_compact_optional_u32(
     } else if value != 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: {domain} row {row_index} {field} present without flag"
-        ));
-    }
-}
-
-fn validate_market_trade_detail_presence_i64(
-    summary: &mut DomainDataDecodeSummary,
-    offset: usize,
-    row_index: usize,
-    name: &str,
-    value: i64,
-    present: bool,
-    min: i64,
-    max: i64,
-) {
-    if present {
-        if !(min..=max).contains(&value) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has invalid {name} {value}"
-            ));
-        }
-    } else if value != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 row {row_index} has {name} without flag"
-        ));
-    }
-}
-
-fn validate_market_trade_detail_presence_i32(
-    summary: &mut DomainDataDecodeSummary,
-    offset: usize,
-    row_index: usize,
-    name: &str,
-    value: i32,
-    present: bool,
-    min: i32,
-    max: i32,
-) {
-    if present {
-        if !(min..=max).contains(&value) {
-            summary.parse_errors.push(format!(
-                "offset {offset}: market trade MTD1 row {row_index} has invalid {name} {value}"
-            ));
-        }
-    } else if value != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: market trade MTD1 row {row_index} has {name} without flag"
         ));
     }
 }
@@ -18826,7 +17707,7 @@ mod tests {
     /// checked at EVERY version now. This comment used to end "v1/v2 witness
     /// content stays uninspected here, exactly as it always was", and that was
     /// the last version-gated hole in this family -- the fold's witness check
-    /// (`world_fold.rs::parse_market_trade_classic_deal_trailer`) has never been
+    /// (the fold's former private MTRD walker) had never been
     /// gated on a version, so a v1/v2 payload with a malformed witness list
     /// decoded here and was discarded there. The whole-record consequence is
     /// tested through the shipping entry points by
@@ -18859,7 +17740,7 @@ mod tests {
         let decode = |version: u16, incomplete: &[u32]| {
             let payload = mtrd_trailer(version, incomplete);
             let mut summary = DomainDataDecodeSummary::default();
-            let end = decode_compact_market_trade_classic_deal_trailer(0, &payload, 0, &mut summary);
+            let end = d43_test_decode_classic_deal_trailer(0, &payload, 0, &mut summary);
             (end, summary.parse_errors)
         };
 
@@ -18867,7 +17748,7 @@ mod tests {
         assert!(errors.is_empty(), "a well-formed v3 block decodes: {errors:?}");
         assert_eq!(
             end,
-            MarketTradeTrailerEnd::At(32 + 2 * 4 + 4),
+            D43TestTrailerEnd::At(32 + 2 * 4 + 4),
             "and the cursor clears the whole trailer"
         );
 
@@ -18918,7 +17799,7 @@ mod tests {
         let decode_witnesses = |version: u16, witnesses: [u32; 2], incomplete: &[u32]| {
             let payload = mtrd_trailer_with_witnesses(version, witnesses, incomplete);
             let mut summary = DomainDataDecodeSummary::default();
-            decode_compact_market_trade_classic_deal_trailer(0, &payload, 0, &mut summary);
+            d43_test_decode_classic_deal_trailer(0, &payload, 0, &mut summary);
             summary.parse_errors
         };
         for (label, witnesses, incomplete) in [
@@ -18956,13 +17837,13 @@ mod tests {
             assert!(errors.is_empty(), "v{version} still decodes: {errors:?}");
             assert_eq!(
                 end,
-                MarketTradeTrailerEnd::At(32 + 2 * 4),
+                D43TestTrailerEnd::At(32 + 2 * 4),
                 "with no block between witnesses and rows"
             );
             // CHANGED by lane LR, owner ruling 2026-08-16. This used to assert
             // the opposite -- that a v1/v2 witness list was "not this decoder's
             // business" -- and that was the last version-gated hole in this
-            // family: `world_fold.rs::parse_market_trade_classic_deal_trailer`
+            // family: the fold's former private MTRD walker
             // has never gated the witness check on a version, so a v1/v2
             // payload with a duplicate witness
             // decoded here and was thrown away there. Both readers refuse it
@@ -19463,11 +18344,11 @@ mod tests {
 
     fn decode_mtrr(payload: &[u8]) -> DomainDataDecodeSummary {
         let mut summary = DomainDataDecodeSummary::default();
-        decode_compact_market_trade_sized_trailer(
+        d43_test_decode_sized_trailer(
             0,
             payload,
             0,
-            &mut MarketTradeResourceSetClaim::default(),
+            &mut D43TestResourceSetClaim::default(),
             &[
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION,
                 COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION,
@@ -20864,6 +19745,403 @@ mod tests {
         );
     }
 
+    fn d43_marker_region<'a>(source: &'a str, end_marker: Option<&str>) -> &'a str {
+        const MARKER: &str = "// @leaf-source-authority crate=d43_grammar";
+        let start = source
+            .find(MARKER)
+            .expect("the D43 leaf-source-authority marker moved");
+        let marked = &source[start..];
+        match end_marker {
+            Some(end_marker) => {
+                let end = marked
+                    .find(end_marker)
+                    .expect("the end of a marked D43 source region moved");
+                &marked[..end]
+            }
+            None => marked,
+        }
+    }
+
+    fn d43_census_region(source: &str) -> &str {
+        const BEGIN: &str = "// @d43-payload-reader-region begin";
+        const END: &str = "// @d43-payload-reader-region end";
+        let start = source
+            .find(BEGIN)
+            .expect("a D43 payload-reader census begin marker moved");
+        let marked = &source[start..];
+        let end = marked
+            .find(END)
+            .expect("a D43 payload-reader census end marker moved");
+        &marked[..end + END.len()]
+    }
+
+    fn d43_is_char_literal_at(source: &str, at: usize) -> bool {
+        let bytes = source.as_bytes();
+        if bytes.get(at) != Some(&b'\'') {
+            return false;
+        }
+        let mut i = at + 1;
+        if bytes.get(i) == Some(&b'\\') {
+            i += 1;
+            if bytes.get(i) == Some(&b'u') && bytes.get(i + 1) == Some(&b'{') {
+                i += 2;
+                while matches!(bytes.get(i), Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' | b'_')) {
+                    i += 1;
+                }
+                if bytes.get(i) != Some(&b'}') {
+                    return false;
+                }
+                i += 1;
+            } else {
+                i += 1;
+            }
+        } else if let Some(ch) = source[i..].chars().next() {
+            i += ch.len_utf8();
+        } else {
+            return false;
+        }
+        bytes.get(i) == Some(&b'\'')
+    }
+
+    /// Blank comments and literals while preserving byte offsets and line
+    /// boundaries. The walker census must count code, not diagnostic prose.
+    fn d43_strip_rust_comments_and_strings(source: &str) -> String {
+        let bytes = source.as_bytes();
+        let mut out = String::with_capacity(source.len());
+        let mut i = 0usize;
+        let blank = |out: &mut String, slice: &str| {
+            for ch in slice.chars() {
+                out.push(if ch == '\n' { '\n' } else { ' ' });
+            }
+        };
+        while i < bytes.len() {
+            if source[i..].starts_with("//") {
+                let end = source[i..]
+                    .find('\n')
+                    .map(|relative| i + relative)
+                    .unwrap_or(bytes.len());
+                blank(&mut out, &source[i..end]);
+                i = end;
+            } else if source[i..].starts_with("/*") {
+                let start = i;
+                let mut depth = 1usize;
+                i += 2;
+                while i < bytes.len() && depth > 0 {
+                    if source[i..].starts_with("/*") {
+                        depth += 1;
+                        i += 2;
+                    } else if source[i..].starts_with("*/") {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                blank(&mut out, &source[start..i]);
+            } else if source[i..].starts_with("r\"") || source[i..].starts_with("r#") {
+                let start = i;
+                i += 1;
+                let hashes = source[i..].chars().take_while(|ch| *ch == '#').count();
+                i += hashes;
+                if bytes.get(i) == Some(&b'"') {
+                    i += 1;
+                    let terminator = format!("\"{}", "#".repeat(hashes));
+                    i = source[i..]
+                        .find(&terminator)
+                        .map(|relative| i + relative + terminator.len())
+                        .unwrap_or(bytes.len());
+                }
+                blank(&mut out, &source[start..i]);
+            } else if bytes[i] == b'\'' && d43_is_char_literal_at(source, i) {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'\'' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                blank(&mut out, &source[start..i]);
+            } else if bytes[i] == b'"' {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+                blank(&mut out, &source[start..i]);
+            } else {
+                let ch = source[i..].chars().next().expect("source index is in bounds");
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        out
+    }
+
+    fn d43_byte_slice_parameters(source: &str) -> Vec<String> {
+        let bytes = source.as_bytes();
+        let mut names = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] != b'&' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                j += 1;
+            }
+            if bytes.get(j) != Some(&b'[') {
+                i += 1;
+                continue;
+            }
+            j += 1;
+            while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                j += 1;
+            }
+            if bytes.get(j..j + 2) != Some(b"u8") {
+                i += 1;
+                continue;
+            }
+            j += 2;
+            while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+                j += 1;
+            }
+            if bytes.get(j) != Some(&b']') {
+                i += 1;
+                continue;
+            }
+            let mut colon = i;
+            while colon > 0 && bytes[colon - 1].is_ascii_whitespace() {
+                colon -= 1;
+            }
+            if colon == 0 || bytes[colon - 1] != b':' {
+                i = j + 1;
+                continue;
+            }
+            let mut end = colon - 1;
+            while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                end -= 1;
+            }
+            let mut start = end;
+            while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+                start -= 1;
+            }
+            if start < end {
+                let name = source[start..end].to_string();
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            i = j + 1;
+        }
+        names
+    }
+
+    fn d43_enclosing_call_name(source: &str, at: usize) -> Option<&str> {
+        let bytes = source.as_bytes();
+        let mut i = at;
+        let mut depth = 0usize;
+        while i > 0 {
+            i -= 1;
+            match bytes[i] {
+                b')' | b']' => depth += 1,
+                b'(' if depth > 0 => depth -= 1,
+                b'(' => {
+                    let mut end = i;
+                    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                        end -= 1;
+                    }
+                    let mut start = end;
+                    while start > 0
+                        && (bytes[start - 1].is_ascii_alphanumeric()
+                            || matches!(bytes[start - 1], b'_' | b':'))
+                    {
+                        start -= 1;
+                    }
+                    return (start < end).then_some(&source[start..end]);
+                }
+                b'[' if depth > 0 => depth -= 1,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Count uses of a byte-slice parameter that can read bytes itself or hand
+    /// the slice to anything except a resolved shared-decoder forwarding chain.
+    /// Parameter names and helper names are discovered lexically, so renaming
+    /// an old `read_u32` helper does not evade the census.
+    fn d43_computed_payload_reads(source: &str) -> usize {
+        let source = d43_strip_rust_comments_and_strings(source);
+        let bytes = source.as_bytes();
+        let mut reads = 0usize;
+        for name in d43_byte_slice_parameters(&source) {
+            let mut search_at = 0usize;
+            while let Some(relative) = source[search_at..].find(&name) {
+                let at = search_at + relative;
+                let end = at + name.len();
+                search_at = end;
+                let identifier_before = at > 0
+                    && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+                let identifier_after = bytes
+                    .get(end)
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
+                if identifier_before || identifier_after {
+                    continue;
+                }
+                let mut next = end;
+                while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
+                    next += 1;
+                }
+                if bytes.get(next) == Some(&b':') {
+                    continue;
+                }
+                if bytes.get(next) == Some(&b'.') {
+                    let member = source[next + 1..]
+                        .trim_start()
+                        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                        .next()
+                        .unwrap_or("");
+                    if matches!(member, "len" | "is_empty") {
+                        continue;
+                    }
+                    reads += 1;
+                    continue;
+                }
+                if bytes.get(next) == Some(&b'[') {
+                    reads += 1;
+                    continue;
+                }
+                let call = d43_enclosing_call_name(&source, at);
+                let leaf_call = call == Some("d43_grammar::decode::decode_record");
+                let local_authority_forwarder = call
+                    == Some("decode_compact_market_trade_record")
+                    && source.contains("fn decode_compact_market_trade_record(");
+                if leaf_call || local_authority_forwarder {
+                    continue;
+                }
+                reads += 1;
+            }
+        }
+        reads
+    }
+
+    /// D43 had three independent reader sites before this lane: fold 154 raw
+    /// reads, authority 119, and lane gate 217, as recorded in
+    /// `runs/lx_d43_one_decoder/walker_census_before.md`. This test permits one
+    /// implementation: the leaf. The marked fold, authority, lane and producer
+    /// regions must have no byte-slice use except a fully-qualified leaf call
+    /// or a forwarder defined inside the region whose body is itself scanned.
+    ///
+    /// This cannot prove that no wholly independent parser was written from
+    /// scratch elsewhere. Encoding is also a separate census: the collector
+    /// still writes D43 bytes rather than delegating to `d43_grammar::encode`.
+    ///
+    /// kills: reintroducing payload-offset arithmetic, direct indexing, or a
+    /// renamed raw-read helper in any marked consumer region makes that site a
+    /// second implementation and changes the asserted site list.
+    #[test]
+    fn d43_has_exactly_one_structural_payload_reader() {
+        let world_fold = include_str!("world_fold.rs").replace("\r\n", "\n");
+        let authority = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
+        let lane = include_str!("../../lanes/market_trade_live/src/lib.rs").replace("\r\n", "\n");
+        let lane_leaf = include_str!("../../lanes/market_trade_live/src/leaf_decode.rs")
+            .replace("\r\n", "\n");
+        let collector = include_str!("../../collector/src/attach_log.rs").replace("\r\n", "\n");
+
+        let regions = [
+            (
+                "world_fold",
+                d43_marker_region(&world_fold, Some("\n    // --- DOMAIN 44")),
+            ),
+            (
+                "domain_data_authority",
+                d43_marker_region(&authority, Some("\n#[cfg(test)]\n#[derive(Clone, Copy")),
+            ),
+            (
+                "lane_gate",
+                d43_census_region(&lane),
+            ),
+            ("lane_leaf_projection", d43_census_region(&lane_leaf)),
+            (
+                "collector_encoder",
+                d43_marker_region(
+                    &collector,
+                    Some("\nfn compact_supply_logistics_attrition_data_payload("),
+                ),
+            ),
+        ];
+        let consumer_counts: Vec<(&str, usize)> = regions
+            .iter()
+            .map(|(site, source)| (*site, d43_computed_payload_reads(source)))
+            .collect();
+
+        let leaf = [
+            include_str!("../../d43_grammar/src/lib.rs"),
+            include_str!("../../d43_grammar/src/family.rs"),
+            include_str!("../../d43_grammar/src/walk.rs"),
+            include_str!("../../d43_grammar/src/decode.rs"),
+            include_str!("../../d43_grammar/src/encode.rs"),
+        ]
+        .join("\n");
+        let mut implementations = Vec::new();
+        if d43_computed_payload_reads(&leaf) > 0 {
+            implementations.push("d43_grammar");
+        }
+        for (site, count) in &consumer_counts {
+            if *count > 0 {
+                implementations.push(*site);
+            }
+        }
+
+        assert_eq!(
+            consumer_counts,
+            [
+                ("world_fold", 0),
+                ("domain_data_authority", 0),
+                ("lane_gate", 0),
+                ("lane_leaf_projection", 0),
+                ("collector_encoder", 0),
+            ],
+            "a marked D43 consumer reads a payload byte instead of forwarding it"
+        );
+        assert_eq!(
+            implementations,
+            ["d43_grammar"],
+            "D43 must have exactly one structural payload reader"
+        );
+    }
+
+    // kills: exempting calls by their final component alone, which lets a
+    // local `decode_record` outside the marked census region hide a raw read.
+    #[test]
+    fn d43_structural_census_rejects_unresolved_decode_record_forwarder() {
+        let source = r#"
+fn decode_record(payload: &[u8]) {
+    let _ = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+}
+// @d43-payload-reader-region begin
+fn consumer(payload: &[u8]) {
+    decode_record(payload);
+}
+// @d43-payload-reader-region end
+"#;
+        let marked_region = d43_census_region(source);
+        assert_eq!(d43_computed_payload_reads(marked_region), 1);
+    }
+
     // =====================================================================
     // The d43 message oracle
     // =====================================================================
@@ -21303,10 +20581,9 @@ mod tests {
     ///    before the core rows are counted. The record's rows were never read,
     ///    so reporting two of them was the same claim the units were.
     ///
-    /// The `clean` block is byte-identical, at both offsets. So is every block
-    /// for a payload whose only defect is a ROW's contents -- those are still
-    /// diagnosed and read through, which is the residual this lane names rather
-    /// than closes.
+    /// The `clean` block remains decodable at both offsets. Row-content defects
+    /// retain every specific diagnostic, but the shared fatality table now adds
+    /// the record-level refusal for rules the fold historically refused.
     ///
     /// kills: a rewire that renames a diagnostic, changes one of its operands,
     /// emits two where one was emitted, stops emitting one, reorders two
@@ -21331,6 +20608,13 @@ mod tests {
     }
 
     const D43_ORACLE_EXPECTED: &str = r#"== clean
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21353,7 +20637,7 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == core header short
    ! offset 0: market trade data payload is 40 byte(s), expected at least 48
-   ! offset 0: market trade record is undecodable at byte 40; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 0; the whole D43 record is discarded
    $ raw_status_flags_or = None
    $ status_flags_or = 0
    $ data_rows_total = 0
@@ -21361,7 +20645,7 @@ mod tests {
    $ domain.status_flags_or = 0
 == core rows short
    ! offset 0: market trade data payload is 96 byte(s), expected at least 144
-   ! offset 0: market trade record is undecodable at byte 96; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 48; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 0
@@ -21369,6 +20653,13 @@ mod tests {
    $ domain.status_flags_or = 0
 == core changed_rows exceeds row_count
    ! offset 0: market trade changed_rows 5 > row_count 2
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21392,6 +20683,13 @@ mod tests {
 == core emitted/observed disagree
    ! offset 0: market trade emitted_contract_rows 3 != row_count 2
    ! offset 0: market trade observed_contract_rows 1 < row_count 2
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21414,6 +20712,12 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == core scale_raw wrong
    ! offset 0: market trade scale_raw 7 != 100000
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
    ! offset 0: market trade record is undecodable at byte 44; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21422,6 +20726,13 @@ mod tests {
    $ domain.status_flags_or = 0
 == core row contract_type wrong
    ! offset 0: market trade row 0 has contract_type 9, expected 81
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21444,6 +20755,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == core row unknown flag bit
    ! offset 0: market trade row 0 has unknown flags 2147483679
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21466,7 +20784,15 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == core row duplicate contract_id
    ! offset 0: market trade row 1 duplicates contract_id 1
+   ! offset 0: market trade row 1 duplicates contract identity 1:81
    ! offset 0: market trade MTD1 row 1 references missing contract_id 2
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21489,6 +20815,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == core row reserved nonzero
    ! offset 0: market trade row 0 reserved field is nonzero
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21524,7 +20857,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == trailer magic unknown
-   ! offset 0: market trade trailing bytes have unknown trailer magic
+   ! offset 0: market trade unknown trailer magic
    ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21538,7 +20871,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTD1 twice
-   ! offset 0: market trade has duplicate MTD1 trailer
+   ! offset 0: market trade duplicate MTD1 trailer
    ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21553,8 +20886,13 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRA twice
-   ! offset 0: market trade has duplicate MTRA trailer
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade duplicate MTRA trailer
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21574,8 +20912,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTS1 twice
-   ! offset 0: market trade has duplicate MTS1 trailer
-   ! offset 0: market trade record is undecodable at byte 1016; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade duplicate MTS1 trailer
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21610,7 +20953,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTD1 version wrong
-   ! offset 0: market trade MTD1 version 9 != 1
+   ! offset 0: market trade MTD1 version 9 is unsupported
    ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21623,7 +20966,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTD1 header_len wrong
-   ! offset 0: market trade MTD1 header shape is invalid
+   ! offset 0: market trade MTD1 header_len 40 != 32
    ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21636,7 +20979,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTD1 row_len wrong
-   ! offset 0: market trade MTD1 header shape is invalid
+   ! offset 0: market trade MTD1 row_len 40 != 64
    ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21650,19 +20993,35 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTD1 reserved0 nonzero
    ! offset 0: market trade MTD1 header shape is invalid
-   ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 154; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTD1 row_count overruns
-   ! offset 0: market trade MTD1 end 64176 exceeds payload len 1016
+   ! offset 0: market trade MTD1 len 1016 < 64176
    ! offset 0: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21676,6 +21035,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTD1 count claim disagrees
    ! offset 0: market trade MTD1 price_valid_rows 1 != computed 2
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21698,6 +21064,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTD1 row names a missing contract
    ! offset 0: market trade MTD1 row 0 references missing contract_id 99
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21720,6 +21093,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTD1 row flags unknown
    ! offset 0: market trade MTD1 row 0 has invalid flags 0x80000003
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 180; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21757,7 +21137,7 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTRF v3 resource_count zero
    ! offset 0: market trade MTRF v3 resource_count 0 is outside 1..=64
-   ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 328; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -21771,7 +21151,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRF header_len wrong
-   ! offset 0: market trade MTRF header shape is invalid
+   ! offset 0: market trade MTRF header_len 40 != 32
    ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21787,36 +21167,65 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTRF country/kind shape wrong
    ! offset 0: market trade MTRF country/kind shape is invalid
-   ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 0: market trade MTRF country/kind shape is invalid
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 316; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRF scale_raw wrong
    ! offset 0: market trade MTRF scale_raw 7 != 100000
-   ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 324; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRF row_count overruns
-   ! offset 0: market trade MTRF country/kind shape is invalid
+   ! offset 0: market trade MTRF len 1016 < 32336
    ! offset 0: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21846,7 +21255,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRH version wrong
-   ! offset 0: market trade MTRH header shape is invalid (version 9)
+   ! offset 0: market trade MTRH version 9 is unsupported
    ! offset 0: market trade record is undecodable at byte 528; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21863,22 +21272,35 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTRH country_count wrong
    ! offset 0: market trade MTRH count/shape fields are invalid
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
    ! offset 0: market trade record is undecodable at byte 528; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR resource_count out of range
-   ! offset 0: market trade MTRR count/shape fields are invalid
+   ! offset 0: market trade MTRR resource_count 0 is outside 1..=64
    ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21895,7 +21317,7 @@ mod tests {
    # market_trade_resource_flow_rows = 6
    # market_trade_variant_valid_rows = 2
 == MTRR identity stride word wrong
-   ! offset 0: market trade MTRR count/shape fields are invalid
+   ! offset 0: market trade MTRR absent block count is 7
    ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -21913,109 +21335,188 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == MTRR identity token length zero
    ! offset 0: market trade MTRR identity 0 token length 0 is outside 1..=62
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR identity 0 has non-zero padding
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR identity token too long
    ! offset 0: market trade MTRR identity 0 token length 999 is outside 1..=62
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR identity padding nonzero
    ! offset 0: market trade MTRR identity 0 has non-zero padding
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR identity not a token
    ! offset 0: market trade MTRR identity 0 is not a resource token
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR identity not UTF-8
    ! offset 0: market trade MTRR identity 0 is not UTF-8
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR identity 0 is not a resource token
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRR identity repeats a token
    ! offset 0: market trade MTRR identity 1 repeats token oil
-   ! offset 0: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 664; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRD version wrong
-   ! offset 0: market trade MTRD header shape is invalid
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade MTRD version 9 is unsupported
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22032,15 +21533,25 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRD witness invalid
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRD witness 0 is invalid or duplicated
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade MTRD incomplete owner 0 is not an ascending witness
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -22048,17 +21559,27 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRD witness duplicated
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRD witness 1 is invalid or duplicated
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -22066,17 +21587,28 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRD incomplete owner not a witness
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRD incomplete owner 0 is not an ascending witness
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -22084,10 +21616,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRD row_count overruns
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRD len 1016 < 96900
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22104,8 +21643,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRD header truncated
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRD trailer header overruns payload at cursor 856: need 32, remaining 8
-   ! offset 0: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22122,13 +21666,20 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTRA root kind wrong
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRA root_kind 9 != 1
-   ! offset 0: market trade record is undecodable at byte 900; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
    # market_trade_classic_deal_country_witnesses = 2
@@ -22140,10 +21691,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTRA header truncated
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTRA activation header overruns payload at cursor 900: need 32, remaining 8
-   ! offset 0: market trade record is undecodable at byte 900; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22162,8 +21720,14 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTS1 scale_raw wrong
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTS1 header/count/length is invalid
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22181,10 +21745,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTS1 country row tag zero
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTS1 country row 0 has invalid tag/range/completeness
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22202,10 +21774,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTS1 country ranges short
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTS1 country ranges cover 0 item(s), expected 1
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22223,10 +21803,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTS1 item type wrong
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTS1 item 0 has invalid identity/order/amount
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22244,10 +21832,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == MTS1 header truncated
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
    ! offset 0: market trade MTS1 trailer header overruns payload at cursor 932: need 40, remaining 8
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22267,8 +21862,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == MTS1 country_row_len wrong
-   ! offset 0: market trade MTS1 header/count/length is invalid
-   ! offset 0: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade MTS1 row_len 24 != 20
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22288,6 +21888,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == core status flags set
+   ! offset 0: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 0: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 0: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 0: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 0: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 0: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 0: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(512)
    $ status_flags_or = 512
    $ data_rows_total = 2
@@ -22309,6 +21916,13 @@ mod tests {
    # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 clean
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22331,7 +21945,7 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 core header short
    ! offset 4096: market trade data payload is 40 byte(s), expected at least 48
-   ! offset 4096: market trade record is undecodable at byte 40; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 0; the whole D43 record is discarded
    $ raw_status_flags_or = None
    $ status_flags_or = 0
    $ data_rows_total = 0
@@ -22339,7 +21953,7 @@ mod tests {
    $ domain.status_flags_or = 0
 == @4096 core rows short
    ! offset 4096: market trade data payload is 96 byte(s), expected at least 144
-   ! offset 4096: market trade record is undecodable at byte 96; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 48; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 0
@@ -22347,6 +21961,13 @@ mod tests {
    $ domain.status_flags_or = 0
 == @4096 core changed_rows exceeds row_count
    ! offset 4096: market trade changed_rows 5 > row_count 2
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22370,6 +21991,13 @@ mod tests {
 == @4096 core emitted/observed disagree
    ! offset 4096: market trade emitted_contract_rows 3 != row_count 2
    ! offset 4096: market trade observed_contract_rows 1 < row_count 2
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22392,6 +22020,12 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 core scale_raw wrong
    ! offset 4096: market trade scale_raw 7 != 100000
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
    ! offset 4096: market trade record is undecodable at byte 44; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22400,6 +22034,13 @@ mod tests {
    $ domain.status_flags_or = 0
 == @4096 core row contract_type wrong
    ! offset 4096: market trade row 0 has contract_type 9, expected 81
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22422,6 +22063,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 core row unknown flag bit
    ! offset 4096: market trade row 0 has unknown flags 2147483679
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22444,7 +22092,15 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 core row duplicate contract_id
    ! offset 4096: market trade row 1 duplicates contract_id 1
+   ! offset 4096: market trade row 1 duplicates contract identity 1:81
    ! offset 4096: market trade MTD1 row 1 references missing contract_id 2
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22467,6 +22123,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 core row reserved nonzero
    ! offset 4096: market trade row 0 reserved field is nonzero
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22502,7 +22165,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 trailer magic unknown
-   ! offset 4096: market trade trailing bytes have unknown trailer magic
+   ! offset 4096: market trade unknown trailer magic
    ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22516,7 +22179,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 twice
-   ! offset 4096: market trade has duplicate MTD1 trailer
+   ! offset 4096: market trade duplicate MTD1 trailer
    ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22531,8 +22194,13 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRA twice
-   ! offset 4096: market trade has duplicate MTRA trailer
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade duplicate MTRA trailer
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22552,8 +22220,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 twice
-   ! offset 4096: market trade has duplicate MTS1 trailer
-   ! offset 4096: market trade record is undecodable at byte 1016; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade duplicate MTS1 trailer
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22588,7 +22261,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 version wrong
-   ! offset 4096: market trade MTD1 version 9 != 1
+   ! offset 4096: market trade MTD1 version 9 is unsupported
    ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22601,7 +22274,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 header_len wrong
-   ! offset 4096: market trade MTD1 header shape is invalid
+   ! offset 4096: market trade MTD1 header_len 40 != 32
    ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22614,7 +22287,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 row_len wrong
-   ! offset 4096: market trade MTD1 header shape is invalid
+   ! offset 4096: market trade MTD1 row_len 40 != 64
    ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22628,19 +22301,35 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 reserved0 nonzero
    ! offset 4096: market trade MTD1 header shape is invalid
-   ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 154; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
+   # market_trade_detail_price_valid_rows = 2
+   # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 row_count overruns
-   ! offset 4096: market trade MTD1 end 64176 exceeds payload len 1016
+   ! offset 4096: market trade MTD1 len 1016 < 64176
    ! offset 4096: market trade record is undecodable at byte 144; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22654,6 +22343,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 count claim disagrees
    ! offset 4096: market trade MTD1 price_valid_rows 1 != computed 2
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22676,6 +22372,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 row names a missing contract
    ! offset 4096: market trade MTD1 row 0 references missing contract_id 99
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22698,6 +22401,13 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTD1 row flags unknown
    ! offset 4096: market trade MTD1 row 0 has invalid flags 0x80000003
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 180; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22735,7 +22445,7 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTRF v3 resource_count zero
    ! offset 4096: market trade MTRF v3 resource_count 0 is outside 1..=64
-   ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 328; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -22749,7 +22459,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRF header_len wrong
-   ! offset 4096: market trade MTRF header shape is invalid
+   ! offset 4096: market trade MTRF header_len 40 != 32
    ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22765,36 +22475,65 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTRF country/kind shape wrong
    ! offset 4096: market trade MTRF country/kind shape is invalid
-   ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 4096: market trade MTRF country/kind shape is invalid
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 316; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRF scale_raw wrong
    ! offset 4096: market trade MTRF scale_raw 7 != 100000
-   ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 324; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
+   # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRF row_count overruns
-   ! offset 4096: market trade MTRF country/kind shape is invalid
+   ! offset 4096: market trade MTRF len 1016 < 32336
    ! offset 4096: market trade record is undecodable at byte 304; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22824,7 +22563,7 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRH version wrong
-   ! offset 4096: market trade MTRH header shape is invalid (version 9)
+   ! offset 4096: market trade MTRH version 9 is unsupported
    ! offset 4096: market trade record is undecodable at byte 528; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22841,22 +22580,35 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTRH country_count wrong
    ! offset 4096: market trade MTRH count/shape fields are invalid
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
    ! offset 4096: market trade record is undecodable at byte 528; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
+   # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR resource_count out of range
-   ! offset 4096: market trade MTRR count/shape fields are invalid
+   ! offset 4096: market trade MTRR resource_count 0 is outside 1..=64
    ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22873,7 +22625,7 @@ mod tests {
    # market_trade_resource_flow_rows = 6
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity stride word wrong
-   ! offset 4096: market trade MTRR count/shape fields are invalid
+   ! offset 4096: market trade MTRR absent block count is 7
    ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
@@ -22891,109 +22643,188 @@ mod tests {
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity token length zero
    ! offset 4096: market trade MTRR identity 0 token length 0 is outside 1..=62
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR identity 0 has non-zero padding
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity token too long
    ! offset 4096: market trade MTRR identity 0 token length 999 is outside 1..=62
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity padding nonzero
    ! offset 4096: market trade MTRR identity 0 has non-zero padding
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity not a token
    ! offset 4096: market trade MTRR identity 0 is not a resource token
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity not UTF-8
    ! offset 4096: market trade MTRR identity 0 is not UTF-8
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR identity 0 is not a resource token
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 600; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRR identity repeats a token
    ! offset 4096: market trade MTRR identity 1 repeats token oil
-   ! offset 4096: market trade record is undecodable at byte 568; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 664; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
    # market_trade_factory_header_rows = 1
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
+   # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD version wrong
-   ! offset 4096: market trade MTRD header shape is invalid
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade MTRD version 9 is unsupported
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23010,15 +22841,25 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD witness invalid
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRD witness 0 is invalid or duplicated
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade MTRD incomplete owner 0 is not an ascending witness
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -23026,17 +22867,27 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD witness duplicated
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRD witness 1 is invalid or duplicated
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -23044,17 +22895,28 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD incomplete owner not a witness
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRD incomplete owner 0 is not an ascending witness
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
+   # market_trade_classic_deal_country_witnesses = 2
+   # market_trade_classic_deal_incomplete_owners = 1
    # market_trade_contract_rows = 2
    # market_trade_detail_price_valid_rows = 2
    # market_trade_detail_rows = 2
@@ -23062,10 +22924,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD row_count overruns
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRD len 1016 < 96900
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23082,8 +22951,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRD header truncated
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRD trailer header overruns payload at cursor 856: need 32, remaining 8
-   ! offset 4096: market trade record is undecodable at byte 856; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23100,13 +22974,20 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTRA root kind wrong
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRA root_kind 9 != 1
-   ! offset 4096: market trade record is undecodable at byte 900; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
    $ data_changed_rows_total = 2
    $ domain.status_flags_or = 0
+   # market_trade_activation_rows = 1
    # market_trade_amount_valid_rows = 2
    # market_trade_buyer_ptr_valid_rows = 2
    # market_trade_classic_deal_country_witnesses = 2
@@ -23118,10 +22999,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTRA header truncated
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTRA activation header overruns payload at cursor 900: need 32, remaining 8
-   ! offset 4096: market trade record is undecodable at byte 900; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23140,8 +23028,14 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 scale_raw wrong
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTS1 header/count/length is invalid
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23159,10 +23053,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 country row tag zero
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTS1 country row 0 has invalid tag/range/completeness
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23180,10 +23082,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 country ranges short
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTS1 country ranges cover 0 item(s), expected 1
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23201,10 +23111,18 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 item type wrong
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTS1 item 0 has invalid identity/order/amount
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23222,10 +23140,17 @@ mod tests {
    # market_trade_observed_contract_rows = 2
    # market_trade_resource_flow_rows = 6
    # market_trade_resource_rows = 2
+   # market_trade_stockpile_country_rows = 1
+   # market_trade_stockpile_item_rows = 1
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 header truncated
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
    ! offset 4096: market trade MTS1 trailer header overruns payload at cursor 932: need 40, remaining 8
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23245,8 +23170,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 MTS1 country_row_len wrong
-   ! offset 4096: market trade MTS1 header/count/length is invalid
-   ! offset 4096: market trade record is undecodable at byte 932; the whole D43 record is discarded
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade MTS1 row_len 24 != 20
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(0)
    $ status_flags_or = 0
    $ data_rows_total = 2
@@ -23266,6 +23196,13 @@ mod tests {
    # market_trade_resource_rows = 2
    # market_trade_variant_valid_rows = 2
 == @4096 core status flags set
+   ! offset 4096: market trade MTRR row 0 has zero descriptor_db_index
+   ! offset 4096: market trade MTRR row 0 has invalid needed_type 0
+   ! offset 4096: market trade MTRR row 1 has invalid needed_type 0
+   ! offset 4096: market trade MTRR has 0 oil slot(s), expected 1
+   ! offset 4096: market trade MTRR has 0 oil row(s), expected 1
+   ! offset 4096: market trade classic country witnesses disagree between MTRF and MTRD
+   ! offset 4096: market trade record is undecodable at byte 784; the whole D43 record is discarded
    $ raw_status_flags_or = Some(512)
    $ status_flags_or = 512
    $ data_rows_total = 2
@@ -23308,10 +23245,18 @@ mod tests {
     /// Verdict, every diagnostic, and every published unit.
     #[allow(clippy::type_complexity)]
     fn d43_authority_read(payload: &[u8]) -> (Option<String>, Vec<String>, BTreeMap<String, u64>) {
+        d43_authority_read_at(0, payload)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn d43_authority_read_at(
+        record_offset: usize,
+        payload: &[u8],
+    ) -> (Option<String>, Vec<String>, BTreeMap<String, u64>) {
         let mut summary = DomainDataDecodeSummary::default();
         summary.domain_id = 43;
         summary.per_domain.entry(43).or_default();
-        decode_compact_market_trade_data_payload(0, payload, &mut summary);
+        decode_compact_market_trade_data_payload(record_offset, payload, &mut summary);
         let verdict = summary
             .parse_errors
             .iter()
@@ -23327,9 +23272,18 @@ mod tests {
 
     /// The fold's verdict on the same bytes.
     fn d43_fold_verdict(payload: &[u8]) -> Option<String> {
-        crate::world_fold::WorldFold::new("lr-d43-differential")
-            .fold_market_trade(payload)
-            .err()
+        d43_fold_read(payload).0
+    }
+
+    fn d43_fold_read(
+        payload: &[u8],
+    ) -> (
+        Option<String>,
+        crate::world_fold::D43FoldStateCardinalities,
+    ) {
+        let mut fold = crate::world_fold::WorldFold::new("lx-d43-differential");
+        let verdict = fold.fold_market_trade(payload).err();
+        (verdict, fold.d43_state_cardinalities())
     }
 
     /// A payload BOTH readers accept, carrying all seven families the authority
@@ -23354,20 +23308,35 @@ mod tests {
     /// witness rule at v1/v2 needs a v1/v2 trailer.
     #[derive(Clone, Copy)]
     struct D43PayloadShape {
+        /// Which MTRF grammar the payload carries.
+        flow_version: d43_grammar::FlowVersion,
         /// The resource width `MTRF` declares.
         flow_resource_count: u32,
         /// The resource width `MTRR` declares. Equal to the above by default.
         row_resource_count: u32,
         /// Which `MTRD` grammar the payload carries.
         deal_version: d43_grammar::DealVersion,
+        /// Whether MTRD carries one valid two-half deal.
+        deal_rows: bool,
+        /// Whether every witnessed owner appears in the v3/v4 incomplete block.
+        deal_incomplete_all: bool,
+        /// Whether MTS1 carries two one-item countries instead of one.
+        stockpile_two_countries: bool,
+        /// Whether MTS1's sole country carries two items instead of one.
+        stockpile_two_items: bool,
     }
 
     impl Default for D43PayloadShape {
         fn default() -> Self {
             D43PayloadShape {
+                flow_version: d43_grammar::FlowVersion::Variable,
                 flow_resource_count: 2,
                 row_resource_count: 2,
                 deal_version: d43_grammar::DealVersion::PerOwner,
+                deal_rows: false,
+                deal_incomplete_all: false,
+                stockpile_two_countries: false,
+                stockpile_two_items: false,
             }
         }
     }
@@ -23473,7 +23442,12 @@ mod tests {
         let flow_values = vec![1i64; shape.flow_resource_count as usize];
         let mut flow_rows: Vec<encode::FlowRowInput<'_>> = Vec::new();
         for tag_db_id in countries {
-            for flow_kind in 1..=6u32 {
+            let flow_kinds = if shape.flow_version == d43_grammar::FlowVersion::Legacy {
+                3..=3
+            } else {
+                1..=6
+            };
+            for flow_kind in flow_kinds {
                 flow_rows.push(encode::FlowRowInput {
                     tag_db_id,
                     flow_kind,
@@ -23484,7 +23458,7 @@ mod tests {
         at.insert("MTRF", payload.len());
         payload.extend_from_slice(
             &encode::encode_resource_flow(
-                d43_grammar::FlowVersion::Variable,
+                shape.flow_version,
                 shape.flow_resource_count,
                 countries.len() as u32,
                 &flow_rows,
@@ -23538,7 +23512,15 @@ mod tests {
         // One token per slot, distinct, and the fold names oil off slot 0's own
         // vocabulary rather than off its position. A FIXED pool, so widening the
         // set adds a slot instead of respelling the two the default carries.
-        let token_pool: [&[u8]; 4] = [b"oil", b"steel", b"tungsten", b"rubber"];
+        let token_pool: [&[u8]; 7] = [
+            b"oil",
+            b"steel",
+            b"tungsten",
+            b"rubber",
+            b"aluminium",
+            b"chromium",
+            b"coal",
+        ];
         let token_refs: Vec<&[u8]> = token_pool
             .into_iter()
             .take(shape.row_resource_count as usize)
@@ -23565,14 +23547,77 @@ mod tests {
 
         // v1 and v2 declare no incomplete-owner block, so the ONE owner short of
         // exactness is a v3/v4 fact and the encoder refuses it otherwise.
-        let incomplete: &[u32] = if shape.deal_version.carries_incomplete_owners() {
-            &[tag]
+        let incomplete_one = [tag];
+        let incomplete_all = [tag, second_tag];
+        let incomplete: &[u32] = if shape.deal_version.carries_incomplete_owners()
+            && shape.deal_incomplete_all
+        {
+            &incomplete_all
+        } else if shape.deal_version.carries_incomplete_owners() {
+            &incomplete_one
         } else {
             &[]
         };
+        let deal_rows = if shape.deal_rows {
+            vec![
+                d43_grammar::DealRow {
+                    owner_tag_db_id: tag,
+                    counterpart_tag_db_id: second_tag,
+                    resource_index: 1,
+                    visible_order: 0,
+                    direction: d43_grammar::DealDirection::Export.wire(),
+                    route_kind: d43_grammar::DealRoute::Sea.wire(),
+                    flags: d43_grammar::DEAL_FLAG_EXACT,
+                    route_status_or_reserved: 0,
+                    identity_exporter_tag_db_id: tag,
+                    identity_importer_tag_db_id: second_tag,
+                    identity_ordinal: 1,
+                    packed_identity: None,
+                    reserved_ordinal_word: None,
+                    requested_raw: COMPACT_FIXED_SCALE_RAW as i64,
+                    delivered_raw: 0,
+                    available_export_raw: 0,
+                    factory_cost_raw: 0,
+                    efficiency_raw: 0,
+                    civilian_factories: 0,
+                    convoys_assigned: 0,
+                    convoys_required: 0,
+                },
+                d43_grammar::DealRow {
+                    owner_tag_db_id: second_tag,
+                    counterpart_tag_db_id: tag,
+                    resource_index: 1,
+                    visible_order: 0,
+                    direction: d43_grammar::DealDirection::Import.wire(),
+                    route_kind: d43_grammar::DealRoute::Sea.wire(),
+                    flags: d43_grammar::DEAL_FLAG_EXACT,
+                    route_status_or_reserved: 0,
+                    identity_exporter_tag_db_id: tag,
+                    identity_importer_tag_db_id: second_tag,
+                    identity_ordinal: 1,
+                    packed_identity: None,
+                    reserved_ordinal_word: None,
+                    requested_raw: COMPACT_FIXED_SCALE_RAW as i64,
+                    delivered_raw: 0,
+                    available_export_raw: 0,
+                    factory_cost_raw: 0,
+                    efficiency_raw: 0,
+                    civilian_factories: 0,
+                    convoys_assigned: 0,
+                    convoys_required: 0,
+                },
+            ]
+        } else {
+            Vec::new()
+        };
         at.insert("MTRD", payload.len());
         payload.extend_from_slice(
-            &encode::encode_classic_deals(shape.deal_version, &countries, incomplete, &[])
+            &encode::encode_classic_deals(
+                shape.deal_version,
+                &countries,
+                incomplete,
+                &deal_rows,
+            )
                 .expect("MTRD encodes"),
         );
 
@@ -23594,24 +23639,43 @@ mod tests {
         // only when a SINGLE 20-byte country row sits between the 40-byte header
         // and the items. A second country row would move the items and that
         // fixture would silently start editing a country row instead.
+        let stockpile_tags: Vec<u32> = if shape.stockpile_two_countries {
+            vec![tag, second_tag]
+        } else {
+            vec![tag]
+        };
+        let stockpile_countries: Vec<d43_grammar::StockpileCountryRow> = stockpile_tags
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, tag_db_id)| d43_grammar::StockpileCountryRow {
+                tag_db_id,
+                item_first: index,
+                item_count: if shape.stockpile_two_items { 2 } else { 1 },
+                flags: COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE,
+                reserved: 0,
+            })
+            .collect();
+        let stockpile_item_count = if shape.stockpile_two_items {
+            2
+        } else {
+            stockpile_tags.len()
+        };
+        let stockpile_items: Vec<d43_grammar::StockpileItemRow> = (0..stockpile_item_count)
+            .map(|index| d43_grammar::StockpileItemRow {
+                equipment_variant_id: 5 + index as u32,
+                variant_type: COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE,
+                ordinal: 0,
+                reserved: 0,
+                amount_raw: 100,
+            })
+            .collect();
         at.insert("MTS1", payload.len());
         payload.extend_from_slice(
             &encode::encode_stockpile(
-                1,
-                &[d43_grammar::StockpileCountryRow {
-                    tag_db_id: tag,
-                    item_first: 0,
-                    item_count: 1,
-                    flags: COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE,
-                    reserved: 0,
-                }],
-                &[d43_grammar::StockpileItemRow {
-                    equipment_variant_id: 5,
-                    variant_type: COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE,
-                    ordinal: 0,
-                    reserved: 0,
-                    amount_raw: 100,
-                }],
+                stockpile_countries.len() as u32,
+                &stockpile_countries,
+                &stockpile_items,
             )
             .expect("MTS1 encodes"),
         );
@@ -23646,6 +23710,744 @@ mod tests {
                 "{family} published {unit}, so a mutation of its header changes \
                  something a reader looked at: {units:?}"
             );
+        }
+    }
+
+    /// The oracle matrix is a SHIPPING-entry-point differential, at both
+    /// record offsets the operator oracle pins.
+    ///
+    /// kills: either shipping reader acquiring a private fatality decision, or
+    /// record-offset arithmetic changing a verdict at the authority only.
+    #[test]
+    fn d43_oracle_matrix_has_one_shipping_decodability_verdict_at_both_offsets() {
+        let (clean, at) = d43_agreed_payload();
+        for (name, mutate) in d43_oracle_cases() {
+            let mut payload = clean.clone();
+            mutate(&mut payload, &at);
+            let fold_refused = d43_fold_verdict(&payload).is_some();
+            for record_offset in [0, 4096] {
+                let authority_refused = d43_authority_read_at(record_offset, &payload).0.is_some();
+                assert_eq!(
+                    authority_refused, fold_refused,
+                    "{name} at record offset {record_offset}"
+                );
+            }
+        }
+    }
+
+    /// The authority's published units and the fold's applied state are two
+    /// projections of the same leaf-owned cardinalities.
+    ///
+    /// kills: either site counting a decoded block itself, dropping a typed
+    /// row while applying it, or publishing a count different from the leaf.
+    #[test]
+    fn d43_authority_units_and_fold_state_equal_the_leaf_report_units() {
+        let (payload, _) = d43_agreed_payload();
+        let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
+        assert!(
+            d43_grammar::decode::select_first_fatal(&report).is_none(),
+            "the cardinality fixture must be decodable: {:?}",
+            report.findings
+        );
+        let (authority_verdict, errors, authority_units) = d43_authority_read(&payload);
+        assert_eq!(authority_verdict, None, "authority errors: {errors:?}");
+        let (fold_verdict, fold) = d43_fold_read(&payload);
+        assert_eq!(fold_verdict, None);
+
+        let expected = [
+            ("market_trade_contract_rows", report.units.market_trade_contract_rows.unwrap_or(0)),
+            ("market_trade_detail_rows", report.units.market_trade_detail_rows.unwrap_or(0)),
+            ("market_trade_resource_flow_rows", report.units.market_trade_resource_flow_rows.unwrap_or(0)),
+            ("market_trade_factory_header_rows", report.units.market_trade_factory_header_rows.unwrap_or(0)),
+            ("market_trade_resource_rows", report.units.market_trade_resource_rows.unwrap_or(0)),
+            ("market_trade_classic_deal_country_witnesses", report.units.market_trade_classic_deal_country_witnesses.unwrap_or(0)),
+            ("market_trade_classic_deal_incomplete_owners", report.units.market_trade_classic_deal_incomplete_owners.unwrap_or(0)),
+            ("market_trade_classic_deal_rows", report.units.market_trade_classic_deal_rows.unwrap_or(0)),
+            ("market_trade_activation_rows", report.units.market_trade_activation_rows.unwrap_or(0)),
+            ("market_trade_stockpile_country_rows", report.units.market_trade_stockpile_country_rows.unwrap_or(0)),
+            ("market_trade_stockpile_item_rows", report.units.market_trade_stockpile_item_rows.unwrap_or(0)),
+        ];
+        for (name, count) in expected {
+            if count == 0 {
+                assert!(!authority_units.contains_key(name), "zero unit {name} must stay unpublished");
+            } else {
+                assert_eq!(authority_units.get(name), Some(&(count as u64)), "unit {name}");
+            }
+        }
+        assert_eq!(
+            fold,
+            crate::world_fold::D43FoldStateCardinalities {
+                contract_rows: report.units.market_trade_contract_rows.unwrap_or(0),
+                detail_rows: report.units.market_trade_detail_rows.unwrap_or(0),
+                resource_flow_rows: report.units.market_trade_resource_flow_rows.unwrap_or(0),
+                factory_rows: report.units.market_trade_factory_header_rows.unwrap_or(0),
+                resource_rows: report.units.market_trade_resource_rows.unwrap_or(0),
+                witnesses: report.units.market_trade_classic_deal_country_witnesses.unwrap_or(0),
+                incomplete_owners: report.units.market_trade_classic_deal_incomplete_owners.unwrap_or(0),
+                deal_rows: report.units.market_trade_classic_deal_rows.unwrap_or(0),
+                activation_rows: report.units.market_trade_activation_rows.unwrap_or(0),
+                stockpile_country_rows: report.units.market_trade_stockpile_country_rows.unwrap_or(0),
+                stockpile_item_rows: report.units.market_trade_stockpile_item_rows.unwrap_or(0),
+            }
+        );
+    }
+
+    /// D43's shared payload verdict does not erase the fold's two site-policy
+    /// early returns. The authority reports the fatal row; the fold deliberately
+    /// treats a failed/clear record as unavailable and never applies that row.
+    ///
+    /// kills: moving core-row refusal ahead of either fold policy gate, or
+    /// accidentally committing core contracts on the failure-status path.
+    #[test]
+    fn d43_core_defects_do_not_move_ahead_of_failure_or_baseline_clear_policy() {
+        let (clean, _) = d43_agreed_payload();
+        let valid_flags = COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID
+            | COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID;
+        for (label, status_flags, commits_trailers) in [
+            ("failure", COMPACT_STATUS_PARTIAL_DATA, true),
+            (
+                "baseline clear",
+                compact_contract::COMPACT_STATUS_BASELINE_CLEAR,
+                false,
+            ),
+        ] {
+            let mut payload = clean.clone();
+            oracle_put_u32(&mut payload, 16, status_flags);
+            oracle_put_u32(&mut payload, d43_grammar::CORE_HEADER_LEN + 8, valid_flags | 1 << 31);
+
+            let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
+            assert!(
+                d43_grammar::decode::select_first_fatal(&report)
+                    .is_some_and(|finding| finding.rule == d43_grammar::decode::D43DecodeRule::D43CoreUnknownFlags),
+                "{label}: the one decoder still finds the fatal core rule"
+            );
+            assert!(
+                d43_authority_verdict(&payload).is_some(),
+                "{label}: the authority reports the shared record verdict"
+            );
+            let (fold_verdict, state) = d43_fold_read(&payload);
+            assert_eq!(fold_verdict, None, "{label}: the fold takes its policy early return");
+            assert_eq!(state.contract_rows, 0, "{label}: no malformed core is committed");
+            assert_eq!(
+                state.resource_flow_rows > 0,
+                commits_trailers,
+                "{label}: trailer commit remains on its historical side of the policy gate"
+            );
+        }
+    }
+
+    /// Semantic findings discovered before a later structural stop survive in
+    /// the authority report, while both shipping readers share the refusal.
+    ///
+    /// kills: turning the report back into `Result` at the first semantic
+    /// finding, or clearing earlier findings when a later boundary is unknown.
+    #[test]
+    fn d43_shipping_report_retains_semantics_before_a_structural_stop() {
+        let (mut payload, at) = d43_agreed_payload();
+        oracle_put_u32(&mut payload, 12, 5);
+        payload.truncate(at["MTRF"] + 8);
+        for record_offset in [0, 4096] {
+            let (verdict, errors, _) = d43_authority_read_at(record_offset, &payload);
+            assert!(verdict.is_some(), "offset {record_offset}: structural refusal");
+            assert!(
+                errors.iter().any(|error| error.contains("changed_rows 5 > row_count 2")),
+                "offset {record_offset}: earlier semantic finding retained: {errors:?}"
+            );
+            assert!(
+                errors.iter().any(|error| error.contains("MTRF") && error.contains("overruns")),
+                "offset {record_offset}: structural stop remains named: {errors:?}"
+            );
+        }
+        assert!(d43_fold_verdict(&payload).is_some());
+    }
+
+    /// All defects in one decoded row remain reportable, but the shared policy
+    /// key still chooses the fold's historical first error.
+    ///
+    /// kills: short-circuiting row evaluation, sorting by discovery/byte order,
+    /// or selecting unknown flags ahead of contract type.
+    #[test]
+    fn d43_multi_defect_core_row_reports_all_and_selects_the_historical_first() {
+        let (mut payload, _) = d43_agreed_payload();
+        let row = d43_grammar::CORE_HEADER_LEN;
+        oracle_put_u32(&mut payload, row + 4, 9);
+        oracle_put_u32(&mut payload, row + 8, u32::MAX);
+        oracle_put_u32(&mut payload, row + 44, 1);
+        let (verdict, errors, _) = d43_authority_read(&payload);
+        assert!(verdict.is_some());
+        for fragment in ["contract_type 9", "unknown flags", "reserved field is nonzero"] {
+            assert!(
+                errors.iter().any(|error| error.contains(fragment)),
+                "retained {fragment}: {errors:?}"
+            );
+        }
+        assert_eq!(
+            d43_fold_verdict(&payload).as_deref(),
+            Some("market trade row 0 has unexpected contract_type 9")
+        );
+    }
+
+    /// The classic row families the old authority sized but did not inspect are
+    /// exercised through both shipping entry points, with one named predicate
+    /// group per fixture.
+    ///
+    /// kills: restoring a private authority/fold row rule, omitting one classic
+    /// block from the shared report, or formatting a fatal finding while one
+    /// shipping entry point nevertheless accepts the record.
+    #[test]
+    fn d43_classic_row_predicate_groups_have_one_shipping_verdict() {
+        use d43_grammar::decode::D43DecodeRule as Rule;
+        type Mutation = Box<
+            dyn Fn(
+                &mut Vec<u8>,
+                &d43_grammar::decode::DecodeReport,
+            ),
+        >;
+
+        let (clean, _) = d43_agreed_payload_with(D43PayloadShape {
+            deal_rows: true,
+            ..D43PayloadShape::default()
+        });
+        let cases: Vec<(&str, Rule, Mutation)> = vec![
+            ("MTRF tag", Rule::D43FlowTagRange, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at, 0))),
+            ("MTRF kind", Rule::D43FlowKind, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 4, 9))),
+            ("MTRF width echo", Rule::D43FlowRowMaskOrCount, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 8, 9))),
+            ("MTRF reserved", Rule::D43FlowReserved, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 12, 1))),
+            ("MTRF duplicate country/kind", Rule::D43FlowDuplicateCountryKind, Box::new(|p, r| {
+                let first = r.document.flow_rows[0].at;
+                let second = r.document.flow_rows[1].at;
+                let flow_kind = u32::from_le_bytes(
+                    p[first + 4..first + 8]
+                        .try_into()
+                        .expect("flow kind"),
+                );
+                oracle_put_u32(p, second + 4, flow_kind);
+            })),
+            ("MTRH tag", Rule::D43FactoryTagRange, Box::new(|p, r| oracle_put_u32(p, r.document.factory_rows[0].at, 0))),
+            ("MTRH duplicate", Rule::D43FactoryDuplicateTag, Box::new(|p, r| {
+                let first = r.document.factory_rows[0].row.tag_db_id;
+                oracle_put_u32(p, r.document.factory_rows[1].at, first);
+            })),
+            ("MTRR row shape", Rule::D43ResourceDescriptorZero, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 56, 0))),
+            ("MTRR unavailable version", Rule::D43ResourceUnavailableVersion, Box::new(|p, r| {
+                let at = r.document.resource_rows[0].at;
+                oracle_put_u32(p, at + 12, d43_grammar::NeededType::Unavailable.wire());
+                oracle_put_u32(p, at + 52, d43_grammar::ResourceFlag::NeededUnavailable.bit());
+            })),
+            ("MTRR oil shape", Rule::D43ResourceOilShape, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 40, 1))),
+            ("MTRR non-oil shape", Rule::D43ResourceNonOilNeededBalance, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 40, 1))),
+            ("MTRR duplicate key", Rule::D43ResourceDuplicateCountrySlot, Box::new(|p, r| {
+                let at = r.document.resource_rows[1].at;
+                oracle_put_u32(p, at + 4, 0);
+                oracle_put_u32(p, at + 8, 0);
+            })),
+            ("MTRR descriptor changes", Rule::D43ResourceDescriptorChanged, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[2].at + 56, 9))),
+            ("MTRD row shape", Rule::D43DealFlags, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 24, 0))),
+            ("MTRD half count", Rule::D43DealHalfCount, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[1].at + 36, 2))),
+            ("MTRD half mismatch", Rule::D43DealHalfMismatch, Box::new(|p, r| {
+                let at = r.document.deal_rows[1].at + 48;
+                p[at..at + 8].copy_from_slice(&1i64.to_le_bytes());
+            })),
+            ("MTRD visible order", Rule::D43DealVisibleOrderCoverage, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 12, 1))),
+        ];
+
+        for (name, expected_rule, mutate) in cases {
+            let clean_report = d43_grammar::decode::decode_record(&clean, D43_AUTHORITY_DECODE_CONTEXT);
+            let mut payload = clean.clone();
+            mutate(&mut payload, &clean_report);
+            let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
+            assert!(
+                report.findings.iter().any(|finding| finding.rule == expected_rule),
+                "{name}: expected {expected_rule:?}, got {:?}",
+                report.findings
+            );
+            assert!(d43_fold_verdict(&payload).is_some(), "{name}: fold refused");
+            for offset in [0, 4096] {
+                assert!(
+                    d43_authority_read_at(offset, &payload).0.is_some(),
+                    "{name}: authority refused at {offset}"
+                );
+            }
+        }
+    }
+
+    /// Every classic row predicate that was not already pinned by the LK/LR
+    /// oracle receives its own mutation through both shipping entry points.
+    ///
+    /// kills: dropping any individual MTRF/MTRR/MTRD/MTS1 predicate from the
+    /// shared evaluator, demoting its fatality, or letting either site recover
+    /// independently from that predicate.
+    #[test]
+    fn d43_remaining_row_predicates_have_one_shipping_verdict() {
+        use d43_grammar::decode::{D43DecodeRule as Rule, D43RuleFatality};
+        type Mutation = Box<
+            dyn Fn(
+                &mut Vec<u8>,
+                &d43_grammar::decode::DecodeReport,
+            ),
+        >;
+
+        let exercise = |name: &str, expected_rule: Rule, payload: Vec<u8>| {
+            let report = d43_grammar::decode::decode_record(
+                &payload,
+                D43_AUTHORITY_DECODE_CONTEXT,
+            );
+            assert!(
+                report.findings.iter().any(|finding| {
+                    finding.rule == expected_rule
+                        && finding.fatality == D43RuleFatality::Fatal
+                }),
+                "{name}: expected fatal {expected_rule:?}, got {:?}",
+                report.findings
+            );
+            assert!(d43_fold_verdict(&payload).is_some(), "{name}: fold refused");
+            for offset in [0, 4096] {
+                assert!(
+                    d43_authority_read_at(offset, &payload).0.is_some(),
+                    "{name}: authority refused at {offset}"
+                );
+            }
+        };
+
+        let (clean, _) = d43_agreed_payload_with(D43PayloadShape {
+            deal_rows: true,
+            ..D43PayloadShape::default()
+        });
+        let clean_report = d43_grammar::decode::decode_record(
+            &clean,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        let cases: Vec<(&str, Rule, Mutation)> = vec![
+            (
+                "MTRF decoded country count",
+                Rule::D43FlowDecodedCountryCount,
+                Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at, 30)),
+            ),
+            (
+                "MTRF country kind coverage",
+                Rule::D43FlowCountryKindsIncomplete,
+                Box::new(|p, r| {
+                    let kind = r.document.flow_rows[0].row.flow_kind;
+                    oracle_put_u32(p, r.document.flow_rows[1].at + 4, kind);
+                }),
+            ),
+            (
+                "MTRR tag range",
+                Rule::D43ResourceTagRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at, 0)),
+            ),
+            (
+                "MTRR resource index range",
+                Rule::D43ResourceIndexRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 4, 2)),
+            ),
+            (
+                "MTRR visible order range",
+                Rule::D43ResourceVisibleOrderRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 8, 2)),
+            ),
+            (
+                "MTRR resource/order mismatch",
+                Rule::D43ResourceIndexOrderMismatch,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 8, 0)),
+            ),
+            (
+                "MTRR reserved",
+                Rule::D43ResourceReserved,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 60, 1)),
+            ),
+            (
+                "MTRR unavailable shape",
+                Rule::D43ResourceUnavailableShape,
+                Box::new(|p, r| {
+                    let at = r.document.resource_rows[0].at;
+                    oracle_put_u32(p, at + 12, d43_grammar::NeededType::Unavailable.wire());
+                    oracle_put_u32(p, at + 52, d43_grammar::ResourceFlag::NeededUnavailable.bit());
+                    oracle_put_u32(p, at + 40, 1);
+                }),
+            ),
+            (
+                "MTRR non-oil flags",
+                Rule::D43ResourceNonOilFlags,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 52, 1 << 31)),
+            ),
+            (
+                "MTRR non-oil current/max",
+                Rule::D43ResourceNonOilCurrentMax,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 44, 1)),
+            ),
+            (
+                "MTRR non-oil needed type",
+                Rule::D43ResourceNonOilNeededType,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 12, 99)),
+            ),
+            (
+                "MTRR non-oil sign",
+                Rule::D43ResourceNonOilSign,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 12, d43_grammar::NeededType::Deficit.wire())),
+            ),
+            (
+                "MTRR oil slot count",
+                Rule::D43ResourceOilSlotCount,
+                Box::new(|p, r| {
+                    let at = r.document.resource_rows[1].at;
+                    oracle_put_u32(p, at + 12, d43_grammar::NeededType::CurrentMax.wire());
+                    oracle_put_u32(p, at + 52, d43_grammar::RESOURCE_FLAGS_OIL);
+                }),
+            ),
+            (
+                "MTRR oil row count",
+                Rule::D43ResourceOilRowCount,
+                Box::new(|p, r| {
+                    let at = r.document.resource_rows[0].at;
+                    oracle_put_u32(p, at + 12, d43_grammar::NeededType::Surplus.wire());
+                    oracle_put_u32(p, at + 52, 0);
+                }),
+            ),
+            (
+                "MTRR oil rows without countries",
+                Rule::D43ResourceOilWithoutCountry,
+                Box::new(|p, r| {
+                    let at = r.document.resource_header.expect("MTRR header").at;
+                    oracle_put_u32(p, at + 16, 0);
+                }),
+            ),
+            (
+                "MTRR descriptor coverage",
+                Rule::D43ResourceDescriptorCoverage,
+                Box::new(|p, r| {
+                    oracle_put_u32(p, r.document.resource_rows[1].at + 56, 1);
+                    oracle_put_u32(p, r.document.resource_rows[3].at + 56, 1);
+                }),
+            ),
+            (
+                "MTRR decoded country count",
+                Rule::D43ResourceCountryCount,
+                Box::new(|p, r| {
+                    oracle_put_u32(p, r.document.resource_rows[2].at, 10);
+                    oracle_put_u32(p, r.document.resource_rows[3].at, 10);
+                }),
+            ),
+            (
+                "MTRR country slot coverage",
+                Rule::D43ResourceCountryCoverage,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 8, 0)),
+            ),
+            (
+                "MTRD owner witnessed",
+                Rule::D43DealOwnerNotWitnessed,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at, 30)),
+            ),
+            (
+                "MTRD counterpart witnessed",
+                Rule::D43DealCounterpartNotWitnessed,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 4, 30)),
+            ),
+            (
+                "MTRD distinct parties",
+                Rule::D43DealSameParty,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 4, 10)),
+            ),
+            (
+                "MTRD resource index range",
+                Rule::D43DealResourceIndexRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 8, COMPACT_MAX_STRATEGIC_RESOURCE_COUNT)),
+            ),
+            (
+                "MTRD direction",
+                Rule::D43DealDirection,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 16, 9)),
+            ),
+            (
+                "MTRD route",
+                Rule::D43DealRoute,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 20, 9)),
+            ),
+            (
+                "MTRD status bits",
+                Rule::D43DealStatusBits,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 28, 1 << 31)),
+            ),
+            (
+                "MTRD packed reserved bits",
+                Rule::D43DealPackedReserved,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 32;
+                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    p[at..at + 8].copy_from_slice(&(old | (1u64 << 48)).to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD packed resource echo",
+                Rule::D43DealPackedResourceEcho,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 32;
+                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    p[at..at + 8].copy_from_slice(&(old & !(0xffu64 << 8)).to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD identity ordinal",
+                Rule::D43DealIdentityOrdinal,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 32;
+                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    p[at..at + 8].copy_from_slice(&(old & !0xffu64).to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD identity parties",
+                Rule::D43DealIdentityParties,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 32;
+                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    let changed = (old & !(0xffffu64 << 32)) | (11u64 << 32);
+                    p[at..at + 8].copy_from_slice(&changed.to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD requested scale",
+                Rule::D43DealRequestedScale,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 40;
+                    p[at..at + 8].copy_from_slice(&1i64.to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD efficiency range",
+                Rule::D43DealEfficiencyRange,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[0].at + 72;
+                    p[at..at + 8].copy_from_slice(&i64::MAX.to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD reserved ordinal",
+                Rule::D43DealReservedOrdinal,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 92, 1)),
+            ),
+            (
+                "MTRD duplicate visible order",
+                Rule::D43DealDuplicateVisibleOrder,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[1].at, 10)),
+            ),
+            (
+                "MTS1 country first",
+                Rule::D43StockpileCountryFirst,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_countries[0].at + 4, 1)),
+            ),
+            (
+                "MTS1 country range",
+                Rule::D43StockpileCountryRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_countries[0].at + 8, 2)),
+            ),
+            (
+                "MTS1 country flags",
+                Rule::D43StockpileCountryFlags,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_countries[0].at + 12, 0)),
+            ),
+            (
+                "MTS1 country reserved",
+                Rule::D43StockpileCountryReserved,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_countries[0].at + 16, 1)),
+            ),
+            (
+                "MTS1 country coverage",
+                Rule::D43StockpileCountryCoverage,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_countries[0].at + 8, 0)),
+            ),
+            (
+                "MTS1 variant range",
+                Rule::D43StockpileVariantRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_items[0].at, 0)),
+            ),
+            (
+                "MTS1 item ordinal",
+                Rule::D43StockpileOrdinal,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_items[0].at + 8, 1)),
+            ),
+            (
+                "MTS1 item reserved",
+                Rule::D43StockpileItemReserved,
+                Box::new(|p, r| oracle_put_u32(p, r.document.stockpile_items[0].at + 12, 1)),
+            ),
+            (
+                "MTS1 amount range",
+                Rule::D43StockpileAmountRange,
+                Box::new(|p, r| {
+                    let at = r.document.stockpile_items[0].at + 16;
+                    p[at..at + 8].copy_from_slice(&(-1i64).to_le_bytes());
+                }),
+            ),
+        ];
+        for (name, rule, mutate) in cases {
+            let mut payload = clean.clone();
+            mutate(&mut payload, &clean_report);
+            exercise(name, rule, payload);
+        }
+
+        let (legacy_flow, _) = d43_agreed_payload_with(D43PayloadShape {
+            flow_version: d43_grammar::FlowVersion::Legacy,
+            flow_resource_count: 7,
+            row_resource_count: 7,
+            ..D43PayloadShape::default()
+        });
+        let legacy_flow_report = d43_grammar::decode::decode_record(
+            &legacy_flow,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        assert!(
+            d43_grammar::decode::select_first_fatal(&legacy_flow_report).is_none(),
+            "legacy-flow control: {:?}",
+            legacy_flow_report.findings
+        );
+        let mut all_zero = legacy_flow;
+        let first = &legacy_flow_report.document.flow_rows[0];
+        let values_at = first.at + 16;
+        let values_len = (first.values.end - first.values.start) * 8;
+        all_zero[values_at..values_at + values_len].fill(0);
+        exercise(
+            "MTRF legacy all-zero values",
+            Rule::D43FlowLegacyValuesAllZero,
+            all_zero,
+        );
+
+        let (legacy_deal, _) = d43_agreed_payload_with(D43PayloadShape {
+            deal_version: d43_grammar::DealVersion::Legacy,
+            deal_rows: true,
+            ..D43PayloadShape::default()
+        });
+        let legacy_deal_report = d43_grammar::decode::decode_record(
+            &legacy_deal,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        let mut legacy_status = legacy_deal;
+        oracle_put_u32(
+            &mut legacy_status,
+            legacy_deal_report.document.deal_rows[0].at + 28,
+            1,
+        );
+        exercise(
+            "MTRD legacy reserved status",
+            Rule::D43DealLegacyReservedStatus,
+            legacy_status,
+        );
+
+        let (ascending, _) = d43_agreed_payload_with(D43PayloadShape {
+            deal_rows: true,
+            deal_incomplete_all: true,
+            ..D43PayloadShape::default()
+        });
+        let ascending_report = d43_grammar::decode::decode_record(
+            &ascending,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        let mut descending = ascending;
+        oracle_put_u32(
+            &mut descending,
+            ascending_report.document.deal_incomplete_owners[1].at,
+            10,
+        );
+        exercise(
+            "MTRD incomplete owners ascending",
+            Rule::D43DealIncompleteNotAscending,
+            descending,
+        );
+
+        let (two_countries, _) = d43_agreed_payload_with(D43PayloadShape {
+            stockpile_two_countries: true,
+            ..D43PayloadShape::default()
+        });
+        let two_country_report = d43_grammar::decode::decode_record(
+            &two_countries,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        let mut duplicate_country = two_countries;
+        oracle_put_u32(
+            &mut duplicate_country,
+            two_country_report.document.stockpile_countries[1].at,
+            10,
+        );
+        exercise(
+            "MTS1 duplicate country",
+            Rule::D43StockpileCountryDuplicate,
+            duplicate_country,
+        );
+
+        let (two_items, _) = d43_agreed_payload_with(D43PayloadShape {
+            stockpile_two_items: true,
+            ..D43PayloadShape::default()
+        });
+        let two_item_report = d43_grammar::decode::decode_record(
+            &two_items,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        let mut duplicate_item = two_items;
+        let first_variant = two_item_report.document.stockpile_items[0]
+            .row
+            .equipment_variant_id;
+        oracle_put_u32(
+            &mut duplicate_item,
+            two_item_report.document.stockpile_items[1].at,
+            first_variant,
+        );
+        exercise(
+            "MTS1 duplicate variant",
+            Rule::D43StockpileDuplicateVariant,
+            duplicate_item,
+        );
+    }
+
+    /// Fold row diagnostics that used helper functions or compound predicates
+    /// keep their pre-rewire byte-for-byte spellings.
+    ///
+    /// kills: replacing a field-specific MTD1 error or an oil/non-oil MTRR
+    /// model error with a generic row-shape/debug-rule message.
+    #[test]
+    fn d43_fold_row_spellings_remain_specific() {
+        type Mutation = Box<
+            dyn Fn(
+                &mut Vec<u8>,
+                &d43_grammar::decode::DecodeReport,
+            ),
+        >;
+        let (clean, _) = d43_agreed_payload();
+        let cases: Vec<(&str, Mutation)> = vec![
+            (
+                "market trade MTD1 row 0 reserved is nonzero",
+                Box::new(|p, r| oracle_put_u32(p, r.document.detail_rows[0].at + 60, 1)),
+            ),
+            (
+                "market trade MTD1 row 0 has invalid price_raw 9223372036854775807",
+                Box::new(|p, r| {
+                    let at = r.document.detail_rows[0].at + 8;
+                    p[at..at + 8].copy_from_slice(&i64::MAX.to_le_bytes());
+                }),
+            ),
+            (
+                "market trade MTD1 row 0 has speed_raw without flag",
+                Box::new(|p, r| oracle_put_u32(p, r.document.detail_rows[0].at + 24, 1)),
+            ),
+            (
+                "market trade MTRR row 0 oil needed semantics are invalid",
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 40, 1)),
+            ),
+            (
+                "market trade MTRR row 1 non-oil needed semantics are invalid",
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 40, 1)),
+            ),
+        ];
+        for (expected, mutate) in cases {
+            let report = d43_grammar::decode::decode_record(
+                &clean,
+                D43_AUTHORITY_DECODE_CONTEXT,
+            );
+            let mut payload = clean.clone();
+            mutate(&mut payload, &report);
+            assert_eq!(d43_fold_verdict(&payload).as_deref(), Some(expected));
         }
     }
 
@@ -23705,8 +24507,8 @@ mod tests {
     ///
     /// The ten core header words (`d43_grammar::CoreWord::ALL`) and every word
     /// of the seven accepted families' trailer headers, plus one truncation
-    /// bucket per family. Rows are NOT swept -- the row-contents class is this
-    /// lane's named residual, not its claim.
+    /// bucket per family. Rows are covered separately by the oracle and the two
+    /// shipping row-predicate differentials above.
     #[test]
     fn d43_every_header_word_costs_the_record_at_both_readers_or_at_neither() {
         let (clean, at) = d43_agreed_payload();
@@ -24021,21 +24823,19 @@ mod tests {
         report
     }
 
-    /// A family that refuses publishes NOTHING, reads no row, and ends the
-    /// walk.
+    /// A structurally unreadable family publishes nothing and ends the walk;
+    /// a fully delimited family keeps its readable counts on semantic refusal.
     ///
     /// The three properties are separate and the first is the one the owner's
     /// ruling is about: before it, an `MTD1` whose version word was 9 published
     /// its detail rows AND every later family's units, out of a record
     /// `world_fold` discards whole.
     ///
-    /// kills: an authority that sets the refusal only after reading the rows
-    /// (the row diagnostic would appear), one that keeps publishing the refused
-    /// family's units, and one that carries on to the next trailer (the later
-    /// families' units would appear). Each is checked separately, so passing by
-    /// accident needs three regressions to cancel out.
+    /// kills: reading behind an invalid version, publishing behind that
+    /// structural stop, or erasing a fully decoded MTRA/MTS1 count merely
+    /// because an MTRA semantic word refuses the whole record.
     #[test]
-    fn d43_a_refused_family_publishes_nothing_and_reads_no_row() {
+    fn d43_publication_distinguishes_structural_stop_from_semantic_refusal() {
         let (clean, at) = d43_agreed_payload();
 
         // MTD1 with a wrong version AND a row this reader would otherwise
@@ -24095,13 +24895,15 @@ mod tests {
                 .any(|error| error.contains("MTRA root_kind 9")),
             "naming the word and its value: {errors:?}"
         );
-        assert!(
-            !units.contains_key("market_trade_activation_rows"),
-            "no activation unit: {units:?}"
+        assert_eq!(
+            units.get("market_trade_activation_rows"),
+            Some(&1),
+            "the fully delimited MTRA count remains readable: {units:?}"
         );
-        assert!(
-            !units.contains_key("market_trade_stockpile_country_rows"),
-            "and nothing from the MTS1 behind it: {units:?}"
+        assert_eq!(
+            units.get("market_trade_stockpile_country_rows"),
+            Some(&1),
+            "the fully delimited MTS1 behind it remains readable: {units:?}"
         );
         // MTD1 came BEFORE the refusal and is still published, which is what
         // makes the absences above mean something.
@@ -24229,9 +25031,8 @@ mod tests {
     /// counts are ever compared. So the payload is built with both trailers
     /// individually well formed and stating different widths.
     ///
-    /// kills: removing `MarketTradeResourceSetClaim`. The header sweep does not
-    /// -- every single-word mutation of either count is refused by the family's
-    /// own shape rule first, which is why this test exists separately.
+    /// kills: removing the shared resource-count agreement or erasing MTRR's
+    /// fully decoded row count merely because the cross-family widths disagree.
     #[test]
     fn d43_two_valid_trailers_that_state_different_resource_widths_are_refused() {
         // The control: same shape, same widths, accepted by both.
@@ -24263,14 +25064,128 @@ mod tests {
                 .any(|error| error.contains("MTRF resource_count 2 != MTRR resource_count 3")),
             "naming both declarations: {errors:?}"
         );
-        assert!(
-            !units.contains_key("market_trade_resource_rows"),
-            "and MTRR's rows are not published against a width the payload \
-             disputes: {units:?}"
+        assert_eq!(
+            units.get("market_trade_resource_rows"),
+            Some(&6),
+            "MTRR's fully delimited rows remain structurally readable: {units:?}"
         );
         assert!(
             d43_fold_verdict(&mismatched).is_some(),
             "the fold refuses the same payload"
+        );
+    }
+
+    /// Both movable cross-family rules are observed through the shipping
+    /// readers, not merely through the leaf evaluator.
+    ///
+    /// kills: dropping country-set reconciliation, evaluating the MTRF-v3
+    /// identity requirement before exact consumption, or letting either site
+    /// choose its own record verdict for either rule.
+    #[test]
+    fn d43_movable_cross_family_rules_have_one_shipping_verdict() {
+        use d43_grammar::decode::D43DecodeRule as Rule;
+
+        let (mut country_mismatch, _) = d43_agreed_payload();
+        let report = d43_grammar::decode::decode_record(
+            &country_mismatch,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        oracle_put_u32(
+            &mut country_mismatch,
+            report.document.factory_rows[0].at,
+            30,
+        );
+        let mismatch_report = d43_grammar::decode::decode_record(
+            &country_mismatch,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        assert!(mismatch_report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == Rule::D43CrossCountrySetAgreement));
+        assert!(d43_fold_verdict(&country_mismatch).is_some());
+        assert!(d43_authority_verdict(&country_mismatch).is_some());
+
+        let (mut missing_identity, at) = d43_agreed_payload();
+        missing_identity.drain(at["MTRR"]..at["MTRD"]);
+        let identity_report = d43_grammar::decode::decode_record(
+            &missing_identity,
+            D43_AUTHORITY_DECODE_CONTEXT,
+        );
+        assert!(identity_report.findings.iter().any(|finding| {
+            finding.rule == Rule::D43CrossFlowV3NeedsIdentityResourceRows
+        }));
+        assert!(d43_fold_verdict(&missing_identity).is_some());
+        assert!(d43_authority_verdict(&missing_identity).is_some());
+    }
+
+    /// The MTRD-only resource-name capacity refusal is deliberately fold-local:
+    /// it depends on the fold's seven authored fallback names, not payload
+    /// grammar. The shipping authority must therefore retain the leaf verdict
+    /// while the fold refuses projection with its exact contextual message.
+    ///
+    /// kills: moving the authored seven-name table into the leaf, silently
+    /// dropping an out-of-name-range deal at the fold, or making the authority
+    /// fabricate the fold's game-file context.
+    #[test]
+    fn d43_fold_local_resource_name_refusal_stays_contextual() {
+        use d43_grammar::encode;
+        let mut payload = encode::encode_core(
+            7,
+            encode::CoreCounts {
+                changed_rows: 0,
+                status_flags: 0,
+                observed_contract_rows: 0,
+                emitted_contract_rows: 0,
+                buyer_ptr_valid_rows: 0,
+                variant_valid_rows: 0,
+                amount_valid_rows: 0,
+                partial_field_rows: 0,
+            },
+            &[],
+        )
+        .expect("empty core");
+        let deal = |owner, counterpart, direction| d43_grammar::DealRow {
+            owner_tag_db_id: owner,
+            counterpart_tag_db_id: counterpart,
+            resource_index: 7,
+            visible_order: 0,
+            direction,
+            route_kind: d43_grammar::DealRoute::Sea.wire(),
+            flags: d43_grammar::DEAL_FLAG_EXACT,
+            route_status_or_reserved: 0,
+            identity_exporter_tag_db_id: 10,
+            identity_importer_tag_db_id: 20,
+            identity_ordinal: 1,
+            packed_identity: None,
+            reserved_ordinal_word: None,
+            requested_raw: COMPACT_FIXED_SCALE_RAW as i64,
+            delivered_raw: 0,
+            available_export_raw: 0,
+            factory_cost_raw: 0,
+            efficiency_raw: 0,
+            civilian_factories: 0,
+            convoys_assigned: 0,
+            convoys_required: 0,
+        };
+        payload.extend_from_slice(
+            &encode::encode_classic_deals(
+                d43_grammar::DealVersion::WideIdentity,
+                &[10, 20],
+                &[],
+                &[
+                    deal(10, 20, d43_grammar::DealDirection::Export.wire()),
+                    deal(20, 10, d43_grammar::DealDirection::Import.wire()),
+                ],
+            )
+            .expect("MTRD-only payload"),
+        );
+        assert_eq!(d43_authority_verdict(&payload), None);
+        assert_eq!(
+            d43_fold_verdict(&payload).as_deref(),
+            Some(
+                "market trade resource identity is not carried on the wire: MTRD tag 10 names resource slot 7 and the fold can name only 7"
+            )
         );
     }
 
@@ -24285,7 +25200,8 @@ mod tests {
     /// older test calls directly, because the version gate lived in this
     /// function and a helper-level test cannot show that a whole record is lost.
     ///
-    /// kills: putting the `per_owner` gate back around the witness loop.
+    /// kills: putting the `per_owner` gate back around the witness loop or
+    /// erasing the fully decoded witness count after its semantic refusal.
     #[test]
     fn d43_an_mtrd_witness_list_is_checked_at_every_version() {
         // `DealVersion::ALL`, not a hand-written subset: the earlier list left
@@ -24322,9 +25238,10 @@ mod tests {
                     .any(|error| error.contains("MTRD witness 0 is invalid or duplicated")),
                 "{version:?}: naming the witness: {errors:?}"
             );
-            assert!(
-                !units.contains_key("market_trade_classic_deal_country_witnesses"),
-                "{version:?}: and publishing no witness count: {units:?}"
+            assert_eq!(
+                units.get("market_trade_classic_deal_country_witnesses"),
+                Some(&2),
+                "{version:?}: the fully decoded witness count remains readable: {units:?}"
             );
             assert!(
                 d43_fold_verdict(&bad_witness).is_some(),
@@ -24423,16 +25340,16 @@ mod tests {
    authority = refused
    fold      = refused: market trade scale_raw 7 != 100000
 == core row contract_type wrong
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade row 0 has unexpected contract_type 9
 == core row unknown flag bit
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade row 0 has unknown flags 0x8000001f
 == core row duplicate contract_id
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade row 1 duplicates contract identity 1:81
 == core row reserved nonzero
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade row 0 reserved field is nonzero
 == trailer magic truncated
    authority = refused
@@ -24471,10 +25388,10 @@ mod tests {
    authority = reads the record
    fold      = folds the record
 == MTD1 row names a missing contract
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade MTD1 references missing contract_id 99
 == MTD1 row flags unknown
-   authority = reads the record
+   authority = refused
    fold      = refused: market trade MTD1 row 0 has invalid flags 0x80000003
 == MTRF version unsupported
    authority = refused

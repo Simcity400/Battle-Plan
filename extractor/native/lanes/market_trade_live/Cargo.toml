@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+d43_grammar = { path = "../../d43_grammar" }
 serde_json = "1"
 snapshot = { path = "../../snapshot" }
 
