@@ -269,6 +269,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Declared HERE, before anything can throw (lane ME, 2026-08-17): the cleanup
+# path tests `$null -ne $recorderProcess`, and under StrictMode a throw between
+# this point and Phase 1 used to be REPLACED by "The variable '$recorderProcess'
+# cannot be retrieved because it has not been set" - the real error (a launch
+# collision with another lane's game, a static-catalog check, ...) was masked
+# on three lane-ME runs. Phase 1 assigns it again; that is harmless.
+$recorderProcess = $null
 
 # Resolve the derived default. See the parameter's own derivation: 19.6 s of
 # measured recorder work per second of speed-5 capture, doubled for margin, with
