@@ -1081,7 +1081,8 @@ fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
         if other == pov_tag {
             continue;
         }
-        let pair = view.pairs.get(&(pov_tag.to_string(), other.clone()));
+        let pair = view.pair(pov_tag, other);
+        let pair = pair.as_ref();
         rows.push(RelationRow {
             other_tag: other.clone(),
             at_war: pair.and_then(|p| bool_opt(&p.at_war)),
@@ -1819,25 +1820,10 @@ mod tests {
     fn autonomy_view(
         rows: Vec<replay_core::SubjectAutonomyCurrentRow>,
     ) -> DiplomacyView {
-        DiplomacyView {
-            status: ViewStatus::Present,
-            pairs: Default::default(),
-            countries: Default::default(),
-            war_relations: Leaf::Absent,
-            wars: Leaf::Absent,
-            faction_members: Leaf::Absent,
-            operation_instances: Leaf::Absent,
-            operation_token_memberships: Leaf::Absent,
-            intel_levels: Leaf::Absent,
-            air_disclosure: Leaf::Absent,
-            intel_network_graphs: Leaf::Absent,
-            subject_autonomy_current: Leaf::Measured(rows),
-            agency_upgrade_controller_refresh: Leaf::Absent,
-            cipher_controller_refresh: Leaf::Absent,
-            intelligence_controller_companion: Leaf::Absent,
-            domain53_snapshot_payload_sha256: Leaf::Absent,
-            relation_flags: Default::default(),
-        }
+        let mut view = DiplomacyView::stating_nothing_for_consumer_tests();
+        view.status = ViewStatus::Present;
+        view.subject_autonomy_current = Leaf::Measured(rows);
+        view
     }
 
     fn autonomy_row(

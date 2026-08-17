@@ -472,11 +472,9 @@ fn belligerents(
             }
         }
     }
-    for ((a, b), pair) in &view.pairs {
-        if matches!(pair.at_war, Leaf::Measured(true)) {
-            set.insert(a.clone());
-            set.insert(b.clone());
-        }
+    for (a, b) in view.at_war_pairs() {
+        set.insert(a.to_string());
+        set.insert(b.to_string());
     }
     set.into_iter().collect()
 }
@@ -485,9 +483,9 @@ fn belligerents(
 /// `at_war == Some(true)`.
 fn pov_belligerents(view: &DiplomacyView, pov_tag: &str) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
-    for ((a, b), pair) in &view.pairs {
-        if a == pov_tag && matches!(pair.at_war, Leaf::Measured(true)) {
-            set.insert(b.clone());
+    for (a, b) in view.at_war_pairs() {
+        if a == pov_tag {
+            set.insert(b.to_string());
         }
     }
     set.into_iter().collect()
@@ -542,29 +540,13 @@ mod tests {
         pairs: Vec<((&str, &str), DiplomaticPairState)>,
         war_relations: Leaf<Vec<WarRelationRow>>,
     ) -> DiplomacyView {
-        let mut map = BTreeMap::new();
+        let mut view = DiplomacyView::stating_nothing_for_consumer_tests();
+        view.status = status;
+        view.war_relations = war_relations;
         for ((a, b), p) in pairs {
-            map.insert((a.to_string(), b.to_string()), p);
+            view.state_pair_for_consumer_tests(a, b, p);
         }
-        DiplomacyView {
-            status,
-            pairs: map,
-            countries: BTreeMap::new(),
-            war_relations,
-            wars: Leaf::Absent,
-            faction_members: Leaf::Absent,
-            operation_instances: Leaf::Absent,
-            operation_token_memberships: Leaf::Absent,
-            intel_levels: Leaf::Absent,
-            air_disclosure: Leaf::Absent,
-            intel_network_graphs: Leaf::Absent,
-            subject_autonomy_current: Leaf::Absent,
-            agency_upgrade_controller_refresh: Leaf::Absent,
-            cipher_controller_refresh: Leaf::Absent,
-            intelligence_controller_companion: Leaf::Absent,
-            domain53_snapshot_payload_sha256: Leaf::Absent,
-            relation_flags: BTreeMap::new(),
-        }
+        view
     }
 
     #[test]
