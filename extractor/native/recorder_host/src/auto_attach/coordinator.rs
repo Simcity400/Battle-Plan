@@ -21,8 +21,9 @@ use super::journal::{recover, Journal, JournalRecord};
 use super::policy;
 use super::reducer::{CandidateRegistry, ObserveOutcome};
 use super::sources::{
-    AttachEnvironment, Clock, CollectorModuleResidency, PayloadStager, ProcessEventSource,
-    ProcessProbe, RawProcessEvent, WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
+    AttachEnvironment, Clock, CollectorModuleResidency, GameBuildAdmission, PayloadStager,
+    ProcessEventSource, ProcessProbe, RawProcessEvent, WorkerHandle, WorkerSpawner, WorkerSpec,
+    WorkerStatus,
 };
 use super::staging::{generate_attempt_id, generate_pipe_token, generate_secret_128};
 use super::state::{CandidateState, ReasonCode};
@@ -83,6 +84,20 @@ pub struct Coordinator {
     started: bool,
     supervisor_events: Vec<SupervisorEvent>,
     readiness_diagnostics: BTreeMap<ProcessKey, String>,
+    /// Identities whose game build was already proved supported. The answer
+    /// cannot change while the process runs, and reading it costs a sha256 of
+    /// the game executable, so it is asked once and remembered.
+    build_admitted: BTreeSet<ProcessKey>,
+    /// The host-facing sentence for a game this recorder does not know, once one
+    /// has been seen.
+    ///
+    /// A SUPERVISOR-terminal fact, not just a candidate-terminal one. Failing
+    /// the candidate alone would leave the recorder watching for a game that
+    /// cannot arrive — the host's install is the build it is, and only a
+    /// recorder update changes that — so the supervisor reads this, stops
+    /// cooperatively (finishing any recording already in flight), and hands the
+    /// sentence back to be shown, logged and exited on.
+    unsupported_game_build: Option<String>,
 }
 
 impl Drop for Coordinator {
@@ -115,6 +130,8 @@ impl Coordinator {
             started: false,
             supervisor_events: Vec::new(),
             readiness_diagnostics: BTreeMap::new(),
+            build_admitted: BTreeSet::new(),
+            unsupported_game_build: None,
         })
     }
 
@@ -125,6 +142,16 @@ impl Coordinator {
     /// Drain product-facing notifications after their transitions are durable.
     pub fn drain_supervisor_events(&mut self) -> Vec<SupervisorEvent> {
         std::mem::take(&mut self.supervisor_events)
+    }
+
+    /// The host-facing sentence for a game this recorder does not know, if one
+    /// was seen since the last call.
+    ///
+    /// The supervisor reads this and STOPS. Waiting cannot turn an unknown build
+    /// into a known one, so a recorder that kept watching would be promising a
+    /// recording it can never make.
+    pub fn take_unsupported_game_build(&mut self) -> Option<String> {
+        self.unsupported_game_build.take()
     }
 
     /// Transfer every active candidate into explicit-stop ownership. Recording
@@ -412,6 +439,60 @@ impl Coordinator {
                     }
                 }
                 let id = self.registry.get(&key).unwrap().identity.clone();
+                // THE PATCH-DAY GATE (owner ruling 2026-08-18), and the reason
+                // it sits HERE rather than beside the other executable-digest
+                // checks: every other one runs after the collector DLL is
+                // already mapped into the player's game. This candidate has
+                // been detected and identified and nothing else — no staging
+                // directory, no worker, no handle with write rights, no
+                // allocation, no patched byte. Refusing here is the only place
+                // that can honestly tell the host "nothing was changed in your
+                // game".
+                //
+                // TERMINAL, not a holding state. An unknown build does not
+                // become known by waiting, so retrying would only spin a
+                // message at the host forever; support arrives as a recorder
+                // update, which is what the message says to wait for.
+                //
+                // ASKED ONCE PER IDENTITY. `WaitingForIdentity` is a retry
+                // state — an unresolved modset holds a candidate here and the
+                // readiness probe comes round again — and answering costs a
+                // sha256 of a 53 MB file. Re-reading it on every probe would
+                // spend disk on the machine that is loading the game, to answer
+                // a question about an executable that cannot change while its
+                // own process runs.
+                if !self.build_admitted.contains(&key) {
+                    if let GameBuildAdmission::Unsupported(refusal) =
+                        self.deps.env.game_build_admission(&id)
+                    {
+                        let message = refusal.message();
+                        // Best-effort, and deliberately not `?`: the host has
+                        // already been told, and a receipt that cannot be
+                        // written must not turn a clean refusal into a
+                        // supervisor error.
+                        let _ = crate::game_build::write_refusal_receipt(
+                            &self.config.out_root,
+                            refusal.as_ref(),
+                        );
+                        // Recorded BEFORE the fallible journal write, and the
+                        // exit code armed with it. A journal or disk error on
+                        // the way out must not be able to replace "your game is
+                        // newer than this recorder" with a generic fatal and
+                        // exit 1 — the refusal is the answer, and everything
+                        // after it is bookkeeping.
+                        self.unsupported_game_build
+                            .get_or_insert_with(|| message.clone());
+                        crate::game_build::arm_refusal_exit_code();
+                        self.fail(
+                            key,
+                            ReasonCode::UnsupportedGameBuild,
+                            now,
+                            Some(message),
+                        )?;
+                        return Ok(());
+                    }
+                    self.build_admitted.insert(key);
+                }
                 let modset = self.deps.env.resolve_modset(&id);
                 if modset.resolved {
                     self.readiness_diagnostics.remove(&key);
@@ -831,6 +912,23 @@ impl Coordinator {
                     Some("worker completed before matched hello/first-frame proof".into()),
                 )?;
             }
+            // PATCH DAY, from the other direction: the worker got further than
+            // the coordinator's own gate and refused there. It is NOT a
+            // finalize failure — nothing was recorded and nothing broke — so it
+            // carries its own reason code, its own sentence, and the same
+            // supervisor-terminal effect as the coordinator's own refusal.
+            (_, WorkerStatus::UnsupportedGameBuild { message }) => {
+                if let Some(worker) = self.workers.get_mut(&key) {
+                    worker.request_stop();
+                }
+                // Recorded BEFORE the fallible journal write. A journal error
+                // must not be able to turn "your game is newer than this
+                // recorder" back into a generic fatal.
+                self.unsupported_game_build
+                    .get_or_insert_with(|| message.clone());
+                crate::game_build::arm_refusal_exit_code();
+                self.fail(key, ReasonCode::UnsupportedGameBuild, now, Some(message))?;
+            }
             (_, WorkerStatus::Failed { reason }) => {
                 if let Some(worker) = self.workers.get_mut(&key) {
                     worker.request_stop();
@@ -954,19 +1052,33 @@ impl Coordinator {
     ) -> Result<(), String> {
         if let Some(from) = self.registry.fail(&key) {
             let _ = now;
+            let event = SupervisorEvent::RecordingFailed {
+                pid: key.pid,
+                reason,
+                detail: detail.clone(),
+                run_dir: self.run_dir_for(key),
+            };
+            // ORDER MATTERS for exactly one reason code. Everywhere else the
+            // durable record comes first and the window is a consequence of it.
+            // For an unsupported game build the host's sentence outranks the
+            // bookkeeping: a journal that cannot be appended must not be able to
+            // leave the window showing "Recorder stopped because of an error"
+            // while the recorder already knows, and is about to exit on, the
+            // fact that their game is newer than it.
+            let host_sentence_first = reason == ReasonCode::UnsupportedGameBuild;
+            if host_sentence_first {
+                self.supervisor_events.push(event.clone());
+            }
             self.journal_transition(
                 key,
                 Some(from),
                 CandidateState::Failed,
                 reason,
-                detail.clone(),
-            )?;
-            self.supervisor_events.push(SupervisorEvent::RecordingFailed {
-                pid: key.pid,
-                reason,
                 detail,
-                run_dir: self.run_dir_for(key),
-            });
+            )?;
+            if !host_sentence_first {
+                self.supervisor_events.push(event);
+            }
         }
         self.workers.remove(&key);
         Ok(())
@@ -1226,12 +1338,22 @@ mod tests {
     struct FakeEnv {
         window_ready: Rc<RefCell<bool>>,
         modset_resolved: Rc<RefCell<bool>>,
+        /// The game build this fake presents. `None` is the supported build —
+        /// the default, so every pre-existing gate test still exercises the
+        /// ordinary path unchanged. `Some(observed)` presents a build the
+        /// recorder does not know.
+        unsupported_build: Rc<RefCell<Option<crate::game_build::ObservedGameBuild>>>,
+        /// How many times the coordinator asked. Proves the question is asked
+        /// once per candidate rather than in a retry loop.
+        build_queries: Rc<RefCell<usize>>,
     }
     impl Default for FakeEnv {
         fn default() -> Self {
             Self {
                 window_ready: Rc::new(RefCell::new(true)),
                 modset_resolved: Rc::new(RefCell::new(true)),
+                unsupported_build: Rc::new(RefCell::new(None)),
+                build_queries: Rc::new(RefCell::new(0)),
             }
         }
     }
@@ -1243,6 +1365,15 @@ mod tests {
             ModsetResolution {
                 resolved: *self.modset_resolved.borrow(),
                 reasons: vec![],
+            }
+        }
+        fn game_build_admission(&self, _id: &ProcessIdentity) -> GameBuildAdmission {
+            *self.build_queries.borrow_mut() += 1;
+            match self.unsupported_build.borrow().clone() {
+                None => GameBuildAdmission::Supported,
+                Some(observed) => GameBuildAdmission::Unsupported(Box::new(
+                    crate::game_build::UnsupportedGameBuild { observed },
+                )),
             }
         }
     }
@@ -1423,10 +1554,18 @@ mod tests {
     }
 
     fn build_with_window_requirement(h: &Harness, require_visible_window: bool) -> Coordinator {
+        build_with_window_requirement_and_out_root(h, require_visible_window, PathBuf::from("out"))
+    }
+
+    fn build_with_window_requirement_and_out_root(
+        h: &Harness,
+        require_visible_window: bool,
+        out_root: PathBuf,
+    ) -> Coordinator {
         *h.spawner.journal_path.borrow_mut() = Some(h.journal_path.clone());
         let config = CoordinatorConfig {
             coordinator_instance_id: "coord-test".into(),
-            out_root: PathBuf::from("out"),
+            out_root,
             own_session_id: OWN_SESSION,
             own_sid_hash: OWN_SID.to_string(),
             require_visible_window,
@@ -1482,6 +1621,255 @@ mod tests {
 
     fn state_of(coord: &Coordinator, key: ProcessKey) -> Option<CandidateState> {
         coord.registry().get(&key).map(|c| c.state)
+    }
+
+    // ---- Patch day: an unknown game build ----------------------------
+
+    fn unknown_build() -> crate::game_build::ObservedGameBuild {
+        crate::game_build::ObservedGameBuild {
+            display_version: "Operation Bombers v1.20.0.b100 (d300)".to_string(),
+            version_source: crate::game_build::VersionSource::LauncherSettingsVersion,
+            exe_sha256: Some([0x5a; 32]),
+            exe_read_error: None,
+            exe_path: PathBuf::from(r"D:\Steam\common\the game\hoi4.exe"),
+        }
+    }
+
+    fn patch_day_out_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "mk_patch_day_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    /// kills: deleting the build gate in `WaitingForIdentity`, or moving it
+    /// anywhere at or past `Preparing`. A candidate on an unknown build must
+    /// reach `Failed` having staged nothing and spawned no worker — the worker
+    /// is the only thing that ever writes into the game, so `spawn_count == 0`
+    /// IS "nothing was patched into the game".
+    #[test]
+    fn an_unknown_game_build_is_refused_before_anything_is_staged_or_injected() {
+        let h = harness("patch_day_refuse", full_success_script());
+        *h.env.unsupported_build.borrow_mut() = Some(unknown_build());
+        let out_root = patch_day_out_root("refuse");
+        h.probe.add(hoi4_identity(6100, 909));
+        let mut coord = build_with_window_requirement_and_out_root(&h, true, out_root.clone());
+        run_steps(&mut coord, &h.clock, 12);
+
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6100, 909)),
+            Some(CandidateState::Failed),
+            "an unknown build is terminal, not a holding state"
+        );
+        assert_eq!(
+            *h.spawner.spawn_count.borrow(),
+            0,
+            "no worker may be spawned: the worker is what injects"
+        );
+        assert!(
+            h.stager.staged.borrow().is_empty(),
+            "nothing may be staged before the build is admitted: {:?}",
+            h.stager.staged.borrow()
+        );
+
+        // The host is shown the message, once, and nothing else about it.
+        let events = coord.drain_supervisor_events();
+        let expected = crate::game_build::UnsupportedGameBuild {
+            observed: unknown_build(),
+        }
+        .message();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SupervisorEvent::RecordingFailed { pid: 6100, reason, detail, .. }]
+                    if *reason == ReasonCode::UnsupportedGameBuild
+                        && detail.as_deref() == Some(expected.as_str())
+            ),
+            "expected exactly the unsupported-build message, got {events:?}"
+        );
+
+        // ...and the same words are on the durable record and in the receipt.
+        let records = read_all(&h.journal_path).unwrap();
+        let terminal = records
+            .iter()
+            .find(|record| record.state_to == CandidateState::Failed)
+            .expect("a terminal journal record");
+        assert_eq!(terminal.reason_code, ReasonCode::UnsupportedGameBuild);
+        assert_eq!(terminal.reason_detail.as_deref(), Some(expected.as_str()));
+
+        let receipt = out_root.join(crate::game_build::UNSUPPORTED_GAME_BUILD_RECEIPT_FILE);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt).expect("receipt written"))
+                .expect("receipt parses");
+        assert_eq!(value["message"], expected);
+        assert_eq!(
+            value["terminal_outcome"],
+            crate::game_build::UnsupportedGameBuild::TERMINAL_OUTCOME
+        );
+        assert_eq!(value["recording_started"], false);
+        assert_eq!(value["game_modified"], false);
+
+        // ...and it is the SUPERVISOR's outcome, not just the candidate's.
+        // Waiting cannot turn an unknown build into a known one, so a recorder
+        // that kept watching would be promising a recording it can never make.
+        let taken = coord.take_unsupported_game_build();
+        assert_eq!(
+            taken.as_deref(),
+            Some(expected.as_str()),
+            "the supervisor must be handed the same sentence to stop on"
+        );
+        assert!(
+            coord.take_unsupported_game_build().is_none(),
+            "the supervisor-terminal fact is handed over once"
+        );
+
+        // Terminal means terminal: more ticks do not re-ask and do not retry.
+        let asked_once = *h.env.build_queries.borrow();
+        run_steps(&mut coord, &h.clock, 12);
+        assert_eq!(*h.env.build_queries.borrow(), asked_once);
+        assert_eq!(*h.spawner.spawn_count.borrow(), 0);
+        assert!(coord.drain_supervisor_events().is_empty());
+
+        let _ = std::fs::remove_dir_all(&out_root);
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    /// kills: making the gate refuse everything, or leaving it armed on the
+    /// supported build. A known build takes exactly the path it always took,
+    /// and the gate is consulted before the modset resolver rather than after.
+    #[test]
+    fn a_known_game_build_takes_the_ordinary_path() {
+        let h = harness("patch_day_known", full_success_script());
+        h.probe.add(hoi4_identity(6200, 910));
+        let mut coord = build(&h);
+        run_steps(&mut coord, &h.clock, 12);
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6200, 910)),
+            Some(CandidateState::Complete)
+        );
+        assert_eq!(*h.spawner.spawn_count.borrow(), 1);
+        assert_eq!(
+            *h.env.build_queries.borrow(),
+            1,
+            "the supported build is asked about exactly once"
+        );
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    /// kills: filing a worker's unsupported-build refusal as an ordinary
+    /// failure. Before this the worker's exit was read as
+    /// `FinalizeVerifyFailed`, its five-line sentence was cut to its last stderr
+    /// line and wrapped in "worker exited with …", the window told the host a
+    /// recording had failed, and the supervisor kept watching for a game that
+    /// cannot arrive.
+    #[test]
+    fn a_workers_unsupported_build_refusal_is_not_a_finalize_failure() {
+        let message = crate::game_build::UnsupportedGameBuild {
+            observed: unknown_build(),
+        }
+        .message();
+        let h = harness(
+            "patch_day_worker",
+            vec![WorkerStatus::UnsupportedGameBuild {
+                message: message.clone(),
+            }],
+        );
+        h.probe.add(hoi4_identity(6500, 913));
+        let mut coord = build(&h);
+        run_steps(&mut coord, &h.clock, 12);
+
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6500, 913)),
+            Some(CandidateState::Failed)
+        );
+        let events = coord.drain_supervisor_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    SupervisorEvent::RecordingStarted { .. },
+                    SupervisorEvent::RecordingFailed { reason, detail, .. },
+                ] | [SupervisorEvent::RecordingFailed { reason, detail, .. }]
+                    if *reason == ReasonCode::UnsupportedGameBuild
+                        && detail.as_deref() == Some(message.as_str())
+            ),
+            "the worker's own sentence must survive whole, under its own reason \
+             code, got {events:?}"
+        );
+        // ...and it stops the supervisor, exactly like the coordinator's own.
+        assert_eq!(
+            coord.take_unsupported_game_build().as_deref(),
+            Some(message.as_str())
+        );
+        let records = read_all(&h.journal_path).unwrap();
+        assert!(
+            records
+                .iter()
+                .all(|record| record.reason_code != ReasonCode::FinalizeVerifyFailed),
+            "nothing was recorded, so nothing failed to finalize: {records:?}"
+        );
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    /// kills: asking the build question again on every readiness probe.
+    /// `WaitingForIdentity` is a RETRY state — an unresolved modset holds a
+    /// candidate here across many ticks — and the answer costs a sha256 of a
+    /// 53 MB file that cannot change while its own process runs. Re-reading it
+    /// per probe spends disk on the machine that is loading the game.
+    #[test]
+    fn a_held_candidate_is_not_re_asked_about_its_build() {
+        let h = harness("patch_day_held", full_success_script());
+        *h.env.modset_resolved.borrow_mut() = false;
+        h.probe.add(hoi4_identity(6400, 912));
+        let mut coord = build(&h);
+        run_steps(&mut coord, &h.clock, 40);
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6400, 912)),
+            Some(CandidateState::WaitingForIdentity),
+            "an unresolved modset holds the candidate across many probes"
+        );
+        assert_eq!(
+            *h.env.build_queries.borrow(),
+            1,
+            "the build was proved supported once and remembered"
+        );
+        let _ = std::fs::remove_file(&h.journal_path);
+    }
+
+    /// kills: ordering the gate after the modset resolver. On patch day the
+    /// modset resolver may itself be unable to resolve (its own reader reads
+    /// the same install), and the host must still get the version sentence
+    /// rather than a modset diagnostic.
+    #[test]
+    fn the_build_gate_outranks_an_unresolved_modset() {
+        let h = harness("patch_day_before_modset", full_success_script());
+        *h.env.unsupported_build.borrow_mut() = Some(unknown_build());
+        *h.env.modset_resolved.borrow_mut() = false;
+        let out_root = patch_day_out_root("before_modset");
+        h.probe.add(hoi4_identity(6300, 911));
+        let mut coord = build_with_window_requirement_and_out_root(&h, true, out_root.clone());
+        run_steps(&mut coord, &h.clock, 12);
+        assert_eq!(
+            state_of(&coord, ProcessKey::new(6300, 911)),
+            Some(CandidateState::Failed)
+        );
+        let events = coord.drain_supervisor_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [SupervisorEvent::RecordingFailed { reason, .. }]
+                    if *reason == ReasonCode::UnsupportedGameBuild
+            ),
+            "the version sentence outranks a modset diagnostic, got {events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&out_root);
+        let _ = std::fs::remove_file(&h.journal_path);
     }
 
     // ---- Gate 1: dual order ------------------------------------------

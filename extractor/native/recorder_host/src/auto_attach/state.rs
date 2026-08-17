@@ -143,6 +143,11 @@ impl fmt::Display for CandidateState {
 pub enum ReasonCode {
     Detected,
     IdentityUnresolved,
+    /// The game is a build this recorder's offsets were never derived against.
+    /// TERMINAL, and reached BEFORE anything is staged, spawned or written into
+    /// the game (owner ruling 2026-08-18). Its `reason_detail` is the whole
+    /// host-facing message, verbatim.
+    UnsupportedGameBuild,
     ModsetUnresolved,
     UserDirAmbiguous,
     WrongUserOrSession,
@@ -174,6 +179,9 @@ impl ReasonCode {
         match self {
             ReasonCode::Detected => "detected",
             ReasonCode::IdentityUnresolved => "identity_unresolved",
+            ReasonCode::UnsupportedGameBuild => {
+                crate::game_build::UnsupportedGameBuild::TERMINAL_OUTCOME
+            }
             ReasonCode::ModsetUnresolved => "modset_unresolved",
             ReasonCode::UserDirAmbiguous => "user_dir_ambiguous",
             ReasonCode::WrongUserOrSession => "wrong_user_or_session",

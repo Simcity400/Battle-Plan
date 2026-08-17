@@ -119,6 +119,30 @@ pub trait AttachEnvironment: Send {
     /// injection (design §3: "auto-attach blocks injection while preserving
     /// errors").
     fn resolve_modset(&self, identity: &ProcessIdentity) -> ModsetResolution;
+    /// Is this game a build the recorder's offsets were derived against?
+    ///
+    /// REFUSE-BEFORE-MUTATION (owner ruling 2026-08-18). The coordinator asks
+    /// this while the candidate is still only *detected* — before a payload is
+    /// staged, before a worker is spawned, and long before anything is written
+    /// into the game. Implementations must therefore answer from files on disk,
+    /// reached from the identity's own image path, and must never open the
+    /// target for write, allocate in it, or read its memory.
+    ///
+    /// Fail closed: anything other than a proven-supported executable is
+    /// [`GameBuildAdmission::Unsupported`], whose payload is the exact sentence
+    /// the host is shown.
+    fn game_build_admission(&self, identity: &ProcessIdentity) -> GameBuildAdmission;
+}
+
+/// The coordinator's view of [`AttachEnvironment::game_build_admission`].
+///
+/// Deliberately carries the finished message rather than the observation: one
+/// function in `game_build` writes the host's sentence, and every surface —
+/// window, console, receipt, journal — repeats that one string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameBuildAdmission {
+    Supported,
+    Unsupported(Box<crate::game_build::UnsupportedGameBuild>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -206,6 +230,22 @@ pub enum WorkerStatus {
     Complete { replay_path: String },
     /// Hard failure; carries a reason for the red status card.
     Failed { reason: String },
+    /// The worker refused because the game is a build this recorder does not
+    /// know, and it published the receipt that says so.
+    ///
+    /// A SEPARATE status from `Failed` because it is a different outcome with a
+    /// different audience. `Failed`'s reason is the worker's last stderr line
+    /// wrapped in "worker exited with …", which for this refusal would keep the
+    /// last line of a five-line sentence and throw away the sentence — and the
+    /// coordinator would journal it as `FinalizeVerifyFailed`, tell the host a
+    /// recording failed, and keep watching for a game that cannot arrive.
+    ///
+    /// `message` is the host-facing sentence. The EXIT CODE decides that this
+    /// variant applies; the wording is recovered, in order, from the worker's
+    /// `GAME_BUILD_UNSUPPORTED_V1.json`, else from the shape-checked trailing
+    /// block of its own log, else from a last-resort sentence that cannot name
+    /// the version. It is never re-derived from the game here.
+    UnsupportedGameBuild { message: String },
 }
 
 pub trait WorkerHandle: Send {

@@ -1940,7 +1940,11 @@ pub fn process_image_file_name(pid: u32) -> Result<String, String> {
         .ok_or_else(|| format!("process {pid} image path has no file name"))
 }
 
-fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
+/// The full path of a live process's executable, read through a QUERY-ONLY
+/// handle. Nothing here can mutate the target, which is why the patch-day build
+/// gate (`crate::game_build`) is allowed to reach the game's files through it
+/// before any injection authority is taken.
+pub fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {

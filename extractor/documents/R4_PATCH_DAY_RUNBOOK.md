@@ -81,7 +81,18 @@ python ../save_oracle/parse_characters.py "<save>.hoi4"     # d47 characters
 
 ## Step 6 — declare
 Only when Steps 1–5 are green: bump the supported-build list and note the new build id in the
-release doc. If ANY step is red, the version is **fail-closed unsupported**; captures from it
+release doc. **The supported-build list is
+`extractor/native/recorder_host/src/game_build.rs::supported_game_builds()`** — one row per build,
+whose digest comes from the same pinned constant the hook contract and the CaptureReady validator
+refuse against. Until that row exists, the shipped recorder refuses the build BEFORE it patches
+anything into the game and tells the host, in one sentence, that a recorder update will add it.
+
+**This document is the developer's, and stays the developer's.** Nothing a host sees links to it,
+and nothing a host sees should: the host's whole instruction is in the refusal message ("wait for a
+recorder update that adds this version"). If a host-facing surface ever grows a pointer here, that
+is the defect.
+
+If ANY step is red, the version is **fail-closed unsupported**; captures from it
 must not be admitted as supported production evidence. Any diagnostic attempt remains explicitly
 failed/partial rather than being treated as valid capture data.
 

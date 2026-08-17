@@ -836,6 +836,11 @@ active recording before exit. The window reports recording start, verified
 completion, or failure and shows the exact output path. Use "Open recordings
 folder" to reveal the current output directory.
 
+This recorder supports one the game version. When Paradox patches the
+game, the recorder tells you that this game version is not supported yet and
+that an update to the recorder will add it. Nothing is changed in your game and
+no recording is started; wait for a recorder update that adds that version.
+
 The recorder is a passive injected observer. It does not pause the game, change game
 speed, send input, move or focus the game window, or start/stop the game process.
 Evidence-backed observation hooks are allowed only for values that cannot be

@@ -126,27 +126,72 @@ pub fn run_supervisor_with_events(
     // Reconcile any prior journal before touching live processes (design §8).
     coord.recover_from_journal()?;
 
+    // PATCH DAY (owner ruling 2026-08-18). An unknown game build stops the
+    // recorder, not just the candidate: the host's install is the build it is,
+    // and only a recorder update changes that, so a supervisor that kept
+    // watching would be waiting for something that cannot arrive. The stop goes
+    // through the SAME cooperative path as an explicit stop below, so a
+    // recording already in flight is finalized rather than abandoned.
+    let mut unsupported_game_build = None;
+    let mut loop_error = None;
     while !should_stop() {
-        coord.step()?;
+        // `step` is fallible, and it is also what DISCOVERS the refusal. Its
+        // error is held rather than thrown so the refusal it may have just
+        // recorded still gets to be the outcome.
+        if let Err(error) = coord.step() {
+            loop_error = Some(error);
+        }
         for event in coord.drain_supervisor_events() {
             on_event(event);
         }
-        std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
-    }
-    coord.begin_explicit_stop()?;
-    for event in coord.drain_supervisor_events() {
-        on_event(event);
-    }
-    while !coord.drive_shutdown()? {
-        for event in coord.drain_supervisor_events() {
-            on_event(event);
+        if let Some(message) = coord.take_unsupported_game_build() {
+            // Armed HERE, before the shutdown below, which is fallible. A
+            // failure while finishing up must not be able to replace "your game
+            // is newer than this recorder" with a generic fatal.
+            crate::game_build::arm_refusal_exit_code();
+            unsupported_game_build = Some(message);
+            break;
+        }
+        if let Some(error) = loop_error {
+            return Err(error);
         }
         std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
     }
-    for event in coord.drain_supervisor_events() {
-        on_event(event);
+    // Cooperative shutdown runs either way, so a recording already in flight is
+    // finalized rather than abandoned. When a refusal is in hand its errors are
+    // REPORTED, not raised: the refusal is the answer, and cleanup trouble on
+    // the way out is a second, lesser fact.
+    let mut shutdown = |coord: &mut Coordinator| -> Result<(), String> {
+        coord.begin_explicit_stop()?;
+        for event in coord.drain_supervisor_events() {
+            on_event(event);
+        }
+        while !coord.drive_shutdown()? {
+            for event in coord.drain_supervisor_events() {
+                on_event(event);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
+        }
+        for event in coord.drain_supervisor_events() {
+            on_event(event);
+        }
+        Ok(())
+    };
+    match unsupported_game_build {
+        // The message travels back as the supervisor's own outcome so `main`
+        // exits on the distinct code and the console carries the same sentence
+        // the window does. It is not an error in the recorder; it is the answer.
+        Some(message) => {
+            if let Err(error) = shutdown(&mut coord) {
+                eprintln!("recorder: stopping after an unsupported game build: {error}");
+            }
+            Err(message)
+        }
+        None => {
+            shutdown(&mut coord)?;
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 /// Live Windows adapters that don't belong in `sources.rs` (they compose the
@@ -165,8 +210,8 @@ mod live {
 
     use super::identity::{ProcessIdentity, ProcessKey};
     use super::sources::{
-        AttachEnvironment, ModsetResolution, ProcessProbe, ToolhelpProbe, WorkerHandle,
-        WorkerSpawner, WorkerSpec, WorkerStatus,
+        AttachEnvironment, GameBuildAdmission, ModsetResolution, ProcessProbe, ToolhelpProbe,
+        WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
     };
 
     /// A per-boot coordinator instance id (design §8 `coordinator_instance_id`).
@@ -195,6 +240,25 @@ mod live {
     impl AttachEnvironment for LiveAttachEnvironment {
         fn has_visible_window(&self, key: ProcessKey) -> bool {
             has_visible_window_for_process(key)
+        }
+
+        /// Read the game's own files beside the running executable and say
+        /// whether this recorder was derived against that build.
+        ///
+        /// Disk only, by construction. The image path comes from the identity
+        /// the probe already resolved with a query-only handle; nothing here
+        /// opens the target for write, allocates in it, or reads its memory. It
+        /// is safe to call — and is called — before the candidate has any
+        /// staging directory or worker at all.
+        fn game_build_admission(&self, id: &ProcessIdentity) -> GameBuildAdmission {
+            match crate::game_build::verdict_for_image_path(std::path::Path::new(&id.image_path)) {
+                crate::game_build::GameBuildVerdict::Supported { .. } => {
+                    GameBuildAdmission::Supported
+                }
+                crate::game_build::GameBuildVerdict::Unsupported(refusal) => {
+                    GameBuildAdmission::Unsupported(Box::new(refusal))
+                }
+            }
         }
 
         fn resolve_modset(&self, id: &ProcessIdentity) -> ModsetResolution {
@@ -505,6 +569,25 @@ mod live {
     impl WorkerSpawner for ProductProcessCommandSpawner {
         fn spawn(&self, spec: &WorkerSpec) -> Result<Box<dyn WorkerHandle>, String> {
             std::fs::create_dir_all(&spec.out_dir).map_err(|e| format!("create out dir: {e}"))?;
+            // No inherited refusal receipt may survive into this attempt. The
+            // supervisor reads that file to recover what its worker told the
+            // host; one left by an earlier attempt in a reused directory would
+            // make this attempt report an older game's version. Refusing to
+            // start is the fail-closed answer: a receipt this process cannot
+            // remove is a receipt it cannot tell apart from its own.
+            let stale_receipt = spec
+                .out_dir
+                .join(crate::game_build::UNSUPPORTED_GAME_BUILD_RECEIPT_FILE);
+            match std::fs::remove_file(&stale_receipt) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "clear an inherited unsupported-build receipt at {} failed: {error}",
+                        stale_receipt.display()
+                    ))
+                }
+            }
             const RESERVED: &[&str] = &[
                 "--pid",
                 "--dll",
@@ -921,8 +1004,72 @@ mod live {
             finalization_deadman_expired(started, last_progress, now)
         }
 
+        /// The last unbroken run of non-empty lines the worker wrote to stderr.
+        ///
+        /// The refusal message is several lines and is the last thing the worker
+        /// says, so the trailing BLOCK is the message; the single-line reader in
+        /// `worker_exit_failure` would keep only "Your game reports: …".
+        fn trailing_stderr_block(&self) -> Option<String> {
+            const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
+            let bytes = std::fs::read(&self.stderr_path).ok()?;
+            let start = bytes.len().saturating_sub(MAX_STDERR_TAIL_BYTES);
+            let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+            let mut block: Vec<&str> = Vec::new();
+            for line in text.lines().rev() {
+                if line.trim().is_empty() {
+                    if block.is_empty() {
+                        continue;
+                    }
+                    break;
+                }
+                block.push(line.trim_end());
+            }
+            block.reverse();
+            let joined = block.join("\n");
+            (!joined.trim().is_empty()).then_some(joined)
+        }
+
         fn worker_exit_failure(&self, status: std::process::ExitStatus) -> WorkerStatus {
             const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
+            // PATCH DAY first, before this is read as an ordinary failure.
+            //
+            // THE EXIT CODE DECIDES. It is this recorder's own binary, exiting
+            // on a code it reserves for exactly one outcome, so it is the
+            // control signal. The receipt is durable EVIDENCE and is used for
+            // the wording when it is there — but it is written best-effort by a
+            // worker that keeps refusing when the write fails, so requiring it
+            // would make a full disk turn "your game is newer than this
+            // recorder" back into a finalize failure with the recorder still
+            // watching.
+            //
+            // Without the receipt the sentence is recovered from the worker's
+            // own stderr, where it printed it WHOLE and last, with no
+            // program-name prefix. The trailing block is taken, not the last
+            // line: the message is five lines, and the last of them alone says
+            // almost nothing.
+            if status.code() == Some(crate::game_build::UNSUPPORTED_GAME_BUILD_EXIT_CODE) {
+                let message = crate::game_build::refusal_message_from_receipt(&self.out_dir)
+                    .or_else(|| {
+                        // EXTRACTED, not accepted or rejected whole. A log is a
+                        // place other things also write, and the line saying the
+                        // receipt could not be written is printed immediately
+                        // before the message with no blank line between them.
+                        // Discarding the block for that would cost the host the
+                        // VERSION, which was right there one line down; taking
+                        // the suffix that begins where a message begins keeps
+                        // the sentence and leaves the diagnostic behind.
+                        self.trailing_stderr_block()
+                            .as_deref()
+                            .and_then(crate::game_build::extract_refusal_message)
+                    })
+                    .unwrap_or_else(|| {
+                        // Neither surface survived. The host still gets a true
+                        // sentence rather than an exit code, and the recorder
+                        // still stops.
+                        crate::game_build::unreadable_refusal_message()
+                    });
+                return WorkerStatus::UnsupportedGameBuild { message };
+            }
             let detail = std::fs::read(&self.stderr_path).ok().and_then(|bytes| {
                 let start = bytes.len().saturating_sub(MAX_STDERR_TAIL_BYTES);
                 String::from_utf8_lossy(&bytes[start..])

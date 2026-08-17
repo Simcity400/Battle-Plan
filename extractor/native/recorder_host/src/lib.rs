@@ -21,6 +21,11 @@ pub mod early_render_launch;
 pub mod emitted_token_inventory;
 pub mod finalize_progress;
 pub mod gap_ledger;
+/// WHICH the game BUILDS this recorder can record, and the one sentence a host
+/// reads when theirs is not one of them. See the module header for why the
+/// check has to sit ahead of the first mutation, and for how a game names its
+/// own version without the recorder reading anything the patch moved.
+pub mod game_build;
 /// What the supervising harness REFUSED, read by the process it supervised, so
 /// a capture whose READY custody was never established does not spend an hour
 /// folding frames nobody can vouch for. See the module header.

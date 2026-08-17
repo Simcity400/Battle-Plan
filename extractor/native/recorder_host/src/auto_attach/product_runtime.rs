@@ -653,6 +653,10 @@ mod desktop {
         recordings_root: PathBuf,
         terminal_result_seen: bool,
         entries: Vec<String>,
+        /// This session ended because the game is a build the recorder does not
+        /// know. Recorded so the stop that follows does not wrap the version
+        /// sentence in an error report about itself.
+        unsupported_game_build: bool,
     }
 
     impl ProductPresentation {
@@ -667,6 +671,7 @@ mod desktop {
                 recordings_root: out_root,
                 terminal_result_seen: false,
                 entries: vec![initial],
+                unsupported_game_build: false,
             }
         }
 
@@ -721,6 +726,37 @@ mod desktop {
                     detail,
                     run_dir,
                 } => {
+                    // PATCH DAY (owner ruling 2026-08-18). An unknown game
+                    // build is not "recording failed" — nothing was attempted,
+                    // nothing was changed, and there is no attempt folder worth
+                    // pointing at. The host reads the version sentence and
+                    // nothing else, so no PID, no reason code, no "still
+                    // watching" (waiting will not make an unknown build known;
+                    // a recorder update will).
+                    if reason == crate::auto_attach::state::ReasonCode::UnsupportedGameBuild {
+                        let message = detail
+                            .unwrap_or_else(|| reason.as_str().to_string())
+                            .replace("\r\n", "\n")
+                            .replace('\n', "\r\n");
+                        // REPLACES the log, it does not join it. `append` keeps
+                        // a scrollback — the "Watching for the game…"
+                        // line it opens with, and anything an earlier game left
+                        // behind — and a host reading "Recording finished and
+                        // verified… / This game version … is not supported yet"
+                        // in one box has been given two answers to one
+                        // question. The refusal ends the session, so it ends
+                        // the transcript with it.
+                        self.entries = vec![message.clone()];
+                        self.status_text = message;
+                        self.unsupported_game_build = true;
+                        // The host has now seen it. `main` reads this so a
+                        // no-argument launch does not follow the window with a
+                        // modal dialog carrying the same sentence again.
+                        crate::game_build::mark_refusal_presented();
+                        self.open_target = self.recordings_root.clone();
+                        self.terminal_result_seen = true;
+                        return;
+                    }
                     let detail = detail.unwrap_or_else(|| reason.as_str().to_string());
                     let run_dir_is_directory =
                         run_dir.as_ref().is_some_and(|path| path.is_dir());
@@ -752,6 +788,19 @@ mod desktop {
         }
 
         pub(super) fn finished(&mut self, error: Option<&str>) {
+            // The unsupported-build refusal IS the supervisor's error, and the
+            // window is already showing it. Wrapping it in "Recorder stopped
+            // because of an error: …" would tell the host their recorder broke,
+            // when what happened is that their game is newer than it. One line
+            // is added: that it has stopped, and that Close is the next thing
+            // to do.
+            if self.unsupported_game_build {
+                self.entries
+                    .push("The recorder has stopped. Select Close when ready.".to_string());
+                self.status_text = self.entries.join("\r\n\r\n");
+                self.terminal_result_seen = true;
+                return;
+            }
             if let Some(error) = error {
                 self.append(format!(
                     "Recorder stopped because of an error: {error}\r\nReview the recordings folder, then select Close."
@@ -1511,6 +1560,112 @@ mod tests {
         assert!(presentation.status_text.contains("stopped safely"));
         assert!(presentation.status_text.contains("Select Close"));
         assert!(presentation.status_text.contains(&replay.display().to_string()));
+    }
+
+    /// kills: routing an unsupported game build through the ordinary
+    /// "Recording failed for … (PID n): …" template, or appending "still
+    /// watching" / an attempt folder to it. The window must show the version
+    /// sentence and only the version sentence — the host has to be able to read
+    /// what happened without knowing what a PID or an attempt folder is.
+    #[cfg(windows)]
+    #[test]
+    fn product_presentation_shows_only_the_unsupported_build_sentence() {
+        use super::desktop::ProductPresentation;
+        use crate::auto_attach::{state::ReasonCode, SupervisorEvent};
+        use crate::game_build::{ObservedGameBuild, UnsupportedGameBuild, VersionSource};
+
+        let root = PathBuf::from(r"C:\Users\Example\AppData\Local\Battle Plan Recorder");
+        let refusal = UnsupportedGameBuild {
+            observed: ObservedGameBuild {
+                display_version: "Operation Bombers v1.20.0.b100 (d300)".to_string(),
+                version_source: VersionSource::LauncherSettingsVersion,
+                exe_sha256: Some([0x5a; 32]),
+                exe_read_error: None,
+                exe_path: PathBuf::from(r"D:\Steam\common\the game\hoi4.exe"),
+            },
+        };
+        let mut presentation = ProductPresentation::watching(root.clone());
+        presentation.apply(SupervisorEvent::RecordingFailed {
+            pid: 42,
+            reason: ReasonCode::UnsupportedGameBuild,
+            detail: Some(refusal.message()),
+            run_dir: Some(root.join("run_attempt-1")),
+        });
+
+        // EQUALITY, not `contains`. The window opens with "Watching for Hearts
+        // of Iron IV…" and keeps a scrollback of earlier recordings; a host
+        // reading "Recording finished and verified…" above "This game version …
+        // is not supported yet" has been given two answers to one question. The
+        // refusal ends the session, so it replaces the transcript.
+        let rendered = refusal.message().replace('\n', "\r\n");
+        assert_eq!(presentation.status_text, rendered);
+        for absent in [
+            "Recording failed",
+            "PID 42",
+            "still watching",
+            "Watching for the game",
+            "Attempt folder:",
+            ReasonCode::UnsupportedGameBuild.as_str(),
+        ] {
+            assert!(
+                !presentation.status_text.contains(absent),
+                "window must not show {absent:?}: {}",
+                presentation.status_text
+            );
+        }
+        assert_eq!(presentation.open_target, root);
+
+        // ...and the stop that follows does not wrap it in an error report
+        // about the recorder. The host's game is newer than the recorder; the
+        // recorder did not break.
+        presentation.finished(Some(refusal.message().as_str()));
+        assert!(presentation.status_text.starts_with(&rendered));
+        assert!(presentation
+            .status_text
+            .ends_with("The recorder has stopped. Select Close when ready."));
+        assert!(!presentation
+            .status_text
+            .contains("Recorder stopped because of an error"));
+    }
+
+    /// kills: leaving an earlier recording's transcript in the window when the
+    /// refusal lands. This is the same claim as the test above, from the other
+    /// side: a session that already recorded something must still end with the
+    /// version sentence alone.
+    #[cfg(windows)]
+    #[test]
+    fn an_earlier_recording_does_not_survive_the_unsupported_build_sentence() {
+        use super::desktop::ProductPresentation;
+        use crate::auto_attach::{state::ReasonCode, SupervisorEvent};
+        use crate::game_build::{ObservedGameBuild, UnsupportedGameBuild, VersionSource};
+
+        let root = PathBuf::from(r"C:\recordings");
+        let mut presentation = ProductPresentation::watching(root.clone());
+        presentation.apply(SupervisorEvent::RecordingSucceeded {
+            pid: 7,
+            replay_path: root.join("earlier.battleplan"),
+        });
+        assert!(presentation.status_text.contains("finished and verified"));
+
+        let refusal = UnsupportedGameBuild {
+            observed: ObservedGameBuild {
+                display_version: "Operation Bombers v1.20.0.b100 (d300)".to_string(),
+                version_source: VersionSource::LauncherSettingsVersion,
+                exe_sha256: Some([0x5a; 32]),
+                exe_read_error: None,
+                exe_path: PathBuf::from("hoi4.exe"),
+            },
+        };
+        presentation.apply(SupervisorEvent::RecordingFailed {
+            pid: 8,
+            reason: ReasonCode::UnsupportedGameBuild,
+            detail: Some(refusal.message()),
+            run_dir: None,
+        });
+        assert_eq!(
+            presentation.status_text,
+            refusal.message().replace('\n', "\r\n")
+        );
     }
 
     #[cfg(windows)]

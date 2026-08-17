@@ -333,6 +333,11 @@ fn parse_reason(s: &str) -> Result<ReasonCode, String> {
     Ok(match s {
         "detected" => Detected,
         "identity_unresolved" => IdentityUnresolved,
+        // Spelled from the same constant the reason code writes, so the writer
+        // and this reader cannot drift into a journal nobody can recover.
+        other if other == crate::game_build::UnsupportedGameBuild::TERMINAL_OUTCOME => {
+            UnsupportedGameBuild
+        }
         "modset_unresolved" => ModsetUnresolved,
         "user_dir_ambiguous" => UserDirAmbiguous,
         "wrong_user_or_session" => WrongUserOrSession,
