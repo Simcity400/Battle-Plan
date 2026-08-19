@@ -3,7 +3,7 @@
 //!
 //! The run directory's `native_session_manifest.json` keeps absolute paths, for
 //! recovery and audit on the machine that recorded. The independently shareable
-//! container must never carry them (container spec §0, "No personal paths"), so
+//! container must never carry personal paths, so
 //! the recorder redacts every absolute path string — and every absolute path
 //! object KEY — down to its final component before packing, then refuses to
 //! seal if anything absolute survived.
@@ -19,8 +19,8 @@
 use serde_json::Value;
 
 /// Reduce a possibly-personal filesystem path to a portable basename. The
-/// container spec forbids personal paths in emitted metadata (§0 "No personal
-/// paths"); the domain-59 catalog embeds absolute install/mod roots, so we keep
+/// container format forbids personal paths in emitted metadata; the domain-59
+/// catalog embeds absolute install/mod roots, so we keep
 /// only the final component (mirrors `redact_path` in the Python gates).
 pub fn redact_root_basename(root: &str) -> String {
     let trimmed = root.trim_end_matches(['/', '\\']);

@@ -59,21 +59,16 @@ class ExclusionRules(unittest.TestCase):
         # kills: an exclusion written wide enough to swallow the corpus -- a
         # rule that excluded everything would pass every test above.
         for rel in ("extractor/native/collector/src/domain_registry.rs",
-                    "extractor/documents/WIRE_FORMAT.md",
                     "extractor/coverage_audit/atlas_generated/save_path_catalog.csv",
-                    "extractor/documents/domains/d10_fuel_live.md"):
+                    "extractor/documents/technical_evidence.json"):
             self.assertFalse(mfd.is_outside_source_corpus(rel), rel)
 
-    def test_the_dossier_section_copied_from_this_map_is_not_scanned(self):
-        # kills: deleting the split in scannable_text. The Files section of a
-        # dossier is written from this CSV by emit_domain_dossiers.py, so
-        # reading it back is the CSV self-scan laundered through a second
-        # generator -- it is what put 47 dossiers in the d58 row.
+    def test_scannable_text_does_not_rewrite_source(self):
         text = ("# d10 - fuel_live\n\n## Condensed knowledge\n\nSee also d11.\n"
                 "\n## Files about this domain\n\n- `lanes/d99_elsewhere/x.rs`\n")
         kept = mfd.scannable_text("extractor/documents/domains/d10_fuel_live.md", text)
         self.assertIn("See also d11.", kept)
-        self.assertNotIn("d99_elsewhere", kept)
+        self.assertIn("d99_elsewhere", kept)
 
     def test_a_file_outside_the_dossier_directory_is_read_whole(self):
         # kills: applying the dossier split to every file.
@@ -215,9 +210,8 @@ class CheckComparesTheWholeFile(unittest.TestCase):
         return _run_generator(self.repo, "--check")
 
     def test_a_renamed_header_is_drift(self):
-        # kills: comparing only the data rows. emit_domain_dossiers.py reads
-        # this file with a DictReader, so the header IS the contract, and a
-        # comparison that drops it calls a file no consumer can read "current".
+        # kills: comparing only the data rows. The header is part of the
+        # committed machine-readable contract.
         bad = self.current.replace("domain_id,domain_name,file_count,files",
                                    "wrong,name,count,paths", 1)
         self.assertNotEqual(bad, self.current)

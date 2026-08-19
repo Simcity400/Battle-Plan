@@ -757,9 +757,8 @@ impl BoundaryTracker {
                 // A refused hour is a CLOSED hour that published nothing. It is
                 // the plainest excluded hour there is, and before this arm
                 // existed it was simply ABSENT from the output with nothing
-                // anywhere saying it had existed and been refused (lane GQ cell
-                // (e): a consumer counting hours could not tell it apart from a
-                // capture that was one hour shorter).
+                // saying it had existed and been refused; a consumer counting
+                // hours could not tell it apart from a shorter capture.
                 if let Some(span) = self.hour_span.take() {
                     self.coverage.record_excluded(
                         span.game_hour_raw,
@@ -3952,8 +3951,7 @@ mod tests {
         walk_clean_hours(&mut tracker, &mut seq, &[HOUR_A], &mut at);
 
         // Hour B opens, then a SECOND hour's DATA arrives while it is open —
-        // the hour-interleaving violation, one of the five structural injuries
-        // that used to refuse the whole run (lane GQ cells a/c1/c2/d/h).
+        // the hour-interleaving violation.
         let hour_b = raw_for(HOUR_B);
         let data = country_identity_payload(&[(47, "GER")]);
         tracker.observe(

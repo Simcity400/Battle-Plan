@@ -1,14 +1,13 @@
 //! d23 `map_detail_live` — per-state resources and buildings, per-province
 //! buildings.
 //!
-//! Derived from `world_fold.rs:29444`-`:29667`
+//! Derived from `world_fold.rs:29413`-`:29636`
 //! (`fold_map_detail`), its payload constants at `:400`-`:403`, the shared row
-// @world-fold-authority domain=23 functions=fold_map_detail lines=29444-29667 sha256=cc05053702f50c19a32f93dbe8f89c8012b931affc32b5748eef1ab4e2c9bd87 closure=dbdfc192e8b924a50b96575d370ad83716da7b6b789e2120af925cfa1c59750b
+// @world-fold-authority domain=23 functions=fold_map_detail lines=29413-29636 sha256=f1811dd2ba44bb469d40dcd00b7a9d855d7c247270108333059ee41aa65f9494 closure=592c1c7d237c25f6993a63d5ea4621f8ebb711ce1c3e47676e39d87a40a4d317
 //! helpers at `:29977`-`:30044`, and the collector read and packer that produce
 //! the flags (`extractor/native/collector/src/attach_log.rs:58628`-`:58717`,
-//! `:59312`-`:59444`, `:71729`-`:71850`). d23 has no dossier
-//! (`documents/domains/UNDOCUMENTED_DOMAINS.md`), so the fold and the collector
-//! read are the whole basis.
+//! `:59312`-`:59444`, `:71729`-`:71850`). The fold and collector read are the
+//! field-level basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_map_detail`, packer `:71758`-`:71772`):
 //! a 48-byte header followed by five fixed-stride arrays, in this order:
@@ -68,7 +67,7 @@
 //! **`type_id` is a `ContentId`.** The wire carries a number; the human name
 //! comes from a host-side registry at render time (`:30047`-`:30064`), so the
 //! fold's string keys in its JSON are a rendering artefact and not payload. The
-//! deciding question (§5, and the recipe's step 3) is whether a content manifest
+//! deciding question (content-identity contract, and the recipe's step 3) is whether a content manifest
 //! must resolve the id for it to keep its meaning under another mod set. It must:
 //! buildings are defined by `common/buildings` script and
 //! `compact_contract::building_registry` says so in its own words — the table is
@@ -77,7 +76,7 @@
 //! ids are the same kind of thing (`common/resources`), and the fold's own
 //! fallback for an unrecognised one is a numeric `tid_0x…` string (`world_fold.rs::map_detail_resource_name`).
 //! Both are content, not engine discriminators, so both are `ContentId` — and
-//! both are **key components**, which §13 flags as the heavier manifest-retrofit
+//! both are **key components**, which codec-measurement contract flags as the heavier manifest-retrofit
 //! class. Every key in this domain is a `ContentId`; see the deliverable's open
 //! questions.
 //!
@@ -122,7 +121,7 @@ pub const STATE_BUILDINGS_INDEX: usize = 3;
 pub const PROVINCE_BUILDINGS_INDEX: usize = 4;
 pub const COLLECTION_COUNT: usize = 5;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// *different* field. Ids are unique per collection, and an id that names the
 /// same concept in two collections is deliberately the same id.
 pub mod field {
@@ -184,7 +183,7 @@ pub fn schema() -> Schema {
     // not captured at all (flag clear, which the collector produces when the
     // lane is scheduled without resources, `attach_log.rs:59327`-`:59334`).
     // Without these fields the absence of `(state_id, *)` rows would silently
-    // assert "empty" about data that was never read — exactly the §3 fidelity
+    // assert "empty" about data that was never read — exactly the record-state contract fidelity
     // loss the four states exist to prevent.
     //
     // They are a real measured value in every row: `Bool`, never `Absent`,
@@ -208,7 +207,7 @@ pub fn schema() -> Schema {
     // exactly when `state_id != 0` (`attach_log.rs:71816`), and `state_id` is
     // `0` exactly when the province's state pointer is null
     // (`attach_log.rs:59588`) — a sea or lake province genuinely belongs to no
-    // state. That is §3's null, "the relation genuinely points at nothing", word
+    // state. That is record-state contract's null, "the relation genuinely points at nothing", word
     // for word. It is not `unknown`: every path that could not *read* the state
     // returns `Err` (`:59587`, `:59600`) and fails the whole sample. It is not
     // `absent`: every province row this schema carries can have a state.
@@ -227,7 +226,7 @@ pub fn schema() -> Schema {
     // `:30039`), so the entry's position in the shared array is not part of the
     // state.
     //
-    // `amount` is `Quant::Exact`. §6 makes exact the default and requires the
+    // `amount` is `Quant::Exact`. derived-field contract makes exact the default and requires the
     // domain document to justify anything else; d23 has no domain document at
     // all, so no quantization is justified and none is declared. See the
     // deliverable's open questions for the empirical note.
@@ -636,7 +635,7 @@ pub fn building_type_id(entry: &[u8]) -> core::result::Result<u32, String> {
 /// its stored Record. `row` is the raw 28-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); d23 has exactly one state
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d23 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -1374,7 +1373,7 @@ mod tests {
                 assert_eq!(
                     k.kind,
                     Kind::ContentId,
-                    "every d23 key component is content-defined (§5)"
+                    "every d23 key component is content-defined (content-identity contract)"
                 );
                 assert!(k.kind.legal_as_key());
             }
@@ -1409,7 +1408,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d23 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d23 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         for c in &schema().collections {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -1421,9 +1420,8 @@ mod tests {
     #[test]
     fn the_one_continuous_field_is_exact() {
         // Step 4's "quantization saves bytes" test does not apply: d23 declares
-        // no quantized field. §6 makes `exact` the default and requires the
-        // domain document to justify anything else; d23 has no domain document
-        // (`domains/UNDOCUMENTED_DOMAINS.md`), so nothing justifies rounding a
+        // no quantized field. derived-field contract makes `exact` the default and requires the
+        // domain evidence to justify anything else; none justifies rounding a
         // resource amount. Building levels are integers and are not continuous
         // at all, so no quantization question arises for them.
         let s = schema();

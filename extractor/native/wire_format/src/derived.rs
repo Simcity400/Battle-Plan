@@ -1,4 +1,4 @@
-//! §6 derived fields: the clock-linear transform between a field's live value
+//! derived-field contract derived fields: the clock-linear transform between a field's live value
 //! and the value the format stores.
 //!
 //! ```text
@@ -13,7 +13,7 @@
 //! here, at the two boundaries — capture converts live to stored before building
 //! a record, replay converts back after decoding one. Everything between those
 //! boundaries is then tick-free: `diff`, `check_minimal`, the change mask and the
-//! encoders all compare stored forms, which is exactly what §7.1's "differs as
+//! encoders all compare stored forms, which is exactly what delta-minimality contract's "differs as
 //! stored" asks of them, and none of them has to carry a frame tick to do it.
 //!
 //! Putting the transform inside the codec instead would mean every comparison
@@ -21,14 +21,14 @@
 //! row — and the tick-invariance that makes `UNCHANGED` work would become an
 //! emergent property of the comparison rather than a property of the stored
 //! value. It is stated here as a contract rather than left to the caller because
-//! an undocumented pre-transformation cannot enforce §6's overflow rule, and
+//! an undocumented pre-transformation cannot enforce derived-field contract's overflow rule, and
 //! cannot supply the inverse a reader needs.
 
 use crate::schema::Field;
 use crate::value::Value;
 use crate::varint::{Result, WireError};
 
-/// `c × (frame_tick >> u)`, the clock term. §6 computes it in `i64` and makes
+/// `c × (frame_tick >> u)`, the clock term. derived-field contract computes it in `i64` and makes
 /// overflow a hard error rather than a wrapped value, because a wrapped clock
 /// term silently reconstructs the wrong live value forever after.
 fn clock_term(field: &Field, frame_tick: u64) -> Result<i64> {
@@ -37,7 +37,7 @@ fn clock_term(field: &Field, frame_tick: u64) -> Result<i64> {
     };
     // The conversion is part of the arithmetic, so it is checked too: `as i64`
     // turns `u64::MAX` into `-1`, and the `checked_mul` below would then never
-    // see the overflow §6 calls a hard error.
+    // see the overflow derived-field contract calls a hard error.
     let ticks = i64::try_from(frame_tick >> d.u)
         .map_err(|_| WireError::Corrupt("derived clock term overflows i64"))?;
     d.c.checked_mul(ticks)
@@ -57,7 +57,7 @@ fn matches_live_kind(kind: crate::schema::Kind, live: Value) -> bool {
 
 /// Live value at `frame_tick` → the value a record stores, always `Signed`.
 ///
-/// The stored domain is all of `i64` whatever the field's live kind, because §6's
+/// The stored domain is all of `i64` whatever the field's live kind, because derived-field contract's
 /// transform "can carry an otherwise unsigned quantity negative" — a count-up
 /// field with `c = -1` stores `-5` for a live `5` at tick 10, which is legal and
 /// has no overflow anywhere. Forcing the result back into the live variant made
@@ -70,7 +70,7 @@ pub fn to_stored(field: &Field, live: Value, frame_tick: u64) -> Result<Value> {
     // kind, so the boundary is a bijection.
     //
     // `matches_kind` is too generous here: it blesses `Value::Signed` for
-    // `Kind::Monotone` — correct for a *stored* monotone value, which §4 may
+    // `Kind::Monotone` — correct for a *stored* monotone value, which schema-kind contract may
     // difference negative — but a monotone field's *live* value is unsigned
     // everywhere else in the crate. Gating on it let capture accept
     // `Signed(-5)` on a derived monotone field, encode it, and then have replay
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn overflow_is_a_hard_error_not_a_wrapped_value() {
-        // §6: "overflow is a hard writer error, not a wrapped value."
+        // derived-field contract: "overflow is a hard writer error, not a wrapped value."
         let f = countdown(i64::MAX, 0);
         assert_eq!(
             to_stored(&f, Value::Unsigned(1), 2),
@@ -211,7 +211,7 @@ mod tests {
             to_stored(&f, Value::Unsigned(u64::MAX), 0),
             Err(WireError::Corrupt("derived live value exceeds i64"))
         );
-        // A NEGATIVE stored value is legal — §6 zigzags precisely because the
+        // A NEGATIVE stored value is legal — derived-field contract zigzags precisely because the
         // transform can carry an otherwise unsigned quantity negative.
         assert_eq!(to_stored(&countdown(-1, 0), Value::Unsigned(5), 10), Ok(Value::Signed(-5)));
         // What is not legal is a negative LIVE value on an unsigned field.

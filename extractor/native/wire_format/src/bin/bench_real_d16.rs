@@ -141,9 +141,8 @@ const BLOCK_HOURS: usize = 48;
 /// Two reasons, and the second is not a cadence choice: the block boundary at
 /// `block_hours`, or a measured hour that does not immediately follow the
 /// previous measured one. An hour this domain did not successfully sample is
-/// coverage the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190`
-/// is explicit: "A gap affecting the state part forces the next state
-/// observation to be a `BASELINE`. State may have moved and returned while
+/// coverage the domain lost.
+/// State after a gap to resume from a complete baseline. State may have moved and returned while
 /// nobody was looking, so neither a delta nor an `UNCHANGED` can be justified
 /// across unobserved time." Delta-encoding across the gap would produce bytes
 /// that decode — the reader's prior is never invalidated, so the local replay
@@ -530,7 +529,7 @@ fn scan_stream(
             // quietly — otherwise a malformed payload could hide behind a failure
             // status and still leave the stream measurable.
             //
-            // Round-1 review finding, and the whole property it implies rather
+            // and the whole property it implies rather
             // than the one reported input: status flag 1 with `country_count = 0`,
             // `timed_count = 1` and no timed-row bytes was accepted here while
             // `fold_decisions` rejects it. `split_payload` covers the header and
@@ -549,7 +548,7 @@ fn scan_stream(
             // Bits 15..=31 are unassigned (`status_flags_base.rs:40`-`:44`), and an
             // unassigned bit "is not evidence of a future informational status".
             //
-            // Round-4 review finding: without this, a record with
+            // without this, a record with
             // `status_flags = 1 << 14` and a valid country row was measured as a
             // healthy hour, because the failure helper masks with the *known*
             // failure set and returns zero for a bit it does not know. Every
@@ -700,7 +699,6 @@ fn scan_stream(
 /// **delta path** carried and is a property of this block cadence; `real_*`
 /// describes what the **data** did and is a property of the campaign. A change
 /// that lands on a block boundary is carried by that hour's baseline and so never
-/// enters `delta_*` — which is a round-3 review finding: with 48-hour blocks the
 /// reference capture's change at game hour 60833079 (hour index 672, a block
 /// start) moved tag 38's `active_targeted_timed` from 328 to 331 and was invisible
 /// in the delta accounting. Quoting a delta-path count as "the campaign's real
@@ -715,7 +713,7 @@ struct Measurement {
     /// Sum of the accumulator's row count over every hour.
     state_rows_total: usize,
     baselines: usize,
-    /// Baselines the §1.5 gap rule forced outside a scheduled block start.
+    /// Baselines the gap handling forced outside a scheduled block start.
     gap_forced_baselines: usize,
     baseline_bytes: usize,
     /// Hours that emitted a wire DELTA, and the bytes they cost.
@@ -736,8 +734,7 @@ struct Measurement {
 
 /// Build both arms, verifying the reader replay every hour.
 ///
-/// Factored out of `main` so the block-cadence behaviour is testable: the round-3
-/// finding was invisible from `main` because nothing could call it with a small
+/// Factored out of `main` so the block-cadence behaviour is testable with a small
 /// block size and a change placed on a boundary.
 fn measure(
     schema: &wire_format::Schema,
@@ -944,7 +941,7 @@ fn main() {
     );
     println!(
         "baselines            {} ({} every {BLOCK_HOURS} h, {} forced by a gap in measured \
-         hours — WIRE_FORMAT §1.5), {} raw bytes",
+         hours —, {} raw bytes",
         m.baselines,
         m.baselines - m.gap_forced_baselines,
         m.gap_forced_baselines,
@@ -1634,10 +1631,10 @@ mod tests {
 
     #[test]
     fn an_excluded_records_payload_is_still_validated() {
-        // Round-1 review finding, generalized. A record excluded from the arms is
+        // A record excluded from the arms is
         // still a record in the stream: `fold_decisions` decodes the whole payload
         // before accepting it, so a malformed one is a corrupt stream, not an hour
-        // to drop quietly. The reviewer's exact input is the first case; the
+        // to drop quietly. The exact regression input is the first case; the
         // sweep is every failure bit crossed with every way a rowless payload's
         // timed region can be malformed.
         let reviewers_input = {
@@ -1721,7 +1718,7 @@ mod tests {
 
     #[test]
     fn an_unassigned_status_bit_is_refused_not_classified() {
-        // Round-4 review finding, generalized to every unassigned bit rather than
+        // generalized to every unassigned bit rather than
         // the one reported. `compact_contract/src/lib.rs:121`-`:123`: the failure
         // helpers classify the v1 vocabulary and are not validity predicates, so an
         // unassigned bit must be rejected BEFORE classification — otherwise it
@@ -1884,7 +1881,7 @@ mod tests {
 
     #[test]
     fn churn_counts_a_change_that_lands_on_a_block_boundary() {
-        // Round-3 review finding, generalized. `real_*` must be a property of the
+        // `real_*` must be a property of the
         // data and `delta_*` a property of the cadence; a change on a block start
         // is carried by that hour's baseline and never reaches the delta path, so
         // quoting the delta count as "the campaign's real changes" undercounts.
@@ -1985,8 +1982,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." The decision function
+        // A complete
+        // baseline after a gap. The decision function
         // over its whole input space:
         for hours_seen in 0..(2 * BLOCK_HOURS) {
             assert!(opens_baseline(hours_seen, BLOCK_HOURS, None, 100));

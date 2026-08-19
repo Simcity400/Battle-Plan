@@ -1,5 +1,4 @@
-//! Shared, exact-byte H4CT v1 typed payload codecs
-//! (`extractor/documents/DUPLEX_CONTROL_TRANSPORT.md` §3).
+//! Shared, exact-byte H4CT v1 typed payload codecs.
 //!
 //! These are the single implementation of every H4CT payload the recorder host
 //! and the injected collector exchange, so neither side can drift. Each payload
@@ -30,7 +29,7 @@ pub const CAPTURE_READY_ACK_LEN: usize = 168;
 const CAPTURE_READY_AUTH_OFFSET: usize = CAPTURE_READY_LEN - 32;
 const CAPTURE_READY_ACK_AUTH_OFFSET: usize = CAPTURE_READY_ACK_LEN - 32;
 
-/// `HeartbeatProof.state` closed enum (`§3`).
+/// `HeartbeatProof.state` closed enum.
 pub const HEARTBEAT_STATE_WAITING_FOR_WORLD: u16 = 1;
 pub const HEARTBEAT_STATE_PRODUCING: u16 = 2;
 pub const HEARTBEAT_STATE_PAUSED_FOR_CONTROL: u16 = 3;

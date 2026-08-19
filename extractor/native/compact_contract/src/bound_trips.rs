@@ -1,4 +1,4 @@
-//! R2 bound-trip attribution registry (`R2_VALIDATION_BOUNDS_AUDIT.md` follow-up).
+//! R2 bound-trip attribution registry.
 //!
 //! Every hardcoded plausibility bound tuned on *vanilla* observation is a place
 //! a modded save can legitimately exceed the limit. The dominant pre-R2 pattern

@@ -3,7 +3,7 @@
 Core library for the Battle Plan host-side memory reader (Phase 0).
 No third-party deps: just ctypes + struct + hashlib.
 
-Design rules (from extractor/documents/archive/research/RESEARCH_memory_reader.md):
+Design rules (``PROJECT.md``, ``Passive recording``):
   * READ-ONLY. We open with PROCESS_VM_READ | PROCESS_QUERY_INFORMATION and
     NEVER request write rights, never call WriteProcessMemory. The game is
     only ever observed, never touched.

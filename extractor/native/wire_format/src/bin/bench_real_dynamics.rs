@@ -1,5 +1,5 @@
 //! Measure the wire format against the shipping compact stream on REAL
-//! division dynamics — the measurement §13 says is missing.
+//! division dynamics — the measurement codec-measurement contract says is missing.
 //!
 //! Input: a real `collector_stream.bin` from a d20-scheduled capture
 //! (`runs/crashrate/minimal_t*`). The stream's own d20 DATA records are the
@@ -55,7 +55,7 @@
 //!                    block-span slicing
 //!
 //! It also prints the real churn surface (changed rows per hour at stored
-//! precision), which is the number the §13 layout model had to assume.
+//! precision), which is the number the codec-measurement contract layout model had to assume.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;

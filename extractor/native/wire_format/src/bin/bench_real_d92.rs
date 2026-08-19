@@ -17,7 +17,7 @@
 //! frame walk is grammar (two collections, a variable-length row walk and a
 //! modelled cross-domain gate) and grammar has exactly one home.
 //!
-//! **Two passes, because the symbol table is what pass 1 builds.** §5 requires
+//! **Two passes, because the symbol table is what pass 1 builds.** content-identity contract requires
 //! symbol ids to be file-global and forbids in-stream interning — "it must be
 //! fully read before any seek" — so the `tactic_id` vocabulary is collected over
 //! the whole validated stream first and frozen into a `d92::Symbols` that pass 2
@@ -90,8 +90,7 @@
 //! the fold's classification and is reported as a named deviation instead (d49's
 //! rule). Two of those deviations are counted: an unparseable payload the recorder
 //! tolerates, and a failure-status record whose body the authority would reject but
-//! the fold never reads. Both are 0 on the measured capture. Ported from
-//! `bench_real_d96.rs`, whose Codex rounds 1-3 established all three rulings.
+//! the fold never reads. Both are 0 on the measured capture.
 //!
 //! # The three outcomes, by name
 //!
@@ -162,7 +161,7 @@
 //!
 //! - **`source_sequence == hour_index_from_raw(game_hour_raw) + 1`.** The
 //!   collector computes it that way (`attach_log.rs:33335`), which would make it
-//!   a §6 derived field costing zero in every delta. The fold enforces nothing of
+//!   a derived-field contract derived field costing zero in every delta. The fold enforces nothing of
 //!   the kind, so `d92.rs` carries it as a plain value and this harness MEASURES
 //!   the identity instead. Any violation is counted and printed, never assumed
 //!   away.
@@ -314,9 +313,7 @@ struct D18Mirror {
 ///   would measure a stream production does not certify — d65's rule ("the same
 ///   defect class is enforced at different layers"). It refuses the stream.
 ///
-/// Ported from `bench_real_d96.rs`, where the rule was Codex round-1 finding
-/// `019fa530-c013-74a2-b717-31f8e89e8639` and its over-reach was round-2 finding
-/// `019fa53d-daf5-7810-a470-aeeb710e8166`. **This function applies ONLY the checks
+/// **This function applies ONLY the checks
 /// the fold does not make**, which is the whole of its licence to refuse a stream:
 /// a payload shorter than 20 bytes is the FOLD's refusal too
 /// (`world_fold.rs:14155`), the recorder tolerates that refusal, and the hour is
@@ -364,8 +361,7 @@ impl D18Mirror {
         // header: the fold notes the failure and returns `Ok` **without reading
         // the body at all**, leaving the roster and the KNOWN flag unchanged.
         // This is the PLAIN failure predicate, which is what the recorder's d18
-        // fold uses — not d92's tolerance-aware one. Codex round-3 finding on the
-        // d96 port (thread 019fa548-5e33-7061-9236-5c7151f92098): walking the rows
+        // fold uses — not d92's tolerance-aware one. Walking the rows
         // first misclassified a failure-status record with an unwalkable body as
         // an unparseable one, contradicting the fold's own non-folding-path
         // classification.
@@ -656,11 +652,9 @@ struct D92Hour {
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences:
-/// the 48-hour block cadence (every block opens with its own baseline, §1.5's
-/// closing paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap
-/// affecting the state part forces the next state observation to be a
-/// `BASELINE`." Every hour this domain did not successfully sample is such a
+/// Two reasons: the 48-hour block cadence and a capture gap.
+/// State after a gap to resume from a
+/// complete baseline. Every hour this domain did not successfully sample is such a
 /// gap — each excluded-hour reason, and any non-contiguous hour step — and
 /// d92's cadence is hourly, so a measured hour that does not follow the
 /// previous measured one by exactly one is preceded by one. Neither a delta
@@ -669,15 +663,14 @@ fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay over both collections. Factored out of `main` so the
 /// tests execute the PRODUCTION encode path over a scanned stream: a mutant
 /// that reverts the baseline decision here to block-position-only fails the
-/// gap test (a Codex round-1 finding — the earlier tests exercised the
 /// decision function but not this callsite).
 struct WireHourOutcome {
     opened_baseline: bool,
-    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    /// The baseline sits outside a scheduled block start — gap-forced.
     gap_forced: bool,
     emitted: bool,
     bytes: usize,
@@ -697,7 +690,7 @@ fn encode_wire_hour(
     wire: &mut Vec<u8>,
 ) -> WireHourOutcome {
     let hour_start = wire.len();
-    // BASELINE at each block start — and at every §1.5 gap, which forces a
+    // BASELINE at each block start — and at every capture gap, which forces a
     // fresh baseline and restarts the delta chain (`opens_baseline`).
     let block_start = opens_baseline(hours_seen, follows_previous);
     let gap_forced = block_start && hours_seen % BLOCK_HOURS != 0;
@@ -811,7 +804,7 @@ struct StreamScan {
     hours: Vec<D92Hour>,
     counts: ScanCounts,
     /// The `tactic_id` vocabulary of the whole stream, frozen before any record
-    /// is mapped (§5).
+    /// is mapped (content-identity contract).
     symbols: Symbols,
     /// Every `(tactic_database_id, tactic_id)` pair observed, for the global
     /// stability report. Reported, never relied on.
@@ -841,7 +834,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // against every closed game hour — see the checks after the EOF rules. The
     // d18 lane is also tracked PER HOUR: aggregate counts alone would accept a
     // compensating duplicate (two d18 records in one hour, none in another)
-    // whose totals still match (a Codex round-1 finding).
+    // whose totals still match.
     let mut d92_records = 0usize;
     let mut d18_records = 0usize;
     let mut closed_hours = 0usize;
@@ -1036,7 +1029,6 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 // and `country_identity_known_this_hour` stays clear, so the
                 // hour's d92 record then takes its "no proven D18 record" path
                 // and is an EXCLUDED HOUR. Returning `Err` here would refuse a
-                // stream the recorder accepts, which is its own defect (round-1
                 // review finding).
                 //
                 // It is still never silent: the reason is retained and printed,
@@ -1137,7 +1129,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 continue;
             }
 
-            // Measured. Everything below is reporting, plus the §5 vocabulary.
+            // Measured. Everything below is reporting, plus the content-token vocabulary.
             let follows_previous =
                 last_measured_hour.is_some_and(|previous| header.game_hour_raw == previous + 1);
             if last_measured_hour.is_some() && !follows_previous {
@@ -1240,7 +1232,6 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     }
     // Both an aggregate and a PER-HOUR coverage check, because aggregate counts
     // alone would accept a compensating duplicate — two d18 records in one hour
-    // and none in another — whose totals still match (Codex round-1 finding).
     if d18_records != 0 && (d18_records != closed_hours || d18_covered_hours != closed_hours) {
         return Err(format!(
             "stream closes {closed_hours} game hour(s) but carries {d18_records} d18 DATA \
@@ -1250,7 +1241,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         ));
     }
 
-    // §5: the table is complete before any record is mapped, and never grows
+    // content-identity contract: the table is complete before any record is mapped, and never grows
     // afterwards. Pass 2 walks exactly these spans with exactly this
     // `split_payload`, so it cannot need a symbol this pass did not see.
     let symbols = Symbols::from_vocabulary(vocabulary);
@@ -1455,7 +1446,7 @@ fn main() {
         scan.counts.rowless_records
     );
     println!(
-        "tactic symbols       {} (§5 vocabulary, frozen before mapping)",
+        "tactic symbols       {} (frozen before mapping)",
         scan.symbols.len()
     );
     println!(
@@ -1476,7 +1467,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
-         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+         {gap_forced_baselines} forced by a state gap)",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1636,7 +1627,7 @@ mod tests {
     /// The claim pass 1 rests on: a vocabulary built from a payload through
     /// `tokens_in_payload` resolves EVERY row of that payload through
     /// `record_from_row`. Both walk the same `split_payload`, so pass 2 can never
-    /// need a symbol pass 1 did not see — which is what makes §5's "no in-stream
+    /// need a symbol pass 1 did not see — which is what makes content-identity contract's "no in-stream
     /// interning" a property of this harness rather than a hope.
     #[test]
     fn the_symbol_table_covers_every_token_in_the_stream() {
@@ -1718,7 +1709,6 @@ mod tests {
             assert_eq!(d18.roster, roster_before, "no partial roster at cut {cut}");
         }
         // A trailing byte the fold's exact-length check rejects (`:14142`). This
-        // is the round-1 reviewer's own input: it is read as a truncated CIM1
         // extension, and the recorder tolerates it.
         let mut long = d18_payload(&[(2, "BBB")], 0);
         long.push(0);
@@ -1739,8 +1729,6 @@ mod tests {
 
     #[test]
     fn a_d18_record_whose_changed_rows_exceeds_row_count_refuses_the_stream() {
-        // Ported from `bench_real_d96.rs`, where this was Codex round-1 finding
-        // 019fa530-c013-74a2-b717-31f8e89e8639 and the same gap was then flagged
         // here for a sweep. `fold_country_identity` never reads the word, so the
         // mirror folded such a record normally and the hour was measured — while
         // production's status-independent d18 authority rejects it
@@ -1787,8 +1775,7 @@ mod tests {
         }
         // A payload too short to carry the word is NOT this helper's business:
         // the fold refuses it and the recorder tolerates that refusal, so it must
-        // fall through to the mirror rather than refusing the stream (d96 round-2
-        // finding, thread 019fa53d-daf5-7810-a470-aeeb710e8166). Swept over every
+        // fall through to the mirror rather than refusing the stream across every
         // length the word could straddle.
         for len in 0..20usize {
             assert!(
@@ -1809,8 +1796,6 @@ mod tests {
 
     #[test]
     fn a_failure_status_d18_record_is_classified_by_the_fold_not_by_its_body() {
-        // Ported from `bench_real_d96.rs`, Codex round-3 finding
-        // 019fa548-5e33-7061-9236-5c7151f92098, whose exact input this carries: a
         // 20-byte d18 payload claiming `row_count = 1` with no row body at all,
         // under a failure status. `fold_country_identity` checks the status
         // immediately after the header and returns `Ok` WITHOUT reading the body
@@ -1968,8 +1953,8 @@ mod tests {
 
     #[test]
     fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." An excluded d92 hour
+        // A complete
+        // baseline after a gap. An excluded d92 hour
         // (here: a roster-uncovered record) is such a gap — the next measured
         // hour must clear `follows_previous`, and `opens_baseline` must open a
         // baseline on it wherever it lands in a block. A delta would relate two
@@ -2149,7 +2134,6 @@ mod tests {
 
         // A COMPENSATING duplicate — two d18 records in hour 100, none in hour
         // 101 — leaves the aggregate count equal to the closed hours and is
-        // caught only by the per-hour coverage check (Codex round-1 finding).
         let d18 = d18_payload(&[(1, "AAA")], 0);
         let mut s = Vec::new();
         push_record(&mut s, 1, 100, D18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &d18);
@@ -2198,8 +2182,6 @@ mod tests {
         // This test used to assert the defect: that a failure-status d18 record
         // with a malformed body is an `Err` from the mirror, because "production's
         // payload authority is status-independent". Two separate things were
-        // conflated, and the d96 port's round-3 review separated them
-        // (thread 019fa548-5e33-7061-9236-5c7151f92098). The authority's
         // status-independence decides what the harness must REPORT; the FOLD's own
         // order — status immediately after the header, `Ok` without reading the
         // body (`world_fold.rs:14158`-`:14164`) — decides how the record is

@@ -3,9 +3,9 @@
 //! assigned divisions, and the complete registered `COrdersGroup` census that
 //! authenticates the orders' typed owners.
 //!
-//! Derived from `world_fold.rs:28455`-`:28556`
+//! Derived from `world_fold.rs:28425`-`:28526`
 //! (`fold_army_battleplans_depth`, dispatched at `:4729`), its payload decoder
-// @world-fold-authority domain=54 functions=fold_army_battleplans_depth lines=28455-28556 sha256=5ee0c69ae21271799ce50e86479fb049f7e1c3e3b033533829c6a9173fcc1c50 closure=94466c3d24ae43f4b88e75456db69cdd505b19dad47fa5bdadd4202cddb0661a
+// @world-fold-authority domain=54 functions=fold_army_battleplans_depth lines=28425-28526 sha256=5ee0c69ae21271799ce50e86479fb049f7e1c3e3b033533829c6a9173fcc1c50 closure=ca94f244bbfe691c09d82542106cd7e98591c90f3a432059b98a61dab2d3ae8b
 //! `decode_army_battleplans_depth_payload` (`world_fold.rs::decode_army_battleplans_depth_payload`), the accumulator
 //! types at `:23877`-`:23917` and their JSON projection (`:8282`-`:8414`), the
 //! shipping row grammar in
@@ -61,7 +61,7 @@
 //!
 //! | offset | width | header word | enforced by [`split_payload`] |
 //! |---|---|---|---|
-//! | `+0`  | u64 | `elapsed_wall_ms`                | parsed, never enforced (frame-level scalar, §13) |
+//! | `+0`  | u64 | `elapsed_wall_ms`                | parsed, never enforced (frame-level scalar, codec-measurement contract) |
 //! | `+8`  | u32 | `row_count`                      | table arithmetic |
 //! | `+12` | u32 | `changed_rows`                   | `<= row_count` (`lane lib.rs:853`-`:857`) |
 //! | `+16` | u32 | `status_flags`                    | classification input |
@@ -168,7 +168,7 @@
 //!   of the capture's 1,207 distinct order keys are serialized more than once, and
 //!   287 of the 616 path observations are repeat observations of a key already
 //!   seen — and the ordinal is scoped inside that key rather than standing on its
-//!   own. And `WIRE_FORMAT.md` §7.3 names its ordered-shape instances
+//!   own. The existing ordered-shape instances
 //!   by name — d11's deployment queue, d56's naval supremacy, d64's delayed events
 //!   — and does **not** name d54, so nothing is binding by name here.
 //!   Stopping would drop every waypoint of every plan, which is the domain's
@@ -194,13 +194,13 @@
 //!
 //! * `order_type != ORDER_TYPE_AREA_DEFENSE` returns `(vec![], None, UNSUPPORTED)`
 //!   (`:355`-`:357`). A non-area-defence order has no type-5 target list and no
-//!   declared size for one: the concept is unsupported by the row, which is §3's
+//!   declared size for one: the concept is unsupported by the row, which is record-state contract's
 //!   **absent**.
 //! * every other `None` comes from `read_u32_vector`'s error arms — an address
 //!   overflow, an unreadable `begin` or `size`, a count past `MAX_CHILD_ROWS` or
 //!   `MAX_INLINE_CHILD_ROWS` — and carries `VALIDATION_FAILED` or `OVERFLOW`
 //!   (`lane lib.rs:1150`-`:1183`). The engine holds a size; this sample could not
-//!   read or accept it. That is §3's **unknown**.
+//!   read or accept it. That is record-state contract's **unknown**.
 //! * a set gate is always a real value, including a real **zero**: `count == 0`
 //!   returns `Ok((vec![], 0))` (`:1163`-`:1165`), so an empty target list under a
 //!   set gate is measured emptiness.
@@ -266,8 +266,8 @@
 //! | `OGS1` v2 | present, `owner_identities_complete = true` | measured | measured |
 //!
 //! Without the singleton, "no manager this hour" and "a measured empty census"
-//! would be the same bytes — the `(domain, part)` gap scope §8 does not have
-//! (`WIRE_FORMAT.md` §13, d17's war graph). With it, the distinction is in band
+//! would be the same bytes — the `(domain, part)` gap scope gap contract does not have
+//! (d17's war graph). With it, the distinction is in band
 //! and costs two bytes an hour.
 //!
 //! # Coverage caveats — what `runs/batch3/deepwar_a` never exercised
@@ -326,7 +326,7 @@ pub const ORDERS_GROUP_ARMIES: u32 = 6;
 /// One row per registered `CArmyGroup` id. Key-only.
 pub const ORDERS_GROUP_ARMY_GROUPS: u32 = 7;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// They are unique across the whole domain, not merely within a collection, so a
 /// misrouted record cannot silently land on a same-numbered field elsewhere.
 pub mod field {
@@ -438,7 +438,7 @@ pub const STATUS_OVERFLOW: u32 = 4;
 pub const STATUS_VALIDATION_FAILED: u32 = 5;
 pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
 pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
-/// §4 cardinality for every status field: codes `0..=7`.
+/// schema-kind contract cardinality for every status field: codes `0..=7`.
 pub const STATUS_CARD: u32 = 8;
 
 /// `orders_group_live::ORDER_OWNER_KIND_ARMY` / `_ARMY_GROUP` (`:46`-`:47`).
@@ -458,10 +458,8 @@ pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 /// collector-side read bounds (`MAX_CHILD_ROWS`, `MAX_INLINE_CHILD_ROWS`) never
 /// reach a payload and are named in the docs instead.
 ///
-/// Both id bounds were `65_535`, a guess; both are now their own id space's
-/// STRUCTURAL width (`claim_39c989ce13504504353c`,
-/// `claim_347234c20a542ca79032`; dossier `runs/ia_province_caps/SWEEP.md`).
-/// The COUNT bounds named above deliberately did NOT move with them — they
+/// Both id bounds use the structural width of the signed ids accepted here.
+/// The count bounds named above deliberately do not move with them — they
 /// bound reads, not identities.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
@@ -528,7 +526,7 @@ pub fn schema() -> Schema {
         // The fold's own key persists across hours — 96 of the capture's 329
         // distinct order keys are observed more than once, one of them 24 times
         // — which is what a keyed set needs, and only a keyed set has a delta
-        // grammar (§7.3).
+        // grammar (collection-shape contract).
         shape: Shape::KeyedSet,
         fields: vec![
             // `ArmyBattleplanDepthKey` (`world_fold.rs:23877`-`:23883`). All four
@@ -584,7 +582,7 @@ pub fn schema() -> Schema {
                 f::TS_ORDINAL,
             );
             // A state id is content-defined: state 1234 is whatever state the mod
-            // set defines, so a manifest must resolve it (§5, d20's province
+            // set defines, so a manifest must resolve it (content-identity contract, d20's province
             // precedent). A `ContentId` **value**, not a key — the ordinal is the
             // key, so the heavier ContentId-key retrofit class does not apply here.
             fields.push(Field::new(f::TS_STATE_ID, Kind::ContentId));
@@ -1378,7 +1376,7 @@ fn check_collection(collection: &Collection, expected: u32) -> core::result::Res
 /// stored Record. `row` is the raw 88-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); d54 has exactly one order
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input; d54 declares no derived field, so it
+/// `frame_tick` is derived-field contract's derived-field input; d54 declares no derived field, so it
 /// is taken and ignored — every domain's mapper has the same shape.
 ///
 /// A **deleted** row is a tombstone and has no record: it removes its key from
@@ -1830,7 +1828,7 @@ fn collection_of(schema: &Schema, id: u32) -> core::result::Result<&Collection, 
         .ok_or_else(|| format!("d54 schema has no collection {id}"))
 }
 
-/// Every `ContentId` field in this domain, for §13's manifest-id retrofit sweep.
+/// Every `ContentId` field in this domain, for the ContentId retrofit sweep.
 ///
 /// Both are `ContentId` **values**, not key components, so the heavier
 /// ContentId-key retrofit class (a manifest remap reorders keys and changes the
@@ -2112,7 +2110,7 @@ mod tests {
 
     #[test]
     fn the_schema_hash_is_stable() {
-        // §11's canonical bytes; a changed hash means a changed grammar.
+        // canonical schema bytes; a changed hash means a changed grammar.
         assert_eq!(schema().schema_hash(), schema().schema_hash());
         assert_eq!(schema().collections.len(), 7);
     }
@@ -2434,7 +2432,7 @@ mod tests {
         // Step 8.3: every capability the schema declares gets its own raw-bytes
         // case, and a collection that declares none says so. Here exactly one
         // field is `.optional().unknown_capable()` and NOTHING anywhere is
-        // `.nullable()` — the fold never emits a §3 null for this domain, and
+        // `.nullable()` — the fold never emits a record-state contract null for this domain, and
         // declaring one would cost a null bitmap bit for a state no input can
         // produce.
         let s = schema();
@@ -3013,7 +3011,7 @@ mod tests {
 
     #[test]
     fn every_content_id_field_is_listed_for_the_manifest_retrofit() {
-        // The §5 assignment exists; listing the fields is what lets the
+        // The content-identity contract assignment exists; listing the fields is what lets the
         // pending mapper-retrofit sweep find them, and asserting the
         // list is what tells "checked" from "not checked" (d35's rule).
         let s = schema();

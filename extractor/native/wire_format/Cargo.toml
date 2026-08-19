@@ -2,7 +2,7 @@
 name = "wire_format"
 version = "0.1.0"
 edition = "2021"
-description = "Reference implementation of extractor/documents/WIRE_FORMAT.md: primitives, records, frames and schemas for the rebuilt replay stream. Golden vectors live beside the code and are the byte-identity gate."
+description = "Primitives, records, frames, and schemas for the rebuilt replay stream. Golden vectors live beside the code and are the byte-identity gate."
 
 [dependencies]
 blake3 = "1"
@@ -10,8 +10,7 @@ blake3 = "1"
 # shipping framing/status/stream contract; production library code may use only
 # d81's `compact_contract::rail_replay` payload authority and the shared status
 # predicates needed to preserve its fold order. No other production codec is
-# admitted without updating this allow-list and DOMAIN_SCHEMA_RECIPE.md under
-# adversarial review. The allow-list is enforced by
+# admitted without updating this allow-list under adversarial review. It is enforced by
 # tests/compact_contract_dependency_policy.rs.
 # production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure
 # `compact_contract` has no normal dependencies, so the

@@ -1,10 +1,9 @@
-//! Durable append-only journal (`auto_attach_journal.jsonl`), design §8.
+//! Durable append-only journal (`auto_attach_journal.jsonl`).
 //!
 //! One flushed record is written BEFORE each externally-visible action, so a
 //! hard kill at any point leaves a replayable trail. On startup the journal is
-//! replayed to reconcile every nonterminal identity with live processes /
-//! worker leases (design §8, gate 10). Raw SID and pipe tokens are never
-//! written — only their hashes (design §8).
+//! replayed to reconcile every nonterminal identity with live processes and
+//! worker leases. Raw SID and pipe tokens are never written, only their hashes.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -16,7 +15,7 @@ use snapshot::sha256::{to_hex, Sha256};
 use super::identity::ProcessKey;
 use super::state::{CandidateState, ReasonCode};
 
-/// One journal record. Fields mirror the design §8 schema. Optional fields are
+/// One journal record. Optional fields are
 /// omitted (not null) when absent so a naive reader never mistakes a missing
 /// value for a real one.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +27,7 @@ pub struct JournalRecord {
     pub pid: u32,
     pub process_creation_filetime: u64,
     pub process_session_id: Option<u32>,
-    /// SHA-256 hex of the user SID. NEVER the raw SID (design §8).
+    /// SHA-256 hex of the user SID. NEVER the raw SID.
     pub process_user_sid_hash: Option<String>,
     pub exe_path: Option<String>,
     pub exe_sha256: Option<String>,
@@ -40,7 +39,7 @@ pub struct JournalRecord {
     pub staging_dir: Option<String>,
     pub run_dir: Option<String>,
     pub session_id: Option<String>,
-    /// SHA-256 hex of the pipe token. NEVER the raw token (design §8).
+    /// SHA-256 hex of the pipe token. NEVER the raw token.
     pub pipe_token_hash: Option<String>,
     pub first_observed_hour: Option<i64>,
     pub last_attempted_hour: Option<i64>,
@@ -54,8 +53,8 @@ pub struct JournalRecord {
 }
 
 impl JournalRecord {
-    // v2 makes the predecessor/head hashes mandatory. Legacy v1 recovery fails
-    // closed instead of silently treating an unauthenticated history as proof.
+    // Predecessor/head hashes are mandatory. Records without them fail closed
+    // instead of being treated as authenticated proof.
     pub const SCHEMA: &'static str = "auto_attach_journal.v2";
 
     /// Minimal constructor for a state-transition record; optional evidence is
@@ -683,8 +682,8 @@ pub struct RecoveredIdentity {
     pub staging_dir: Option<PathBuf>,
 }
 
-/// Fold a journal's records into the last-known state per identity (design §8
-/// "replay the journal and reconcile every nonterminal identity").
+/// Fold a journal's records into the last-known state per identity so every
+/// nonterminal identity can be reconciled.
 pub fn recover(records: &[JournalRecord]) -> Vec<RecoveredIdentity> {
     use std::collections::BTreeMap;
     let mut recovered: BTreeMap<

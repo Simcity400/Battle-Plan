@@ -1,11 +1,11 @@
-//! The `.battleplan` container READER (HOI4REPLAY_CONTAINER_SPEC.md).
+//! The `.battleplan` container reader and wire-contract implementation.
 //!
 //! Opens a portable recording, validates its manifest + integrity + identity, and
 //! serves the snapshot series through the SAME shapes the directory store uses
 //! ([`crate::Index`], [`crate::Snapshot`]), so the app opens a `.battleplan` with
 //! zero changes elsewhere ([`crate::Store`] dispatches to this transparently).
 //!
-//! Verification is STAGED (spec §4). Open validates ZIP structure and caps,
+//! Verification is staged. Open validates ZIP structure and caps,
 //! the manifest digest/signature, versioned path rules, and the required
 //! `index.json`/`timeline.json` spine. Per-entry CRC, size, and SHA-256 checks
 //! happen lazily in the same bounded pass that supplies a requested payload.
@@ -30,18 +30,19 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Highest container version this reader understands. Bumped 1 -> 2 for stitched
 /// (reload/relaunch) archives, which carry the segment/timeline graph
-/// (`STITCHING_DESIGN.md` §9). A reader still rejects any version ABOVE this, and
+/// (the `PROJECT.md` heading "Portable boundary"). A reader still rejects any
+/// version ABOVE this, and
 /// a pre-bump (v1-max) reader rejects a v2 stitched archive rather than silently
 /// hiding its rollback graph.
 pub const MAX_CONTAINER_VERSION: u64 = 2;
 /// The container version at/above which the stitched segment feature is mandatory.
 const STITCHED_CONTAINER_VERSION: u64 = 2;
-/// The required feature a stitched (v2) container must declare (§9).
+/// The required feature a stitched (v2) container must declare.
 const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
 const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
 const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
 const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
-/// Zip-bomb structural caps (spec §4.1). Generous for a real campaign yet bounded.
+/// Zip-bomb structural caps. Generous for a real campaign yet bounded.
 pub(crate) const MAX_ENTRIES: usize = 2_000_000;
 pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
 static SPOOL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -963,8 +964,8 @@ pub struct Container {
     /// matching the historical first-match scan) so per-hour lookup is O(log n)
     /// instead of a linear index scan per scrub step.
     hour_to_file: BTreeMap<i64, String>,
-    /// Every snapshot file name an INDEX authorizes (spec §4.3: the index is the
-    /// filename authority): the main index's `file` names plus, for a stitched
+    /// Every snapshot file name an index authorizes. The index is the filename
+    /// authority: the main index's `file` names plus, for a stitched
     /// container, every per-segment-index retained snapshot — superseded
     /// rollback files stay loadable by explicit name, while manifest-listed
     /// non-index entries (segments.json, stray payloads) never decode as a
@@ -1115,7 +1116,7 @@ impl Container {
         // not otherwise materialize, including embedded raw sources.
         archive.validate_local_headers()?;
 
-        // structural zip-bomb caps (spec §4.1, step 10)
+        // Structural zip-bomb caps.
         if archive.len() > MAX_ENTRIES {
             return Err(ContainerError::Reject(format!(
                 "too many entries ({} > {})",
@@ -1214,7 +1215,7 @@ impl Container {
 
         // Historical container v1 used the ASCII-only collision namespace.
         // A stitched v2 container or the current portable-content-v2 feature
-        // opts into spec section 4.2's NFC plus Unicode-caseless identity. The
+        // opts into NFC plus Unicode-caseless identity. The
         // explicit feature keeps new ordinary (non-stitched) v1 packages strict
         // while preserving pre-feature recordings byte-for-byte.
         let unicode_paths = cv >= STITCHED_CONTAINER_VERSION
@@ -1223,7 +1224,7 @@ impl Container {
                 .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
         archive.validate_portable_paths(unicode_paths)?;
 
-        // (7b) version<->feature coupling (§9): a stitched container declares
+        // Version-to-feature coupling: a stitched container declares
         // container_version 2 AND required feature `timeline_segments_v1`. A v2+
         // container WITHOUT that feature is malformed — reject fail-closed so a
         // tampered manifest cannot advertise the segment format while omitting the
@@ -1235,7 +1236,7 @@ impl Container {
         {
             return Err(ContainerError::Reject(format!(
                 "container_version {cv} must declare required feature \
-                 {FEATURE_TIMELINE_SEGMENTS_V1:?} (stitched-format coupling; §9)"
+                 {FEATURE_TIMELINE_SEGMENTS_V1:?} (stitched-format coupling)"
             )));
         }
         if cv < STITCHED_CONTAINER_VERSION
@@ -1303,13 +1304,13 @@ impl Container {
             Some(_) => {
                 return Err(ContainerError::Reject(
                     "manifest.signature present but no signature-verification policy is \
-                     configured in this reader build (fail-closed; spec §3.2)"
+                     configured in this reader build (fail-closed)"
                         .into(),
                 ));
             }
         };
 
-        // identity expectations (spec §4.1 step optional / §2)
+        // Manifest identity expectations.
         let schema_version = manifest.get("schema_version").and_then(Value::as_str);
         if let Some(exp) = &expected.schema_version {
             if schema_version != Some(exp.as_str()) {
@@ -1473,8 +1474,8 @@ impl Container {
             indexed_snapshot_files.extend(retained);
         }
 
-        // (12) verify + parse timeline.json now if it is declared (spec §4.1
-        // step 12): a malformed or duplicate-key timeline must be an open-time
+        // Verify and parse timeline.json now if it is declared: a malformed or
+        // duplicate-key timeline must be an open-time
         // refusal, never a later consumption-time surprise.
         let timeline_path = format!("payload/{game_id}/timeline.json");
         if by_path.contains_key(&timeline_path) {
@@ -1506,7 +1507,7 @@ impl Container {
                     });
                 }
             }
-            // Same principle for the build identity (spec §2): the manifest's
+            // Same principle for the build identity: the manifest's
             // build.exe_sha256 must not contradict what the snapshots recorded.
             // Absence on either side is a measured absence and passes.
             for (label, snap_sha) in [
@@ -1564,7 +1565,7 @@ impl Container {
     /// Load a snapshot by its index `file` name (the only filename authority).
     /// Verifies the entry's hash lazily; never exposes unverified bytes (Codex d).
     pub fn load_file(&self, file: &str) -> Result<Snapshot, ContainerError> {
-        // Spec §4.3 step 1: the index (main index, plus per-segment indexes for
+        // The index (main index, plus per-segment indexes for
         // a stitched container's retained rollback snapshots) is the filename
         // authority for snapshot reads. Refuse to decode a manifest-listed
         // non-index entry (e.g. segments.json or a stray JSON payload) as a
@@ -1854,7 +1855,8 @@ impl Container {
 
     /// The stitched branch graph (`segments.json`), verified and parsed, or `None`
     /// when this is a plain (non-stitched) container. The graph is the
-    /// authoritative rollback/branch map (`STITCHING_DESIGN.md` §7.2); the main
+    /// authoritative rollback/branch map (the `PROJECT.md` heading
+    /// "Time, identity, sessions, and files"); the main
     /// `index()` remains the default-playback view.
     pub fn segments(&self) -> Result<Option<SegmentGraph>, ContainerError> {
         let path = format!("payload/{}/segments.json", self.game_id);
@@ -1954,8 +1956,7 @@ impl Container {
     /// The granularity of a verdict is the granularity of the damage it can
     /// isolate. `verify_all_streaming` above answers one question about the
     /// whole container, so a single flipped byte anywhere in it refuses
-    /// everything — measured on the real retained capture `t48_authoritative`
-    /// (lane GQ, cell g1). A recording that publishes a PER-HOUR coverage map
+    /// everything. A recording that publishes a per-hour coverage map
     /// needs the container gate to answer at the same resolution, or the map's
     /// own verifiability is coarser than the map.
     ///
@@ -1998,8 +1999,7 @@ impl Container {
     /// The game hour a container entry serves, when the verified index names
     /// one. Snapshot entries are per-hour by construction; the certified cache
     /// and index are not, and correctly report `None` — a cache-only recording
-    /// has no finer granularity than its cache, which is why cell (g1) stays a
-    /// whole-container refusal (see `runs/gy_per_hour_seal/MATRIX.md`).
+    /// has no finer granularity than its cache and must be refused as a whole.
     fn hour_index_served_by(&self, path: &str) -> Option<i64> {
         // The index's `file` is a container-relative name that CARRIES its
         // directory — production writes `snapshots/000000000000.snapshot.json`

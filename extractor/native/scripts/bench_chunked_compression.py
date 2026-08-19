@@ -1,10 +1,7 @@
 """Does compressing per hour cost meaningfully more than compressing in blocks?
 
-DOMAIN_CAPTURE_PATTERN.md §5 forbids resetting the compressor every hour. That
-rule is only worth having if the penalty is large, so this reproduces the number
-rather than asserting it. An earlier draft of the spec claimed the penalty was
-"a few percent"; this exists because that was wrong by more than an order of
-magnitude and nobody had measured it.
+This measures the penalty from resetting the compressor every hour rather than
+asserting it.
 
 The model is a domain that re-emits full state hourly while almost nothing
 changes -- the shape ~75 of ~80 domains have today. Run:

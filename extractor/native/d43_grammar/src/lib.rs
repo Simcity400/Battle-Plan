@@ -12,12 +12,9 @@
 //! it, and `market_trade_live_lane::decode_payload` walked it for the gate
 //! tool and wrote it back out through that crate's `encode_*` functions.
 //!
-//! The survey counted **122 independently duplicated layout facts** across
-//! those sites and 16 trailer-magic identifiers for nine magics — the largest
-//! drift surface in the tree (`runs/ko_domain_grammars/survey.md`). That is the
-//! shape that failed for d13 on 2026-08-14: a lane added a tail at the producer
-//! and one reader, two other readers never learned it, and one of them refused
-//! 59 of 59 live records of the domain.
+//! Those independent transcriptions duplicated layout facts and trailer-magic
+//! identifiers, allowing producer and reader grammars to drift. This crate
+//! makes those structural facts single-source.
 //!
 //! # What is grammar here, and what is not
 //!

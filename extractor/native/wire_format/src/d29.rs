@@ -1,15 +1,15 @@
 //! d29 `ships_live` — one row per live ship instance.
 //!
-//! Derived from `world_fold.rs:19945`-`:20056`
+//! Derived from `world_fold.rs:19922`-`:20033`
 //! (`fold_ships`), its payload constants at `:973`-`:974` and `:1039`-`:1045`, the
-// @world-fold-authority domain=29 functions=fold_ships lines=19945-20056 sha256=05578c1403d6463124e9d7f942c571186b2392b2b7926221a917bf067c8d6b11 closure=09ff1dc7c8e0ab5be007a779eb3984cebed0122578f4c7cb5e633af09cdaa01e
+// @world-fold-authority domain=29 functions=fold_ships lines=19922-20033 sha256=05578c1403d6463124e9d7f942c571186b2392b2b7926221a917bf067c8d6b11 closure=fc1e284e1fe4e94ce7cef870c8dc8b7f5c1c2ffe0dcb337ac76b470a746bbbfd
 //! render path that consumes the folded state (`:8620`-`:8634`, `:8539`-`:8573`),
 //! and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:47977`-`:48031`,
 //! `:47449`-`:47473`, `:47550`-`:47568`).
-//! `extractor/documents/domains/d29_ships_live.md` describes the traversal that
-//! finds ships, not the row layout, so the fold and the collector read are the
-//! field-level basis.
+//! `domain-29::Overview` in `extractor/documents/technical_evidence.json`
+//! describes the traversal that finds ships, not the row layout, so the fold
+//! and collector read are the field-level basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_ships`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
@@ -59,7 +59,7 @@
 //! projection out of the boundary and made every consumer re-derive a
 //! denominator the frame already declares.
 //!
-//! **Four states, `WIRE_FORMAT.md` §3.** Three fields are gated, and for all
+//! **Four states.** Three fields are gated, and for all
 //! three a clear gate is a **failed read**, never a relation pointing at nothing
 //! and never an inapplicable concept — so all three are `unknown`, and no field
 //! in this domain is `optional` or `nullable`:
@@ -82,7 +82,7 @@
 //!   (`attach_log.rs:86539`) returns `None` on unreadable memory, a size past
 //!   `MAX_SHIP_DEFINITION_LEN`, an inconsistent capacity, a missing NUL, or a
 //!   non-printable byte, and the caller additionally discards a value that looks
-//!   like a formatted pointer (`:48017`). Every one of those is §3's "applicable,
+//!   like a formatted pointer (`:48017`). Every one of those is record-state contract's "applicable,
 //!   not captured".
 //!
 //! Corroborated empirically: across the 53,970 live rows of
@@ -98,12 +98,12 @@
 //! from its per-country counts. `0` is not a legal tag
 //! (`valid_division_owner_tag_db_id` requires `> 0`, `attach_log.rs:16689`), so
 //! the sentinel is at least unambiguous — but collapsing "unreadable" into
-//! "unowned" is the value-vs-nothing decision §3 explicitly does not delegate to
+//! "unowned" is the value-vs-nothing decision record-state contract explicitly does not delegate to
 //! the fold. This schema keeps them apart. Recorded as an open question.
 //!
-//! **`definition` is a §5 symbol, and it is kept.** §5 names "equipment names"
+//! **`definition` is a content-identity contract symbol, and it is kept.** content-identity contract names "equipment names"
 //! as content-defined and requires that "the stream carries manifest ids as
-//! varints, never text" — that is why §4 has no string kind: text is a
+//! varints, never text" — that is why schema-kind contract has no string kind: text is a
 //! `ContentId`. The field is a real reference into mod-set content (the
 //! recorder already packs a `ship_definitions_static` catalog whose `ship_hulls`
 //! keys are exactly this vocabulary,
@@ -116,9 +116,9 @@
 //! `definition` is a heap string a mod is free to name anything, so deriving one
 //! from the other would be a vanilla-only assumption and exactly the "silently
 //! drop captured data" failure. See [`Symbols`] for how the id is minted and what
-//! §13 will replace.
+//! codec-measurement contract will replace.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; `sunk_convoys` accumulates on events, not on ticks. The mapper still
 //! takes `frame_tick` so every domain's boundary has one shape.
 
@@ -130,7 +130,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 29;
 pub const SHIPS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const INSTANCE_ID: u32 = 1;
     pub const TASK_FORCE_ID: u32 = 2;
@@ -175,11 +175,11 @@ pub const FIXED_SCALE_RAW: u32 = 100_000;
 /// `100_000 == 10^5`, so `Quant::Fixed(5)` is the source's own grid.
 pub const FIXED_SCALE_DIGITS: u8 = 5;
 
-// --- §5 symbols --------------------------------------------------------------
+// --- content-identity contract symbols --------------------------------------------------------------
 
 /// The definition vocabulary, as a symbol table.
 ///
-/// §5: symbol ids are **file-global**, assigned from the content set, and
+/// content-identity contract: symbol ids are **file-global**, assigned from the content set, and
 /// "in-stream interning is forbidden — it must be fully read before any seek".
 /// So the table is an **input** to this boundary, built once from the whole
 /// content set before any record is mapped; it is never grown by the mapper.
@@ -194,13 +194,13 @@ pub const FIXED_SCALE_DIGITS: u8 = 5;
 /// safe for this deliverable:
 ///
 /// - Nothing downstream of the id is computed from its value: `ContentId` is a
-///   plain varint (§4) and the key of this domain is not a `ContentId`, so no
+///   plain varint (schema-kind contract) and the key of this domain is not a `ContentId`, so no
 ///   ordering or delta layout depends on the choice.
 /// - The measurement is invariant to it. Any assignment over a vocabulary of
 ///   fewer than 128 symbols yields a one-byte varint for every row, so the byte
 ///   sizes reported for this domain are the same under the production rule.
 ///
-/// When this mapper is integrated with §5, this type is replaced by the
+/// When this mapper is integrated with content-identity contract, this type is replaced by the
 /// container's manifest resolver and every call site changes with it — the
 /// retrofit the recipe predicts for every `ContentId`-emitting mapper.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -273,13 +273,13 @@ pub fn schema() -> Schema {
         // genuinely mutable state: 34 ships changed task force during the
         // measured capture.
         Field::new(f::TASK_FORCE_ID, Kind::Unsigned).unknown_capable(),
-        // §5: an equipment/hull name is content-defined, so it travels as a
-        // symbol id. See `Symbols` for this mapper's pending §5 retrofit.
+        // content-identity contract: an equipment/hull name is content-defined, so it travels as a
+        // symbol id. See `Symbols` for this mapper's pending content-identity contract retrofit.
         Field::new(f::DEFINITION, Kind::ContentId).unknown_capable(),
         // The engine's ship-category discriminator. `Unsigned`, not `Enum`:
         // `fold_ships` applies **no** bound to it (`:14604` reads the word and
         // stores it verbatim at `:14639`), so an `Enum(n)` would reject a frame
-        // the recorder folds — §4 makes a code `>= n` corrupt. It is also not
+        // the recorder folds — schema-kind contract makes a code `>= n` corrupt. It is also not
         // `ContentId`: like d20's `div_type` it is an engine constant that is
         // identical under every mod set, and stability is not what makes an id
         // content. See the open questions for what would justify an `Enum`.
@@ -289,15 +289,14 @@ pub fn schema() -> Schema {
         // is an int32 over a 100_000 denominator and `10^5` is that grid exactly
         // — lossless, and it recovers the raw word a raw-reading consumer wants
         // without spending `Exact`'s 8 bytes. This is d24's decimal-fixed-point
-        // case, not a precision budget: `Fixed(2)` would round 43% of the
         // capture's strength values and 82% of its experience values.
         Field::new(f::STRENGTH, Kind::Continuous).quant(Quant::Fixed(FIXED_SCALE_DIGITS)),
         Field::new(f::ORGANISATION, Kind::Continuous).quant(Quant::Fixed(FIXED_SCALE_DIGITS)),
         Field::new(f::EXPERIENCE, Kind::Continuous).quant(Quant::Fixed(FIXED_SCALE_DIGITS)),
-        // A lifetime per-ship counter. §4's own worked example says monotone is a
+        // A lifetime per-ship counter. schema-kind contract's own worked example says monotone is a
         // hint and never a validity constraint, naming this very quantity.
         Field::new(f::SUNK_CONVOYS, Kind::Monotone),
-        // The owning country tag — content-defined (§5), the same identity d63
+        // The owning country tag — content-defined (content-identity contract), the same identity d63
         // keys by and d20 classes as `ContentId`. Not a key here, so it is the
         // lighter of the two `ContentId` retrofit classes.
         Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).unknown_capable(),
@@ -312,7 +311,7 @@ pub fn schema() -> Schema {
             // `replace_or_sparse_after_first` (`world_fold.rs:14624`, `:2947`):
             // the first record clears and repopulates, every later one upserts,
             // and a `FLAG_DELETED` row removes. That is a keyed set with a delta
-            // grammar, which is the only shape §7.3 implements anyway.
+            // grammar, which is the only shape collection-shape contract implements anyway.
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -583,18 +582,18 @@ pub fn ship_key(instance_id: u32) -> Key {
 /// `row` is the whole raw row slice — 40 fixed bytes plus the length-prefixed
 /// definition — as [`split_payload`] yields it; d29 has one row form and length
 /// selects nothing, but a row's length is its own and is checked against its
-/// declared string length. `frame_tick` is §6's derived-field input
+/// declared string length. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); d29 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
-/// **`symbols` is the deviation from that shape, and it is deliberate.** §4 has
-/// no string kind because §5 makes text a symbol id, and this domain is the first
+/// **`symbols` is the deviation from that shape, and it is deliberate.** schema-kind contract has
+/// no string kind because content-identity contract makes text a symbol id, and this domain is the first
 /// ported one whose source carries a symbol as *text* rather than as a `u32` a
 /// mapper can pun into a `ContentId`. The recipe already records that every
 /// `ContentId`-emitting mapper gains the production resolver input during its
-/// §5 retrofit; d29 cannot defer the abstraction, so it takes the input now. Dropping the field
+/// content-identity contract retrofit; d29 cannot defer the abstraction, so it takes the input now. Dropping the field
 /// instead would lose captured data, and minting an id inside the mapper would be
-/// the in-stream interning §5 forbids.
+/// the in-stream interning content-identity contract forbids.
 ///
 /// A **tombstone row is not a record** and is rejected here: a `FLAG_DELETED` row
 /// removes its key (`world_fold.rs:14629`) and carries no fields. Callers reach
@@ -634,7 +633,7 @@ pub fn record_from_parsed_row(
     for f in collection.value_fields() {
         let value = match f.field_id {
             // A clear gate is a failed read, not an unlinked ship — see the
-            // module docs. §3 calls that `unknown`.
+            // module docs. record-state contract calls that `unknown`.
             field::TASK_FORCE_ID => {
                 if has_task_force {
                     Value::Unsigned(parsed.task_force_id as u64)
@@ -686,7 +685,7 @@ pub fn record_from_parsed_row(
 }
 
 /// Every definition string one payload carries, for building a [`Symbols`] table
-/// over a whole capture before any record is mapped (§5: fully read first).
+/// over a whole capture before any record is mapped (content-identity contract: fully read first).
 ///
 /// Shares [`split_payload`]/[`parse_row`] rather than re-walking the payload, so
 /// the vocabulary and the records can never disagree about what a row says.
@@ -1000,7 +999,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d29 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d29 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
     }
@@ -1087,7 +1086,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every gate SET and every value zero: a freshly built ship with no
-        // organisation, no experience and no kills. §3 keeps zero out of the
+        // organisation, no experience and no kills. record-state contract keeps zero out of the
         // three empty states. `organisation_raw == 0` and `experience_raw == 0`
         // both occur in the measured capture.
         let c = collection();
@@ -1411,7 +1410,7 @@ mod tests {
 
     #[test]
     fn symbol_ids_do_not_depend_on_the_order_they_were_supplied_in() {
-        // §5 requires the assignment to be a function of the content set. Two
+        // content-identity contract requires the assignment to be a function of the content set. Two
         // callers over the same vocabulary must mint the same ids, or no two
         // files are comparable.
         let a = Symbols::from_vocabulary(["destroyer", "carrier", "submarine"]);
@@ -1443,7 +1442,7 @@ mod tests {
 
     #[test]
     fn every_symbol_id_of_a_realistic_vocabulary_is_a_one_byte_varint() {
-        // Why the measurement does not depend on §13's eventual assignment rule:
+        // Why the measurement does not depend on the eventual manifest-id assignment rule:
         // any assignment over a vocabulary this size encodes in one byte, so the
         // reported sizes are the same under any of them.
         let s = symbols();

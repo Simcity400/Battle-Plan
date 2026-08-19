@@ -2,12 +2,12 @@
 //! the frame-level fold mirror.
 //!
 //! Authority, in the recipe's precedence order:
-//! `world_fold.rs:25053`-`:25270`'s `fold_scripted_state` (dispatched
+//! `world_fold.rs:25026`-`:25241`'s `fold_scripted_state` (dispatched
 //! at `:4726`), its row validator `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), its
 //! accumulator writer `apply_scripted_state_row` (`world_fold.rs::apply_scripted_state_row`) and its clear
 //! `clear_scripted_state_accumulators` (`world_fold.rs::clear_scripted_state_accumulators`). There is no dossier for this
-// @world-fold-authority domain=51 functions=fold_scripted_state lines=25053-25270 sha256=a25fb8448356b23e4b75e48ae1e52ad195bea2388de296f60fa7757be25408fe closure=14145deface4e98f5caa96b48abf3b87f7c40da0871022c08143b1f795404554
-// @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=213-645 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
+// @world-fold-authority domain=51 functions=fold_scripted_state lines=25026-25241 sha256=e92a1ed010a355d572703f77b655f9d358d4d48d2e1fda54be0ccee32b82e2e8 closure=89b565819ecfd6101e3ae8a078d144d1e79fc67983defd76c3e45a74373f92a7
+// @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=212-644 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
 //! (`lanes/scripted_state_flags_variables_live/scripted_state_compact.rs`,
 //! reached from `recorder_host::domain_data_authority:8081`) is production's
@@ -50,9 +50,9 @@
 //!
 //! # `scope_kind` leads the key, and that is load-bearing for the measurement
 //!
-//! §7.4 delta-chains only the FIRST key component; later components are absolute
+//! key-encoding contract delta-chains only the FIRST key component; later components are absolute
 //! varints (`body.rs:88`-`:116`). With `(scope_kind, owner_id, name_symbol)` the
-//! §5 symbol id is never the leading component, so a different symbol assignment
+//! content-identity contract symbol id is never the leading component, so a different symbol assignment
 //! permutes rows only *within* one `(scope_kind, owner_id)` run — it cannot change
 //! the sequence of leading components and therefore cannot change the delta chain.
 //! The whole assignment-sensitivity of the measurement collapses to
@@ -98,7 +98,7 @@
 //!   (`attach_log.rs:44545`-`:44559`, `value: Some(..)`, `date_hour_raw: Some(..)`),
 //!   so a clear gate is a payload the emitter cannot produce and, if one ever
 //!   arrived, would mean the producer did not supply a value that exists in the
-//!   engine — §3's "applicable, not captured". The recipe's tie-break points the
+//!   engine — record-state contract's "applicable, not captured". The recipe's tie-break points the
 //!   same way. Zero coverage in this capture: every one of the 1,959 live flag
 //!   rows sets both gates.
 //! * [`OPAQUE_BADGES`]`::BADGE_KEY` — **Null** on a clear key gate. The fold
@@ -109,7 +109,7 @@
 //! * [`DELAYED_EVENTS`]`::DUE_REMAINING_HOURS` — **Unknown** on a clear gate. The
 //!   collector badges it absent on "an out-of-bounds / torn due read"
 //!   (`scripted_state_domain51_collector.rs:99`-`:107`); an unreadable or
-//!   range-rejected value is §3's unknown, which is d63's ruling and the rule the
+//!   range-rejected value is record-state contract's unknown, which is d63's ruling and the rule the
 //!   recipe says wins over the fold's own "absent" wording.
 //!
 //! # Values that are not fields
@@ -173,7 +173,7 @@ pub const DELAYED_EVENTS: u32 = 5;
 
 pub const COLLECTION_COUNT: usize = 5;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// Unique across the whole domain, not merely within a collection, so a misrouted
 /// record cannot silently land on a same-numbered field elsewhere.
 pub mod field {
@@ -288,8 +288,7 @@ pub const MAX_DELAYED_EVENT_DUE_HOURS: u32 = 500_000;
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID` (`scripted_state_compact.rs:62`) — authority-only, never a
 /// fold bound. Was `65_535`, a guess; now the state id space's STRUCTURAL
-/// width, proven from `ai_theatre_graph.cpp:0x86`
-/// (`claim_39c989ce13504504353c`, dossier `runs/ia_province_caps/SWEEP.md`).
+/// width admitted by `ai_theatre_graph.cpp:0x86`.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_KEY_BYTES` / `MAX_KEY_TABLE_BYTES` (`scripted_state_compact.rs:60`-`:61`)
 /// — authority-only.
@@ -302,13 +301,13 @@ pub const MAX_KEY_TABLE_BYTES: usize = 8 * 1024 * 1024;
 pub const DELAYED_EVENTS_BADGE_KEY: &str = "root_unresolved:delayed_events";
 pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_state";
 
-// --- §5 symbols --------------------------------------------------------------
+// --- content-identity contract symbols --------------------------------------------------------------
 
 /// The scripted key vocabulary, as a symbol table.
 ///
-/// §5: "Country tags, equipment names, province and state ids are
+/// content-identity contract: "Country tags, equipment names, province and state ids are
 /// content-defined. The stream carries manifest ids as varints, never text"
-/// (`WIRE_FORMAT.md:346`-`:351`). A scripted variable or flag name —
+/// A scripted variable or flag name —
 /// `abda_convoy_escort_efficiency`, `sabotaged_coal` — is a mod-set content token
 /// declared in script files, so it travels as a `ContentId` resolved through a
 /// table the caller supplies, and because `ContentId` is a legal key kind
@@ -336,13 +335,13 @@ pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_stat
 /// measurement therefore reports the stand-in's cost **and the exact band** over
 /// all assignments of this vocabulary (`bin/bench_real_d51.rs`), which is
 /// computable precisely because the symbol is never the leading key component —
-/// see the module docs. §5's ids are file-global, so an assignment over the whole
+/// see the module docs. content-identity contract's ids are file-global, so an assignment over the whole
 /// content set can widen the varint further; that is claimed nowhere.
 ///
 /// The badge-key marker strings ([`DELAYED_EVENTS_BADGE_KEY`]) ride the same
 /// table. They are producer constants rather than mod content, and they are
 /// disjoint from the script vocabulary by construction (a `:` cannot occur in a
-/// script name); §4 declares no string kind, so a `ContentId` through this table
+/// script name); schema-kind contract declares no string kind, so a `ContentId` through this table
 /// is the only lossless carrier either way.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
@@ -405,7 +404,7 @@ impl Symbols {
 pub fn schema() -> Schema {
     use field as f;
 
-    // `scope_kind` is `Unsigned`, not `Enum`: §7.4 admits only Unsigned, Signed
+    // `scope_kind` is `Unsigned`, not `Enum`: key-encoding contract admits only Unsigned, Signed
     // and ContentId as key components (`schema.rs:29`-`:31`), and the scope is
     // part of the identity — the same name in the same country and in the world
     // scope are two different rows in two different fold accumulators. It is an
@@ -414,12 +413,12 @@ pub fn schema() -> Schema {
     // `owner_id` is `ContentId`. Its manifest domain is selected by
     // `scope_kind`, which is key component 0 — d28's decide-per-(field, kind)
     // rule, applied to a key: COUNTRY carries a `tag_db_id` and STATE a
-    // `state_id`, and §5 names both as content-defined in as many words, so a
+    // `state_id`, and content-identity contract names both as content-defined in as many words, so a
     // manifest must resolve it for the row to keep its meaning under another mod
     // set (d63's `tag_db_id` key and d52's `state_id` key are the precedents).
     // On GLOBAL the fold hard-enforces `owner_id == 0` (`world_fold.rs::validate_scripted_state_row`),
     // which is the "no owner" sentinel rather than a content reference. This is a
-    // ContentId KEY — the heavier §13 retrofit class — and it is flagged as such
+    // ContentId KEY — the heavier codec-measurement contract retrofit class — and it is flagged as such
     // in the deliverable, twice over: the retrofit needs a scope-selected
     // resolver, not one table.
     let scope_and_owner = |scope_id: u32, owner_id: u32| {
@@ -444,7 +443,7 @@ pub fn schema() -> Schema {
         Field::new(f::NAMED_FLAG_NAME, Kind::ContentId).key(2),
         // Unknown-capable, never optional and never nullable: the concept always
         // applies (a flag has a value and a set-date in the engine), and a clear
-        // gate means the producer did not supply one — §3's "applicable, not
+        // gate means the producer did not supply one — record-state contract's "applicable, not
         // captured". No divisor: the fold stores these verbatim
         // (`ScriptFlagState`, `world_fold.rs:25501`-`:25504`).
         Field::new(f::NAMED_FLAG_VALUE_RAW, Kind::Signed).unknown_capable(),
@@ -492,7 +491,7 @@ pub fn schema() -> Schema {
         Field::new(f::DELAYED_SCOPE_RANDOM, Kind::Unsigned).key(2),
         // Unknown on a clear gate: the collector badges it absent on an
         // out-of-bounds or torn read (`scripted_state_domain51_collector.rs:104`
-        // -`:107`), which is §3's unknown (d63's ruling).
+        // -`:107`), which is record-state contract's unknown (d63's ruling).
         Field::new(f::DELAYED_DUE_REMAINING_HOURS, Kind::Unsigned).unknown_capable(),
     ];
 
@@ -1024,7 +1023,7 @@ fn check_collection(collection: &Collection, expected: u32) -> core::result::Res
 
 /// One `VARIABLES` row onto its stored `Record`.
 ///
-/// `frame_tick` is §6's derived-field input; this domain declares no derived
+/// `frame_tick` is derived-field contract's derived-field input; this domain declares no derived
 /// field, so it is named and ignored — every domain's mapper has one shape.
 pub fn record_from_variable_row(
     collection: &Collection,
@@ -1076,7 +1075,7 @@ pub fn record_from_token_flag_row(
     ]))
 }
 
-/// A clear `VALUE_PRESENT` gate on a flag row is §3's **unknown** — see the module
+/// A clear `VALUE_PRESENT` gate on a flag row is record-state contract's **unknown** — see the module
 /// docs. Carried raw: the fold applies no divisor to a flag value.
 fn flag_value(value_raw: Option<i64>) -> Value {
     match value_raw {
@@ -1092,7 +1091,7 @@ fn flag_date(date_hour_raw: Option<i32>) -> Value {
     }
 }
 
-/// One `OPAQUE_BADGES` row onto its stored `Record`. `symbols` is the §5 resolver
+/// One `OPAQUE_BADGES` row onto its stored `Record`. `symbols` is the content-identity contract resolver
 /// (step 3's typed input): the badge key is text, so there is no raw id to cast.
 pub fn record_from_badge_row(
     collection: &Collection,
@@ -1155,7 +1154,7 @@ pub fn record_from_parsed_row(
 /// because a row's key is a `(offset, len)` slice of the payload's trailing
 /// string table and the row alone cannot resolve it (d35's `RowScales` shape);
 /// `is_delta`, because one row rule is frame-relative ([`parse_row`]); and
-/// `symbols`, §5's resolver (d29's shape).
+/// `symbols`, content-identity contract's resolver (d29's shape).
 pub fn record_from_row(
     collection: &Collection,
     row: &[u8],
@@ -1392,7 +1391,7 @@ fn collection_of(schema: &Schema, id: u32) -> core::result::Result<&Collection, 
 /// Pass 1 of a two-pass harness: the same fold decisions, on the ONE piece of
 /// fold state that decides them, with no symbol resolved.
 ///
-/// §5 forbids in-stream interning — the symbol table "must be fully read before
+/// content-identity contract forbids in-stream interning — the symbol table "must be fully read before
 /// any seek" — so the vocabulary has to be collected over the whole validated
 /// stream before any record is mapped, which means pass 1 cannot call a mapper at
 /// all (d29's rule; `bin/bench_real_d29.rs:458`-`:465` is the worked example).
@@ -2276,7 +2275,7 @@ mod tests {
                 assert_eq!(keys[position].field_id, field_id, "collection {id}");
                 assert_eq!(keys[position].kind, kind, "collection {id}");
                 assert_eq!(keys[position].key_position, Some(position as u32));
-                // §11: a key member is concrete.
+                // schema-identity contract: a key member is concrete.
                 assert!(!keys[position].optional);
                 assert!(!keys[position].nullable);
                 assert!(!keys[position].unknown_capable);
@@ -2308,7 +2307,7 @@ mod tests {
     #[test]
     fn the_content_id_fields_are_exactly_the_swept_set() {
         // "This domain has no ContentId" is a sweep result, not a silence (d35's
-        // rule); so is "these six". When §5's assignment rule lands, every one of
+        // rule); so is "these six". When the manifest-id assignment rule lands, every one of
         // these changes, and the four that are KEY components are the heavier
         // retrofit class.
         let mut content_ids: Vec<(u32, u32, bool)> = Vec::new();

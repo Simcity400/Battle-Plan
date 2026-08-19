@@ -2,7 +2,7 @@
 //! validated against the captured MainScene->RestoreBloom pair.
 //!
 //! Source law (files-first; every stage is cited in
-//! `documents/BLOOM_LAW.md`):
+//! the XMAP10 production modules):
 //!   * `gfx/FX/downsample.shader`  — bright-pass + 2x downsample.
 //!   * `gfx/FX/bloom.shader`       — separable linear-sampled Gaussian blur.
 //!   * `gfx/FX/posteffect_base.fxh`— PostEffectBase constant layout.

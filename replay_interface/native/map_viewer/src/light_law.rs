@@ -7,8 +7,7 @@
 //! intensities. Every field is either (a) a shipped define we reproduce
 //! exactly, (b) a fitted law with residuals against the mined captures, or
 //! (c) an engine-runtime value we read from CB0 and cannot derive from files
-//! (a tracked gap, with the exact capture that would close it named in
-//! `documents/LIGHT_LAW.md`).
+//! (typed unavailable when the required runtime value is absent).
 //!
 //! Sibling of [`crate::water_law`], which owns the water sun/moon *packing*
 //! (`.xwz` swizzle) law. This module owns the *rig* (positions, day/night,
@@ -617,8 +616,7 @@ pub fn validate_lighting_law_against_cb0(cb0: &[u8]) -> Option<LightingLawResidu
 ///
 /// hour24 is DayNight_Hour_SunDir.x * 24. The .y/.z/.w height/latitude
 /// components stay at their file-derived constants (600/848/5000 etc.);
-/// the sun-direction .yzw seasonal drift is date-driven and tracked
-/// separately (LIGHT_LAW.md open item).
+/// the sun-direction .yzw seasonal drift is date-driven and handled separately.
 pub fn virtual_sun_longitude(hour24: f32, map_size_x: f32) -> f32 {
     (map_size_x * (1.0 - hour24 / 24.0)).rem_euclid(map_size_x)
 }
@@ -637,7 +635,7 @@ pub fn virtual_moon_longitude(hour24: f32, map_size_x: f32) -> f32 {
 /// pair — `vSecondVirtualSunPos` rides the *moon* longitude and
 /// `vSecondVirtualMoonPos` rides the *sun* longitude (the fake sun/moon sit on
 /// the opposite side of the globe to hide the wrap seam; measured in
-/// session_FINAL_1 and encoded in `LIGHT_LAW.md`).
+/// session_FINAL_1).
 ///
 /// Only the `.x` lane of each float4 is produced here; the heights/latitudes
 /// (`.y/.z/.w`) are file-exact constants the render must leave untouched.
@@ -658,9 +656,7 @@ pub fn virtual_rig_longitudes_x(hour24: f32, map_size_x: f32) -> [f32; 4] {
 ///
 /// # The finding: `.yzw` is HOUR-INVARIANT (the hour lives entirely in `.x`)
 ///
-/// The prior corpus only ever captured two hours (1 and 16), so `.yzw` looked
-/// like "4 discrete unit vectors" and the `.yzw(hour)` curve was documented
-/// UNKNOWN (`LIGHT_LAW.md` §8 #1). The hour-swept sweep resolves it: **the
+/// The hour-swept sweep establishes that **the
 /// sun-direction vector does NOT rotate with the game hour.** Measured across
 /// all 468 samples:
 /// * `.y` (dir.x) = `0.000000` **exactly**, at every hour.

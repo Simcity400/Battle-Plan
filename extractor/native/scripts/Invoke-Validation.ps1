@@ -316,7 +316,6 @@ function Test-ProductionInteractionInput {
         'extractor/native/scripts/verify_sink_reconciliation.py',
         'extractor/native/scripts/PassiveCapture.Lifecycle.ps1',
         'portable_replay/native/scripts/ProductionArtifact.Attestation.ps1',
-        'extractor/documents/CLIENT_DRIVING_ISOLATION.md',
         'extractor/native/Cargo.toml',
         'extractor/native/Cargo.lock',
         'replay_interface/native/Cargo.toml',

@@ -86,7 +86,7 @@ PROTECTED_BASENAMES = {
     # Entry-point documentation is found by a human opening the directory, or by
     # the forge rendering it. Nothing links to a README for the same reason
     # nothing links to a front door.
-    "readme.md", "readme", "readme.txt", "agents.md", "claude.md",
+    "readme.md", "readme", "readme.txt", "agents.md", "project.md",
 }
 PROTECTED_DIR_PARTS = {".github", ".cargo", ".config"}
 

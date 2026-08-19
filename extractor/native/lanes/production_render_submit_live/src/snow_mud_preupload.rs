@@ -44,9 +44,8 @@ pub struct RawSnowMudTextureObservation {
     /// as `bytes`.
     ///
     /// This is the source the XMAP07 evidence requires, and it is copied here,
-    /// beside the texture, rather than read at promotion time, because
-    /// `PRODUCTION_EVIDENCE.md` asks for the global owner *"at the same
-    /// displayed-hour cutoff as the texture"* — a later read would be a
+    /// beside the texture, rather than read at promotion time, because the
+    /// global owner must use the same displayed-hour cutoff as the texture — a later read would be a
     /// different cutoff. Nothing is validated at copy time; the witness is what
     /// lets `promote_snow_mud_texture_observation` prove, after the bracket,
     /// that the anchor discovery resolved was still the anchor.
@@ -74,16 +73,14 @@ pub struct RawSnowMudTextureObservation {
 /// epoch/hour/QPC joins are checked here before any process-local state is
 /// discarded.
 ///
-/// # The fade source (lane HY, finding HP-F1)
+/// # The fade source
 ///
-/// `rendering_laws/XMAP07/PRODUCTION_EVIDENCE.md:172`–`:182` states the rule:
-/// *"The recorder therefore reads the global owner at the same displayed-hour
-/// cutoff as the texture, **never a reflected draw submit**."* Until this lane
-/// the recorder did the opposite — `fade_receipt.fade_f32_bits` is produced by
+/// The recorder reads the global owner at the same displayed-hour cutoff as the
+/// texture, never from a reflected draw submit. The previous path did the
+/// opposite — `fade_receipt.fade_f32_bits` is produced by
 /// `selected_present_snow_mud_fade_receipt`, which reads `SnowMudFade` out of
-/// each selected-Present draw's REFLECTED constant buffer. HP recorded that as
-/// finding HP-F1 and observed that the offset `0x5ce8` appeared nowhere in
-/// `extractor/`: the passive read did not exist.
+/// each selected-Present draw's REFLECTED constant buffer. A source census for
+/// `0x5ce8` found that the passive read did not exist.
 ///
 /// The observation now carries a passive fade sampled inside the texture's own
 /// bracket (`RawSnowMudTextureObservation::passive_fade_sample`), and that is
@@ -113,8 +110,8 @@ pub fn promote_snow_mud_texture_observation(
         // cache: the chain the recorder discovered is no longer the chain, so
         // the cached anchor must be rediscovered before the next capture.
         // Without this, a map object permanently replaced mid-process would
-        // refuse this hour and then every later one — the recording paying for
-        // one bad hour, which AGENTS.md forbids. Rediscovery itself happens on
+        // refuse this hour and then every later one, violating `PROJECT.md` —
+        // “Loss and coverage”. Rediscovery itself happens on
         // the next map Present, never here and never in a bracket.
         if refusal.reason == map_passive_carriers_live_lane::xmap07::ANCHOR_CHANGED_REFUSAL {
             crate::a729_hook::invalidate_map_render_anchor(raw.passive_anchor_generation);

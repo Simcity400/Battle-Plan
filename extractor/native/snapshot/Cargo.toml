@@ -8,9 +8,6 @@ description = "Forward-compatible READ-ONLY reader for the replay snapshot store
 autobins = false
 
 [features]
-# Passthrough for the Lane DQ H4CP v3 prototype instrument. Never on by default;
-# no production binary in this package enables it.
-dq-v3-prototype = ["portable_replay_format/dq-v3-prototype"]
 default = []
 # The `ce-cache-anatomy` and `dq-v3-prototype` passthroughs that stood here were
 # the only thing in this workspace that enabled the same-named
@@ -42,24 +39,16 @@ windows-sys = { version = "0.61", features = [
     "Wdk_Storage_FileSystem",
 ] }
 
-# The bin sources live in the NEUTRAL layer next to the implementation they
-# drive (portable_replay/native/snapshot/src/bin). They were moved there so the
+# The packer source lives in the NEUTRAL layer next to the implementation it
+# drives (portable_replay/native/snapshot/src/bin). It lives there so the
 # replay-side pathname-capability audit
 # (`replay_interface/native/replay_core/src/source.rs::production_sources_have_no_descendant_pathname_read`)
-# can scan them without
-# reaching across the boundary into extractor/. They are still declared here so
+# can scan it without reaching across the boundary into extractor/. It remains
+# declared here so
 # the centralized Release keeps emitting `.cargo-target/release/pack_replay.exe`
 # for the `container_verify` production-artifact role, and so every existing
 # `cargo run -p snapshot --bin pack_replay ...` invocation is unchanged.
 
 [[bin]]
-name = "m0_demo"
-path = "../../../portable_replay/native/snapshot/src/bin/m0_demo.rs"
-
-[[bin]]
 name = "pack_replay"
 path = "../../../portable_replay/native/snapshot/src/bin/pack_replay.rs"
-
-[[bin]]
-name = "container_codec_bench"
-path = "../../../portable_replay/native/snapshot/src/bin/container_codec_bench.rs"

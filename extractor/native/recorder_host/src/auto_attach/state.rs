@@ -1,14 +1,13 @@
-//! The per-identity attach state machine (design §4).
+//! The per-identity attach state machine.
 //!
-//! Each detected `(pid, creation_filetime)` gets its own `CandidateState`. The
-//! states and their legal transitions are exactly the table in the design; this
-//! module encodes them as data so the coordinator cannot silently invent an
-//! illegal jump (e.g. reaching `Recording` without a heartbeat, which the
-//! self-refutation section calls out as the original bug class).
+//! Each detected `(pid, creation_filetime)` gets its own `CandidateState`. This
+//! module encodes the legal transitions as data so the coordinator cannot
+//! silently invent an illegal jump, such as reaching `Recording` without a
+//! heartbeat.
 
 use std::fmt;
 
-/// The lifecycle states from design §4. Ordered roughly by progress; terminal
+/// Lifecycle states ordered roughly by progress; terminal
 /// states are grouped at the end.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum CandidateState {
@@ -32,17 +31,16 @@ pub enum CandidateState {
     Finalizing,
     /// Verified replay produced. Terminal (success).
     Complete,
-    /// Any hard failure. Terminal; NO uncertain reinjection (design §5, §8).
+    /// Any hard failure. Terminal; NO uncertain reinjection.
     Failed,
-    /// Process exited before we ever attached. Terminal (design §8 closure).
+    /// Process exited before we ever attached. Terminal.
     ProcessExitedBeforeAttach,
 }
 
 impl CandidateState {
     /// Terminal states never transition again. Every detected identity MUST end
-    /// in one of these (design §8: "Every detected identity must end
-    /// `Complete`, `Failed`, or `ProcessExitedBeforeAttach`" — `Complete` here
-    /// subsumes the finalized-success path).
+    /// in `Complete`, `Failed`, or `ProcessExitedBeforeAttach`; `Complete` here
+    /// subsumes the finalized-success path.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -68,7 +66,7 @@ impl CandidateState {
         )
     }
 
-    /// Human label for the tray/window card (design §4 "Visible result").
+    /// Human label for the tray/window card.
     pub fn visible_label(self) -> &'static str {
         match self {
             CandidateState::Detected => "the game detected",
@@ -138,7 +136,7 @@ impl fmt::Display for CandidateState {
     }
 }
 
-/// Stable machine-readable reason codes for the journal and UI (design §8).
+/// Stable machine-readable reason codes for the journal and UI.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReasonCode {
     Detected,
@@ -229,8 +227,8 @@ mod tests {
 
     #[test]
     fn recording_unreachable_without_full_ladder() {
-        // The design's prime bug class: reaching Recording without heartbeat/
-        // frame proof. Prove there is no single legal edge that skips the
+        // Reaching Recording without heartbeat/frame proof is forbidden. Prove
+        // there is no single legal edge that skips the
         // Handshaking -> WaitingForWorld -> Recording ladder.
         assert!(!CandidateState::Injecting.can_advance_to(CandidateState::Recording));
         assert!(!CandidateState::Preparing.can_advance_to(CandidateState::WaitingForWorld));

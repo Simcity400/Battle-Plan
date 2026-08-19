@@ -25,15 +25,3 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Performance",
     "Win32_System_Threading",
 ] }
-
-[[bin]]
-name = "domain53_proof"
-path = "src/bin/domain53_proof.rs"
-
-[[bin]]
-name = "d53_field_delta_measure"
-path = "src/bin/d53_field_delta_measure.rs"
-
-[[bin]]
-name = "prefetch_model_bench"
-path = "src/bin/prefetch_model_bench.rs"

@@ -1,7 +1,7 @@
 #![recursion_limit = "256"]
 
-//! Container v2 (stitched / reload-relaunch) READER acceptance
-//! (`STITCHING_DESIGN.md` §7, §9).
+//! Container v2 (stitched / reload-relaunch) reader acceptance for the
+//! `Time, identity, sessions, and files` contract in `PROJECT.md`.
 //!
 //! Proves the reader:
 //! * opens a v2 stitched container that declares `timeline_segments_v1`;
@@ -1197,7 +1197,7 @@ fn segments_graph_parses_with_spans() {
 
 #[test]
 fn v2_without_feature_fails_closed() {
-    // §9 coupling: a v2 container that omits `timeline_segments_v1` is malformed.
+    // A v2 container that omits `timeline_segments_v1` is malformed.
     let opts = PackOptions {
         container_version: Some(2),
         required_features: None,

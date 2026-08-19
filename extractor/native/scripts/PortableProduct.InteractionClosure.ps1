@@ -1735,8 +1735,7 @@ function Get-ProductionPassiveSourceAdmissionClosure {
     # NOT because their hooks are absent. Most descheduled producers do sit
     # behind `!passive_product_capture`, but two do not: d75's edge is installed
     # for d64, which depends on it, and d85's whole unit is installed
-    # unconditionally by the production hook registry (an open follow-up, see
-    # documents/DECISIONS.md). Reasoning from this list to "these hooks are not
+    # unconditionally by the production hook registry. Reasoning from this list to "these hooks are not
     # installed" is what would mis-scope that work.
     # The key is read through PSObject.Properties because it is ABSENT on every
     # domain that is still scheduled (the key marks the exception, not the rule), and `$_.capture_scheduled` on

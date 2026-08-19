@@ -25,7 +25,7 @@
 //! `weather.visual_membership_lifecycle` needs a per-region *visual epoch*: the
 //! game hour at which the current entity set was instantiated, and a per-region
 //! ordinal that advances on every airborne-code change
-//! (`re_evidence/rendering_laws/XMAP19/EXACT_A729_WEATHER_PRODUCTION.md`, the
+//! (`replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv`, the
 //! "Minimal production carrier" section). Neither is in the engine: the weather
 //! region record carries the flags, the region value and the transition expiry,
 //! and `0x14166ec50` keeps only the last code it computed, at `producer + 0x60`.

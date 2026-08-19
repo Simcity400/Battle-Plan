@@ -1474,7 +1474,7 @@ fn authoritative_index_requires_eof_certification_and_a_stable_source() {
     let mut malformed_suffix = stream;
     malformed_suffix.extend_from_slice(b"H4C");
     std::fs::write(&path, malformed_suffix).unwrap();
-    // Since the owner's per-hour ruling (2026-08-11, task #188) a malformed
+    // A malformed
     // suffix no longer prevents an authoritative index — it costs the hours it
     // damaged. What the index must still refuse to do is CARRY one of them: the
     // rows it publishes are exactly the verified hours, and the residue is
@@ -2736,7 +2736,7 @@ fn compressed_storage_still_enforces_the_decoded_receipt() {
     assert!(
         error.to_string().contains("certified H4CR identity")
             || error.to_string().contains("not certifiable")
-            // Since the owner's per-hour ruling (2026-08-11, task #188) a
+            // A
             // stream is no longer refused wholesale for a torn tail, so the
             // overshooting DECLARED length is caught by the length binding
             // itself rather than by whole-stream certification. Either way the
@@ -2878,7 +2878,7 @@ fn neutral_prefolded_producer_accepts_only_physically_raw_h4cr() {
 /// A MALFORMED SUFFIX COSTS ITS OWN HOURS, AND THE PREFIX IS NOT SMUGGLED OUT
 /// UNNAMED.
 ///
-/// Before the owner's per-hour ruling (2026-08-11, task #188) this asserted a
+/// This previously asserted a
 /// blanket refusal: three intact hours followed by three stray bytes produced
 /// nothing at all. That is the loss the ruling retired — the three hours are
 /// framed end to end and each carries a digest-backed basis.
@@ -3504,7 +3504,7 @@ fn terminal_outcomes_do_not_relax_hour_interleaving_or_a_bare_frame_end() {
 }
 
 // ---------------------------------------------------------------------------
-// Lane GZ — interior holes (owner ruling 2026-08-12, task #189)
+// Interior holes
 // ---------------------------------------------------------------------------
 
 /// Four game hours whose SECOND hour's records never reached the spool.
@@ -3660,7 +3660,7 @@ fn an_interior_excluded_hour_becomes_a_named_hole_and_the_rest_of_the_recording_
     // source is opened and certified — which is where this check was first
     // written. A stale or foreign index would then be able to declare any hour
     // excluded, and supply any reason, over a source this function never read
-    // (Codex review round 4, finding 1). The whole point of `seek_to_hour` is
+    // The whole point of `seek_to_hour` is
     // that every answer it gives is bound to the source it certified.
     let other_dir = TmpDir::new("gz_interior_hole_other_source");
     let other_path = other_dir.0.join("collector_stream.bin");

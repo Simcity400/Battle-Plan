@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
-    Project a short production capture's stream size out to a full game
-    (MASTER_EXTRACTION_CONTRACT F6 tooling).
+    Project a short production capture's stream size out to a full game.
 
 .DESCRIPTION
     Reads a capture run's native_session_manifest.json (and, when present, cross-

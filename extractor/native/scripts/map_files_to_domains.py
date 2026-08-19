@@ -15,10 +15,10 @@ A file that names several domains belongs to several. A file that names none is
 reported as unassigned, which is itself the useful signal: it is either general
 infrastructure or it is orphaned.
 
-The corpus is the SOURCE tree, NOT every tracked file -- this script's own CSV,
-the section of each domain dossier that is written from it, and the append-only
-`runs/` evidence that quotes both are all excluded, or the run is a fixed-point
-iteration over its own last answer rather than a description of the tree. The
+The corpus is the SOURCE tree, NOT every tracked file -- this script's own CSV
+and append-only `runs/` evidence that quotes generated inventories are excluded,
+or the run is a fixed-point iteration over its own last answer rather than a
+description of the tree. The
 exclusions and what each costs are argued at `OUR_OUTPUT` and in
 `is_outside_source_corpus`. Every skip is counted and every file the size guard
 declined to read is named, so the corpus is never quietly smaller than it looks.
@@ -52,41 +52,14 @@ MAX_BYTES = 4 * 1024 * 1024
 # dNN token, so the row re-elects the file that quotes it, and every artifact
 # that quotes the map inherits every domain the map mentions.
 #
-# The three copies, in the order they were found:
+# The excluded copies:
 #
 #  1. OUR_OUTPUT -- the CSV is tracked and `.csv` is in TEXT_SUFFIXES, so the
-#     generator read the file it was about to overwrite. Lane JL measured this
-#     directly: two consecutive runs from the same committed CSV differed by an
-#     846 KB delta that was entirely self-reference (runs/jl_render_purge/
-#     RECEIPT.md section 6), which is why "run it before and after" was not a
-#     usable proof of anything.
+#     generator would otherwise read the file it is about to overwrite.
 #
-#  2. DOSSIER_DIR + DOSSIER_DERIVED -- emit_domain_dossiers.py consumes this
-#     CSV and writes the "## Files about this domain" section of each dossier
-#     from it verbatim. That is copy 1 laundered through a second generator:
-#     regenerate the dossiers, re-run this script, and the map moves. Only that
-#     section is dropped; a dossier's hand-written "## Condensed knowledge" is
-#     the only surviving copy of investigation write-ups that were deleted, so
-#     it stays in the corpus, and a dossier still lands in its own domain's row
-#     through its filename.
-#
-#  3. EVIDENCE -- the one exclusion that is a judgment call, not a tautology,
-#     and it is NOT free: 2,043 files under `runs/` name a domain, 33,204
-#     file/domain associations in all, and 66 of those files are authored
-#     programs (60 `.py`, 6 `.ps1`) rather than frozen prose. Measured in
-#     runs/kd_domain_map/runs_exclusion_cost.txt; owner decision KD-R2.
-#     `runs/` lane directories are append-only evidence (AGENTS.md)
-#     and they quote generated inventories as a matter of course: lane GU's
-#     DEADNESS_PROOF.md tabulates the d24 row, lane JX's DEADNESS_PROOFS.md and
-#     lane JL's RECEIPT.md quote rows, and a lane that stores a copy of the CSV
-#     as evidence (this lane did: runs/kd_domain_map/) would inject all 37,000
-#     of its path references into the next run. The archive is also not what
-#     this artifact ever described: at e15a011e, the last commit that
-#     regenerated the CSV in full, 15 of 1,513 tracked files were under `runs/`
-#     and the committed map carries exactly one `runs/` reference. It was 5,906
-#     of 8,022 tracked files at base 3a8ad441 and only grows, so leaving them in
-#     would silently turn a 2,301-entry map of the source into a 37,821-entry
-#     map that is 87% evidence archive.
+#  2. EVIDENCE -- `runs/` is an append-only evidence archive that quotes
+#     generated inventories. Including it would make the map describe copies
+#     of prior inventories rather than the source tree.
 #
 # NOT excluded, deliberately: coverage_audit/atlas_generated/ is generated too,
 # but from save-game corpora, not from this map -- it is outside this cycle and
@@ -94,8 +67,6 @@ MAX_BYTES = 4 * 1024 * 1024
 # ---------------------------------------------------------------------------
 OUR_OUTPUT = "extractor/coverage_audit/reference_ledger/domain_file_map.csv"
 HEADER = ["domain_id", "domain_name", "file_count", "files"]
-DOSSIER_DIR = "extractor/documents/domains/"
-DOSSIER_DERIVED = "## Files about this domain"
 EVIDENCE_DIR = "runs/"
 
 
@@ -103,13 +74,10 @@ def is_outside_source_corpus(rel: str) -> bool:
     """True for a tracked path this map is not built from.
 
     The `runs/` half is a whole-directory rule and it is NOT true that every
-    file under it is a copy of the map: 60 authored `.py` and 6 authored `.ps1`
-    programs live there among the frozen prose. The rule is a directory rule
+    file under it is a copy of the map. The rule is a directory rule
     because the alternative -- detecting which evidence files happen to quote a
     generated inventory -- is a heuristic over an append-only archive that grows
-    every lane, and it would have to fail closed on every new shape. Recorded as
-    an owner decision (KD-R2 in runs/kd_domain_map/RECEIPT.md) with both sides
-    and the measured cost, because it does narrow what this artifact describes.
+    every lane, and it would have to fail closed on every new shape.
     """
     rel = rel.replace("\\", "/")
     return (rel == OUR_OUTPUT
@@ -129,10 +97,6 @@ def report_oversize(oversize: list[tuple[str, int]], stream) -> None:
 
 def scannable_text(rel: str, text: str) -> str:
     """The part of a file that counts as evidence about a domain."""
-    if rel.replace("\\", "/").startswith(DOSSIER_DIR):
-        # Keep the hand-written head, drop the section emit_domain_dossiers.py
-        # copied out of this generator's own previous output.
-        text = text.split(DOSSIER_DERIVED, 1)[0]
     return text
 
 
@@ -311,8 +275,7 @@ def parsed_rows(text: str) -> list[list[str]]:
     a dict keyed by domain id either, which was the first spelling of this and
     was wrong in three ways at once -- it dropped the header, so a file whose
     columns had been renamed compared equal; it dropped row order; and it
-    collapsed duplicate ids. `emit_domain_dossiers.py` reads this file with a
-    DictReader, so the header IS part of the contract.
+    collapsed duplicate ids. The header is part of the committed CSV contract.
     """
     csv.field_size_limit(64 * 1024 * 1024)
     return [row for row in csv.reader(io.StringIO(text, newline="")) if row]
@@ -433,8 +396,7 @@ def main() -> int:
 
     print(f"scanned {scanned} text files")
     print(f"skipped {outside_source_count} files outside the source corpus "
-          f"(this map, the dossier sections written from it, {EVIDENCE_DIR} "
-          f"evidence)")
+          f"(this map and {EVIDENCE_DIR} evidence)")
     print(f"domains with at least one file: {len(by_domain)} of {len(names)}")
     print(f"files naming no domain: {len(unassigned)}")
     report_oversize(oversize, sys.stdout)

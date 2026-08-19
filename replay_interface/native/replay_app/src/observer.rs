@@ -1,6 +1,6 @@
 //! E6 observer country selection and optional fog mode.
 //!
-//! Product model (observer-mode directive; `documents/DECISIONS.md` §Viewing):
+//! Product model (see the `PROJECT.md` heading "Fidelity and truth states"):
 //! the
 //! default view is the omniscient world (no fog). The viewer may select any
 //! country in the complete d18 roster for replay-owned panels. Fog is a

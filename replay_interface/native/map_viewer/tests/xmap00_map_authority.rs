@@ -113,7 +113,7 @@ fn world_frame_with(rest: Value) -> std::sync::Arc<WorldFrame> {
 const MEASURED_CALENDAR_STAMP: &str = "1936.1.1.12";
 
 /// The engine's month lengths: 365-day, **no leap years**
-/// (`REPLAY_SCHEMA.md` §0.3). Mirrored here so the harness builds frames whose
+/// Mirrored here so the harness builds frames whose
 /// `hour_index` really is the one its `date` encodes — the guard requires the
 /// pair to agree, and a fixture violating the schema would pass or fail for the
 /// wrong reason.
@@ -831,15 +831,10 @@ fn the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column() 
         ledger_proven, code_proven,
         "admission table is not the ledger's owner-proven set"
     );
-    // The proven set is XMAP14's three combat rows (lane GX), the two lane HW
-    // proved from committed capture evidence, and the two lane HX proved. Every
-    // other semantic row is still refused; why each candidate could NOT be
-    // promoted is recorded per row in
-    // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md` and
-    // `extractor/native/runs/hx_admission_b/RESIDUALS.md`. The count itself is
-    // deliberately not restated as a literal here: the equality above already
-    // pins the set to the ledger, and a number in this test would only be a
-    // second place for one admission to have to be edited.
+    // Every other semantic row is still refused. The count is deliberately not
+    // restated as a literal here: the equality above already pins the set to
+    // `non_ui_visual_input_ledger_20260730.tsv`, and a number in this test would
+    // only be a second place for one admission to have to be edited.
     assert_eq!(
         code_proven.len(),
         MAP_AUTHORITY_OWNER_PROVEN_INPUTS.len(),
@@ -1640,8 +1635,7 @@ fn a_missing_calendar_stamp_moves_no_other_row() {
 }
 
 /// kills: validating the calendar with Gregorian leap years. the game's calendar is
-/// 365-day with **no** leap years (`REPLAY_SCHEMA.md` §0.3,
-/// `compact_contract/src/calendar.rs`), so February always has 28 days and
+/// 365-day with **no** leap years (`compact_contract/src/calendar.rs`), so February always has 28 days and
 /// `1936.2.29` — a real Gregorian leap day — is a date the engine cannot emit.
 ///
 /// Each frame carries the hour index a **lenient** guard would compute for its
@@ -1758,7 +1752,7 @@ fn lenient_hour_index(date: &str) -> Option<i64> {
 
 /// kills: validating `date` without checking it against `hour_index`. The
 /// admitted payload is the **pair**, `hour_index` is derived from `date`
-/// (`REPLAY_SCHEMA.md` §0.3), and this stamp is perfectly well-formed — only
+/// and this stamp is perfectly well-formed — only
 /// the sort key disagrees with it.
 #[test]
 fn a_calendar_stamp_disagreeing_with_its_hour_index_is_not_admitted() {
@@ -2228,13 +2222,9 @@ fn a_faction_roster_without_a_country_census_is_a_gap_not_a_rejected_projection(
     assert!(!admission.is_admitted("diplomacy.faction_roster"));
 }
 
-/// kills: promoting one of lane HW's nine remaining candidates without first
-/// closing the producer-side defect that blocks it. Each id below is a row the
-/// gap map classifies ADMISSION-PROOF-ONLY and this lane proved is not:
-/// `extractor/native/runs/hw_admission_a/ROW_PROOFS.md` names the exact producer
-/// fact for each. Promoting any of them here — without that fact changing —
-/// would put a row into the admission table that no capture can ever satisfy,
-/// which is worse than a gap because it reads as a live seam.
+/// Promoting any id below without closing its producer-side defect would put a
+/// row into the admission table that no capture can satisfy. The structured
+/// `non_ui_visual_input_ledger_20260730.tsv` classifies each row as unavailable.
 #[test]
 fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
     for input_id in [
@@ -2575,7 +2565,7 @@ fn shipping_help_and_source_truth_are_bound_to_all_three_foundation_gates() {
         ))
     );
 
-    let status = include_str!("../../../documents/MAP_GRAPHICS_PRODUCT_STATUS.md");
+    let project = include_str!("../../../../PROJECT.md");
     for required in [
         "Windowed playback",
         "headless frame export",
@@ -2583,8 +2573,8 @@ fn shipping_help_and_source_truth_are_bound_to_all_three_foundation_gates() {
         "ProductMapCompositionSession::execute_on_target",
     ] {
         assert!(
-            compact_rust_source(status).contains(&compact_rust_source(required)),
-            "map product status omits current route token {required}"
+            compact_rust_source(project).contains(&compact_rust_source(required)),
+            "PROJECT.md omits required product-route token {required}"
         );
     }
 

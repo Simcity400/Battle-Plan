@@ -8,7 +8,7 @@
 //! exactly what the recorder stores today. This tool replays those records into
 //! per-hour states — the same fold `world_fold::fold_army_battleplans_depth`
 //! performs — and re-encodes every hour with this crate's grammar: a BASELINE at
-//! each 48-hour block start (and wherever `WIRE_FORMAT.md` §1.5 forces one) and
+//! each 48-hour block start (and after every capture gap) and
 //! field-granular stored-minimal DELTAs between.
 //!
 //! **Nothing here re-derives a contract it can call.** Header, row, child-table,
@@ -1046,10 +1046,9 @@ fn tally_dependencies(
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences: the
-/// 48-hour block cadence (every block opens with its own baseline, §1.5's closing
-/// paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state
-/// part forces the next state observation to be a `BASELINE`." Every hour this
+/// Two reasons: the 48-hour block cadence and a capture gap.
+/// State after a gap to resume from a
+/// complete baseline. Every hour this
 /// domain did not successfully sample is such a gap — each of the fold's three
 /// excluded-hour paths, and any non-contiguous hour step — and d54's cadence is
 /// hourly, so a measured hour that does not follow the previous measured one by
@@ -1068,7 +1067,7 @@ struct WireHourOutcome {
     tombstones_by_collection: Vec<usize>,
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay over every collection. Factored out of `main` so the
 /// tests execute the PRODUCTION encode path over a scanned stream.
 fn encode_wire_hour(
@@ -1173,7 +1172,7 @@ struct Measurement {
     wire_offsets: Vec<usize>,
     hours_seen: usize,
     baselines: usize,
-    /// Baselines the §1.5 gap rule forced outside a scheduled block start.
+    /// Baselines the gap handling forced outside a scheduled block start.
     gap_forced_baselines: usize,
     baseline_bytes: usize,
     delta_bytes: usize,
@@ -1483,7 +1482,7 @@ fn main() {
     );
     println!(
         "baselines            {} ({} at a {BLOCK_HOURS}-h block start, {} forced by a \
-         WIRE_FORMAT §1.5 state gap)",
+ state gap)",
         m.baselines,
         m.baselines - m.gap_forced_baselines,
         m.gap_forced_baselines
@@ -1729,7 +1728,7 @@ mod tests {
 
     #[test]
     fn a_withheld_hour_forces_the_next_state_to_be_a_baseline() {
-        // `WIRE_FORMAT.md` §1.5. Without this rule the wire arm under-reports its
+        // Without the complete-baseline-after-gap rule, the wire arm under-reports its
         // own size and over-claims its replay verification: state may have moved
         // and returned across the withheld hour, and where the two states happen
         // to be equal a delta arm emits nothing at all.

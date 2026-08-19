@@ -2,21 +2,11 @@
 
 Changes only with the owner's permission.
 
-## Goal
+Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
-Perfect clean captures, small, straight into replay, minimal perf hit.
-A bad hour costs that hour, with a named reason — never the recording.
+## Conduct and workflow
 
-## Rules
 - When asking questions to the owner, do not use any jargon and be concise; just make things very simple for them to understand and explain how the change would affect the end users UX, if at all.
-- Never make the game wait.
-- Attach-and-play: find data by RE and read it passively; else derive at
-  replay or refuse it, named.
-- Fail closed. No hardcoded game content. Mods must work.
-- Derive authored content and all presentation at replay from the certified
-  installed content and recorded state; extract only what changes during play — and
-  where an authored value can change, extract the divergence, not a copy.
-- Assume max game speed on a modest 4-core machine.
 - No backwards compat: delete replaced code in the same change, prove it dead.
 - Fix what you find. Leave open only what needs the owner, a live game, or
   someone else's active work.
@@ -26,17 +16,15 @@ A bad hour costs that hour, with a named reason — never the recording.
   turn with a single line ("WIP: waiting on <task>") and nothing else — no
   status summaries, no partial findings; they bloat the orchestrator.
 - Clean up your worktree, branch, build output, temp files. Never stash.
+- Completion requires validated changes on pushed remote `main`; delete the task branch after landing.
 - Hash-pinned committed files need `.gitattributes` `text eol=lf`.
 
 ## Tools
 
-- Default: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1`; capture the exit code.
-- Default mode runs affected shipping-product tests and validators only when their inputs changed; tools manage execution with no repository concurrency cap.
-- `-Mode Landing` is required immediately before landing and runs all shipping-product tests.
-- `-Mode ReleaseManual -AllowReleaseManual` is allowed only when the owner explicitly requests it.
-- Unknown change impact falls back to all shipping-product tests.
-- Never run the legacy/full battery or release/manual mode by default.
-- Ghidra and `hoi4_re` are read-only authorities (READMEs under `replay_interface/tools/`).
+- Validation: your own checkout's `extractor\native\scripts\Invoke-CentralRustValidation.ps1`; capture the exit code.
+- `hoi4_re` is the single agent-facing RE facade; run `re_status` first, never edit its registry directly, and use its four-job offline queue.
+- `candidate_census` and `cross_analyze_function` are discovery or second-opinion outputs, not proof or automatic promotion; the exact-build Ghidra broker remains the static authority. See the tool READMEs for details.
+- Live instrumentation requires explicit owner authorization and an already-running matching game; one job at a time.
 - Evidence: `extractor/native/runs/<run>/`, append-only.
 
 ## Codex reviewer - Only relevant for Claude agents. Ignore if a Codex agent

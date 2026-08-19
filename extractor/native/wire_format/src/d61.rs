@@ -1,8 +1,8 @@
 //! d61 `air_loss_stats_live` — per-country CUMULATIVE strategic-air loss statistics.
 //!
-//! Derived from `world_fold.rs:21468`-`:21521`
+//! Derived from `world_fold.rs:21444`-`:21497`
 //! (`fold_air_loss_stats`, dispatched at `:4708`), its JSON emission at
-// @world-fold-authority domain=61 functions=fold_air_loss_stats lines=21468-21521 sha256=66ea65854ffcdc1958091016b6f1d524fd91b017b314f6a2452f5abf8aa21906 closure=1e30c7b0325bea21b7d2d65ba61abf49cb0dd945f63ad3ce3d4bc0973ca4170a
+// @world-fold-authority domain=61 functions=fold_air_loss_stats lines=21444-21497 sha256=66ea65854ffcdc1958091016b6f1d524fd91b017b314f6a2452f5abf8aa21906 closure=3192a93a40ee88a3d05bc25ae8698360ebe0aed86ee01eee173aa83e66909ad1
 //! `:9150`-`:9183`, and the payload codec the fold calls, which for this domain
 //! lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/air_loss_stats_live/src/lib.rs` (`decode_payload_rows`
@@ -87,7 +87,7 @@
 //! emits a row**; "fail-closed per field: an unreadable/out-of-range value folds
 //! ABSENT, never a fabricated 0" is the lane's stated contract (`lib.rs:26`-`:28`).
 //! In a keyed set that is the absence of the row, which is collection
-//! membership, not a §3 field state.
+//! membership, not a record-state contract field state.
 //!
 //! **This is also what settles the witness bits.** `BINDING_VERIFIED` and
 //! `STRUCT_VERIFIED` look like they gate Unknown-vs-measured, but they cannot:
@@ -120,10 +120,10 @@
 //! the prior table wholesale, and a duplicate `owner_tag_db_id` is a rejected
 //! payload (`world_fold.rs::fold_air_loss_stats`), never a last-writer-wins overwrite — which is what
 //! makes the key a real identity. The country is a stable identity that persists
-//! across hours, so §7.3's keyed set applies and the domain has a delta grammar.
+//! across hours, so collection-shape contract's keyed set applies and the domain has a delta grammar.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
-//! clock. The channels are cumulative counters, which is a §4 `Monotone` *hint*
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
+//! clock. The channels are cumulative counters, which is a schema-kind contract `Monotone` *hint*
 //! and never a constraint — and this domain has a concrete reason not to enforce
 //! it: the crack reads a **yearly** cumulative window (`lib.rs:36`,
 //! `LOOPHIST_WINDOW_OFF` with `EXPECTED_YEARLY_CAPACITY = 5`), so a channel may
@@ -139,7 +139,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 61;
 pub const COUNTRY_AIR_LOSS_STATS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// The 24 channel ids are `2 ..= 25`, assigned in `PINNED_CHANNELS` order
 /// (`lanes/air_loss_stats_live/src/lib.rs:71`-`:96`) — the exact engine display
 /// order, which is NOT the aggregate-history field order.
@@ -309,8 +309,8 @@ pub fn schema() -> Schema {
     //
     // `ContentId`: a country tag-db id is an id whose meaning a content manifest
     // must resolve — country 16 is whatever country the mod set defines — which
-    // is §5's deciding question, and d20 classes `owner` and d62 classes
-    // `owner_tag_db_id` the same way. §13's manifest-id assignment rule is still
+    // is content-identity contract's deciding question, and d20 classes `owner` and d62 classes
+    // `owner_tag_db_id` the same way. the manifest-id assignment rule is still
     // open, so the mapper casts the raw u32; that is recorded in the
     // deliverable, and a ContentId **key** is the heavier retrofit class because
     // key components sort and delta-encode by raw value.
@@ -318,7 +318,7 @@ pub fn schema() -> Schema {
 
     // The 24 channels, in engine display order.
     //
-    // `Monotone`: each is a cumulative loss counter, which §4 makes a *hint*
+    // `Monotone`: each is a cumulative loss counter, which schema-kind contract makes a *hint*
     // about how the value usually moves and never a validity constraint — and
     // this domain needs that latitude, because the crack reads a yearly
     // cumulative window (`lib.rs:36`, `:56`) whose counters can fall at a year
@@ -344,7 +344,7 @@ pub fn schema() -> Schema {
             // fresh map), but the country is a stable identity that persists
             // across hours — the measured capture holds a constant 440 rows an
             // hour with ~25 changing — and only a keyed set has a delta grammar
-            // (§7.3).
+            // (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -499,7 +499,7 @@ pub fn owner_tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// it today, onto its stored Record. `row` is the raw 208-byte row slice (the
 /// caller has already consumed the table header via [`split_payload`]); d61 has
 /// exactly one row form, so length selects nothing and a wrong length is
-/// rejected. `frame_tick` is §6's derived-field input
+/// rejected. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); d61 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
@@ -521,7 +521,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d61 has no derived field; §6's transform input is unused. Named rather
+    // d61 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
 
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d61 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d61 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         let c = collection();
         assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn a_zero_channel_is_a_measured_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states. A country at peace has
+        // record-state contract keeps zero out of the three empty states. A country at peace has
         // genuinely lost nothing, and the lane is explicit that an unreadable
         // value fails the row closed rather than folding to 0 (`lib.rs:26`-`:28`),
         // so a zero on the wire is always a real measurement.
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn no_field_is_a_content_id_except_the_country_key() {
-        // §13's manifest-id retrofit sweep needs "checked, and here they are"
+        // the ContentId retrofit sweep needs "checked, and here they are"
         // rather than silence. d61 has exactly one ContentId and it is a KEY,
         // which is the heavier retrofit class: key components sort and
         // delta-encode by raw value, so a manifest remap reorders keys and
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn every_channel_indexed_entry_point_is_total_over_usize() {
-        // Round-2 review finding: `channel_offset` computed
+        // `channel_offset` computed
         // `CHANNELS_OFFSET + channel * 8` unchecked, so `channel_offset(usize::MAX)`
         // overflowed — a panic under this workspace's overflow checks, and a
         // silent wrap to a plausible in-row offset without them, which would read
@@ -1287,7 +1287,7 @@ mod tests {
             usize::MAX / 8 + 1,
             usize::MAX / 2,
             usize::MAX - 1,
-            // The reviewer's own failing input.
+            // The regression input.
             usize::MAX,
         ];
         for channel in probes {
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[test]
     fn a_counter_that_falls_is_mapped_not_refused() {
-        // §4 makes Monotone a hint and never a validity constraint, and this
+        // schema-kind contract makes Monotone a hint and never a validity constraint, and this
         // domain needs the latitude: the crack reads a YEARLY cumulative window
         // (`lib.rs:36`, `EXPECTED_YEARLY_CAPACITY = 5` at `:56`), so a channel
         // can legitimately fall at a year boundary. Nothing in the mapper or the

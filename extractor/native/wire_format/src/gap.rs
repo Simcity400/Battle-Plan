@@ -1,4 +1,4 @@
-//! Container-level gap records and the canonical §8 normalisation.
+//! Container-level gap records and the canonical gap contract normalisation.
 //!
 //! Ranges are inclusive on the wire but half-open in this API. Keeping the
 //! conversion at the codec boundary makes overlap resolution and range queries
@@ -73,7 +73,7 @@ impl GapPart {
     }
 }
 
-/// The five witness payloads assigned by §8.
+/// The five witness payloads assigned by gap contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GapWitness {
     Counter { counter_id: u64, observed: u64 },
@@ -127,7 +127,7 @@ impl GapWitness {
     }
 
     /// Bytes used after `witness_kind`, and therefore the exact bytes used by
-    /// §8's cause-order comparison.
+    /// gap contract's cause-order comparison.
     pub fn canonical_payload(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let mut out = Vec::new();
@@ -166,8 +166,7 @@ impl GapWitness {
     }
 }
 
-/// One §8 record. `tick_end` is exclusive in memory
-/// (`WIRE_FORMAT.md:698`–`:706`, `:727`–`:730`).
+/// One gap record. `tick_end` is exclusive in memory.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GapRecord {
     pub tick_start: u64,
@@ -185,7 +184,7 @@ impl GapRecord {
             return Err(WireError::Corrupt("gap range is empty or reversed"));
         }
         if self.domains.is_empty() {
-            // The retired H4GP record used empty to mean every domain. §8 has no
+            // The retired H4GP record used empty to mean every domain. gap contract has no
             // such sentinel: accepting it here would silently widen the gap.
             return Err(WireError::Corrupt("gap domain list is empty"));
         }
@@ -202,8 +201,7 @@ impl GapRecord {
     }
 }
 
-/// Encode one record exactly as the §8 field table specifies
-/// (`WIRE_FORMAT.md:696`–`:706`).
+/// Encode one record in canonical field order.
 pub fn encode_record(record: &GapRecord) -> Result<Vec<u8>> {
     record.validate()?;
     let mut out = Vec::new();
@@ -316,8 +314,8 @@ fn decode_witness(kind: u8, bytes: &[u8], pos: usize) -> Result<(GapWitness, usi
 }
 
 /// Decode exactly one record. Trailing bytes are corrupt, including bytes after
-/// a fixed-shape witness. The checked inclusive-to-half-open conversion is the
-/// one at `WIRE_FORMAT.md:727`–`:730`.
+/// a fixed-shape witness. The checked conversion maps the encoded inclusive end
+/// to the in-memory half-open range.
 pub fn decode_record(bytes: &[u8]) -> Result<GapRecord> {
     let (tick_start, pos) = read_varint(bytes, 0)?;
     let (tick_end_delta, pos) = read_varint(bytes, pos)?;
@@ -400,8 +398,8 @@ impl Cause {
 
 impl Ord for Cause {
     fn cmp(&self, other: &Self) -> Ordering {
-        // `WIRE_FORMAT.md:745`–`:750`: reason, kind, then the canonical
-        // encoded payload as unsigned bytes. Numeric witness order is wrong.
+        // Canonical cause order is reason, kind, then encoded payload as
+        // unsigned bytes. Numeric witness order is wrong.
         self.reason
             .cmp(&other.reason)
             .then_with(|| self.witness.kind().cmp(&other.witness.kind()))
@@ -436,9 +434,9 @@ struct GroupKey {
     cause: Cause,
 }
 
-/// Apply §8 steps 1–5 (`WIRE_FORMAT.md:740`–`:765`). The output is invariant
-/// under input order and duplicate observations, and can itself be normalised
-/// without changing its bytes (`:767`–`:774`).
+/// Canonically normalise gap records. The output is invariant under input order
+/// and duplicate observations, and can itself be normalised without changing
+/// its bytes.
 pub fn normalise(records: &[GapRecord]) -> Result<Vec<GapRecord>> {
     let mut by_component: BTreeMap<(u32, u32, Component), Vec<Observation>> = BTreeMap::new();
     for record in records {
@@ -548,7 +546,7 @@ pub fn normalise(records: &[GapRecord]) -> Result<Vec<GapRecord>> {
 
 /// Whether a state-affecting (`part = 0` or `2`) gap intersects `ticks` for one
 /// `(branch, domain)`. Event-only gaps deliberately do not force a state
-/// baseline (`WIRE_FORMAT.md:187`–`:190`).
+/// baseline.
 pub fn state_gap_intersects(
     records: &[GapRecord],
     branch: u32,
@@ -848,7 +846,7 @@ mod tests {
     #[test]
     fn p3_empty_domain_list_is_rejected_not_inherited_as_h4gp_all_domains() {
         // compact_contract/src/gap_record.rs:100 defines the retired H4GP empty
-        // list as "every domain". §8 has no sentinel; inheriting it would widen
+        // list as "every domain". gap contract has no sentinel; inheriting it would widen
         // one empty record across the whole telemetry surface.
         let empty = counter(GapReason::Skipped, GapPart::State, vec![], 1, 2);
         assert_eq!(

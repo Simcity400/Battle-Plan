@@ -12,7 +12,7 @@
         independent verifiers, AND the acceptance-telemetry schema gate below.
 
       * Test-ProductionCaptureManifest + Get-AcceptanceTelemetryProblems - the
-        fail-closed acceptance-telemetry (MASTER_EXTRACTION_CONTRACT F5) schema
+        fail-closed acceptance-telemetry schema
         and numeric gates over a parsed manifest, reusable without a live run.
 
     Every check is FAIL-CLOSED: a missing manifest, a missing telemetry field, or

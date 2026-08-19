@@ -19,9 +19,9 @@ pub const XUI19_EXECUTABLE_SHA256: &str =
 /// Hash of the exact-a729 function evidence manifest cited by the XUI19 law.
 pub const XUI19_EVIDENCE_MANIFEST_SHA256: &str =
     "59650965bd79b711974aa4f3cd8c34fdf1b111e36fa0a294916839955dac1ec1";
-/// SHA-256 of `EXTERNAL_PRODUCER_REQUIREMENTS.md` with repository LF bytes.
+/// SHA-256 of `rendering_laws/XUI19/producer_contract.json` with repository LF bytes.
 pub const XUI19_PRODUCER_CONTRACT_SHA256: &str =
-    "9235a5abd82bb7b916f13ebdc09b03ed4e7ad79166a5c15a908c1aac97624108";
+    "3ccbe6eda7242394614b178e52390ca3050b16d6e5c30934db4e885ec666b14d";
 
 const MAX_COUNTRIES: usize = 65_536;
 const MAX_CATEGORIES_PER_COUNTRY: usize = 65_536;

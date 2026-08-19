@@ -1,4 +1,4 @@
-//! LEB128 varints and zigzag, per `WIRE_FORMAT.md` §0.
+//! LEB128 varints and zigzag.
 //!
 //! Shortest form is **required**, not merely produced: a decoder that accepts a
 //! redundant trailing zero group would let two writers emit different bytes for
@@ -82,7 +82,7 @@ pub fn read_zigzag(buf: &[u8], pos: usize) -> Result<(i64, usize)> {
 }
 
 /// Compare two canonical encoded payloads: unsigned, bytewise, shorter-is-smaller
-/// on a prefix. §8 pins this for gap-cause resolution because the answer differs
+/// on a prefix. gap contract pins this for gap-cause resolution because the answer differs
 /// from numeric order — counter ids 255 and 256 encode as `FF 01` and `80 02`.
 pub fn compare_canonical_bytes(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
     a.cmp(b)
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn the_255_256_case_that_pins_the_comparator() {
-        // §8 cites these exact encodings: numeric order and byte order disagree.
+        // gap contract cites these exact encodings: numeric order and byte order disagree.
         let mut a = Vec::new();
         write_varint(&mut a, 255);
         let mut b = Vec::new();

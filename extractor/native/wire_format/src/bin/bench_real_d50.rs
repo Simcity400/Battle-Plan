@@ -203,7 +203,7 @@ struct StreamScan {
     ///
     /// Both are read from `d50::State`'s own PER-ROW counters at EOF, never
     /// derived from the parent set's size: one payload may insert and delete, and
-    /// the net size change then hides both (a Codex round-2 finding).
+    /// the net size change then hides both.
     parent_deletes: u64,
     parent_cascade_members_dropped: u64,
     /// The persistent retired-key set at EOF, and the parent key set at EOF.
@@ -726,7 +726,7 @@ struct Measurement {
     wire_offsets: Vec<usize>,
     hours_seen: usize,
     baselines: usize,
-    /// Baselines the §1.5 gap rule forced outside a scheduled block start.
+    /// Baselines the gap handling forced outside a scheduled block start.
     gap_forced_baselines: usize,
     baseline_bytes: usize,
     delta_bytes: usize,
@@ -789,7 +789,7 @@ fn measure(
             }
         }
 
-        // §1.5: "A gap affecting the state part forces the next state observation
+        // frame-run contract: "A gap affecting the state part forces the next state observation
         // to be a `BASELINE`." Every hour this domain did not successfully sample
         // is such a gap — the failure-status hour and each of the fold's three
         // whole-hour refusals — and d50's cadence is hourly, so a measured hour
@@ -991,7 +991,7 @@ fn main() {
     );
     println!(
         "baselines            {} ({} at a {BLOCK_HOURS}-h block start, {} forced by a \
-         WIRE_FORMAT §1.5 state gap)",
+ state gap)",
         m.baselines,
         m.baselines - m.gap_forced_baselines,
         m.gap_forced_baselines
@@ -1003,8 +1003,7 @@ fn main() {
     // The denominator is every measured-hour TRANSITION, not only the ones that
     // changed: the recipe's cadence-independent figure asks how much this domain
     // moves per sampled hour, and conditioning it on "something moved" makes an
-    // idle domain look busy (a Codex round-2 finding, and the same denominator
-    // trap the d17 round-2 review named on the delta path).
+    // idle domain look busy (the same denominator
     let transitions = m.hours_seen.saturating_sub(1);
     println!(
         "real churn           {} changed rows and {} tombstone(s) over {} measured-hour \
@@ -1811,8 +1810,8 @@ mod tests {
 
     #[test]
     fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md` §1.5: "A gap affecting the state part forces the next
-        // state observation to be a `BASELINE`." Every excluded hour is such a
+        // State after a
+        // gap to resume from a complete baseline. Every excluded hour is such a
         // gap — state may have moved and returned while nobody was looking — so a
         // delta across it would be unjustifiable and a reader retaining its state
         // across it would be reconstructing from a prior it must not trust.
@@ -1879,7 +1878,7 @@ mod tests {
 
     #[test]
     fn a_change_on_a_block_boundary_is_counted_by_the_cadence_independent_churn() {
-        // The d16 round-3 finding, applied here: with a block size of 2, the
+        // with a block size of 2, the
         // change into hour 101 lands on a baseline and emits no delta, so the
         // delta-path churn cannot see it. The cadence-independent number must.
         let s = good_stream();

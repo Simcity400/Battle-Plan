@@ -1,14 +1,14 @@
 //! Passive map-side carriers — lane HY, task #183.
 //!
-//! Three producer rows from `REPLAY_PRODUCER_GAP_MAP.md`, all of them reads of
+//! Three producer rows, all of them reads of
 //! long-lived engine memory reached by fixed offsets from a static anchor:
 //!
 //! | Row | Lane | State |
 //! |---|---|---|
 //! | `EIR-XMAP17-FACTION-LABEL-TEXT` | GP-N1 | [`xmap17`] — built on D53's own `CFaction` census |
-//! | `EIR-XMAP17-PLAYER-LABEL-IDENTITY` | GP-N1 | **not built** — the field offered as the player identity is a string length; see `runs/hy_map_producers/XMAP17_CORRECTION.md` |
+//! | `EIR-XMAP17-PLAYER-LABEL-IDENTITY` | GP-N1 | **not built** — the field offered as the player identity is a string length; see `replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv` |
 //! | `EIR-XMAP07-SNOW-MUD-RUNTIME` (fade half) | GP-U11 | [`xmap07`] — passive source built |
-//! | `EIR-XMAP06-BORDER-RUNTIME` | GP-N2 | anchor closed in [`anchor`]; the carrier itself is blocked, see `runs/hy_map_producers/XMAP06_POV_BLOCKER.md` |
+//! | `EIR-XMAP06-BORDER-RUNTIME` | GP-N2 | anchor closed in [`anchor`]; the carrier itself is blocked, see `replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv` |
 //!
 //! # What this crate is, and what it deliberately is not
 //!
@@ -20,8 +20,8 @@
 //! makes a read law testable without a game process, and it is why a refusal
 //! in this crate is a value and not a log line.
 //!
-//! It does **not** register anything with the fold. `REPLAY_PRODUCER_GAP_MAP.md`
-//! §7.1 reserves `world_fold.rs::build_snapshot`'s `_r2_*` sidecar block for the
+//! It does **not** register anything with the fold.
+//! `world_fold.rs::build_snapshot`'s `_r2_*` sidecar block is reserved for the
 //! Wave-2 scaffold lane, which has not landed; [`fold_emission`] packages the
 //! seam as pure functions for that lane to call.
 //!

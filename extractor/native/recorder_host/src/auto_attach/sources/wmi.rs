@@ -1,5 +1,4 @@
-//! Real WMI `ProcessEventSource` (design §2 "Watcher: WMI plus bounded
-//! reconciliation").
+//! Real WMI `ProcessEventSource` with bounded reconciliation.
 //!
 //! This is the lower-latency half of the dual-order watcher. It subscribes to
 //! standard-user `__InstanceCreationEvent` and `__InstanceDeletionEvent` queries
@@ -16,8 +15,8 @@
 //! `windows-sys`/`wmi` crate is added (none is in `Cargo.lock`). The COM binding
 //! is hand-written raw `extern "system"` FFI against the system `ole32` /
 //! `oleaut32` import libraries, exactly mirroring the established style in
-//! `modset.rs` and `sources.rs`. Design §9 asked for a pinned crate binding; the
-//! FORBIDDEN-network constraint makes raw FFI the only expressible path, and it
+//! `modset.rs` and `sources.rs`. The build cannot fetch a new crate, so raw FFI
+//! is the available binding path, and it
 //! is functionally sufficient here.
 //!
 //! ## Testability seam
@@ -31,8 +30,8 @@
 //!
 //! Health starts `Degraded` and only flips to `Healthy` after a subscription is
 //! proven established. If the provider is unavailable the source stays `Degraded`
-//! forever (the coordinator then runs on the bounded 2 s snapshot reconcile — the
-//! design's WMI-loss fallback). A lost enumerator degrades to `Degraded` and the
+//! forever and the coordinator runs on the bounded 2 s snapshot reconcile. A
+//! lost enumerator degrades to `Degraded` and the
 //! loop attempts bounded-backoff re-subscription; recovery flips back to
 //! `Healthy`. A timeout is a timeout: no event is ever fabricated.
 
@@ -294,7 +293,7 @@ impl WmiProcessEventSource {
                 .ok()
         };
         // Block until the first subscription attempt reports in (Healthy or
-        // Degraded), closing the design §2 subscribe/enumerate race: once `new()`
+        // Degraded), closing the subscribe/enumerate race: once `new()`
         // returns, any process that starts afterwards is caught by WMI and the
         // coordinator's startup snapshot catches anything already running.
         let _ = rx.recv_timeout(Duration::from_millis(READY_TIMEOUT_MS));
@@ -1055,7 +1054,7 @@ mod tests {
 
     #[test]
     fn iteration_lost_degrades_and_disconnects() {
-        // Models WMI provider loss (design §2): the source degrades so the
+        // Models WMI provider loss: the source degrades so the
         // coordinator falls back to the bounded 2 s snapshot reconcile.
         let shared = SharedWmiState::new();
         shared.set_health(WatcherHealth::Healthy);
@@ -1069,8 +1068,8 @@ mod tests {
 
     #[test]
     fn iteration_recovers_after_loss() {
-        // Lost -> Degraded, then a successful resubscribe -> Healthy (design §2
-        // "WMI loss/recovery"). No duplicate/fabricated events across the gap.
+        // Lost -> Degraded, then a successful resubscribe -> Healthy. No
+        // duplicate or fabricated events cross the gap.
         let shared = SharedWmiState::new();
         let mut pump = FakePump::new(vec![true, true], vec![WmiPoll::Lost, start(7)]);
         let mut connected = false;

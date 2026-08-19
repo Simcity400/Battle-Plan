@@ -1,15 +1,17 @@
 //! d11 `production_live` — per-country stockpiles, production lines, the civil
 //! construction queue, production licences and the convoy bank.
 //!
-//! Derived from `world_fold.rs:16930`-`:17571`
+//! Derived from `world_fold.rs:16910`-`:17551`
 //! (`fold_production`), its `parse_production_trailers` chain parser and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=16930-17571 sha256=7c0b914598055bbe8a970027d5ca682166eafaa501511a66c4c4edc8bc156114 closure=ae6e00de867a9b10b6b17ebbc2c95bdfd87a4e5880dec64307e9a944d2522ae6
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=2b63a23c6f69d9b69c92f7ae67a2817d6902fbe515079f76a27dbc2f82984065
+// @world-fold-authority domain=11 functions=fold_production lines=16910-17551 sha256=196584a7f9b89e2a3bcfd56c98f5b92acfcce5ddbeb34995021888e6db1e14bb closure=8fa73d587855398c94f9fcdf95380af56067014dbfeba016356dc4698c879742
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
-//! `extractor/documents/domains/d11_production_live.md` supplies the native
-//! offsets and the two scale proofs; where it and the fold disagree the fold
-//! wins and the disagreement is a recorded finding (see `construction_queue`).
+//! Native offsets and scale proofs are retained as
+//! `domain-11::Deployment queues`, `domain-11::Production-line efficiency`, and
+//! `domain-11::Stockpiles, production lines, and construction` in
+//! `extractor/documents/technical_evidence.json`. Where that evidence and the
+//! fold disagree, the fold wins (see `construction_queue`).
 //!
 //! # Payload grammar
 //!
@@ -89,7 +91,7 @@
 //!   producer could not prove the join, never an empty/default id"
 //!   (`attach_log.rs:72719`-`:72721`); `requested_factories`' `None` "means the
 //!   field could not be validated" (`:72729`); `efficiency`'s `None` "keeps PEF1
-//!   absent for every line in the frame" (`:72732`). That is §3's *applicable,
+//!   absent for every line in the frame" (`:72732`). That is record-state contract's *applicable,
 //!   not captured*. The capture exercises it: hour 60832893 of `deepwar_t1`
 //!   carries 147 production lines and no `PEF1` segment.
 //! * **`mio_id` is the one `Null`.** `Some(None)` is "a proven zero CID"
@@ -201,7 +203,7 @@
 //! `{priority, count}` multiset (e.g. tag 29 at hour 60832407 carries
 //! `[(2,0),(4,7),(5,0),(3,0)]` and at 60832417 `[(2,0),(3,0),(4,7),(5,0)]`).
 //! A keyed set stores those two hours identically and emits no delta, which is
-//! exactly the fidelity loss §7.3's ordered shapes prevent. `priority` is not
+//! exactly the fidelity loss collection-shape contract's ordered shapes prevent. `priority` is not
 //! fold-enforced unique — `PCV1` enforces uniqueness for variants and checks only
 //! `count >= 0` for reservations — so this is an `OrderedOccurrenceList`, not an
 //! `OrderedKeyedList`. Keying by source index would make identity positional,
@@ -225,8 +227,8 @@
 //! equipment) whose rows include **variable-length UTF-8 strings**: the
 //! conveyor's `name` and `role`, and each equipment row's `archetype`
 //! (`lanes/country_economy_production_stockpile_live/src/deployment_queue.rs:58`,
-//! `:63`, `:35`; encoded at `:197`-`:198` and `:230`). §4 has no string kind, and
-//! §5 carries content symbols as "manifest ids as varints, never text" — but the
+//! `:63`, `:35`; encoded at `:197`-`:198` and `:230`). schema-kind contract has no string kind, and
+//! content-identity contract carries content symbols as "manifest ids as varints, never text" — but the
 //! conveyor `name` is
 //! a player-authored division name, so it is not a content symbol at all and no
 //! manifest rule will ever cover it. Ordering is *not* the blocker here: every
@@ -235,7 +237,7 @@
 //! enforce the five cross-checks the fold makes against it and to account for its
 //! bytes — and maps none of it. See the deliverable's stop-report.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing here changes deterministically with the clock: costs, efficiencies and
 //! stockpiles all move on their own. The mappers still take `frame_tick` so every
@@ -262,7 +264,7 @@ pub const CONVOY_PRIORITY_RESERVATIONS: u32 = 8;
 /// The id now names the implemented collection.
 pub const RESERVED_CONVOY_RESERVATIONS: u32 = CONVOY_PRIORITY_RESERVATIONS;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// different field. The same id names the same concept in every collection that
 /// carries it (d26's convention).
 pub mod field {
@@ -334,7 +336,7 @@ pub mod field {
     pub const ASSIGNED: u32 = 73;
 
     /// Id 80 was reserved for this field before the collection could be ported;
-    /// §11 makes that assignment permanent.
+    /// schema-identity contract makes that assignment permanent.
     pub const RESERVATION_COUNT: u32 = 80;
     pub const RESERVATION_PRIORITY: u32 = 81;
     /// Historical name retained now that the reserved field is implemented.
@@ -418,7 +420,7 @@ const PDQ1_EQUIPMENT_ID_TYPE: u32 = d11_grammar::deployment::EQUIPMENT_ID_TYPE;
 const PDQ1_MAX_STRING_BYTES: usize = 16 * 1024;
 
 /// The `line_subtype` codes of the `PLS1` join (`world_fold.rs::parse_production_line_subtype_segment`).
-/// A mutually exclusive set, so §3's Enum rule applies and the overlap the fold
+/// A mutually exclusive set, so record-state contract's Enum rule applies and the overlap the fold
 /// rejects becomes inexpressible.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -485,10 +487,10 @@ pub fn schema() -> Schema {
                 collection_id: COUNTRIES,
                 shape: Shape::KeyedSet,
                 fields: vec![
-                    // A country tag db id is content-defined (§5) — a manifest
+                    // A country tag db id is content-defined (content-identity contract) — a manifest
                     // must resolve it for it to keep its meaning under another
                     // mod set. d63 and d26 key their countries the same way.
-                    // A ContentId **key**, the heavier §13 retrofit class.
+                    // A ContentId **key**, the heavier codec-measurement contract retrofit class.
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     // `PCP1` bit 0/1/2. A measured boolean: `false` says the
                     // collector could not read that vector this hour
@@ -620,8 +622,8 @@ pub fn schema() -> Schema {
                     Field::new(f::CREATOR_TAG_DB_ID, Kind::ContentId).unknown_capable(),
                     // `attach_log.rs:69023`, verbatim: "`origin_tag_db_id == 0`
                     // means the engine's optional origin override is absent."
-                    // That is §3's null — the relation genuinely points at
-                    // nothing — and it is safe from §3's sentinel ban because
+                    // That is record-state contract's null — the relation genuinely points at
+                    // nothing — and it is safe from record-state contract's sentinel ban because
                     // `0` is not a country: every d11 parser rejects a zero tag.
                     // The fold emits the raw `0` (`world_fold.rs::fold_production`), which
                     // decides value-vs-nothing and nothing else.
@@ -912,7 +914,7 @@ pub struct DeploymentShape {
     pub line_rows: u32,
     pub equipment_rows: u32,
     /// Bytes of UTF-8 payload, excluding the four-byte length prefixes. The
-    /// quantity §4 has no kind for.
+    /// quantity schema-kind contract has no kind for.
     pub string_bytes: usize,
     /// Total bytes of the whole `PDQ1` segment, header included.
     pub segment_len: usize,
@@ -2195,7 +2197,7 @@ fn key_from_construction_value(row: d11_grammar::ConstructionRow, ordinal: u32) 
 
 /// One compact row of the `stockpile` table, as the collector emits it today,
 /// onto its stored Record. `row` is the raw 16-byte row slice (the caller has
-/// already consumed the table header via [`split_payload`]). `frame_tick` is §6's
+/// already consumed the table header via [`split_payload`]). `frame_tick` is derived-field contract's
 /// derived-field input; d11 declares no derived field, so it is taken and
 /// ignored — every domain's mapper has the same shape.
 pub fn record_from_stockpile_row(
@@ -2368,7 +2370,7 @@ fn record_from_construction_value(
         let value = match f.field_id {
             // `world_fold.rs::fold_production` omits the key on the sentinel; the collector
             // writes it for an unreadable template subobject
-            // (`attach_log.rs:85351`), which is §3's unknown.
+            // (`attach_log.rs:85351`), which is record-state contract's unknown.
             field::TEMPLATE_ID => {
                 if template_id == TEMPLATE_ID_ABSENT {
                     Value::Unknown
@@ -2397,7 +2399,7 @@ fn record_from_construction_value(
 ///
 /// `completeness` is that country's `PCP1` flag word, or `None` when the frame
 /// carried no `PCP1` segment — the fold leaves all three witnesses off the JSON
-/// in that case (`world_fold.rs::fold_production`), which is §3's
+/// in that case (`world_fold.rs::fold_production`), which is record-state contract's
 /// unknown, not a false.
 pub fn record_from_country(
     collection: &Collection,
@@ -2443,7 +2445,7 @@ pub fn record_from_license_item(
                 None => Value::Unknown,
             },
             // `attach_log.rs:69023`: zero means "the engine's optional origin
-            // override is absent", which is §3's null and not a country id.
+            // override is absent", which is record-state contract's null and not a country id.
             // d53 reads it the same way (`world_fold.rs::project_production_license_agreements`: `if origin == 0
             // { creator } else { origin }`).
             field::ORIGIN_TAG_DB_ID => match item.origin_tag_db_id {
@@ -3737,7 +3739,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d11 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d11 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         for collection in cols().as_slice() {
             assert!(collection.fields.iter().all(|f| f.derived.is_none()));
@@ -4631,7 +4633,7 @@ mod tests {
 
         // The admitted side of the identity ceiling. Without this the refusal
         // probes below pass for any predicate that is merely tight ENOUGH, and
-        // the round-11 off-by-one (`> i32::MAX`, which admits the size ceiling
+        // an off-by-one bound (`> i32::MAX`, which admits the size ceiling
         // no database can index) is only visible as the difference between
         // these two values.
         //
@@ -4789,7 +4791,7 @@ mod tests {
         assert_eq!(
             shape.string_bytes,
             "1. Infanterie-Division".len() + "role_infantry".len() + "infantry_equipment".len(),
-            "the bytes §4 has no kind for, which is why this collection stops"
+            "the bytes schema-kind contract has no kind for, which is why this collection stops"
         );
         // And nothing in the schema can hold any deployment-queue string.
         assert!(
@@ -4921,7 +4923,7 @@ mod tests {
 
     #[test]
     fn the_line_array_order_survives_a_frame_with_no_ppr1_segment() {
-        // The reviewer's input: two military lines for one country in wire order
+        // The regression input: two military lines for one country in wire order
         // [20, 10] and no `PPR1`. `fold_production` accepts that frame and keeps
         // `[20, 10]`; reversing the two rows folds to a different array. The
         // dense `line_ordinal` is what keeps the two distinguishable, since
@@ -4979,7 +4981,7 @@ mod tests {
 
     #[test]
     fn a_reordered_convoy_variant_run_stays_distinguishable() {
-        // The reviewer's input: `[(61, 100000), (60, 100000)]` is a complete
+        // The regression input: `[(61, 100000), (60, 100000)]` is a complete
         // PCV1 country the fold accepts, and it preserves that array order. The
         // same two variants in the other order fold to a DIFFERENT array, so the
         // two frames must reach different stored states here. A keyed set alone
@@ -5144,7 +5146,7 @@ mod tests {
 
     #[test]
     fn a_pure_reservation_reorder_changes_the_ordered_collection() {
-        // The reviewer's own input, from `deepwar_t1` tag 29 at hours 60832407
+        // The regression input, from `deepwar_t1` tag 29 at hours 60832407
         // and 60832417: the same `{priority, count}` multiset in a different
         // source order. `fold_production` stores an ordered array and those two
         // hours differ; any keyed set over `(tag, priority)` stores them

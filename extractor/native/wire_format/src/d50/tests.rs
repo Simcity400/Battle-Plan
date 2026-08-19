@@ -328,10 +328,10 @@ fn it_is_a_keyed_set_keyed_by_the_folds_own_tuple() {
 #[test]
 fn no_field_is_derived_and_the_content_id_sweep_is_recorded() {
     let c = collection();
-    // §6 derived fields are clock-linear integers; nothing here changes
+    // derived-field contract derived fields are clock-linear integers; nothing here changes
     // deterministically with the clock, so `frame_tick` never enters a value.
     assert!(c.fields.iter().all(|f| f.derived.is_none()));
-    // The ContentId retrofit sweep (§13) needs "checked, and here they are",
+    // The ContentId retrofit sweep (codec-measurement contract) needs "checked, and here they are",
     // not silence. d50 has exactly one, and it is a VALUE, not a key — the
     // lighter retrofit class, because no baseline byte layout depends on it.
     let content_ids: Vec<u32> = c
@@ -352,7 +352,7 @@ fn no_field_is_derived_and_the_content_id_sweep_is_recorded() {
 #[test]
 fn the_schema_declares_exactly_the_states_the_mapper_can_emit() {
     let c = collection();
-    // No field is nullable, and there is no case to write for one: §3's `null`
+    // No field is nullable, and there is no case to write for one: record-state contract's `null`
     // is "the relation genuinely points at nothing", and no authority assigns
     // that meaning to any clear gate in this row. Every clear gate is either a
     // concept that does not apply (a convoy's CShip fields -> absent) or a read
@@ -583,7 +583,7 @@ fn each_member_owned_gate_is_unknown_on_its_own_field_only() {
 fn a_real_zero_is_a_value_not_an_empty_state() {
     let c = collection();
     // Every gate set, every measurable value zero: the row a brand-new,
-    // undamaged, inexperienced ship packs. §3 keeps zero out of the three
+    // undamaged, inexperienced ship packs. record-state contract keeps zero out of the three
     // empty states.
     let raw = Raw {
         group_index: 0,

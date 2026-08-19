@@ -1,17 +1,13 @@
-//! Canonical product-blocker registry — the enumerated set of surfaces
+//! Product-blocker registry — the enumerated set of surfaces
 //! `replay_app` refuses in the product path.
 //!
-//! Authority: `documents/DECISIONS.md` ("Viewing refuses unless the exact
-//! recorded playback capability can be reconstructed"; declared gaps are
-//! unavailable and never substitute a stale frame) and the per-law contracts
-//! under `replay_interface/documents/`. This registry is the executable form of that
-//! intent: `--list-blockers` exposes the enumeration, and the coverage test
-//! below proves that the enumeration is complete.
+//! Declared gaps are unavailable and never substitute a stale frame. This
+//! registry enforces that behavior: `--list-blockers` exposes
+//! the enumeration, and the coverage test below proves that it is complete.
 //!
 //! `replay_app` fails closed on any product path whose rendering/state law still
 //! has FIT/UNKNOWN residuals, plus legacy opt-outs and debug knobs that must
-//! never touch the final render surface. This module is the SINGLE SOURCE for
-//! that list:
+//! never touch the final render surface. This module owns the executable list:
 //!
 //! - every fail-closed message is stored here as [`Blocker::reason`] and the
 //!   `main.rs` gates reference it (pure indirection — no behavior change);
@@ -197,9 +193,7 @@ impl BlockerKind {
     }
 }
 
-/// Current disposition. Every registry row is `Blocked` today; the type exists
-/// so an earned-off block flips its status (and the emission records it) rather
-/// than silently disappearing.
+/// Serialized disposition for a registry row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// Fail-closed. Awaits the closure evidence in [`Blocker::waits_for`].
@@ -223,8 +217,8 @@ pub struct Blocker {
     /// The exact fail-closed message returned when the surface is triggered.
     /// The `main.rs` gate for this surface returns this string verbatim.
     pub reason: &'static str,
-    /// Closure reference: the ledger row or law document whose evidence would
-    /// earn the block off (or note that it is a design block).
+    /// The structured-evidence condition or executable invariant that must hold
+    /// before the surface can be enabled.
     pub waits_for: &'static str,
     pub status: Status,
     /// Where the block applies ([`Scope::Always`] vs a production-recording-
@@ -351,7 +345,7 @@ pub const REGISTRY: &[Blocker] = &[
         surface: CliSwitch("--no-postfx"),
         kind: LegacyOptOut,
         reason: "--no-postfx is blocked: raw captured render targets are not the game's final on-screen image",
-        waits_for: "Design block (GRADING_LAW.md; --postfx is default-on, raw RTs are pre-tonemap)",
+        waits_for: "Design block (--postfx is default-on; raw render targets are pre-tonemap)",
         status: Blocked,
         scope: Always,
         product_path_test: None,
@@ -361,7 +355,7 @@ pub const REGISTRY: &[Blocker] = &[
         surface: CliSwitch("--no-postfx-restore-full"),
         kind: LegacyOptOut,
         reason: "--no-postfx-restore-full is blocked: RestoreScene grading is part of the final game image",
-        waits_for: "Design block (GRADING_LAW.md GRAD1; --postfx-restore-full default-on, fail-closed)",
+        waits_for: "Design block (--postfx-restore-full is default-on and fail-closed)",
         status: Blocked,
         scope: Always,
         product_path_test: None,
@@ -766,8 +760,8 @@ mod tests {
     #[test]
     fn counts_are_exact() {
         // Guardrail: the canonical count is pinned. Bumping it is intentional
-        // and forces `documents/DECISIONS.md` plus the `--list-blockers`
-        // snapshot below to be updated alongside.
+        // and forces the `--list-blockers` snapshot below to be updated
+        // alongside.
         assert_eq!(REGISTRY.len(), 36, "total blocker surfaces");
         let cli = REGISTRY
             .iter()
@@ -850,8 +844,9 @@ mod tests {
     /// comments and string literals containing the call pattern are not
     /// recognized as non-code, and a line whose string content contains `//`
     /// before the call is truncated early. None of these shapes occur in the
-    /// scanned trees today; if one appears, the consuming assertions fail
-    /// loudly (unregistered-name or stale-entry), never silently. The dynamic
+    /// scanned trees; the consuming assertions surface them as
+    /// unregistered-name or stale-entry failures rather than accepting them
+    /// silently. The dynamic
     /// registry-driven read in `reject_env_overrides` has no literal name and
     /// is deliberately outside this scan.
     fn literal_env_reads_in_source(src: &str, out: &mut BTreeSet<String>) {

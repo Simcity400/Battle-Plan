@@ -240,8 +240,6 @@ name = "construction_buildings_state_damage_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "serde_json",
- "snapshot",
 ]
 
 [[package]]
@@ -257,15 +255,6 @@ dependencies = [
  "production_hook_receipt",
  "serde",
  "windows-sys",
-]
-
-[[package]]
-name = "country_economy_counters_live_lane"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
- "serde_json",
- "snapshot",
 ]
 
 [[package]]
@@ -451,16 +440,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
-name = "event_timeline_change_log_live"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
- "recorder_host",
- "serde_json",
- "snapshot",
-]
-
-[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,13 +503,6 @@ dependencies = [
  "serde_json",
  "snapshot",
  "sunk_ship_history_live_lane",
-]
-
-[[package]]
-name = "fold_v3"
-version = "0.1.0"
-dependencies = [
- "snapshot",
 ]
 
 [[package]]
@@ -675,8 +647,6 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "d43_grammar",
- "serde_json",
- "snapshot",
 ]
 
 [[package]]
@@ -963,8 +933,6 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "compact_stream",
- "fold_v3",
- "mimalloc",
  "recorder_host",
  "serde_json",
  "snapshot",
@@ -994,7 +962,6 @@ name = "scientists_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
- "compact_stream",
  "serde_json",
  "sha2",
 ]
@@ -1064,8 +1031,6 @@ dependencies = [
  "inline_detour",
  "minhook_h4",
  "production_hook_receipt",
- "serde_json",
- "snapshot",
  "windows-sys",
 ]
 
@@ -1137,8 +1102,6 @@ dependencies = [
  "inline_detour",
  "minhook_h4",
  "portable_admission",
- "serde_json",
- "snapshot",
  "windows-sys",
 ]
 
@@ -1253,16 +1216,6 @@ name = "victory_points"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
-]
-
-[[package]]
-name = "weather_live_lane"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
- "compact_stream",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

@@ -20,9 +20,8 @@ use crate::anomaly::AnomalyPolicy;
 use crate::bundle::MapBundle;
 use crate::{Result, TimelineMode};
 
-/// A headless recording selection. Canonical hours are absolute
-/// `REPLAY_SCHEMA` hour_index values; ordinals are zero-based positions in the
-/// verified recording index.
+/// A headless recording selection. Canonical hours are absolute `hour_index`
+/// values; ordinals are zero-based positions in the verified recording index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DumpHourRequest {
     Canonical(i64),
@@ -612,8 +611,8 @@ impl RecordingTimeline {
     /// identically on every recorded hour, over the same
     /// `selected_canonical_hour` + `scan_anomalies_through` prologue the render
     /// loop takes. They stay because that equivalence is the claim, and because
-    /// DECISIONS.md's "a replay opens where you stopped watching" restores at an
-    /// hour rather than a frame index.
+    /// The `PROJECT.md` heading "Time, identity, sessions, and files" requires
+    /// restoration at an hour rather than a frame index.
     pub fn seek_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
         let canonical_hour = self.selected_canonical_hour(hour)?;
         self.scan_anomalies_through(canonical_hour)?;

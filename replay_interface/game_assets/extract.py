@@ -59,9 +59,8 @@ DEFAULT_MOD = str((REPO.parent / "test").resolve())  # .../mod/test
 IDEOLOGIES = {"fascism", "communism", "democratic", "neutrality"}
 
 # Priority .gui views to parse into layout JSON (filename stem -> output name).
-# Scope = the §C.4 core in-game replay-target views (group 2). EXCLUDES the ~28
-# frontend/lobby files (group 0) and is independent of the ~19 nation-specific
-# *_scripted_gui overlays (group 1, degrade/selective). The parser extends
+# Scope = core in-game replay-target views. This excludes frontend/lobby files
+# and is independent of nation-specific *_scripted_gui overlays. The parser extends
 # mechanically; adding a stem here parses it on the next run.
 PRIORITY_GUI = {
     # --- Topbar / clock / minimap / alerts / menu / outliner ---
@@ -948,7 +947,7 @@ def _modset_manifest(layers: list, source: str, warnings: list,
         "note": ("Ordered vanilla->modN per Clausewitz: file-level override by "
                  "relpath (later wins); replace_path replaces one EXACT dir's "
                  "lower-layer files (non-recursive). The app auto-selects the "
-                 "matching set per replay and warns on mismatch (plan §K)."),
+                 "matching set per replay and warns on mismatch."),
     }
 
 

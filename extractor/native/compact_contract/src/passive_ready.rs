@@ -387,8 +387,7 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
     //
     // It used to be pinned as d85's prerequisite, inside a group named for d85 —
     // "there is no D78 group to put it in; when one is added this entry moves
-    // rather than being duplicated". That group now exists: the owner
-    // descheduled d85 on 2026-08-13 (`documents/DECISIONS.md`), the seven
+    // rather than being duplicated". That group now exists: the seven
     // `gameplay.d85.*` specs left this roster with it, and this site stayed
     // because its own domain was never descheduled. The rule is
     // `compact_contract::production_hook_site_installs`, and
@@ -639,8 +638,7 @@ pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
     // proof or mandatory bit was touched, and the two additions are
     // `mandatory: false` like every other gameplay producer.
     //
-    // 2026-08-13: recomputed after the seven `gameplay.d85.*` sites were
-    // REMOVED. The owner descheduled d85 (`documents/DECISIONS.md`), so a
+    // Recomputed after the seven `gameplay.d85.*` sites were removed. A
     // shipped capture no longer installs its detours, and a roster that still
     // named them would make `outcomes()` demand receipts nothing mints. The
     // d78 designer-refresh site stayed: its own domain was never descheduled.

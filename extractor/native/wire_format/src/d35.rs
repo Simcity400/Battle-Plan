@@ -1,14 +1,13 @@
 //! d35 `air_variant_stats` — the per-variant aircraft stat catalog.
 //!
-//! Derived from `world_fold.rs:20747`-`:20810`
+//! Derived from `world_fold.rs:20723`-`:20786`
 //! (`fold_air_variant_stats`), its payload constants at `:987`-`:988`, the state
-// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=20747-20810 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=502749f448f2e11a31303888a38fbbafe95aa1ff4857afb5e30c60aca0d97c26
+// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=20723-20786 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=04a65d0b27e64bca4cfdd6b3ed960b38877c33f361b63513490403746671e4cc
 //! struct and render at `:23835`-`:23889`, and the collector read and payload
 //! writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:52997`-`:53067`,
 //! `:57497`-`:57563` and `:70484`-`:70520`).
-//! `domains/UNDOCUMENTED_DOMAINS.md` lists d35 with no dossier; the fold and the
-//! collector read are the whole basis, which the recipe treats as sufficient.
+//! The fold and collector read are the field-level basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_air_variant_stats`, writer at
 //! `attach_log.rs:70492`-`:70500`): a 36-byte header — `elapsed_wall_ms` u64 at
@@ -81,7 +80,7 @@
 //!    observation about one capture, and it is asserted every hour by the
 //!    measurement bin.
 //! 2. **One record is not one state.** The collector emits only rows that
-//!    changed since its own last frame (`attach_log.rs:52773`-`:52777` (pre-9160a8a0 lines; see git history)), so most
+//!    changed since its own last frame (`read_compact_air_variant_stats_row`), so most
 //!    hours carry a *rowless* payload and the hour's state is the accumulator,
 //!    not the record. This is the recipe's fourth public boundary: [`Accumulator`]
 //!    and [`Accumulator::fold_payload`] live here so the measurement bin, the
@@ -96,9 +95,9 @@
 //! **`changed_rows` is not asserted equal to `row_count`.** The writer sets both
 //! from the same `rows.len()` (`attach_log.rs:70494`-`:70495`) and they are equal
 //! on every record of the capture, but the fold does not read `changed_rows` at
-//! all. Asserting a producer identity the authority does not state is how a
-//! harness starts rejecting streams the recorder accepts — it was a round-1
-//! finding on d10. Both words are exposed; neither is enforced.
+//! all. Asserting a producer identity the authority does not state makes a
+//! harness reject streams the recorder accepts. Both words are exposed; neither
+//! is enforced.
 //!
 //! ## Four states: this schema declares none of them
 //!
@@ -139,9 +138,9 @@
 //! (`DIVISION_EQUIPMENT_VARIANT_OFF_ID`, `attach_log.rs:57505`), variants are
 //! designed during play, and variant 3421 is a different variant next campaign.
 //! No content manifest resolves it — the d33/d37 catalogs that name variants are
-//! themselves capture data. §5's deciding question answers "no", so it is
+//! themselves capture data. content-identity contract's deciding question answers "no", so it is
 //! `Unsigned`, and d35 therefore carries no `ContentId` **key**, which is the
-//! heavier §13 retrofit class.
+//! heavier codec-measurement contract retrofit class.
 //!
 //! The three token words answer the same question the same way, and the evidence
 //! is unusually direct: to turn `equipment_token_raw` into a name at all, the
@@ -157,16 +156,16 @@
 //!
 //! `interface_type_raw` is deliberately **not** an `Enum`: the fold validates no
 //! cardinality, so any `enum_card(n)` this module invented would reject codes at
-//! or above `n` (§4) — turning data the recorder accepts into a refused row.
+//! or above `n` (schema-kind contract) — turning data the recorder accepts into a refused row.
 //!
 //! **A d35 port yields unnamed variants.** The human-readable `display_name` and
 //! `variant_name` live in d33 `air_variant_defs` and d37
 //! `stockpile_variant_defs`, which are stop conditions (length-prefixed UTF-8
-//! strings, and `WIRE_FORMAT.md` has no string kind). This domain carries the
+//! strings, and the wire grammar has no string kind). This domain carries the
 //! numbers and the identity to join on; it does not carry the names, and nothing
 //! here can supply them.
 //!
-//! **No derived field (§6).** Nothing in d35 changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing in d35 changes deterministically with the
 //! clock: a variant's stats move when its owner researches or refits, on player
 //! and AI action. The mapper still takes `frame_tick` so every domain's boundary
 //! has one shape.
@@ -179,7 +178,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 35;
 pub const VARIANTS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const VARIANT_ID: u32 = 1;
     pub const FLAGS: u32 = 2;
@@ -303,7 +302,7 @@ pub fn schema() -> Schema {
     // schema constant. A `Fixed(k)` declaration is a claim that the source lives
     // on a `10^-k` grid, and d35's source lives on a grid the payload chooses at
     // runtime — `Fixed(5)`/`Fixed(3)` would be exactly right for this capture's
-    // `(100_000, 1_000)` and silently lossy for any other legal pair. §4's rule
+    // `(100_000, 1_000)` and silently lossy for any other legal pair. schema-kind contract's rule
     // decides it outright: `Exact` for anything you are unsure about, because
     // under-quantizing costs bytes and over-quantizing is unrecoverable.
     for (id, _, _) in STATS {
@@ -324,7 +323,7 @@ pub fn schema() -> Schema {
             collection_id: VARIANTS,
             // `variant_id` is a stable identity that persists across hours, which
             // is what a keyed set needs — and only a keyed set has a delta
-            // grammar (§7.3). The shipping layer is incremental upsert with no
+            // grammar (collection-shape contract). The shipping layer is incremental upsert with no
             // delete, so the key set only grows; see [`Accumulator`].
             shape: Shape::KeyedSet,
             fields,
@@ -427,7 +426,7 @@ pub fn variant_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// onto its stored Record. `row` is the raw 64-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d35 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d35 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -450,11 +449,11 @@ pub fn record_from_row(
     frame_tick: u64,
     scales: RowScales,
 ) -> core::result::Result<Record, String> {
-    // d35 has no derived field; §6's transform input is unused. Named rather
+    // d35 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row)?;
-    // `variant_id` is the key and so is not carried in the record body (§3), but
+    // `variant_id` is the key and so is not carried in the record body (record-state contract), but
     // its validity is still part of this row's validity.
     let _ = variant_id_of_row(row)?;
 
@@ -504,7 +503,7 @@ pub fn record_from_row(
 /// The running d35 state, replaying `fold_air_variant_stats`'s upsert grammar.
 ///
 /// d35 needs this and d63 did not: the collector emits only rows that changed
-/// since its own last frame (`attach_log.rs:52773`-`:52777` (pre-9160a8a0 lines; see git history)), so one record is
+/// since its own last frame (`read_compact_air_variant_stats_row`), so one record is
 /// not one state and the hour's content lives here rather than in the record.
 ///
 /// The whole grammar is "insert every row" — there is no baseline/delta
@@ -699,14 +698,14 @@ mod tests {
 
     #[test]
     fn no_field_is_a_content_id() {
-        // The §13 manifest retrofit sweeps for `ContentId`; d35 must show up in
+        // The codec-measurement contract manifest retrofit sweeps for `ContentId`; d35 must show up in
         // it with nothing, and that has to be an assertion rather than a claim.
         // Every id-like word here is either a runtime instance identity or a
         // process-local token handle — see the module docs.
         let c = collection();
         assert!(
             c.fields.iter().all(|f| f.kind != Kind::ContentId),
-            "d35 carries no ContentId, so no field of it changes when §5's \
+            "d35 carries no ContentId, so no field of it changes when content-identity contract's \
              manifest-id assignment rule lands"
         );
     }
@@ -747,7 +746,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d35 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d35 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         let c = collection();
@@ -989,7 +988,7 @@ mod tests {
         // 59 of the capture's 204 variants read `air_attack == 0` (transports and
         // trainers), 4 read `air_defence == 0` and `thrust == 0`, 1 reads
         // `fuel_consumption == 0`, 4 read `interface_type_raw == 0`, and every one
-        // of the 204 reads `flags == 0`. §3 keeps zero out of the three empty
+        // of the 204 reads `flags == 0`. record-state contract keeps zero out of the three empty
         // states, so every one of those is `Unsigned(0)` or `Continuous(0.0)`.
         let c = collection();
         let r = record_from_row(&c, &raw_row(836, 0, [20_165, 1, 0], [0; 10]), 0, capture_scales())
@@ -1071,7 +1070,7 @@ mod tests {
         // and `range_scale_raw` name at runtime, and the schema is fixed while
         // the header is not. `Fixed(5)`/`Fixed(3)` would be exact for this
         // capture's (100_000, 1_000) and silently lossy for any other legal pair,
-        // which is §4's unrecoverable direction.
+        // which is schema-kind contract's unrecoverable direction.
         let c = collection();
         let continuous: Vec<u32> = c
             .value_fields()
@@ -1222,7 +1221,7 @@ mod tests {
         // they are equal on all 146 records of the capture — but the fold never
         // reads `changed_rows`. Enforcing a producer identity no authority states
         // is how a harness starts refusing streams the recorder accepts (a
-        // round-1 finding on d10). Both are exposed; neither is enforced.
+        // the corresponding invariant). Both are exposed; neither is enforced.
         let mut p = payload((CAPTURE_FIXED_SCALE, CAPTURE_RANGE_SCALE), 0, &[full_row()]);
         for changed in [0u32, 1, 7, u32::MAX] {
             p[12..16].copy_from_slice(&changed.to_le_bytes());

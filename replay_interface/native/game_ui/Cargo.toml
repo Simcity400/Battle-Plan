@@ -24,8 +24,7 @@ replay_test_gates = { path = "../replay_test_gates" }
 replay_core = { path = "../replay_core", features = ["test_support"] }
 
 [dependencies]
-# Consumers read world state ONLY through replay_core's typed views
-# (REPLAY_PRODUCTION_PLAN §0 Constraint 2). The topbar/ideology bindings
+# Consumers read world state only through replay_core's typed views. The topbar/ideology bindings
 # (D1/D2) map those views to UI strings; no recording bytes are parsed here.
 replay_core = { path = "../replay_core" }
 map_viewer = { path = "../map_viewer" }

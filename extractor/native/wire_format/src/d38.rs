@@ -1,9 +1,9 @@
 //! d38 `air_superiority_inputs` — the equipment actually flying each air mission,
 //! aggregated into `(region, owner, mission, variant)` buckets.
 //!
-//! Derived from `world_fold.rs:20934`-`:21069`
+//! Derived from `world_fold.rs:20910`-`:21045`
 //! (`fold_air_superiority_inputs`), its payload constants at `:991`-`:992`,
-// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=20934-21069 sha256=0d9ec25354f229338546a9c188fb9251b664880f6276727f2f4fa29344bdb840 closure=15b571cf8ffb4600816a58b937d9454e6bdcbcce5addf764cc9ee028c2d475c3
+// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=20910-21045 sha256=0d9ec25354f229338546a9c188fb9251b664880f6276727f2f4fa29344bdb840 closure=bfc3c3dced0147604b00ec22ee85fb30bd9a130192bdb7b00cfb02672ac7688e
 //! `:758` and `:156`, the accumulator's own JSON projection (`world_fold.rs::insert_air_superiority_inputs`), and
 //! the collector read that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:55529`-`:55769`,
@@ -118,7 +118,7 @@
 //! `interface_type_raw` is an engine discriminator of d20's `div_type` family
 //! (`d35.rs:145`-`:155`). `interface_type_raw` is deliberately **not** an `Enum`
 //! for the reason d35 gives: the fold validates no cardinality, so any
-//! `enum_card(n)` invented here would reject codes at or above `n` (§4) — 18
+//! `enum_card(n)` invented here would reject codes at or above `n` (schema-kind contract) — 18
 //! distinct values in `0..=22` on this capture, with nothing bounding the next one.
 //!
 //! ## Four states: none
@@ -190,7 +190,7 @@
 //! must be accepted here. [`peek_header`] is the first group, [`split_payload`]
 //! adds the second.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: a bucket's contents move when wings re-task, take losses or are
 //! re-equipped, on player and AI action. `frame_tick` is taken and ignored so every
 //! domain's boundary has one shape.
@@ -204,7 +204,7 @@ pub const DOMAIN: u32 = 38;
 /// The one collection: one row per `(region, owner, mission, variant)` bucket.
 pub const SUPERIORITY_INPUTS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const REGION_ID: u32 = 1;
     pub const OWNER_TAG_DB_ID: u32 = 2;
@@ -252,7 +252,6 @@ pub const SCALE_DIGITS: u8 = 5;
 /// `fixed_five_reproduces_every_raw_in_the_band` proves by a dense sweep.
 ///
 /// **This is a sufficient band, not the maximal one, and the difference is
-/// recorded rather than glossed** (a round-5 review finding against an earlier
 /// draft that called it tight). The smallest inexact magnitude found is
 /// [`FIRST_KNOWN_INEXACT_AMOUNT_RAW`] — about 52.6% above this constant — so the
 /// true contiguous exact band is larger than `2^51`. Nothing gates on either
@@ -261,10 +260,10 @@ pub const SCALE_DIGITS: u8 = 5;
 /// below X" over a 3.4e15-wide interval is not something a sweep establishes.
 /// Above the band the stored value is still a legal
 /// point of the declared `10^-5` grid and within one unit in the last place of the
-/// source, and encode/decode remains exactly consistent (§6's escape rule keeps an
+/// source, and encode/decode remains exactly consistent (derived-field contract's escape rule keeps an
 /// unstable integer off the quantized path entirely, `value.rs`), but a consumer
 /// recovering the raw integer may see it differ by one. Closing that residue needs
-/// an integer-domain `Fixed` in the codec — a `WIRE_FORMAT.md` §13 item, not a
+/// an integer-domain `Fixed` in the codec, not a
 /// schema-side or mapper-side decision. It is in the deliverable's open questions.
 ///
 /// **Refusing such a row would be worse than carrying it** (the recipe's d36 rule).
@@ -319,7 +318,7 @@ pub fn schema() -> Schema {
         //
         // `region_id` is a strategic air region — map content a mod set defines,
         // so a content manifest must resolve it for the id to keep its meaning
-        // (§5's deciding question). ContentId, as d31 classes the same word and
+        // (content-identity contract's deciding question). ContentId, as d31 classes the same word and
         // d20 classes `location_province`.
         Field::new(f::REGION_ID, Kind::ContentId).key(0),
         // A country tag-db id, classed as ContentId by d20 (`owner`), d31, d62 and
@@ -331,7 +330,7 @@ pub fn schema() -> Schema {
         // types are engine constants — no mod-set manifest resolves bit 9 into a
         // different mission — which is d20's `div_type` case, an engine
         // discriminator that is stable everywhere and still not content. It is also
-        // not `Enum`: §7.4 admits only `Unsigned`, `Signed` and `ContentId` as key
+        // not `Enum`: key-encoding contract admits only `Unsigned`, `Signed` and `ContentId` as key
         // kinds, and a bitmask is not a code in `0..n` anyway — the fold constrains
         // it not at all (`:15464` reads the word and uses it whole), so any of the
         // 2^32 words is a legal bucket. Measured on the capture: eight distinct
@@ -356,7 +355,7 @@ pub fn schema() -> Schema {
         Field::new(f::EQUIPMENT_TYPE_TOKEN, Kind::Unsigned),
         Field::new(f::INTERFACE_TYPE, Kind::Unsigned),
         // How many wings contribute to this bucket (`world_fold.rs::fold_air_superiority_inputs`, summed
-        // at `attach_log.rs:55646`). `Unsigned`, not `Monotone`: §4 makes monotone
+        // at `attach_log.rs:55646`). `Unsigned`, not `Monotone`: schema-kind contract makes monotone
         // a hint that a value usually rises, and this one is recomputed from
         // scratch every frame over the wings currently flying that mission in that
         // region, so it falls whenever a wing re-tasks or dies. It counts a current
@@ -371,7 +370,7 @@ pub fn schema() -> Schema {
         // `10^5` before folding anything (`world_fold.rs::fold_air_superiority_inputs`), so `fixed(5)` is the source's
         // own grid and reproduces the source integer bit for bit over the whole
         // accepted band (proved in `fixed_five_reproduces_every_raw_in_the_band`).
-        // §6's "exact unless justified" bar is met by a stronger fact than a
+        // derived-field contract's "exact unless justified" bar is met by a stronger fact than a
         // precision argument: nothing is rounded at all. It also matters that the
         // raw integer survives — the fold's own renderer emits `amount_raw` beside
         // `amount` (`world_fold.rs::insert_air_superiority_inputs`), so a downstream consumer requires the integer, and
@@ -383,7 +382,7 @@ pub fn schema() -> Schema {
         // step for a large `amount_raw` is `raw as f64` in the mapper, which both
         // quantizations share, so `exact` recovers the source integer over exactly
         // the same band and spends 8 bytes doing it. Above that band
-        // (`EXACT_AMOUNT_RAW_BAND`) neither carries the integer exactly, and §6's
+        // (`EXACT_AMOUNT_RAW_BAND`) neither carries the integer exactly, and derived-field contract's
         // escape rule keeps the wire self-consistent either way.
         Field::new(f::AMOUNT, Kind::Continuous).quant(Quant::Fixed(SCALE_DIGITS)),
     ];
@@ -396,7 +395,7 @@ pub fn schema() -> Schema {
             collection_id: SUPERIORITY_INPUTS,
             // The fold upserts and deletes by key against a retained map
             // (`world_fold.rs::fold_air_superiority_inputs`) — a keyed set is what that is, and
-            // only a keyed set has a delta grammar (§7.3).
+            // only a keyed set has a delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -673,7 +672,7 @@ pub fn is_deleted_row(row: &[u8]) -> core::result::Result<bool, String> {
 /// today, onto its stored Record. `row` is the raw 48-byte row slice (the caller
 /// has already consumed the payload header via [`split_payload`]); d38 has exactly
 /// one row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d38 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -688,7 +687,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d38 has no derived field; §6's transform input is unused. Named rather than
+    // d38 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_row(row)?;
@@ -806,7 +805,7 @@ impl Accumulator {
     /// hand-copied mask. Delta-before-baseline is handled here instead, because
     /// `baseline_seen` is state this type holds.
     ///
-    /// `frame_tick` is §6's derived-field input; d38 declares no derived field.
+    /// `frame_tick` is derived-field contract's derived-field input; d38 declares no derived field.
     ///
     /// **Atomic on `Err`.** Every row is parsed and mapped before anything is
     /// written, so a payload this rejects leaves the accumulator exactly as it found
@@ -821,7 +820,7 @@ impl Accumulator {
         is_delta: bool,
         frame_tick: u64,
     ) -> core::result::Result<FoldOutcome, String> {
-        // d38 has no derived field; §6's transform input is unused. Named rather
+        // d38 has no derived field; derived-field contract's transform input is unused. Named rather
         // than `_frame_tick` because the signature is the cross-domain contract.
         let _ = frame_tick;
         // `world_fold.rs::fold_air_superiority_inputs`: the header-structural checks that precede
@@ -1105,7 +1104,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "an air region is map content a manifest must resolve (§5)"
+            "an air region is map content a manifest must resolve (content-identity contract)"
         );
         assert_eq!(
             keys[1].kind,
@@ -1139,7 +1138,7 @@ mod tests {
 
     #[test]
     fn the_content_id_sweep_is_recorded_not_silent() {
-        // §13's manifest-id retrofit sweep needs "checked, and these are the ones"
+        // the ContentId retrofit sweep needs "checked, and these are the ones"
         // rather than silence. Two ContentId fields, BOTH key components — the
         // heavier retrofit class, because a manifest remap reorders keys and changes
         // the byte layout of every baseline and key list, not just one value.
@@ -1180,7 +1179,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; a superiority bucket moves on
+        // derived-field contract derived fields are clock-linear integers; a superiority bucket moves on
         // re-tasking, losses and refits, not on the clock, so `frame_tick` never
         // enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
@@ -1203,7 +1202,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value() {
-        // §3 keeps zero out of the three empty states. Measured instance: 6 live
+        // record-state contract keeps zero out of the three empty states. Measured instance: 6 live
         // rows of the capture carry `interface_type_raw == 0`, the engine's own
         // code 0. `wing_count` and `amount_raw` are zero only in a delete row today,
         // but the fold accepts a live row carrying either, and a mapper that turned
@@ -1497,7 +1496,6 @@ mod tests {
         }
 
         // The band is SUFFICIENT, not maximal, and that distinction is pinned here
-        // rather than left as prose (round-5 review finding — an earlier draft
         // called it tight, which the numbers below refute).
         //
         // The smallest known inexact magnitude and its predecessor, both directions:
@@ -1550,7 +1548,7 @@ mod tests {
         // gates on magnitude nowhere: whatever the mapper produced, the bytes
         // reproduce it exactly and re-encode identically. Above
         // `EXACT_AMOUNT_RAW_BAND` the recovered *raw integer* may drift by one (see
-        // that constant), but the wire never disagrees with itself — §6's escape rule
+        // that constant), but the wire never disagrees with itself — derived-field contract's escape rule
         // puts an unstable value on the raw-f64 path instead.
         let c = collection();
         let mut raws: Vec<i64> = vec![

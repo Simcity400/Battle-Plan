@@ -1,6 +1,6 @@
 //! Encode the real D04 deep-war save's division set both ways: the shipping
 //! 120-byte compact row (`world_fold.rs` layout) and this crate's BASELINE, in
-//! both §13 arms. `bench_layout` measures a modelled month; this measures one
+//! both codec-measurement contract arms. `bench_layout` measures a modelled month; this measures one
 //! real population — 3,168 divisions from an actual 1944 campaign — so the size
 //! claim has at least one non-synthetic anchor.
 //!
@@ -18,7 +18,7 @@
 //!
 //! **Two bounds the stream-harness sweep enforces elsewhere are structurally
 //! N/A here, stated so the sweep can tell "checked, none" from "not checked".**
-//! (1) `WIRE_FORMAT.md` §1.5's gap-forces-baseline rule: this bin encodes ONE
+//! (1) The complete-baseline-after-gap rule: this bin encodes ONE
 //! baseline from ONE save snapshot — there is no hour sequence, no delta chain,
 //! and no `UNCHANGED` run, so no gap can exist for a baseline to be forced
 //! across. (2) The cross-domain validation bound: the input is
@@ -141,7 +141,7 @@ fn build_state(collection: &wire_format::schema::Collection, divs: &[Div]) -> Ke
                 _ => {
                     if f.unknown_capable {
                         // The A15 extension trio: supported by the schema,
-                        // not carried by this source — §3's unknown.
+                        // not carried by this source — record-state contract's unknown.
                         Value::Unknown
                     } else {
                         // has_-gated optionals the source did not carry.

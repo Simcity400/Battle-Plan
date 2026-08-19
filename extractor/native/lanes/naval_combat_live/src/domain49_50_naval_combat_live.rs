@@ -99,8 +99,7 @@ pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;
 /// than the SPACE, which is why lane IA's name-based census -- built around
 /// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
 /// rounds. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other. Dossier:
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// a province id like any other.
 pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;

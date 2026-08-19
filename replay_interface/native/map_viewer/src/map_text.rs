@@ -1,10 +1,10 @@
 //! Map-label text sources (OFF-4): localisation strings and the
-//! country-name zoom cutoff, resolver-routed per MOD_COMPATIBILITY.md.
+//! country-name zoom cutoff, resolver-routed per the `PROJECT.md` heading
+//! "Content and mod contract".
 //!
 //! This backs research-only map-label experiments. The engine's curved label
-//! layout is a known [ENGINE-LAW] gap (GAME_FILES_ATLAS_APPENDIX "Map label
-//! curving/layout"), so these straight-label helpers are not product render
-//! inputs.
+//! layout is not implemented by these straight-label helpers, so they are not
+//! product render inputs.
 //!
 //! Sources:
 //! * `localisation/<language>/*.yml` — UTF-8 (BOM) files of

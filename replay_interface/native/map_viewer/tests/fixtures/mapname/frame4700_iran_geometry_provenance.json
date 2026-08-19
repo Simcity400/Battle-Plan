@@ -36,8 +36,14 @@
   "inclusive_numerator": 43364,
   "detached_component_pixels": 42,
   "selected_segment": {
-    "start": [3525, 802],
-    "end": [3761, 897],
+    "start": [
+      3525,
+      802
+    ],
+    "end": [
+      3761,
+      897
+    ],
     "half_length_f32": 127.20161437988281,
     "length_f32": 254.40322875976562
   },
@@ -56,5 +62,5 @@
     "raw_vb_mean_cap_height": 44.68599635588,
     "predicted_to_raw_ratio_f32": 0.9990302920341492
   },
-  "evidence_report": "replay_interface/documents/lane_reports/w16-iran-recheck.md"
+  "evidence_report": "replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv"
 }

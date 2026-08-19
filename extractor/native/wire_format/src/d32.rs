@@ -1,8 +1,8 @@
 //! d32 `air_wing_loadouts` — per-air-wing air-base placement and equipment banks.
 //!
-//! Derived from `world_fold.rs:20378`-`:20519`
+//! Derived from `world_fold.rs:20354`-`:20495`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
-// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=20378-20519 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=94b092cdb0ec515851d5bccfba7799f8ea4b2b95c980fb6ede728ebee8c513ea
+// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=20354-20495 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=4cc518c6002eb58f5d0f61103c266d495623d19d553c22a91eac8ca91bf631a1
 //! accumulator's JSON projection (`world_fold.rs::build_order_of_battle`), the end-of-hour orphan prune
 //! that also writes that accumulator (`world_fold.rs::prune_air_wing_loadout_orphans_for_current_hour`), and the collector read
 //! and packer that produce the rows
@@ -99,7 +99,7 @@
 //! `read_air_wing_pool_air_base_id` (`:57391`-`:57398`) returns `None` on four
 //! conditions: the airbase-handle qword is unreadable, the handle's type word is
 //! not `AIR_BASE_TYPE`, the id is `0`, or the id exceeds `MAX_AIR_BASE_ID`. Three
-//! of the four are read/validation failures — §3's "applicable, not captured" —
+//! of the four are read/validation failures — record-state contract's "applicable, not captured" —
 //! and none of them survives into a serialized row at all.
 //!
 //! The **only** writer of `air_base_id == 0` is
@@ -132,7 +132,7 @@
 //! The entry row has no gate. Unlike d26, the collector does **not** drop zero
 //! lines and the fold does **not** reject `amount_raw <= 0`: a bank slot holding
 //! nothing is a row carrying `0`. Measured: 3,331 of 5,565 entry rows carry
-//! `amount_raw == 0`. §3 keeps zero out of the three empty states, so `amount`
+//! `amount_raw == 0`. record-state contract keeps zero out of the three empty states, so `amount`
 //! declares no capability and its mapper can emit only a value.
 //!
 //! ## A deleted wing is a removal, not a row
@@ -193,7 +193,7 @@
 //! Measured on `runs/batch2/deepwar_t1`: 0 drops in 146 hours, with d30 and d32
 //! holding the identical 643 keys at the end.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing here changes deterministically with the clock: an equipment amount
 //! moves with attrition and production, and a placement moves on order. The
@@ -212,9 +212,9 @@ pub const WINGS: u32 = 1;
 /// One row per equipment line, keyed by its wing plus the variant.
 pub const EQUIPMENT: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. The three key components appear in both collections because they are
-/// the same field in both — the wing's identity — which is what §11 forbids
+/// the same field in both — the wing's identity — which is what schema-identity contract forbids
 /// reusing an id *against*.
 pub mod field {
     pub const OWNER_TAG_DB_ID: u32 = 1;
@@ -277,7 +277,7 @@ pub fn schema() -> Schema {
                 // Wings persist across hours and the frame grammar is
                 // clear-on-first-baseline / upsert-after / DELETED-removes
                 // (`world_fold.rs::fold_air_wing_loadouts`), which is exactly a keyed
-                // set's grammar — and only a keyed set has deltas (§7.3).
+                // set's grammar — and only a keyed set has deltas (collection-shape contract).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is `AirWingKey { owner_tag_db_id, wing_id,
@@ -287,7 +287,7 @@ pub fn schema() -> Schema {
                     // concrete in every row by construction rather than by check.
                     //
                     // `owner_tag_db_id` is a country tag db id — content-defined
-                    // (§5): a manifest must resolve it for it to keep its meaning
+                    // (content-identity contract): a manifest must resolve it for it to keep its meaning
                     // under another mod set. d63 keys its countries the same way,
                     // d26 keys its divisions the same way, d20 classes its
                     // `owner` the same way. This is a ContentId **key**, the
@@ -307,7 +307,7 @@ pub fn schema() -> Schema {
                     // the high half of a runtime engine handle whose type word is
                     // `AIR_BASE_TYPE` (`attach_log.rs:57391`-`:57397`), i.e. an
                     // instance created during play — no content manifest resolves
-                    // it, which is §5's deciding question. d34 keys
+                    // it, which is content-identity contract's deciding question. d34 keys
                     // `air_base_status` by the same id and classes the
                     // content-defined leaves it joins (`state_id`,
                     // `province_id`) separately.
@@ -342,7 +342,7 @@ pub fn schema() -> Schema {
                     // an i64 over a denominator the fold asserts to be exactly
                     // `10^5` (`world_fold.rs::fold_air_wing_loadouts`), so `fixed(5)` reproduces the source
                     // integer bit for bit over every value a producer can emit
-                    // (proved in the tests). §6's "exact unless justified" bar is
+                    // (proved in the tests). derived-field contract's "exact unless justified" bar is
                     // met by a stronger fact than a precision budget: nothing is
                     // rounded at all. It also matters that the raw integer
                     // survives, because the snapshot publishes `amount_raw`
@@ -394,7 +394,7 @@ pub struct WingRow {
     pub wing_id: u32,
     pub generation: u64,
     pub flags: u32,
-    /// `None` when the word is zero (`world_fold.rs::fold_air_wing_loadouts`) — §3's `unknown`, see
+    /// `None` when the word is zero (`world_fold.rs::fold_air_wing_loadouts`) — record-state contract's `unknown`, see
     /// the module docs.
     pub air_base_id: Option<u32>,
     pub entry_first: usize,
@@ -763,7 +763,7 @@ pub fn key_from_equipment_row(
 /// its stored Record. `row` is the raw 32-byte wing row slice (the caller has
 /// already consumed the payload header via [`split_payload`]); d32 has exactly
 /// one wing row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d32 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -778,7 +778,7 @@ pub fn record_from_wing_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d32 has no derived field; §6's transform input is unused. Named rather
+    // d32 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_wing_row(row)?;
@@ -793,7 +793,7 @@ pub fn record_from_wing_row(
     for f in collection.value_fields() {
         let value = match f.field_id {
             // A zero word means the collector could not authenticate an air-base
-            // handle, not that the wing is at no base — §3's `unknown`. See the
+            // handle, not that the wing is at no base — record-state contract's `unknown`. See the
             // module docs; no live row a collector produces can reach it.
             field::AIR_BASE_ID => match parsed.air_base_id {
                 Some(id) => Value::Unsigned(id as u64),
@@ -1206,7 +1206,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert_eq!(keys[1].field_id, field::WING_ID);
         assert_eq!(keys[1].kind, Kind::Unsigned, "a runtime instance identity");
@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(
             ekeys[3].kind,
             Kind::ContentId,
-            "an equipment variant is content-defined (§5), as in d26"
+            "an equipment variant is content-defined (content-identity contract), as in d26"
         );
         for k in &ekeys {
             assert!(k.kind.legal_as_key());
@@ -1362,7 +1362,7 @@ mod tests {
     #[test]
     fn a_zero_amount_is_a_value_not_an_empty_state() {
         // 3,331 of 5,565 entry rows in `runs/batch2/deepwar_t1` carry a zero
-        // amount. §3 keeps zero out of the three empty states, and unlike d26 no
+        // amount. record-state contract keeps zero out of the three empty states, and unlike d26 no
         // producer drops these lines.
         let c = equipment();
         let r = record_from_equipment_row(&c, &entry_row(900, 0), 0).expect("maps");
@@ -1388,7 +1388,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d32 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d32 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         for c in [wings(), equipment()] {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -1756,14 +1756,14 @@ mod tests {
 
     #[test]
     fn the_uniqueness_check_spares_every_row_whose_equipment_the_fold_discards() {
-        // Round-1 review finding, generalized. The check must constrain the state
+        // The check must constrain the state
         // the frame LEAVES BEHIND, not every byte in it: a range the fold never
         // reads cannot collide with anything. Three ways a range is discarded,
         // each with a duplicated variant that must therefore be accepted.
         let dup = [entry_row(900, 100_000), entry_row(900, 200_000)];
 
         // 1. A DELETE row's range is never read (`world_fold.rs::fold_air_wing_loadouts` returns
-        //    before the slice at `world_fold.rs::fold_air_wing_loadouts`). The reviewer's exact input.
+        //    before the slice at `world_fold.rs::fold_air_wing_loadouts`). The exact regression input.
         let deleted = vec![wing_row(7, 11, 3, WING_FLAG_DELETED, 0, 0, 2)];
         assert!(
             split_payload(&payload(0, &deleted, &dup)).is_ok(),

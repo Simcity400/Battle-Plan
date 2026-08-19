@@ -1,8 +1,7 @@
 //! Golden byte vectors.
 //!
-//! `WIRE_FORMAT.md` §13 lists these as the thing that turns "two implementers
-//! produce identical bytes" from a claim the document makes into one it proves.
-//! Each vector pins an encoding the specification argues for in prose; if a
+//! These vectors turn "two implementers produce identical bytes" from a claim
+//! into a mechanically checked property. Each vector pins an encoding; if a
 //! refactor changes any byte here, either the specification changed or the
 //! implementation drifted, and the diff says which.
 //!
@@ -141,7 +140,7 @@ fn vector_delta_body_with_change_bitmap() {
     let mut bytes = Vec::new();
     encode_delta(&schema, std::slice::from_ref(&prior), &[Some(delta.clone())], &mut bytes)
         .unwrap();
-    // Key 2 exists in the prior state, so this is an UPDATE (§7.2) and carries a
+    // Key 2 exists in the prior state, so this is an UPDATE (update-row contract) and carries a
     // change mask plus only the changed field — not a full record.
     assert_eq!(
         bytes,
@@ -578,7 +577,7 @@ fn quantization_and_the_escape_survive_a_real_row() {
 
 #[test]
 fn vector_null_unknown_and_zero_are_three_encodings() {
-    // §3's centrepiece: these must not collapse into each other.
+    // record-state contract's centrepiece: these must not collapse into each other.
     let c = Collection {
         collection_id: 1,
         shape: Shape::KeyedSet,
@@ -614,7 +613,7 @@ fn vector_null_unknown_and_zero_are_three_encodings() {
 
 #[test]
 fn vector_nan_is_normalised_to_the_canonical_pattern() {
-    // §0: the payload and sign of a NaN are not game state. Two writers with
+    // canonical primitive contract: the payload and sign of a NaN are not game state. Two writers with
     // different NaN payloads must emit identical bytes.
     let c = Collection {
         collection_id: 1,
@@ -657,7 +656,7 @@ fn a_non_canonical_nan_payload_is_rejected_on_decode() {
 
 #[test]
 fn an_unnecessary_escape_is_rejected_on_decode() {
-    // §6's escape conditions are exhaustive, so escaping an ordinary value is a
+    // derived-field contract's escape conditions are exhaustive, so escaping an ordinary value is a
     // second encoding of it.
     let c = Collection {
         collection_id: 1,
@@ -677,7 +676,7 @@ fn an_unnecessary_escape_is_rejected_on_decode() {
 
 #[test]
 fn vector_two_time_chains_in_one_block() {
-    // §1.4: the state and event chains advance independently, and the event chain
+    // frame-order contract: the state and event chains advance independently, and the event chain
     // measures its first frame from first_tick.
     let header = BlockHeader { domain: 64, branch: 0, schema_hash: 0, first_tick: 0 };
     let mut w = BlockWriter::new(header, 1);

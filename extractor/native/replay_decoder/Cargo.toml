@@ -7,15 +7,7 @@ autobins = false
 autotests = false
 
 [features]
-dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
 default = []
-# The lanes CC / CE / CZ / DQ / FR measurement instruments that used to live
-# here (`cc-cache-probe`, `ce-cache-anatomy`, `cz-finalize-profile`,
-# `dq-v3-prototype`, `fr-mem-profile`) and the `dev-prefold-worker-bin` fixture
-# were retired with their lanes on 2026-08-13. Their published measurements
-# stand in `extractor/documents/DELTA_WIRE_DESIGN.md` and under
-# `extractor/native/runs/`; the code that produced them does not.
-#
 # Lane GQ bad-hour fault-injection harness. Injects one structural fault at a
 # time into an otherwise clean H4CR stream (and into a real retained container)
 # and reports which game hours the REAL production paths still deliver, which
@@ -36,35 +28,14 @@ gz-interior-holes = []
 # it refuses by name. Measurement only: it writes nothing outside the scratch
 # directory it is given, is never on by default and is never packaged.
 ha-entry-confinement = []
-# Lane HR truncation harness (task #192). Shares lane HA's fixture
+# Truncation harness. Shares the entry-confinement fixture
 # (`src/bin/entry_damage_fixture.rs`) and cuts the packaged H4CP short instead
 # of flipping a byte, reporting which hours the verified prefix still serves.
 # Measurement only: it writes nothing outside the scratch directory it is given,
 # is never on by default and is never packaged.
 hr-truncated-prefix = []
-# Lane MC scrub-latency instrument (`src/bin/mc_scrub_bench.rs`). Times the
-# SHIPPED reader's seek on a real recording's index/cache pair at whatever
-# checkpoint interval it was built with, so the cost of the size lanes' move
-# from a 168-hour interval to a 744-hour one is measured rather than modelled.
-# It lives on THIS side of the boundary, beside the other cache instruments,
-# because it names the two files it is pointed at -- and the replay side's
-# `production_sources_have_no_descendant_pathname_read` audit scans every module
-# under that crate's `src/`, instrument or not. Measurement only: it writes
-# nothing and no production path enables it.
-mc-scrub-bench = []
-# Lane MN per-stage frame-cost instrument (`src/bin/mn_frame_cost.rs`). Prices
-# each stage the viewer pays to put one hour on screen -- walk, serialize,
-# digest, strict parse, flatten deserialize -- separately, on a real
-# index/cache pair, so the round trip the owner ruled against is aimed at
-# rather than estimated. Same acquisition-side placement and the same reason as
-# `mc-scrub-bench`. Measurement only: it writes nothing and no production path
-# enables it.
-mn-frame-cost = []
 
 [dependencies]
-# Instrument-only; pulled in solely by the Lane DQ prototype feature.
-mimalloc = { version = "0.1.52", optional = true }
-fold_v3 = { path = "../fold_v3", optional = true }
 compact_stream = { path = "../compact_stream" }
 compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
@@ -91,24 +62,9 @@ name = "hr_truncated_prefix"
 path = "src/bin/hr_truncated_prefix.rs"
 required-features = ["hr-truncated-prefix"]
 
-[[bin]]
-name = "mc_scrub_bench"
-path = "src/bin/mc_scrub_bench.rs"
-required-features = ["mc-scrub-bench"]
-
-[[bin]]
-name = "mn_frame_cost"
-path = "src/bin/mn_frame_cost.rs"
-required-features = ["mn-frame-cost"]
-
 # `src/bin/replay_prefold_worker.rs` is deliberately NOT a `[[bin]]` target and
 # `autobins = false` keeps it from becoming one. It is PRODUCTION SOURCE: the
 # shipped recorder `include!`s it (`recorder_host/src/main.rs`) and runs it
 # through `replay_app`'s authenticated internal child mode. It must never be
 # minted or packaged as a standalone executable, which is what declaring a
 # target here would allow.
-
-[[bin]]
-name = "dq_v3_prototype"
-path = "src/bin/dq_v3_prototype.rs"
-required-features = ["dq-v3-prototype"]

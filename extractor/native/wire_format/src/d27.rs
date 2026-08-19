@@ -1,9 +1,9 @@
 //! d27 `army_orders` — the battle-plan orders held by armies and army groups,
 //! with the target states an area-defence order covers.
 //!
-//! Derived from `world_fold.rs:19558`-`:19739`
+//! Derived from `world_fold.rs:19535`-`:19716`
 //! (`fold_army_orders`), its payload constants at `:967`-`:969` and
-// @world-fold-authority domain=27 functions=fold_army_orders lines=19558-19739 sha256=648d691c782cbd794ebb2848dc82aaf4e1ec16f0b0e4cdd9ace7e393ba22ce5d closure=a322371e138d2108fd44e17342abe5b3fa89ea54c0b8c8b5eafddd2a2fd9a38e
+// @world-fold-authority domain=27 functions=fold_army_orders lines=19535-19716 sha256=648d691c782cbd794ebb2848dc82aaf4e1ec16f0b0e4cdd9ace7e393ba22ce5d closure=e100b9d805362bdae01902ef2e4f70ff2ef7a0b4f2b4c2ace4a969983cc02c54
 //! `:1019`-`:1023`, the accumulator's own JSON projection (`:7915`-`:7952`,
 //! `:23532`-`:23541`), and the collector read that produces the flags, the
 //! status word and the target-state child rows
@@ -103,11 +103,11 @@
 //! * `order_type != ORDER_TYPE_AREA_DEFENSE` → `(None, None, "unsupported")`
 //!   (`:19295`). An order that is not an area-defence order has no target-state
 //!   list *and no declared size for one*: the concept is unsupported by the
-//!   row, which is §3's **absent**.
+//!   row, which is record-state contract's **absent**.
 //! * every other `None` size — an address overflow, an unreadable `begin` or
 //!   `size` word, or `size > MAX_ARMY_ORDER_TARGET_STATES` — returns
 //!   `"validation_failed"` (`:19297`-`:19315`). The engine holds a size; this
-//!   sample could not read or accept it. That is §3's **unknown**.
+//!   sample could not read or accept it. That is record-state contract's **unknown**.
 //! * every branch that *does* know a size returns `Some(size)`, including the
 //!   `"overflow"` path that reports the size while refusing to read the list
 //!   (`:19319`) — so a set gate is always a real value, and `0` under a set gate
@@ -171,24 +171,24 @@
 //! (`world_fold.rs::fold_army_orders`, constants at
 //! `lanes/army_battleplans_depth_live/src/orders_group_live.rs:45`-`:46`), so
 //! unlike `order_type` its two-value set *is* enforced. It is still `Unsigned`
-//! rather than `Enum`: §7.4 admits only `Unsigned`, `Signed` and `ContentId` as
-//! key components, so an `Enum` key is not expressible, and §5 classes an engine
+//! rather than `Enum`: key-encoding contract admits only `Unsigned`, `Signed` and `ContentId` as
+//! key components, so an `Enum` key is not expressible, and content-identity contract classes an engine
 //! discriminator as `Unsigned` anyway — the same call d20 makes for `div_type`
 //! and d28 for `kind`. The two-value set is enforced in the mapper, where the
 //! fold enforces it.
 //!
-//! **`state_id` is a `ContentId` and it is a KEY component.** §5 names state ids
+//! **`state_id` is a `ContentId` and it is a KEY component.** content-identity contract names state ids
 //! as content-defined ("Country tags, equipment names, province and state ids
-//! are content-defined", `WIRE_FORMAT.md:346`-`:351`): state 42 is whatever
+//! are content-defined"): state 42 is whatever
 //! state the mod set defines. It is the only `ContentId` in this domain, and
 //! because it sorts and delta-encodes by raw value it is the heavier retrofit
-//! class flagged in §13 — see the deliverable's open questions.
+//! class flagged in codec-measurement contract — see the deliverable's open questions.
 //!
 //! **`generation` and `owner_id` are runtime instance identities.**
 //! `generation` is the collector's own tracker counter, handed out at
 //! `attach_log.rs:46208`-`:46224` and stable only within one capture;
 //! `owner_id` is an engine army/army-group id. Neither is resolved by a content
-//! manifest, so both are `Unsigned` (§5's campaign test). The fold's own comment
+//! manifest, so both are `Unsigned` (content-identity contract's campaign test). The fold's own comment
 //! at `world_fold.rs:23507`-`:23512` explains why `slot_index` is *not* in the
 //! key: it is mutable, and including it stranded a stale twin under the old key
 //! with no tombstone able to remove it.
@@ -217,7 +217,7 @@
 //! `delta_baselines_seen`, because `replace_or_sparse_after_first` (`:14311`) is
 //! never reached.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; `frame_tick` is taken and ignored so every domain's boundary has one
 //! shape.
 
@@ -234,9 +234,9 @@ pub const ORDERS: u32 = 1;
 /// One row per (order, target state) pair.
 pub const TARGET_STATES: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// different field. The three key ids appear in both collections because they
-/// are the same field in both — the order's identity — which is what §11
+/// are the same field in both — the order's identity — which is what schema-identity contract
 /// forbids reusing an id *against*.
 pub mod field {
     pub const OWNER_KIND: u32 = 1;
@@ -286,7 +286,7 @@ pub const TARGET_STATUS_EXACT: u32 = 1;
 pub const TARGET_STATUS_UNSUPPORTED: u32 = 2;
 pub const TARGET_STATUS_OVERFLOW: u32 = 3;
 pub const TARGET_STATUS_VALIDATION_FAILED: u32 = 4;
-/// One past the highest status code; §4 rejects a code at or above this.
+/// One past the highest status code; schema-kind contract rejects a code at or above this.
 pub const TARGET_STATUS_CARDINALITY: u32 = 5;
 
 pub fn schema() -> Schema {
@@ -301,24 +301,24 @@ pub fn schema() -> Schema {
                 // Orders persist across hours and the frame grammar is
                 // first-frame-replaces / later-frames-upsert / low-bit-removes
                 // (`world_fold.rs::fold_army_orders`), which is exactly a keyed
-                // set's grammar — and only a keyed set has deltas (§7.3).
+                // set's grammar — and only a keyed set has deltas (collection-shape contract).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the typed identity
                     // `(owner_kind, owner_id, generation)`
                     // (`world_fold.rs::fold_army_orders`); all three are validated
                     // in every row (`world_fold.rs::fold_army_orders`), so all three are
-                    // concrete. `owner_kind` is `Unsigned`, not `Enum`: §7.4
-                    // admits no `Enum` key, and §5 classes an engine
+                    // concrete. `owner_kind` is `Unsigned`, not `Enum`: key-encoding contract
+                    // admits no `Enum` key, and content-identity contract classes an engine
                     // discriminator as `Unsigned` — d20's call for `div_type`.
                     Field::new(f::OWNER_KIND, Kind::Unsigned).key(0),
                     // An engine army / army-group id: a runtime instance
-                    // identity created during play, so `Unsigned` (§5).
+                    // identity created during play, so `Unsigned` (content-identity contract).
                     Field::new(f::OWNER_ID, Kind::Unsigned).key(1),
                     // The collector's own generation counter
                     // (`attach_log.rs:46208`-`:46224`) — a runtime instance
                     // identity, `Unsigned`. Not `Monotone`: it is an identity,
-                    // and §7.4 admits no `Monotone` key.
+                    // and key-encoding contract admits no `Monotone` key.
                     Field::new(f::GENERATION, Kind::Unsigned).key(2),
                     // The order's position in its owner's order walk
                     // (`attach_log.rs:19080`-`:19081`) — always a value, never
@@ -352,8 +352,8 @@ pub fn schema() -> Schema {
                     Field::new(f::OWNER_KIND, Kind::Unsigned).key(0),
                     Field::new(f::OWNER_ID, Kind::Unsigned).key(1),
                     Field::new(f::GENERATION, Kind::Unsigned).key(2),
-                    // A the game state id: content-defined (§5). A `ContentId`
-                    // **key**, which is the heavier §13 retrofit class.
+                    // A the game state id: content-defined (content-identity contract). A `ContentId`
+                    // **key**, which is the heavier codec-measurement contract retrofit class.
                     Field::new(f::STATE_ID, Kind::ContentId).key(3),
                     // The dense position of this state within its order's target
                     // range. The fold stores the targets as an ordered `Vec`
@@ -641,7 +641,7 @@ pub fn key_from_target_row(
 /// its stored Record. `row` is the raw 48-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); d27 has exactly one row
 /// form, so length selects nothing and a wrong length is rejected. `frame_tick`
-/// is §6's derived-field input (stored = v + c * (frame_tick >> u)); d27
+/// is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u)); d27
 /// declares no derived field, so it is taken and ignored — every domain's mapper
 /// has the same shape.
 ///
@@ -656,7 +656,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d27 has no derived field; §6's transform input is unused. Named rather
+    // d27 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_row(row)?;
@@ -670,7 +670,7 @@ pub fn record_from_row(
 
     // The status word first: it decides the four-state answer for
     // `target_state_declared_count`, so an out-of-vocabulary code must stop the
-    // row before it is read as a gate. §4: "a value the writer cannot map into
+    // row before it is read as a gate. schema-kind contract: "a value the writer cannot map into
     // 0..n-1 is a failed sample and a typed gap, never a coerced code." The
     // producer is total onto `0..=4` (`attach_log.rs:46329`-`:46335`), so this
     // refuses nothing the collector can emit.
@@ -746,7 +746,7 @@ pub fn record_from_row(
 /// order witness the keyed set cannot otherwise carry (see the module docs). It
 /// is a parameter rather than something this function derives, because step 5's
 /// rule is that a generated ordinal is counted at exactly one place: the caller
-/// that walks the range. `frame_tick` is §6's input and is unused here.
+/// that walks the range. `frame_tick` is derived-field contract's input and is unused here.
 ///
 /// The state id itself is **not** a value field — it is key component 3, and
 /// carrying it beside the key would be a second copy of state the decoder must
@@ -1168,7 +1168,7 @@ mod tests {
         );
 
         // Key components are concrete everywhere: never optional, nullable,
-        // unknown-capable or derived (§7.4).
+        // unknown-capable or derived (key-encoding contract).
         for c in &s.collections {
             for f in c.key_fields() {
                 assert!(!f.optional && !f.nullable && !f.unknown_capable);
@@ -1178,7 +1178,7 @@ mod tests {
         }
     }
 
-    /// §13's retrofit sweep needs "checked, none here" to be distinguishable
+    /// the ContentId retrofit sweep needs "checked, none here" to be distinguishable
     /// from "not checked". d27 has exactly one `ContentId`, and it is a KEY.
     #[test]
     fn the_only_content_id_is_the_state_id_key() {

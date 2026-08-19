@@ -26,7 +26,7 @@ Per occupier TAG we extract:
                                     real per-territory law assignment; the
                                     country default_law is only the fallback.
 
-WHY this is a rehost backstop (DESIGN 11.3): the occupation graph (who controls
+WHY this is a rehost backstop: the occupation graph (who controls
 whose land and under what occupation law / resistance regime) is a slow-moving,
 save-persisted governance layer. After a host crash + rehost it is not cheaply
 reconstructable from the live daily layer, which carries raw province/state

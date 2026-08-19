@@ -1,15 +1,15 @@
 //! Selected-unit view panel (`interface/unitview.gui`) layout gate and binding.
-//! Generic geometry follows `replay_interface/documents/UI_LAYOUT_LAW.md`
-//! §§3 and 6.1; typed WorldFrame views own the dynamic values below.
+//! Generic geometry follows `compose.rs` and `widget_layout.rs`; typed
+//! `WorldFrame` views own the dynamic values below.
 //!
 //! This module lays the layout for the selected-unit detail panels the game
 //! shows when a division / task-force / air-wing is selected, and binds
 //! `replay_core`'s READ-ONLY unit views onto their displayed field slots. It is
 //! the sibling of the D3 outliner seam in [`crate::binding`]: it parses no
-//! recording bytes — every value comes through a typed `WorldFrame` view
-//! (Constraint 2) — and fabricates nothing: a leaf that is `Absent`/`Unobtained`
+//! recording bytes — every value comes through a typed `WorldFrame` view — and
+//! fabricates nothing: a leaf that is `Absent`/`Unobtained`
 //! (or a view whose status is not `Present`) renders the fail-closed absent form
-//! (`None` / empty list), never a default like `0` (Constraint 3).
+//! (`None` / empty list), never a default like `0`.
 //!
 //! ## Two label classes
 //!
@@ -20,7 +20,7 @@
 //! * **Field *formatting* is UNKNOWN → rendered raw.** the game's unit-panel number
 //!   formatting (strength as a percent bar, org rounding, thousands grouping) is
 //!   engine-computed and not cited from any shipped file in this decoupled
-//!   context. Per Constraint 3 every scalar is carried as its raw measured value
+//!   context. Every scalar is carried as its raw measured value
 //!   (`Option<f64>` / `Option<i64>`), never a fabricated percent/grouping. The
 //!   caller renders it raw until a shipped-file citation for a field's format is
 //!   found. The per-field FILE/UNKNOWN/VIEW-GAP disposition is the code: each

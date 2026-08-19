@@ -21,7 +21,7 @@
 //! tombstone.
 //!
 //! **`PDQ1` remains stop-reported, while the PCV1 reservation list is ported.**
-//! `PDQ1` carries variable-length UTF-8 strings that §4 has no kind for.
+//! `PDQ1` carries variable-length UTF-8 strings that schema-kind contract has no kind for.
 //! `PCV1`'s convoy priority reservations are an ordered list whose order is not
 //! a function of any carried field, so the harness maps them to the implemented
 //! occurrence-list shape (see `d11.rs`'s module docs for both decisions and the
@@ -124,9 +124,8 @@ const BLOCK_HOURS: usize = 48;
 /// Two reasons, and the second is not a cadence choice: the 48-hour block
 /// boundary, or a measured hour that does not immediately follow the previous
 /// measured one. An hour this domain did not successfully sample is coverage
-/// the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190` is
-/// explicit: "A gap affecting the state part forces the next state observation
-/// to be a `BASELINE`. State may have moved and returned while nobody was
+/// the domain lost. State
+/// after a gap to resume from a complete baseline. State may have moved and returned while nobody was
 /// looking, so neither a delta nor an `UNCHANGED` can be justified across
 /// unobserved time." Delta-encoding across the gap would produce bytes that
 /// decode — the reader's prior is never invalidated, so the local replay
@@ -697,7 +696,7 @@ fn main() {
     let mut reader: Option<Vec<CollectionState>> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
-    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    // Baselines the gap handling forced outside a scheduled block start.
     let mut gap_forced_baselines = 0usize;
     let mut previous_measured_hour: Option<i32> = None;
     let mut empty_hours = 0usize;
@@ -910,7 +909,7 @@ fn main() {
     }
     println!(
         "baselines             {baselines} ({} every {BLOCK_HOURS} h, {gap_forced_baselines} \
-         forced by a gap in measured hours — WIRE_FORMAT §1.5), {baseline_bytes} raw bytes",
+         forced by a gap in measured hours —, {baseline_bytes} raw bytes",
         baselines - gap_forced_baselines
     );
     println!(
@@ -1740,8 +1739,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." An excluded or missing
+        // A complete
+        // baseline after a gap. An excluded or missing
         // hour between two measured ones is such a gap; delta-encoding across it
         // would decode cleanly while asserting a continuity the capture does not
         // have. The decision function, over its whole input space:

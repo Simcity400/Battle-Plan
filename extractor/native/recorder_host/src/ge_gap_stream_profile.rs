@@ -3,14 +3,8 @@
 //!
 //! # What this measures, and why it lives here
 //!
-//! Lane FV's `bin/fv_gap_ledger_profile` priced the manifest's gap LEDGER: it
-//! built a `Vec<GapRecord>` directly and encoded it. What it could not reach is
-//! the DERIVATION -- `derive_gap_records` and the four validators that read its
-//! output -- because `CompactSummary` and those functions live in this binary,
-//! not in the library a `src/bin/*.rs` can import. That is exactly the term lane
-//! GE removes, so the instrument has to be inside the binary. It is a `#[test]`
-//! because that is the only entry point a binary crate offers to code that is
-//! not the recorder's own command line.
+//! The derivation and its validators live in the recorder binary, so the
+//! measurement stays beside them as a `#[test]` instead of a separate tool.
 //!
 //! # The two arms
 //!

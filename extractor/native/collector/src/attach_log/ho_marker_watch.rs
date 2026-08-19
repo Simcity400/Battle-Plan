@@ -9,12 +9,10 @@
 //! `BATTLE_PLAN_HO_MARKER_WATCH` unset it does not start: no thread, no read, no
 //! allocation.
 //!
-//! It exists to answer ONE question, the one lane HF's dossier
-//! (`extractor/native/runs/hf_hour_commit_hook/HOOK_DOSSIER.md` §4.2, §7.1)
-//! left as the deciding unmeasured number: **how long is the marker busy, and
-//! how much quiet time does its falling edge open into?** Per §7.2 every
+//! It exists to answer ONE question: **how long is the marker busy, and how
+//! much quiet time does its falling edge open into?** Every
 //! blocker that would let a marker-gated frame be WRONGLY ACCEPTED (N1, N2, N5,
-//! N6, N8, N9, §3.1/N7) is still open, so nothing this module measures may be
+//! N6, N7, N8, and N9) is still open, so nothing this module measures may be
 //! read as evidence that a frame is clean or that the interval is quiescent.
 //! Mechanical feasibility only.
 //!
@@ -24,7 +22,7 @@
 //! scheduler quantum, and a tight sampling loop is also the most obvious way to
 //! PERTURB the thing being measured: it burns a core and it pulls
 //! `CGameState`'s cache lines to the watcher's core, so every engine store to
-//! them may pay coherence latency to reclaim ownership (dossier §3).
+//! them may pay coherence latency to reclaim ownership.
 //!
 //! So the window is cut into 200 ms epochs on a 5-epoch cycle: four SPIN
 //! epochs, then one LOW epoch. Both arms read BOTH fields; what separates them
@@ -33,7 +31,7 @@
 //! near-zero-load control taken IN THE SAME PROCESS, in the same window,
 //! against the same campaign. Comparing the engine's hour rate across the two
 //! epoch kinds is what says whether the spin moved the number it reported.
-//! (`A/B inside one process only` — `AGENTS.md`, Measurement.)
+//! Both arms therefore run inside the same process and campaign.
 //!
 //! The LOW arm reads the marker rather than skipping it, and that is a
 //! correctness requirement, not a convenience: an arm that carried the last
@@ -537,11 +535,11 @@ mod tests {
         assert_eq!(window_seconds_from(Some("600")), 600);
     }
 
-    /// kills: publishing the marker offset as anything other than the dossier's
+    /// kills: publishing the marker offset as anything other than the validated
     /// `CGameState+0x4C0`, or the date offset drifting off `+0x468`. The whole
     /// measurement is about the distance between those two fields' events.
     #[test]
-    fn the_two_watched_fields_are_the_dossier_addresses() {
+    fn the_two_watched_fields_are_the_validated_addresses() {
         assert_eq!(GS_TICK_BUSY_MARKER_OFFSET, 0x4C0);
         assert_eq!(GS_CURRENT_DATE_OFFSET, 0x468);
     }

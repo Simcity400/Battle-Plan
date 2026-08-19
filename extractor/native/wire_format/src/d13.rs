@@ -1,17 +1,17 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `world_fold.rs:17763`-`:18166`
+//! Derived from `world_fold.rs:17743`-`:18146`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=17763-18166 sha256=3c67f3bd440442e719fd9c225dbb0985ade107814daa7533e8c29cbe185e0966 closure=bd082cf53139d043660d4475481ca6fa9555b04e11804eeeabf3b741f618ad62
+// @world-fold-authority domain=13 functions=fold_tech lines=17743-18146 sha256=a94c63198c17782a1ee46a63deb97a42c20544d636d7dc268ad8ecce6a0fdd03 closure=22559789d55df7c1723be5523845cec1537455afbaf0db5d43d59993492d6ef1
 // The structural half of that fold no longer lives in `world_fold.rs`: it is the
 // shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
 // The closure above cannot follow it across the crate boundary, so the leaf's
 // own source is pinned here instead.
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=25f1c76e67752b9361fd14ce964dee9a78c33842e07d918ced7b8de4eb15369b
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=23069ce1f109dcd23d697b71e18be75dc806d6169733ea41b7d36e78a19d0c29
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
-//! `:81311`-`:81356`). `extractor/documents/domains/d13_tech_live.md` carries the
-//! A29 producer knowledge and is quoted where it decides something.
+//! `:81311`-`:81356`). A29 producer knowledge is retained as
+//! `domain-13::Overview` in `extractor/documents/technical_evidence.json`.
 //!
 //! `fold_tech` is the only fold that takes `game_hour_raw` (`:13321`), and its
 //! sole consumer is the A29 same-hour authority gate at `:13525`. That hour is
@@ -62,8 +62,8 @@
 //! the researched-list capacity contradicts its size, or the value trips
 //! `MAX_COMPLETED_TECH_COUNT` (`attach_log.rs:80881`-`:80910`), and
 //! `research_slot_count` is `None` only on an unreadable word or a value above
-//! `MAX_RESEARCH_SLOT_COUNT` (`:80911`-`:80912`). That is `WIRE_FORMAT.md` §3's
-//! **unknown** — "applicable, not captured" — word for word, never null and never
+//! `MAX_RESEARCH_SLOT_COUNT` (`:80911`-`:80912`). That is **unknown** —
+//! applicable but not captured — never null and never
 //! absent. Those two bounds (2000 and 32, `attach_log/offsets.rs:274`-`:275`)
 //! also make `u32::MAX` unreachable as a real reading, so the sentinel is
 //! unambiguous.
@@ -138,8 +138,8 @@
 //!
 //! # Field-level stop-reports
 //!
-//! Two things this domain captures have **no representable target** under
-//! `WIRE_FORMAT.md` §4, whose seven kinds are `Unsigned`, `Signed`, `Monotone`,
+//! Two things this domain captures have **no representable target** among the
+//! seven wire kinds: `Unsigned`, `Signed`, `Monotone`,
 //! `Enum`, `Boolean`, `ContentId`, `Continuous` — no string, no bytes. Both are
 //! reported rather than dropped quietly, and neither occurs in the measured
 //! capture (0 of 364,487 active rows carry either tail).
@@ -150,14 +150,14 @@
 //!    the `tech_name_captured` `Boolean`. The name is not independent state — the
 //!    collector resolves it as `tech_def_filter[handle]` (`attach_log.rs:81024`),
 //!    a content-table rendering of the handle, exactly the argument d23 makes for
-//!    its `type_id` names. A §13 manifest that resolves `tech_handle_raw` restores
+//!    its `type_id` names. A codec-measurement contract manifest that resolves `tech_handle_raw` restores
 //!    it; the Boolean records the one thing the handle does not, namely whether
 //!    that table resolved this handle at capture time.
 //!
 //! 2. **The 176-byte A29 provenance block** (`:13452`-`:13544`), except its
 //!    `localization_branch`. Three independent reasons, each sufficient:
 //!    * Three of its fields are `[u8; 32]` SHA-256 digests (`:13460`, `:13470`,
-//!      `:13473`) and §4 has no bytes kind.
+//!      `:13473`) and schema-kind contract has no bytes kind.
 //!    * It is an indivisible receipt. Every one of its remaining integers is an
 //!      argument to `a29_expected_source_record_sha256`
 //!      (`recorder_host/src/domain_data_authority.rs:72`-`:124`) or to
@@ -182,14 +182,11 @@
 //!    that, and `bin/bench_real_d13.rs` refuses to measure any stream whose d13
 //!    payloads carry a provenance block. The reference capture carries none.
 //!
-//!    `localization_branch` is ported because it is the one field in the block
-//!    with meaning outside the receipt: the dossier's branch table makes it the
-//!    *displayed form* (`0` no display, `1` unreduced, `2` reduced), the fold
-//!    constrains the quartet's shape by it (`:13513`-`:13522`), and it is not
-//!    recoverable from the quartet — the quartet `(0,0,0,0)` satisfies branch 0
-//!    and branch 1 alike. The dossier says so directly: "Branch identity comes
-//!    from the observed ordered name sequence, never inferred from the values."
-//!    Its three codes are mutually exclusive, which is §4's `Enum`.
+//!    `localization_branch` is ported because the fold constrains the quartet's
+//!    shape with it (`:13513`-`:13522`). The values encode no display, unreduced,
+//!    and reduced display respectively, and the branch cannot be recovered from
+//!    the quartet because `(0,0,0,0)` satisfies both branch 0 and branch 1.
+//!    The three mutually exclusive codes use `Kind::Enum`.
 //!
 //! # Four states
 //!
@@ -218,9 +215,9 @@
 //! to a row this schema carries, and no field is a relation that can point at
 //! nothing.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
-//! §6 admits clock-linear integers only. `progress_raw` rises while a slot
+//! derived-field contract admits clock-linear integers only. `progress_raw` rises while a slot
 //! researches but resets when the slot takes a new technology and moves at a rate
 //! the clock does not fix, so it is not `v + c * (frame_tick >> u)`. The tick
 //! parameter is still used — by the A29 same-hour gate, not by a transform.
@@ -249,7 +246,7 @@ pub const COUNTRIES_INDEX: usize = 0;
 pub const ACTIVE_RESEARCH_INDEX: usize = 1;
 pub const COLLECTION_COUNT: usize = 2;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// *different* field. Ids are unique per collection, and `TAG_DB_ID` is
 /// deliberately the same id in both because it names the same concept.
 pub mod field {
@@ -347,15 +344,11 @@ pub const AHEAD_RAW_MAX: i64 = 10_000_000_000;
 
 /// `world_fold.rs::fold_tech` — the A29 block's `authority` word.
 pub const A29_AUTHORITY: u32 = 3;
-/// `world_fold.rs::fold_tech` compares the block's `ui_action_gate_return_rva` against
-/// `A29_UI_YEAR_HELPER_RETURN_RVA`, which is `pub(crate)` in
-/// `recorder_host/src/domain_data_authority.rs:59`. The same value is published
-/// knowledge in `documents/domains/d13_tech_live.md:42` ("The helper detour's
-/// first in-image return must be RVA `0x01BCF384`"), which is what makes it
-/// citable here rather than a private constant smuggled across a crate boundary.
-/// It is nevertheless a copied constant and is listed in the open questions.
+/// `world_fold.rs::fold_tech` compares the block's `ui_action_gate_return_rva`
+/// against this helper return RVA. The value mirrors the producer-side constant
+/// in `recorder_host/src/domain_data_authority.rs`.
 pub const A29_UI_YEAR_HELPER_RETURN_RVA: u32 = 0x01BC_F384;
-/// The three `localization_branch` codes (`world_fold.rs::fold_tech`, dossier table).
+/// The three `localization_branch` codes accepted by `world_fold.rs::fold_tech`.
 pub const AHEAD_BRANCH_CARDINALITY: u32 = 3;
 
 pub fn schema() -> Schema {
@@ -365,12 +358,12 @@ pub fn schema() -> Schema {
     //
     // The key is `tag_db_id` (`world_fold.rs::fold_tech`), the identity d18's roster
     // defines and d63 keys by. `ContentId` because a country tag is
-    // content-defined (§5) — a manifest must resolve it for it to keep its
-    // meaning under another mod set. It is a ContentId *key*, which §13 flags as
+    // content-defined (content-identity contract) — a manifest must resolve it for it to keep its
+    // meaning under another mod set. It is a ContentId *key*, which codec-measurement contract flags as
     // the heavier manifest-retrofit class; see the open questions.
     //
     // `completed_tech_count` is `Monotone`: a researched technology is never
-    // un-researched, so the count rises. §4 makes monotone an encoding hint and
+    // un-researched, so the count rises. schema-kind contract makes monotone an encoding hint and
     // never a validity constraint, so nothing breaks if the engine ever trims it.
     // `research_slots` is plain `Unsigned` — slots are granted and can be lost
     // with the focus or law that granted them, so the hint would be wrong about
@@ -550,15 +543,14 @@ pub fn active_row_spans(
 
 /// `XU09`, the first word of the witness tail.
 ///
-/// SHARED, not mirrored, since the owner's 2026-08-15 one-decoder ruling: it and
-/// every other structural constant in this module now come from the leaf
+/// Shared rather than mirrored: it and every other structural constant in this
+/// module come from the leaf
 /// `d13_grammar` crate, which the producer and both recorder-side readers also
 /// depend on. That reverses no crate direction — the leaf has no dependencies at
 /// all, so this port still takes no recorder dependency — and it closes the gap
 /// that made the mirrored copy refuse every shipping payload the day this tail
 /// was added. What stays independent is the SEMANTIC layer below: this module
-/// still decides for itself what a span means and what `WIRE_FORMAT.md` requires
-/// of it.
+/// still decides for itself what a span means and which wire invariants apply.
 pub const XUI09_TAIL_MAGIC: u32 = grammar::XUI09_TAIL_MAGIC;
 /// `magic`, `flags`, `dictionary_count`, `measured_count`, `refused_count`,
 /// `vector_count`, one `u32` each.
@@ -576,12 +568,8 @@ pub const XUI09_COUNTRY_FLAG_DENSE: u32 = grammar::XUI09_COUNTRY_FLAG_DENSE;
 /// the same `d13_grammar` walk `recorder_host::world_fold::compact_tech_xui09_tail_len`
 /// measures it with, so the two can no longer disagree about where it ends.
 ///
-/// It exists because a decoder that does not know the tail reports it as
-/// trailing bytes and refuses a perfectly good payload. That is not a
-/// hypothetical: on the t53 live capture the canonical validator did precisely
-/// that and 59 D13 records — the whole domain — were excluded
-/// (`runs/jt_a29_values/LIVE_D13_EXCLUSION.md`). This port was the next decoder
-/// in line with the same gap.
+/// A decoder must measure this tail before checking for trailing bytes, or it
+/// can reject a valid payload whose active-research table is otherwise empty.
 pub fn xui09_tail_len(rest: &[u8]) -> core::result::Result<usize, String> {
     grammar::xui09_tail_len(rest, 0).map_err(|violation| message(&violation))
 }
@@ -756,7 +744,7 @@ pub fn key_from_active_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// onto its stored Record. `row` is the raw 16-byte row slice (the caller has
 /// already consumed the payload header via [`split_payload`]); d13 has exactly
 /// one country row form, so length selects nothing and a wrong length is
-/// rejected. `frame_tick` is §6's derived-field input
+/// rejected. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); no country field is derived, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
@@ -800,7 +788,7 @@ pub fn record_from_country_row(
     Ok(Record::new(values))
 }
 
-/// A gated country count. A clear gate is §3's **unknown**: the collector could
+/// A gated country count. A clear gate is record-state contract's **unknown**: the collector could
 /// not read the value (module docs), and it packs `u32::MAX` in its place.
 ///
 /// A clear gate over any *other* word is a contradiction between this domain's
@@ -830,7 +818,7 @@ fn gated_country_count(
 /// this function does not consume exactly is rejected, so a caller that mis-split
 /// the table gets an error rather than a record built from another row's bytes.
 ///
-/// `frame_tick` is the recipe's fixed §6 input, and d13 declares no derived
+/// `frame_tick` is the recipe's fixed derived-field contract input, and d13 declares no derived
 /// field, so it is taken and ignored — every domain's mapper has the same shape.
 ///
 /// **A tick index is not the fold's game hour.** `fold_tech` is the only fold in
@@ -841,7 +829,7 @@ fn gated_country_count(
 /// (`compact_contract/src/calendar.rs:9`, `:22`) — the reference capture's
 /// `60_832_407` is hour index `17_032_408`, not `60_832_407`. The two coordinates
 /// share a *rate* (`cadence_log2 = 0` makes both hourly) and not an origin, so a
-/// §6 tick cannot be fed to the gate. This entry point therefore **refuses** any
+/// derived-field contract tick cannot be fed to the gate. This entry point therefore **refuses** any
 /// row carrying a provenance block rather than evaluating the gate against the
 /// wrong clock or skipping it in silence; [`record_from_active_row_at_hour`] is
 /// the entry that takes the fold's own `game_hour_raw` and can decide it. That is
@@ -880,7 +868,7 @@ pub fn active_row_carries_a29_provenance(row: &[u8]) -> core::result::Result<boo
 /// Whether an active-research row carries EITHER A29 authority tail.
 ///
 /// Both are same-hour gated, so both are undecidable at the entry point that
-/// has only a §6 tick. [`record_from_active_row`] refuses on this rather than
+/// has only a derived-field contract tick. [`record_from_active_row`] refuses on this rather than
 /// on provenance alone — otherwise a derived row would walk straight past a
 /// gate written to stop exactly it.
 pub fn active_row_carries_a29_authority(row: &[u8]) -> core::result::Result<bool, String> {
@@ -944,7 +932,7 @@ pub fn record_from_active_row_at_hour(
 }
 
 /// A gate that is clear means the collector could not read the value, not that
-/// the value is nothing — see the module docs. §3 calls that **unknown**.
+/// the value is nothing — see the module docs. record-state contract calls that **unknown**.
 fn gated_signed(value: Option<i64>) -> Value {
     match value {
         Some(v) => Value::Signed(v),
@@ -1267,7 +1255,7 @@ impl TechState {
 
 /// Fold one d13 DATA payload into `acc`, exactly as `fold_tech` folds it.
 ///
-/// `frame_tick` is the recipe's fixed §6 input; d13 declares no derived field, so
+/// `frame_tick` is the recipe's fixed derived-field contract input; d13 declares no derived field, so
 /// it is taken and ignored, and — because a tick index is not the fold's
 /// `game_hour_raw` — this entry point refuses a payload carrying an A29
 /// provenance block. See [`record_from_active_row`] for the whole argument, and

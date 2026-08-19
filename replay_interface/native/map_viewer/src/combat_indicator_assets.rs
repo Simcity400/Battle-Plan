@@ -9,8 +9,8 @@
 //! no recorded UI draw or capture-space geometry is a product input.
 //!
 //! All shipped-file reads go through `GameFileResolver` keyed by the recording
-//! modset (`MOD_COMPATIBILITY.md`), reusing the C1 parser/DDS-resolution helpers
-//! verbatim (no forked parser).
+//! modset (the `PROJECT.md` heading "Content and mod contract"), reusing the C1
+//! parser/DDS-resolution helpers verbatim (no forked parser).
 
 use crate::unit_counter_assets::{
     container_layout_from_text, parse_bitmap_fonts, parse_progress_bar_assets,

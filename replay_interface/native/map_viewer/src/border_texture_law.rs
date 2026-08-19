@@ -47,11 +47,9 @@
 //! 1. **No border texture is red.** province/state/sea are pure-black RGB, the
 //!    country stripe is dark navy, impassable is brown. Any "hot red band" in a
 //!    render therefore does NOT come from this pass's textures — it is either the
-//!    separate gradient-border/political layer or a synthetic colour. The old CPU
-//!    debug oracle (`bin/dump_border_render.rs`) painted classes with invented
-//!    colours (country = `[255,83,73]`); this module replaces those with the real
-//!    decoded colour so the oracle can no longer imply a colour vanilla never
-//!    draws.
+//!    separate gradient-border/political layer or a synthetic colour. The retired
+//!    CPU debug oracle painted classes with invented colours (country =
+//!    `[255,83,73]`); this module replaces those with the real decoded colour.
 //! 2. **The soft edge is authored into the texture alpha**, not into geometry.
 //!    sea/sea_region/country/impassable have smooth alpha ramps across V; the
 //!    thin classes (province, state) are deliberately narrow. So the correct
@@ -386,7 +384,7 @@ mod tests {
         let by: std::collections::BTreeMap<_, _> =
             profiles.iter().map(|p| (p.material, p)).collect();
 
-        // Documented dims + peak alpha (BORDER_LAW.md BORD3 table).
+        // Authored dimensions plus measured peak alpha.
         let expect: [(BorderMaterial, usize, usize, u8); 6] = [
             (BorderMaterial::Province, 64, 32, 179),
             (BorderMaterial::State, 128, 64, 114),

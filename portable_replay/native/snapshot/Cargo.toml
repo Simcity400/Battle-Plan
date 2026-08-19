@@ -3,32 +3,16 @@ name = "portable_replay_format"
 version = "0.1.0"
 edition = "2021"
 description = "Neutral portable .battleplan container, snapshot store, verifier, and packer"
-# src/bin/ holds the command-line drivers for this crate. They are stored here,
-# next to the implementation they drive, so the replay side's
-# pathname-capability audit can scan every file-access site in them without
-# reading across the replay/acquisition boundary (see
+# The packer command-line driver is stored next to the implementation it drives,
+# so the replay side's pathname-capability audit can scan its file-access sites
+# without reading across the replay/acquisition boundary (see
 # `production_sources_have_no_descendant_pathname_read` in replay_core's
-# source.rs). They are NOT built from this manifest: the acquisition-side
-# `snapshot` facade package declares all three by path and is the sole owner of
-# the released `pack_replay.exe` / `m0_demo.exe` / `container_codec_bench.exe`.
-# Both manifests share one target directory, so two packages emitting the same
-# binary names would race to overwrite an attested production artifact.
+# source.rs). It is NOT built from this manifest: the acquisition-side
+# `snapshot` facade package declares it by path and owns `pack_replay.exe`.
 autobins = false
 
 [features]
 default = []
-# Lane CE size-lever measurement instrument (`src/ce_anatomy.rs`). It decomposes
-# an existing sealed checkpoint cache into the byte classes its v2 grammar
-# emits and prices candidate encodings by rewriting the cache and compressing
-# the result with the production container profile. Measurement only: it never
-# writes a cache and no production path enables it.
-ce-cache-anatomy = []
-# Lane DQ H4CP v3 prototype instrument. Exposes ONE function
-# (`replay_cache::measure_section_patch_bytes`) so the prototype can price a
-# section's v2 delta with the production diff and patch encoder instead of a
-# reimplementation of them. Measurement only: it writes nothing and no
-# production path enables it.
-dq-v3-prototype = []
 # Lane LL revive pricing instrument (`src/bin/ll_revive_pricing.rs`). Drives THE
 # production cache encoder over the real hours of an already-sealed recording,
 # then makes the production reader reconstruct every one of them, so the size a
@@ -78,9 +62,4 @@ overflow-checks = true
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
-
-[[bin]]
-name = "ll_revive_pricing"
-path = "src/bin/ll_revive_pricing.rs"
-required-features = ["ll-revive-pricing", "ce-cache-anatomy"]
 

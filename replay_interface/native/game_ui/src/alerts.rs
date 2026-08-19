@@ -1,5 +1,5 @@
 //! U1 — Topbar alerts strip / notification-area binding.
-//! Generic geometry follows `replay_interface/documents/UI_LAYOUT_LAW.md`.
+//! Generic geometry follows `compose.rs` and `widget_layout.rs`.
 //!
 //! Population seam (Constraint 2: parses **no** recording bytes) mapping
 //! `replay_core`'s READ-ONLY [`TopbarAlerts`] view (requirements item 9b) onto
@@ -9,9 +9,6 @@
 //! Like [`crate::binding`], it fabricates no value: a `Leaf` that is
 //! `Absent`/`Unobtained` renders the **fail-closed absent form** (a `None` count
 //! / no badge), never a default `0` (Constraint 3).
-//! The d87-to-legacy-badge bridge below is retained only for nonshipping
-//! diagnostic compatibility. Shipping decision presentation belongs to the
-//! XUI19 decision packet and does not use this helper as product authority.
 //!
 //! ## FILE citations — element names, `interface/topbar.gui`
 //!
@@ -151,8 +148,7 @@ pub struct AlertBadge {
 pub struct AlertsStripBinding {
     pub pov_tag: String,
     /// `true` when the general [`TopbarAlerts`] view is `Present`, or when the
-    /// diagnostic compatibility projection supplies a validated D65/d87 count.
-    /// Shipping decision presentation does not use this availability flag.
+    /// validated D65 projection supplies a prototype-reward count.
     pub available: bool,
     /// Every canonical alert badge, always in [`AlertKind::ALL`] order.
     pub badges: Vec<AlertBadge>,
@@ -222,7 +218,6 @@ fn compose_alerts_strip(
     pov_tag: &str,
     general_alerts_present: bool,
     alerts: Option<&TopbarAlerts>,
-    exact_decisions: Option<(u32, u32)>,
     validated_prototype_rewards: Option<i64>,
 ) -> AlertsStripBinding {
     let mut badges: Vec<_> = AlertKind::ALL
@@ -237,35 +232,18 @@ fn compose_alerts_strip(
         AlertKind::PrototypeRewards,
         validated_prototype_rewards,
     );
-    if let Some((available, timeout)) = exact_decisions {
-        set_badge_count(
-            &mut badges,
-            AlertKind::DecisionsAvailable,
-            Some(i64::from(available)),
-        );
-        set_badge_count(
-            &mut badges,
-            AlertKind::DecisionsTimeout,
-            Some(i64::from(timeout)),
-        );
-    }
     AlertsStripBinding {
         pov_tag: pov_tag.to_string(),
-        available: general_alerts_present
-            || exact_decisions.is_some()
-            || validated_prototype_rewards.is_some(),
+        available: general_alerts_present || validated_prototype_rewards.is_some(),
         badges,
     }
 }
 
-/// Build the nonshipping diagnostic compatibility strip for `pov_tag`.
+/// Build the topbar alerts strip for `pov_tag`.
 ///
 /// General typed-leaf availability is owned by
 /// [`WorldFrame::topbar_alerts_status`]. When that status is not `Present`, or
-/// the POV is absent from a present view, those leaves stay fail-closed. A
-/// same-POV authenticated d87 decision panel may populate the two legacy
-/// decision badges for diagnostics. The shipping XUI19 decision route does not
-/// consume this bridge, and no other category borrows d87 authority.
+/// the POV is absent from a present view, those leaves stay fail-closed.
 pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStripBinding {
     let present = frame.topbar_alerts_status() == ViewStatus::Present;
     let alerts = if present {
@@ -273,21 +251,10 @@ pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStrip
     } else {
         None
     };
-    // Diagnostic compatibility only: project same-POV d87 counts into the
-    // legacy badge model. A missing/mismatched carrier remains fail-closed.
-    let exact_decisions = frame
-        .decision_panel_exact()
-        .panel
-        .as_ref()
-        .filter(|panel| {
-            frame.decision_panel_exact_status() == ViewStatus::Present
-                && panel.country_tag == pov_tag
-        });
     compose_alerts_strip(
         pov_tag,
         present,
         alerts,
-        exact_decisions.map(|panel| (panel.available_alert_count, panel.timeout_alert_count)),
         validated_prototype_reward_count(frame, pov_tag),
     )
 }
@@ -513,20 +480,4 @@ mod tests {
         assert_eq!(kinds, AlertKind::ALL.to_vec());
     }
 
-    #[test]
-    fn d87_only_source_makes_only_its_decision_badges_available() {
-        let strip = compose_alerts_strip("GER", false, None, Some((5, 2)), None);
-        assert!(strip.available);
-        assert_eq!(
-            strip.badge(AlertKind::DecisionsAvailable).count,
-            Some(5)
-        );
-        assert_eq!(strip.badge(AlertKind::DecisionsTimeout).count, Some(2));
-        assert!(AlertKind::ALL.into_iter().all(|kind| {
-            matches!(
-                kind,
-                AlertKind::DecisionsAvailable | AlertKind::DecisionsTimeout
-            ) || strip.badge(kind).count.is_none()
-        }));
-    }
 }

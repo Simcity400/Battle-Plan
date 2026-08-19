@@ -1,13 +1,13 @@
 //! d16 `decisions_live` — per-country decision-status counters.
 //!
-//! Derived from `world_fold.rs:19023`-`:19081`
+//! Derived from `world_fold.rs:19003`-`:19061`
 //! (`fold_decisions`), the collector write that produces the payload
-// @world-fold-authority domain=16 functions=fold_decisions lines=19023-19081 sha256=be53b53fb85f6abfa59eca3721f7d8b65ef511ef04d038a280f0379815af269c closure=28182abd9cdaf1a5d82d9f8a07bb2f340e0fb9b76090ab2d2126371df84d5a06
+// @world-fold-authority domain=16 functions=fold_decisions lines=19003-19061 sha256=be53b53fb85f6abfa59eca3721f7d8b65ef511ef04d038a280f0379815af269c closure=2a380d6f954e85dcaa71e5e31a3eb658e58e17a66f28cf8b985b83f63633fb31
 //! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
 //! that produces the counters (`attach_log.rs:83141`-`:83235`).
-//! `extractor/documents/domains/d16_decisions_live.md` carries real field-level
-//! knowledge and is used below, with one recorded disagreement (see
-//! "The dossier's preservation claim is false on this path").
+//! Field-level evidence is retained as `domain-16::Overview` in
+//! `extractor/documents/technical_evidence.json`, with one disagreement noted
+//! below under "Measured-empty handling".
 //!
 //! **This domain is a SPLIT deliverable.** The `countries` collection is ported
 //! here. The payload's second table — the `timed_live` rows, an ordered
@@ -73,7 +73,7 @@
 //!
 //! ## Four-state semantics: every ported field is a plain value, and zero is real
 //!
-//! §3's four states are decided per field. All three counters land in the same
+//! record-state contract's four states are decided per field. All three counters land in the same
 //! place, and the reasoning is unusual enough to be worth stating in full.
 //!
 //! **The fold gates nothing.** Unlike `fold_country_core_scalars`, `fold_decisions`
@@ -96,7 +96,7 @@
 //! non-zero, which says nothing about this particular counter.
 //!
 //! That ambiguity is real and it is **upstream of this boundary**. The recipe's
-//! scope puts collector changes out of bounds, and §3's own rule is explicit that
+//! scope puts collector changes out of bounds, and record-state contract's own rule is explicit that
 //! **zero** is "a real measured value, never collapsed" into an empty state.
 //! Mapping `0` to `Unknown` would assert "not captured" over the 58.50% of counter
 //! cells that read zero in the reference capture (3,954 of 6,759) — the
@@ -110,13 +110,13 @@
 //! Unknown for a *gated* field, and nothing here is gated. The conflation is
 //! recorded as the deliverable's first open question, with the evidence that
 //! would settle it (a collector change that packs the six sizes as
-//! `Option<u32>`-shaped presence bits, which is §13 work, not schema work).
+//! `Option<u32>`-shaped presence bits, which is codec-measurement contract work, not schema work).
 //!
-//! ## The dossier's preservation claim is false on this path
+//! ## Measured-empty handling
 //!
-//! `domains/d16_decisions_live.md` states: *"Fold semantics preserve measured-empty
-//! `timed_live=[]` separately from an unmeasured or failed country."* On the
-//! compact path that is not what happens. `fold_decisions` writes
+//! Measured-empty `timed_live=[]` should remain distinguishable from an
+//! unmeasured or failed country. On the compact path that is not what happens.
+//! `fold_decisions` writes
 //! `obj.insert("timed_live", json!([]))` for **every** country row
 //! (`world_fold.rs::fold_decisions`) before any timed row is appended, and the only bit that
 //! could tell the two apart — `flags` `1<<1`, written from
@@ -145,21 +145,21 @@
 //! does not sort, so a
 //! payload with one country row for tag 7 and two identical timed rows
 //! `(7, 30, 0, "x")` folds to two entries in source order, and any shape with a
-//! key would collapse them into one. That is §7.3's third shape word for word —
+//! key would collapse them into one. That is collection-shape contract's third shape word for word —
 //! "meaningful physical order, duplicates legitimate, no unique key" — beside d56
-//! and d64, and §7.4 states outright that ordered occurrence lists have **no key**,
+//! and d64, and key-encoding contract states outright that ordered occurrence lists have **no key**,
 //! so no key question arises for this table at all. `Shape` declares the variant
 //! (`Shape::OrderedOccurrenceList`, `schema.rs:163`), and `body.rs` now implements
 //! its full-replacement baseline and delta grammar. The former shape blocker is
 //! therefore closed.
 //!
 //! *The token is what still stops the collection.* Every shape must carry `decision`
-//! as a value, and §4 has nothing to carry a string in: `Kind` is
+//! as a value, and schema-kind contract has nothing to carry a string in: `Kind` is
 //! `Unsigned | Signed | Monotone | Enum | Boolean | ContentId | Continuous`
 //! (`schema.rs:12`-`:20`). Dropping it is data loss — it is the row's only
 //! distinguishing content, since `(tag, days, state)` repeats across different
 //! decisions — and hashing it into a `ContentId` would invent the manifest-id
-//! id unless this mapper receives the file-global §5 resolver. Until that
+//! id unless this mapper receives the file-global content-identity contract resolver. Until that
 //! resolver is wired here, the collection remains stopped regardless of its implemented
 //! shape.
 //!
@@ -181,7 +181,7 @@
 //! carries 0–6, so a per-record reading of "the state" would be wrong in 902 of
 //! 903 hours.
 //!
-//! **No derived field (§6).** A decision countdown is not carried here at all (it
+//! **No derived field (derived-field contract).** A decision countdown is not carried here at all (it
 //! lives in the stopped `timed_live` table), and the three counters move on player
 //! and AI action, not on the clock. The mapper still takes `frame_tick` so every
 //! domain's boundary has one shape.
@@ -209,12 +209,12 @@ pub const DOMAIN: u32 = 16;
 /// `Shape::OrderedOccurrenceList`; see "Why `timed_live` stops") but because that
 /// shape has no implementation to declare a collection against: every encoder and
 /// decoder in `body.rs` hard-rejects a non-`KeyedSet` shape, so a collection id
-/// here would name something nothing can encode. Field ids are append-only (§11)
+/// here would name something nothing can encode. Field ids are append-only (schema-identity contract)
 /// and collection ids follow the same discipline, so the id is left unclaimed
-/// until §7.3 lands rather than spent on a collection that cannot be written.
+/// until collection-shape contract lands rather than spent on a collection that cannot be written.
 pub const COUNTRIES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const TAG_DB_ID: u32 = 1;
     pub const ACTIVE_TIMED: u32 = 2;
@@ -266,17 +266,17 @@ pub fn schema() -> Schema {
     use field as f;
     let fields = vec![
         // Key: the country's `tag_db_id` (`world_fold.rs::fold_decisions`). ContentId
-        // because a country tag is content-defined (§5) — a manifest must resolve
+        // because a country tag is content-defined (content-identity contract) — a manifest must resolve
         // it for it to keep its meaning under another mod set, which is the
         // deciding question for ContentId-vs-Unsigned. d63's `tag_db_id` and
         // d20's `owner` are classed the same way. This is a ContentId **key**,
-        // the heavier §13 retrofit class: key components sort and delta-encode by
+        // the heavier codec-measurement contract retrofit class: key components sort and delta-encode by
         // raw value, so a manifest remap would reorder keys and change the byte
         // layout of every baseline. Flagged separately in the open questions.
         Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
         // Sizes of live decision vectors: they rise when a decision is activated
         // and fall when one completes or is cancelled, so `Unsigned`, not
-        // `Monotone` — §4 makes Monotone a hint for counters that *usually* rise,
+        // `Monotone` — schema-kind contract makes Monotone a hint for counters that *usually* rise,
         // and these do not. Not `ContentId`: a vector length is not an id and no
         // manifest resolves it. Not `Continuous`: the fold emits each as an
         // integer with no divisor (`world_fold.rs::fold_decisions`).
@@ -298,7 +298,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: COUNTRIES,
             // `tag_db_id` is a stable identity that persists across hours, and
-            // only a keyed set has a delta grammar (§7.3). The fold's per-tag
+            // only a keyed set has a delta grammar (collection-shape contract). The fold's per-tag
             // upsert (`world_fold.rs::fold_decisions`) is a keyed-set update, not
             // a replacement: see [`Accumulator`].
             shape: Shape::KeyedSet,
@@ -474,7 +474,7 @@ pub fn key_from_country_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// (`attach_log.rs:69608`-`:69634`), onto its stored Record. `row` is the raw
 /// 32-byte row slice (the caller has already consumed the payload header via
 /// [`split_payload`]); d16 has exactly one country row form, so length selects
-/// nothing and a wrong length is rejected. `frame_tick` is §6's derived-field
+/// nothing and a wrong length is rejected. `frame_tick` is derived-field contract's derived-field
 /// input (stored = v + c * (frame_tick >> u)); d16 declares no derived field, so
 /// it is taken and ignored — every domain's mapper has the same shape.
 ///
@@ -489,7 +489,7 @@ pub fn record_from_country_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d16 has no derived field; §6's transform input is unused. Named rather than
+    // d16 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_country_row_len(row)?;
@@ -510,7 +510,7 @@ pub fn record_from_country_row(
             ));
         };
         // Raw, unscaled, ungated — `world_fold.rs::fold_decisions`. A zero here is
-        // a measured value (§3), not an empty state; see the module docs for why
+        // a measured value (record-state contract), not an empty state; see the module docs for why
         // the collector's zero-vs-unreadable conflation is not expressed as
         // `Unknown`.
         values.push(Value::Unsigned(u32_at(row, offset) as u64));
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(c.fields.len(), 4, "1 key + 3 counters");
@@ -792,7 +792,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // The common case in the reference capture: 58.50% of counter cells read
         // zero, overwhelmingly countries with no active decisions of that kind.
-        // §3 keeps zero out of the three empty states, and the collector's
+        // record-state contract keeps zero out of the three empty states, and the collector's
         // zero-vs-unreadable conflation (`attach_log.rs:83209`-`:83212`) is not
         // expressible from the payload, so it must not be guessed at here.
         let c = countries();
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; the counters move on player
+        // derived-field contract derived fields are clock-linear integers; the counters move on player
         // and AI action, so `frame_tick` never enters a value. The one clock-linear
         // quantity this domain touches — a decision countdown — lives in the
         // stopped `timed_live` table and is not carried here.
@@ -1210,7 +1210,7 @@ mod tests {
         // to two entries in source order. Any keyed collection would collapse them
         // into one, which is why `Shape::OrderedOccurrenceList` is the collection's
         // real shape even though its separate string blocker keeps it unported.
-        // Round-5 review finding: the report previously treated
+        // the report previously treated
         // `(tag_db_id, decision)` as a stable key without checking this.
         let region = {
             let mut r = Vec::new();

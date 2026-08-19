@@ -1,5 +1,4 @@
-//! Factions map mode (E3 lane; UI_LAYOUT_LAW.md §6.2 map-mode manager, toolbar
-//! button
+//! Factions map mode (toolbar button
 //! `mapmode_button_11` / `ui_mapmode_factions` / F10, engine layer
 //! `game_map_mode_factions`).
 //!

@@ -81,7 +81,7 @@ pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
 /// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// Was `1_000_000`, a guess.
 pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 pub const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;

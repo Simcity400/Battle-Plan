@@ -1083,8 +1083,7 @@ Assert-Case 'the summary does not announce a layer that did not run' (
 # kills: shipping the lexical splice scan as if it were complete. THIS IS THE
 # CASE THE LEXICAL SCAN CANNOT SEE. `include!(concat!(..))` puts no path literal
 # in the source at all, so the regex has nothing to match -- lane JD proved that
-# residual needs macro expansion and a real Rust lexer, not more patterns
-# (runs/jd_battery_granularity/WHY_THIS_DID_NOT_LAND.md). The compiler resolved
+# residual needs macro expansion and a real Rust lexer, not more patterns. The compiler resolved
 # it, so cargo's dep-info names the file and the layer attributes it correctly.
 #
 # The assertions are PAIRED on purpose: the same tree is asked both ways, so

@@ -7,10 +7,6 @@ edition = "2021"
 name = "focus_research_decisions_depth_live"
 path = "src/lib.rs"
 
-[[bin]]
-name = "proof_from_stream"
-path = "src/bin/proof_from_stream.rs"
-
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
 direct_frd_transitions_live = { path = "../direct_frd_transitions_live" }

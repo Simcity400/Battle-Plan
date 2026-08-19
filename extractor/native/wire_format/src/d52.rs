@@ -2,21 +2,19 @@
 //! and compliance, plus the `GAR1` garrison-alert and `COL1` collaboration
 //! trailers.
 //!
-//! Derived from `world_fold.rs:22886`-`:22892`
+//! Derived from `world_fold.rs:22862`-`:22868`
 //! (`fold_occupation_resistance_compliance`, dispatched `:4714`), its payload
-// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=22886-22892 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=b2fd859927b2c15ccf26ebf410f0367599b6dfbfb9921fb747b959cfbf9838a5
-// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=265-662 sha256=974013e723937ae796d4f566b1b702b266e152ddf2e990ba2f3409d31994eff5
+// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=22862-22868 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=b9ecc51fdba71f0cb63e427dcb9655cdc8a4e06310b7ceafac5a7090ab3157c3
+// @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=264-661 sha256=974013e723937ae796d4f566b1b702b266e152ddf2e990ba2f3409d31994eff5
 //! constants at `:388`-`:399` and `:435`-`:466`, its two trailer decoders
 //! (`occupation_garrison_alert_len` `:30271`, `decode_occupation_collaboration`
 //! `:30291`, `decode_occupation_garrison_alert` `:30355`), the lane's own payload
 //! contract
 //! (`extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs`,
 //! included verbatim as `domain52_compact.rs`) and the collector read that
-//! produces the presence flags (`collector_module.rs:1079`-`:1117`), plus
-//! `extractor/documents/domains/d52_occupation_resistance_compliance_live.md`.
-//! This note used to say there was no domain dossier, which was true when the
-//! module was written; lane IM added one's census section and the prose contract
-//! for the coverage verdict lives there now.
+//! produces the presence flags (`collector_module.rs:1079`-`:1117`). The
+//! state-root census is retained as `domain-52::The state-root census witness`
+//! in `extractor/documents/technical_evidence.json`.
 //!
 //! # Payload grammar
 //!
@@ -132,7 +130,7 @@
 //! `:16813`-`:16820` stay live and are published at `:5218`-`:5268` and
 //! `:6014`-`:6019` — real folded data on an hour whose base table is unknown.
 //! A keyed set cannot say "this collection's membership was not measured this
-//! hour" (`WIRE_FORMAT.md` §13, the gap that stopped d17), so that hour cannot be
+//! hour", so that hour cannot be
 //! encoded faithfully and cannot be silently skipped either. [`FoldOutcome`]
 //! reports it and the measurement harness **refuses the run**; see
 //! `bin/bench_real_d52.rs`.
@@ -168,7 +166,7 @@
 //!
 //! # Four-state semantics
 //!
-//! `WIRE_FORMAT.md` §3's four states are decided per field from the **collector**,
+//! The four states are decided per field from the **collector**,
 //! which is the only authority on *why* a gate is clear, and corroborated against
 //! the 7,498 real rows of `runs/batch3/deepwar_a`.
 //!
@@ -177,7 +175,7 @@
 //!   (`collector_module.rs:1079`-`:1080`) and drops the whole row when the read
 //!   fails or a bound trips (`:1047`, `:1056`-`:1076`), so a clear gate is a
 //!   payload it cannot produce. The concept applies to every state (so not
-//!   Absent) and is not a relation that can point at nothing (so not Null); §3's
+//!   Absent) and is not a relation that can point at nothing (so not Null); record-state contract's
 //!   remaining reading is "applicable, not captured". This is the recipe's
 //!   tie-break, and it is in the open questions.
 //! * **`resistance_speed`, `compliance_speed` — Unknown on a clear gate, for the
@@ -202,13 +200,13 @@
 //! * **`occupier_tag`, `occupied_country_tag` — Absent when the state is not
 //!   occupied, Null when the relation is empty.** Both live under
 //!   `OCCUPIED_STATE` (`1<<4`, `:16932`): a state that is not occupied has no
-//!   occupier and no occupied country, which is §3's "not applicable" — d20's
+//!   occupier and no occupied country, which is record-state contract's "not applicable" — d20's
 //!   `move_target_province` reasoning. Inside that gate the fold takes the
 //!   controller for `occupier_tag` (`:16933`-`:16938`) and the derived tag or,
 //!   failing that, the owner for `occupied_country_tag` (`:16938`-`:16947`); the
 //!   collector clears `OWNER`/`CONTROLLER` exactly when the tag word is `0`
 //!   (`collector_module.rs:1083`-`:1088`), i.e. the relation genuinely points at
-//!   nothing — §3's **null**.
+//!   nothing — record-state contract's **null**.
 //! * **`occupation_law_token_id` — Unknown on a clear flag, never Null, and the
 //!   badge that looks like the gate is not one.** `OCCUPATION_LAW_UNAVAILABLE`
 //!   (`1<<10`) is the obvious neighbour and it is the **wrong** one: the collector
@@ -251,12 +249,12 @@
 //!   rule: it is constrained on the *complete* arm and unconstrained on the
 //!   unavailable one, so it is measured on both and declares no empty state.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing in the state rows changes deterministically with the clock. The `GAR1`
 //! trailer's `game_hour_raw` **is** clock-linear on this capture — it equals the
 //! record's own game hour on 514 of 514 hours — but no domain in this crate
-//! declares a §6 derived field yet and the fold enforces no such identity, so it
+//! declares a derived-field contract derived field yet and the fold enforces no such identity, so it
 //! ships as a plain `Signed` field and the derived-field candidacy is an open
 //! question. The mappers still take `frame_tick` so every domain's boundary has
 //! one shape.
@@ -279,7 +277,7 @@ pub const COLLABORATION_STATUS: u32 = 4;
 /// The `COL1` relation rows, keyed by `(owner, target)`.
 pub const COLLABORATION_RELATIONS: u32 = 5;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// They are unique across the whole domain, not merely within a collection, so a
 /// misrouted record cannot silently land on a same-numbered field elsewhere.
 pub mod field {
@@ -456,14 +454,14 @@ pub fn schema() -> Schema {
         collection_id: STATES,
         // A `state_id` is a stable identity that persists across hours, which is
         // what a keyed set needs, and only a keyed set has a delta grammar
-        // (§7.3) — which this baseline-plus-delta domain requires.
+        // (collection-shape contract) — which this baseline-plus-delta domain requires.
         shape: Shape::KeyedSet,
         fields: vec![
-            // `ContentId`, not `Unsigned`: §5 names state ids as content-defined
+            // `ContentId`, not `Unsigned`: content-identity contract names state ids as content-defined
             // in as many words ("Country tags, equipment names, province and
             // state ids are content-defined"), so a manifest must resolve this
             // for it to keep its meaning under another mod set. It is a ContentId
-            // **key**, the heavier §13 retrofit class — flagged separately in the
+            // **key**, the heavier codec-measurement contract retrofit class — flagged separately in the
             // deliverable, because a manifest remap reorders keys and changes the
             // byte layout of every baseline and key list.
             Field::new(f::STATE_ID, Kind::ContentId).key(0),
@@ -490,7 +488,7 @@ pub fn schema() -> Schema {
                 .unknown_capable()
                 .quant(FIXED_QUANT),
             // Absent when the state is not occupied, Null when the relation
-            // points at nothing. Country tags are content-defined (§5).
+            // points at nothing. Country tags are content-defined (content-identity contract).
             Field::new(f::OCCUPIER_TAG, Kind::ContentId)
                 .optional()
                 .nullable(),
@@ -515,7 +513,7 @@ pub fn schema() -> Schema {
                 .quant(FIXED_QUANT),
             // `ContentId`. The fold labels this an FNV-1a-32 hash of the law's
             // NAME (`world_fold.rs::fold_occupation_resistance_compliance`), and a law name is
-            // content-defined — §5 lists law tokens among the content-defined
+            // content-defined — content-identity contract lists law tokens among the content-defined
             // vocabularies, and the recipe's deciding question ("must a content
             // manifest resolve this id for it to keep its meaning across mod
             // sets?") answers yes: which law the hash denotes is defined by the
@@ -570,7 +568,7 @@ pub fn schema() -> Schema {
             // that arm their words are grammar rather than measurement: the
             // alert was not read at all. Emitting `0`/`false` there would
             // publish "no controller, the predicate did not fire, nothing is
-            // missing" as measured facts. §3's reading is **unknown** —
+            // missing" as measured facts. record-state contract's reading is **unknown** —
             // "applicable, not captured".
             Field::new(f::ALERT_CONTROLLER_TAG_DB_ID, Kind::ContentId).unknown_capable(),
             Field::new(f::ALERT_PREDICATE_RETURNED, Kind::Boolean).unknown_capable(),
@@ -584,7 +582,7 @@ pub fn schema() -> Schema {
         collection_id: GARRISON_ALERT_EQUIPMENT,
         shape: Shape::KeyedSet,
         fields: vec![
-            // `CEquipmentArchetype+0x418` (`domain44_compact.rs:95`). §5 names
+            // `CEquipmentArchetype+0x418` (`domain44_compact.rs:95`). content-identity contract names
             // equipment as content-defined, so this is a ContentId key.
             Field::new(f::EQUIPMENT_ARCHETYPE_ID, Kind::ContentId).key(0),
             // `whole_units <= 0` is a rejected row (`world_fold.rs::decode_occupation_garrison_alert`).
@@ -1005,8 +1003,7 @@ pub fn parse_collaboration(trailer: &[u8]) -> core::result::Result<Collaboration
 pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID`, `domain44_compact.rs:49` — a lane-contract bound, not a fold
 /// one, so it is enforced in [`check_authority_payload`] and nowhere else.
-/// Was `65_535`, a guess; now the state id space's STRUCTURAL width
-/// (`claim_39c989ce13504504353c`, `runs/ia_province_caps/SWEEP.md`).
+/// The bound is the structural width of the signed state id accepted here.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_ABS_FIXED_RAW`, `domain44_compact.rs:51` — likewise lane-contract only.
 pub const MAX_ABS_FIXED_RAW: i32 = 100_000_000;
@@ -1041,7 +1038,7 @@ pub fn key_from_collaboration_row(entry: &CollaborationRelationRow) -> Key {
 /// One compact row of the `states` table, as the collector emits it today, onto
 /// its stored Record. `row` is the raw 64-byte row slice (the caller has already
 /// consumed the table header via [`split_payload`]); d52 has exactly one row form,
-/// so length selects nothing and a wrong length is rejected. `frame_tick` is §6's
+/// so length selects nothing and a wrong length is rejected. `frame_tick` is derived-field contract's
 /// derived-field input; d52 declares no derived field, so it is taken and ignored
 /// — every domain's mapper has the same shape.
 ///
@@ -1059,7 +1056,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d52 has no derived field; §6's transform input is unused. Named rather
+    // d52 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     if collection.collection_id != STATES {
@@ -1169,7 +1166,7 @@ pub fn record_from_row(
 /// (`world_fold.rs::fold_occupation_resistance_compliance`).
 pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
     // The key's validity is part of the row's validity even though the key is not
-    // carried in the record body (§3).
+    // carried in the record body (record-state contract).
     let _ = state_id_of_row(row)?;
     let flags = u32_at(row, 52);
     if flags & !KNOWN_FLAGS != 0 {
@@ -1917,7 +1914,7 @@ pub fn check_authority_trailers(trailers: &[u8]) -> core::result::Result<(), Str
 // --- Small helpers -----------------------------------------------------------
 
 /// A gate that is clear on a channel the collector always measures means the
-/// value was not captured — see the module docs. §3 calls that **unknown**.
+/// value was not captured — see the module docs. record-state contract calls that **unknown**.
 fn gated_fixed(present: bool, row: &[u8], offset: usize) -> Value {
     if present {
         Value::Continuous(i32_at(row, offset) as f64 / FIXED_SCALE)
@@ -2262,7 +2259,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "§5 names state ids as content-defined"
+            "content-identity contract names state ids as content-defined"
         );
         assert_eq!(states.fields.len(), 16, "1 key + 15 value fields");
 
@@ -2290,7 +2287,7 @@ mod tests {
 
     #[test]
     fn field_ids_are_unique_across_the_whole_domain() {
-        // §11 needs uniqueness per collection; this domain goes further so a
+        // schema-identity contract needs uniqueness per collection; this domain goes further so a
         // record routed to the wrong collection cannot land on a same-numbered
         // field and be silently accepted.
         let mut seen: Vec<u32> = Vec::new();
@@ -2305,7 +2302,7 @@ mod tests {
 
     #[test]
     fn every_content_id_field_is_listed_for_the_manifest_retrofit() {
-        // §13's manifest-id assignment rule will change every mapper that emits a
+        // codec-measurement contract's manifest-id assignment rule will change every mapper that emits a
         // ContentId, so the retrofit sweep needs this to be an assertion rather
         // than a claim — and it needs the KEY components called out separately,
         // because a remap there reorders keys and rewrites every baseline's bytes.
@@ -2343,7 +2340,7 @@ mod tests {
             "ContentId value fields"
         );
         // The law token is in that list on purpose: it is an FNV-1a-32 hash of a
-        // content-defined law NAME, and §5 lists law tokens among the
+        // content-defined law NAME, and content-identity contract lists law tokens among the
         // content-defined vocabularies. No manifest can invert a hash today,
         // which is a gap in the manifest rather than a statement about the kind —
         // and putting it in the sweep is what makes that gap findable.
@@ -2816,7 +2813,7 @@ mod tests {
         );
 
         // Occupied with neither owner nor derived tag: the relation points at
-        // nothing, which is §3's null.
+        // nothing, which is record-state contract's null.
         let null_tags = RawRow {
             owner: 0,
             controller: 0,
@@ -3030,7 +3027,7 @@ mod tests {
         // The three states of each trailer, which the FOLD conflates: it renders
         // "no trailer" and "trailer says unavailable" both as JSON null
         // (`world_fold.rs:6014`-`:6019`, `:30407`). The singleton row's presence
-        // separates them, which is a fidelity gain §3 asks for.
+        // separates them, which is a fidelity gain record-state contract asks for.
         let s = schema();
         let alert_c = collection(GARRISON_ALERT);
         let unavailable = parse_garrison_alert(&gar1_unavailable(1_234)).expect("GAR1");

@@ -37,7 +37,7 @@ pub const DOMAIN_ID: u16 = 60;
 pub const DOMAIN_NAME: &str = "capitulation_war_state_live";
 pub const SCHEMA_VERSION_V1: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 2;
-/// Legitimacy fixed-point scale (i32 raw x 1e5, FINAL_SWEEP §T1 8/8 exact).
+/// Legitimacy fixed-point scale (i32 raw x 1e5, validated 8/8 exact).
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
 pub const HEADER_LEN: usize = 32;
@@ -102,8 +102,8 @@ pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNE
 ///
 /// It used to be `50_000_000`, copied from the domain 53 reader. That number is
 /// a plausibility guess about how many casualties a war "could" have, i.e. a cap
-/// on game content, and AGENTS.md's mod-agnostic law admits only engine-structural
-/// or attach-discovered caps. A long or modded game that crossed it lost the
+/// on game content. `PROJECT.md` — “Content and mod contract” forbids such a
+/// compiled content limit. A long or modded game that crossed it lost the
 /// WHOLE D60 read (`capwar_war_casualties_invalid` rejects the row, and a
 /// rejected row fails the discovery), so the guess could destroy a capture's war
 /// state rather than bound it. The same guessed constant is still live in three

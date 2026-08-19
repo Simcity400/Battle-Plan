@@ -36,7 +36,7 @@ Archetype names for the price-level entries are resolved from the top-level
 unresolved (id,type) keeps ``archetype=null`` and is counted in
 ``stats.unknown_equipment_ids`` (NO fabricated default).
 
-WHY a rehost backstop (DESIGN 11.3): the market PRICE BAND + SUBSIDY graph is the
+WHY a rehost backstop: the market PRICE BAND + SUBSIDY graph is the
 negotiated-terms layer of the trade graph. market.json carries the live transfers
 (who supplies whom, progress); this carries the *terms* (price levels, who is
 being subsidised to buy what) which are equally unreconstructable from the live

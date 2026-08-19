@@ -498,7 +498,7 @@ fn the_d45_pin_predicate_mirrors_the_folds_activation_state() {
     assert!(fold_refuses(&tracker, true, false));
     assert!(fold_refuses(&tracker, false, false));
 
-    // REGIME 4 -- the §7.3.1 reset badge, which is the ONLY thing that ends the
+    // REGIME 4 -- the direct-history reset badge, which is the ONLY thing that ends the
     // absorbing regime above. The fold discards its `frd_direct_*` extent
     // before it asks either question, so both grounds are answered at once and
     // the record is applied whatever it carries.
@@ -568,7 +568,7 @@ fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
     // refuses the next record with `already invalidated`. The producer believed
     // otherwise and kept committing pins against a fold that was applying
     // nothing -- the AHEAD divergence, arrived at from the gap side.
-    // `DELTA_WIRE_DESIGN.md` §7.3.1 measured 362 such gaps on t26.
+    // The t26 capture measured 362 such gaps.
     if !d45_published_its_record && tracker.direct_baseline_published {
         tracker.fold_history_failed = true;
     }
@@ -584,7 +584,7 @@ fn a_withdrawn_d45_record_does_not_arm_the_fold_mirror() {
     );
     assert!(
         !super::d45_fold_refuses_record(&tracker, true, true),
-        "which is what the §7.3.1 reset badge is for: the one record that reopens the domain"
+        "the direct-history reset badge is the one record that reopens the domain"
     );
 
     // The control: a frame that DID publish arms it, or the assertion above
@@ -1367,16 +1367,16 @@ fn no_transactional_domain_is_default_constructed_on_its_own_rejection() {
     }
 }
 
-/// FOUND, NOT FIXED (`DELTA_WIRE_DESIGN.md` §7.3.1): D45 cannot absorb its
+/// D45 cannot absorb its
 /// absorbing direct-history failure through `COMPACT_STATUS_BASELINE_CLEAR`.
 ///
-/// §7.3.1 diagnoses the defect correctly -- once `frd_direct_history_failed` is
+/// Once `frd_direct_history_failed` is
 /// set the fold refuses every later D45 record whatever it carries, and on t26
 /// one of d45's 361 post-first-data gaps is enough to set it for the rest of the
 /// capture -- and then prescribes the global resync bit as the remedy. The
 /// remedy does not survive contact with the contract. This test states the three
 /// INDEPENDENT grounds on which `compact_baseline_clear_requested` refuses a D45
-/// record, so §7.3.1's correction cannot quietly stop being true.
+/// record, so the direct-history repair cannot quietly stop being true.
 ///
 /// The transport is NOT the obstacle and this test deliberately does not claim
 /// it is: FRD2 schema v3 onwards carries an authoritative global status word at
@@ -1408,7 +1408,7 @@ fn d45_cannot_carry_the_global_resync_bit() {
     assert_ne!(
         read.status_flags & COMPACT_STATUS_DELTA_DATA,
         0,
-        "D45's reader sets DELTA_DATA unconditionally; if that changed, §7.3.1's first          blocker is gone and this test is the place to record it"
+        "D45's reader sets DELTA_DATA unconditionally; if that changed, the first direct-history          blocker is gone and this test is the place to record it"
     );
     assert!(
         compact_baseline_clear_requested(D45, read.status_flags | COMPACT_STATUS_BASELINE_CLEAR)
@@ -1441,7 +1441,7 @@ fn d45_cannot_carry_the_global_resync_bit() {
     // increment and never a complete claim about the domain's whole extent.
     assert!(
         !compact_baseline_clear_admissible(D45),
-        "D45 is not on COMPACT_BASELINE_CLEAR_ADMISSIONS, and §7.3.1's step 3 concedes why:          a resync there recovers the FUTURE, never the hole, which is not the sentence rule 4          admits a domain for"
+        "D45 is not on COMPACT_BASELINE_CLEAR_ADMISSIONS: a resync there recovers the FUTURE,          never the hole, which the sentence rule does not admit"
     );
     assert!(
         compact_baseline_clear_requested(D45, COMPACT_STATUS_BASELINE_CLEAR).is_err(),
@@ -1460,7 +1460,7 @@ fn d45_cannot_carry_the_global_resync_bit() {
 }
 
 // ---------------------------------------------------------------------
-// 6. The §7.3.1 D45-LOCAL direct-history reset badge
+// 6. The D45-LOCAL direct-history reset badge
 // ---------------------------------------------------------------------
 
 /// One frame of the D45 producer, driven entirely through PRODUCTION calls:
@@ -1498,7 +1498,7 @@ fn d45_gapped_frame(tracker: &mut CompactFrdDepthTracker) {
 
 /// THE WHOLE LIFE OF THE RESET DEBT, through the production seal.
 ///
-/// `DELTA_WIRE_DESIGN.md` §7.3.1. The fold's `frd_direct_history_failed` is
+/// The fold's `frd_direct_history_failed` is
 /// ABSORBING: once set, every later D45 record is refused whatever it carries,
 /// and on the t26 capture 361 of d45's 362 gaps fall after its first data
 /// record, so d45's direct history died early and stayed dead. The producer

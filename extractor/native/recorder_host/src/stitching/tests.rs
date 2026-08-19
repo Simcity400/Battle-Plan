@@ -1,5 +1,5 @@
 //! Unit tests for the supersede algorithm, rollback retention, fail-closed
-//! identity/order gate, serialization, and determinism (design sections 4-8, 11).
+//! identity/order gate, serialization, and determinism.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -161,12 +161,12 @@ fn main_hours(p: &StitchedPlan) -> Vec<i64> {
 const K: &[u8] = b"campaign-A";
 
 // =========================================================================
-// Section 6 — supersede acceptance examples
+// Supersede acceptance examples
 // =========================================================================
 
 #[test]
 fn rollback_middle_supersedes_and_retains() {
-    // design section 6 pinned example: S0=0..100, rollback S1=80..90.
+    // S0=0..100, rollback S1=80..90.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 80..=90);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
@@ -224,7 +224,7 @@ fn overlap_at_end_extends_past_old_head() {
 
 #[test]
 fn relaunch_continuation_extends_main() {
-    // section 6: normal relaunch S2=91..120 after S0/S1 rollback.
+    // Normal relaunch S2=91..120 after S0/S1 rollback.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 80..=90);
     let s2 = snap_seg(2, 0, K, 91..=120);
@@ -238,7 +238,7 @@ fn relaunch_continuation_extends_main() {
 
 #[test]
 fn cross_session_gap_is_explicit_not_invented() {
-    // section 6: later session begins at 110 after prior head 100 -> 101..109 gap.
+    // Later session begins at 110 after prior head 100 -> 101..109 gap.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let mut s2 = snap_seg(1, 0, K, 110..=120);
     for hour in 101..=109 {
@@ -529,7 +529,7 @@ fn visible_index_uses_segment_prefixed_filenames() {
 }
 
 // =========================================================================
-// Sections 4 & 10 — fail-closed refusals
+// Fail-closed refusals
 // =========================================================================
 
 #[test]
@@ -678,7 +678,7 @@ fn refuse_corrupt_coverage_hole() {
 }
 
 // =========================================================================
-// Section 8 — determinism
+// Determinism
 // =========================================================================
 
 #[test]

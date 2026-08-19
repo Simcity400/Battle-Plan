@@ -3,9 +3,8 @@
 //!
 //! # What this measures, and what it does not
 //!
-//! Lane GE removed the derived gap ROWS and named this encoder as the largest
-//! remaining term in the finalize gap phase (`runs/ge_gap_stream/RESULTS.md`
-//! residual 2). The term is not the ledger it produces — that is
+//! This measures the largest remaining term in the finalize gap phase. The term
+//! is not the ledger it produces — that is
 //! O(classes + hour runs) and did not change, which the byte-identity test in
 //! `gap_ledger/tests.rs` pins. The term is the state the encoder holds WHILE
 //! producing it, and the two arms here differ in nothing else:

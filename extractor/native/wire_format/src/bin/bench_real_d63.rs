@@ -70,7 +70,6 @@
 //!
 //! The seal fields, the PERF hour binding, the DATA arm's pending-PERF rule, the
 //! status-independent payload authority and the stated identity mode arrived
-//! together in the five-check sweep, which carried d38's round-1..5 findings
 //! (`runs/batch2/d38_air_superiority_inputs/`) back across every earlier bin.
 //! None of them moved a measured number on this capture: its 903 FRAME_END
 //! records all carry `emitted == scheduled == 20`, `status == 0`, `reserved == 0`,
@@ -137,11 +136,9 @@ struct StreamScan {
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences:
-/// the 48-hour block cadence (every block opens with its own baseline, §1.5's
-/// closing paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap
-/// affecting the state part forces the next state observation to be a
-/// `BASELINE`. State may have moved and returned while nobody was looking, so
+/// Two reasons: the 48-hour block cadence and a capture gap.
+/// State after a gap to resume from a
+/// complete baseline. State may have moved and returned while nobody was looking, so
 /// neither a delta nor an `UNCHANGED` can be justified across unobserved
 /// time." Every hour this domain did not successfully sample is such a gap —
 /// the excluded failure-status hour, and any non-contiguous hour step — and
@@ -630,12 +627,11 @@ fn scan_stream(
     })
 }
 
-/// The wire arm — BASELINE at each block start and at every §1.5 gap,
+/// The wire arm — BASELINE at each block start and at every capture gap,
 /// stored-minimal DELTA between — with the per-hour reader replay.
 ///
 /// Factored out of `main` so the tests execute the PRODUCTION encode path over
 /// a scanned stream: a mutant that reverts the baseline decision at this
-/// call chain to block-position-only fails the gap test (a Codex round-1
 /// finding — the earlier tests exercised the decision function but not this
 /// callsite).
 struct WireMeasurement {
@@ -675,7 +671,7 @@ fn measure_wire_arm(
         let state: &KeyedState = &hour.state;
         m.countries_total += state.len();
 
-        // New arm: BASELINE at each block start — and at every §1.5 gap, which
+        // New arm: BASELINE at each block start — and at every capture gap, which
         // forces a fresh baseline and restarts the delta chain (`opens_baseline`).
         let hour_start = m.wire.len();
         let block_start = opens_baseline(m.hours_seen, hour.follows_previous);
@@ -828,7 +824,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
-         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+         {gap_forced_baselines} forced by a state gap)",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1013,7 +1009,7 @@ mod tests {
 
     #[test]
     fn a_stream_truncated_on_a_record_boundary_is_rejected() {
-        // The reviewer's input, generalized: a cut immediately after a d63 DATA
+        // The regression input, generalized: a cut immediately after a d63 DATA
         // record leaves that hour open and ends the stream on a record that is
         // not a FRAME_END. That used to produce a plausible shorter number; it
         // must now be refused. Records 1 and 3 of `good_stream` are the DATA
@@ -1146,7 +1142,7 @@ mod tests {
         // over EVERY d63 DATA record and before status-based exclusion, so all
         // four success/failure orderings are refused — gating it on the record
         // being usable let a success + failure pair through, which is the
-        // reviewer's reported input.
+        // reported regression input.
         const FAILED: u32 = 1; // COMPACT_STATUS_STATE_UNAVAILABLE
         for (first, second) in [(0u32, 0u32), (0, FAILED), (FAILED, 0), (FAILED, FAILED)] {
             let mut s = Vec::new();
@@ -1219,8 +1215,8 @@ mod tests {
 
     #[test]
     fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." Both gap shapes d63
+        // A complete
+        // baseline after a gap. Both gap shapes d63
         // can meet — an excluded failure-status hour, and a whole hour the
         // capture never scheduled — must clear `follows_previous`, and
         // `opens_baseline` must open a baseline on it wherever it lands in a
@@ -1406,7 +1402,7 @@ mod tests {
         assert!(scan_stream(&s, &test_collection(), StreamIdentityMode::Legacy).is_err());
 
         // A row the FOLD rejects must make the SCAN fail, not be accepted and
-        // then unwind while measuring. The reviewer's input was a structurally
+        // then unwind while measuring. The regression input was a structurally
         // sized payload whose row is invalid; the whole row-rejection space is
         // covered here, not just that one case.
         let mut invalid_rows: Vec<Vec<u8>> = Vec::new();

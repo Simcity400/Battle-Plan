@@ -1,4 +1,4 @@
-//! LAB3 integration test: decode the REAL captured engine `mapname` vertex
+//! Integration test: decode the REAL captured engine `mapname` vertex
 //! buffer (the first-ever captured country-label draw) with field-level
 //! assertions, and score the placement law's arc model against the engine's own
 //! glyph baseline with explicit tolerances.
@@ -6,7 +6,7 @@
 //! Fixtures under `tests/fixtures/mapname/` are the exact bytes captured in
 //! `session_CAPFIX2_GAPS_4` (`map_frame_mapname_pass_bundle.json`, draw 0). They
 //! are DECODER INPUTS for validation only — they never feed the runtime label
-//! path (see `documents/MAP_LABEL_LAW.md` §5, "captures validate, never drive").
+//! path; captures validate and never drive product output.
 //!
 //! Ground truth for the layout is the reflected VS input signature of
 //! `4e1b73f39c128df0` (bundle `input_layout.elements`): POSITION (DXGI 6,

@@ -1,26 +1,26 @@
-//! LABGRAD1 HARD ACCEPTANCE GATE (structural version).
+//! Structural acceptance gate for the captured 7B label set.
 //!
 //! Reconstructs the `session_MAPNAME_7B` camera from its captured cb0 (READ-ONLY
 //! evidence, copied verbatim into `tests/fixtures/mapname_7b/`) and scores the
 //! per-component country-label law's GEOMETRY machinery against ALL 23 engine
 //! `mapname` label draws of that frame. Captures VALIDATE the law; they never
-//! feed the runtime label path (`MAP_LABEL_LAW.md` §5).
+//! feed the runtime label path.
 //!
 //! ## Why STRUCTURAL, not full
 //!
-//! The full gate the spec describes ("run the label law on the recording state
-//! for that save") needs the capture-time OWNER/CONTROLLER province raster for
+//! Running the label law on the recording state for that save needs the
+//! capture-time OWNER/CONTROLLER province raster for
 //! the ~1943 7B save. That raster is NOT in the capture — the 7B session dumped
 //! only the label vertex buffers + constant buffers (see its
-//! `map_capture_session.json`; `MAP_LABEL_LAW.md` §5.1 lists the owner/controller
-//! rasters as the still-uncaptured evidence). So this gate ships the DOWNGRADED
-//! structural form the spec authorises:
+//! `map_capture_session.json`; the test below lists the owner/controller
+//! rasters as the still-uncaptured evidence). This gate therefore checks the
+//! structural facts that the available capture can prove:
 //!
 //!   1. **Camera reconstruction (all 23 draws).** Each draw's captured cb0
-//!      `ViewProjectionMatrix`, read column-major (transposed for CPU `M·v`,
-//!      per LAB3), projects that draw's world-space glyph quads INSIDE the
+//!      `ViewProjectionMatrix`, read column-major (transposed for CPU `M·v`),
+//!      projects that draw's world-space glyph quads INSIDE the
 //!      captured 1920×1080 frame — proving the camera reconstruction is exact for
-//!      every label, not just the one LAB3 checked.
+//!      every label.
 //!   2. **All-strings-resolvable.** Every one of the 23 labels decodes to a
 //!      clean, non-empty ASCII string (no `?` glyphs) via the shipped
 //!      `hoi_mapfont4.fnt` rects — i.e. the exact strings the engine drew
@@ -30,20 +30,20 @@
 //!      the same tag MULTIPLE times (UNITED KINGDOM ×8, FRANCE ×2, …). A
 //!      one-label-per-country law can draw at most one per tag, so ≥2 draws of a
 //!      tag DECISIVELY refutes it and shows the engine labels detached regions
-//!      separately. NOTE this is consistent with per-CONNECTED-COMPONENT (the
-//!      LABGRAD1 rule) but does NOT uniquely prove it over per-STATE or
-//!      per-strategic-region (§5.1) — settling that needs the absent
+//!      separately. NOTE this is consistent with per-CONNECTED-COMPONENT but
+//!      does NOT uniquely prove it over per-STATE or per-strategic-region;
+//!      settling that needs the absent
 //!      owner/controller raster. This gate checks the refutation, not the
 //!      stronger per-component claim.
 //!   4. **Geometry-law residuals on matched labels (all 23).** The placement
 //!      law's own arc model (centroid anchor + PCA angle + quadratic bow) fits
-//!      each engine baseline to within the LAB3-cited tolerance (mean RMS ≈0.158,
-//!      max ≈1.14 world units). This validates the §3.4–§3.7 arc/size machinery —
-//!      unchanged by LABGRAD1 — across the whole 23-label set.
+//!      each engine baseline to a mean RMS of about 0.158 and a maximum of about
+//!      1.14 world units. This validates the arc/size machinery across the whole
+//!      23-label set.
 //!
 //! What this gate does NOT prove (honest scope): that the law's
 //! PCA-over-ownership-raster predicts THESE anchors/angles from the 7B owner
-//! state (needs the absent raster), nor the absolute size curve (§5.1). Those
+//! state (needs the absent raster), nor the absolute size curve. Those
 //! stay UNKNOWN-ENGINE-SIDE / UNTRACED.
 
 use map_viewer::{
@@ -180,7 +180,7 @@ fn all_23_strings_resolve_cleanly() {
         );
         texts.push(label.text);
     }
-    // The 23 labels are the §5 set; assert the load-bearing structural facts:
+    // Assert the load-bearing structural facts of the captured 23-label set:
     // several distinct multi-word powers appear, and at least one string recurs
     // (the SAME tag labelled more than once — refutes one-label-per-country).
     let joined = texts.join(" ");
@@ -196,7 +196,7 @@ fn all_23_strings_resolve_cleanly() {
             "expected engine label {needle:?} not found; decoded set: {joined}"
         );
     }
-    // UNITED KINGDOM appears MANY times (§5: ×8) — the decisive refutation of
+    // UNITED KINGDOM appears eight times — the decisive refutation of
     // one-label-per-country. Assert it recurs (> once) without over-fitting the
     // exact count.
     let uk = texts.iter().filter(|t| *t == "UNITEDKINGDOM").count();
@@ -211,7 +211,7 @@ fn all_23_strings_resolve_cleanly() {
 #[test]
 #[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
 fn draw_time_cull_matches_the_captured_drawn_set() {
-    // RE-EMIT §6.2a: the BUILT label set is camera-independent (the
+    // The BUILT label set is camera-independent (the
     // visibility is a DRAW-time cull. `label_draw_visible` is that cull, and
     // this capture pins its two laws:
     //
@@ -227,7 +227,7 @@ fn draw_time_cull_matches_the_captured_drawn_set() {
     //    submissions where a conservative skip is pixel-identical.
     //
     // Honest scope (precision): the 7B save's full BUILT label set is not
-    // reconstructable (its owner raster was not captured — MAP_LABEL_LAW §5.1),
+    // reconstructable because its owner raster was not captured,
     // so drawn-set PRECISION against that save cannot be measured here; recall
     // on the engine's own drawn geometry + the negative controls below are
     // what this capture can prove. SKIPS without the local game install.
@@ -309,10 +309,10 @@ fn draw_time_cull_matches_the_captured_drawn_set() {
 
 #[test]
 fn law_arc_model_reproduces_all_23_engine_baselines() {
-    // (4): the placement law's arc model fits each engine baseline. Per LAB3 the
-    // MEAN RMS across the 23 is ≈0.158 (max ≈1.14). Assert the aggregate mean is
-    // within a tolerance comfortably above the cited figure but well below a
-    // world-unit, and that no single label blows past the cited max by much.
+    // (4): the placement law's arc model fits each engine baseline. The measured
+    // mean RMS across the 23 is about 0.158 (max about 1.14). Assert the aggregate
+    // mean is within a tolerance comfortably above that figure but well below a
+    // world-unit, and that no single label blows past the measured max by much.
     let draws = draws();
     let mut rms_sum = 0.0f64;
     let mut rms_max = 0.0f32;
@@ -341,7 +341,7 @@ fn law_arc_model_reproduces_all_23_engine_baselines() {
         "arc-model vs 23 engine baselines: mean RMS {mean_rms:.4} wu, worst per-label \
          RMS {rms_max:.4}, worst max residual {worst_max:.4}"
     );
-    // LAB3 measured mean RMS ≈ 0.158. Gate at 0.35 (> the cited value with head-
+    // Measured mean RMS is about 0.158. Gate at 0.35 (with head-
     // room, << one world unit): a real regression trips this.
     assert!(
         mean_rms < 0.35,
@@ -349,7 +349,7 @@ fn law_arc_model_reproduces_all_23_engine_baselines() {
     );
     // Per-label RMS should also stay sub-world-unit.
     assert!(rms_max < 0.8, "worst per-label RMS {rms_max} exceeds 0.8");
-    // LAB3 max residual ≈ 1.14 on the most-curved labels; gate at 2.0.
+    // Measured max residual is about 1.14 on the most-curved labels; gate at 2.0.
     assert!(
         worst_max < 2.0,
         "worst per-label MAX residual {worst_max} exceeds 2.0 world units"

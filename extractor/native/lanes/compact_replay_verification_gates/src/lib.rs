@@ -248,9 +248,8 @@ struct DomainContract {
     /// every row away, which is silent data loss masquerading as a tolerated
     /// PARTIAL. This fires EVEN under `allow_partial_or_source_failure` (a
     /// partial-tolerant profile still may not tolerate 39.5M rows in / 0 out).
-    /// Motivating defect: d47 characters adapter processed millions of rows and
-    /// emitted zero for a whole session behind a rowless-PARTIAL frame
-    /// (2026-07-10; see extractor/documents/CONFIRMED_COMPLETE_DESIGN.md).
+    /// A d47 characters adapter processing rows but emitting none behind a
+    /// rowless-PARTIAL frame is a gate failure.
     work_implies_rows_units: &'static [&'static str],
     shared_recorder_known: bool,
 }
@@ -602,7 +601,7 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "domain47_adapter_advisor_roster_rows",
             "domain47_adapter_country_leader_role_rows",
             "domain47_adapter_unit_leader_rows",
-            // G1-residue finding 5: previously-missing output families — an
+            // Previously missing output families — an
             // active-ruler-only or trait-only session must not bypass the
             // invariant.
             "domain47_adapter_active_ruler_rows",
@@ -1225,7 +1224,7 @@ fn validate_domain_manifest(
     // came out. (row_count_total is the emitted-row total; requires_data only
     // checks records exist, not rows.)
     if !contract.work_implies_rows_units.is_empty() {
-        // G1-residue gate finding 5: the aggregate rule alone let ONE early
+        // The aggregate rule alone let ONE early
         // emitted row mask total loss on every later frame. The collector now
         // counts per-frame work-without-emission (adapter built output-family
         // rows, frame emitted zero data rows); any nonzero total is the same
@@ -2221,8 +2220,7 @@ const CACHE_ONLY_LINK_CHECKPOINT_CACHE: &str = "h4cp_source_digest";
 ///
 /// Without it the authority could only join the artifacts' hour NAMES against
 /// the sealed coverage map, never their byte account, because the coverage map
-/// is not a byte-range authority (see `runs/gz_interior_holes/MATRIX.md`,
-/// residual GZ-1). A repacked or regression-built index could then move a hole
+/// is not a byte-range authority. A repacked or regression-built index could then move a hole
 /// off the injured hour's records, or omit it and let a served hour's range
 /// stretch over them — hour misattribution reaching replay. The digest closes
 /// that transitively: `build_certified_replay_artifacts` compares the packaged
@@ -2415,7 +2413,7 @@ impl<'a> StaticBundleCopies<'a> {
 /// directory on the RECORDING machine — the static bundle manifest, the game
 /// executable, the mod/dlc/load-order documents, the source inventory, the
 /// verifier script. Those are absolute paths, and a shareable container must
-/// carry none (container spec §0); the recorder's seal-time
+/// carry none; the recorder's seal-time
 /// `reject_absolute_paths_in_json` refuses to write one, and
 /// `bind_run_dir_manifest_to_sealed_authority` now asserts the same thing on
 /// the copy read back out. So requiring the SEALED entry to hold an absolute
@@ -3762,8 +3760,7 @@ fn certify_attach_time_content_proof(
             "{field}.kind disagrees with the declared proof kind"
         ));
     }
-    // THE ROUTE MUST MATCH THE EVIDENCE, and the verifier decides that for
-    // itself (Codex review round 2, finding 1).
+    // THE ROUTE MUST MATCH THE EVIDENCE, and the verifier decides that for itself.
     //
     // The recorder refuses to write a recording that carries both, but a
     // consumer that trusted the declaration would let a recording holding the
@@ -3816,8 +3813,8 @@ fn certify_attach_time_content_proof(
     if completed_at < observed_at {
         return Err(format!("{field} window closes before it opens"));
     }
-    // The interval the proof does NOT cover, verified rather than carried
-    // (Codex review round 2, finding 2). Capture is attach-and-play, so the
+    // The interval the proof does NOT cover is verified rather than carried.
+    // Capture is attach-and-play, so the
     // engine has usually been running for a while when the window opens, and
     // content it read at ITS launch that changed before the window is outside
     // every observation this proof makes. Requiring the stamp, and requiring it
@@ -3857,8 +3854,7 @@ fn certify_attach_time_content_proof(
         .ok_or_else(|| format!("{field}.layer_stack is missing or not an array"))?;
     // A vacuous stack must not certify. An empty list has a perfectly valid
     // digest, so without this the whole "the proof states the world it was
-    // taken in" claim could be satisfied by stating no world at all (Codex
-    // review round 1, finding 5).
+    // taken in" claim could be satisfied by stating no world at all.
     if layer_rows.is_empty() {
         return Err(format!(
             "{field}.layer_stack is empty: a proof that states no content layers states no world"
@@ -4005,8 +4001,7 @@ fn certify_attach_time_content_proof(
 
     // Zero packaged roles would admit zero artifacts and join zero paths while
     // still reporting `static_artifacts_joined: true`. The producer refuses to
-    // start a fingerprint with no artifacts; the consumer must not depend on
-    // that (Codex review round 1, finding 5).
+    // start a fingerprint with no artifacts; the consumer must not depend on that.
     if declared.is_empty() {
         return Err(format!(
             "{field}: the recording packages no static artifacts at all, so its attach-time proof \
@@ -4118,8 +4113,7 @@ fn certify_attach_time_content_proof(
     // needs; a recording that could not resolve it names the gap here.
     // The EXPECTED roster is derived here from the recording's own sealed
     // scheduled domains rather than read out of the proof, so a recording
-    // cannot certify by shipping two empty arrays (Codex review round 1,
-    // finding 4).
+    // cannot certify by shipping two empty arrays.
     let scheduled = embedded_manifest
         .get("scheduled_domains")
         .and_then(Value::as_array)
@@ -4349,7 +4343,7 @@ struct SealedManifestBinding {
 ///
 ///  1. The sealed copy goes through the portable projection — every absolute
 ///     path is reduced to its basename, because a shareable container must not
-///     carry personal paths (container spec §0). The run-dir copy keeps the
+///     carry personal paths. The run-dir copy keeps the
 ///     absolute paths on purpose, for recovery and audit on the recording
 ///     machine.
 ///  2. The sealed copy is built BEFORE the container is packed, so it cannot
@@ -4412,7 +4406,7 @@ fn bind_run_dir_manifest_to_sealed_authority(
 ) -> Result<SealedManifestBinding, String> {
     // PORTABILITY, asserted before anything else is read out of the sealed
     // copy. A `.battleplan` is meant to be handed to someone else, and the
-    // container spec (§0, "No personal paths") forbids personal filesystem
+    // The portable-container contract forbids personal filesystem
     // paths in what it carries. The recorder enforces that at seal time by
     // running `reject_absolute_paths_in_json` over the projected manifest and
     // refusing to pack if anything absolute survived — but `verify_all()`
@@ -4866,7 +4860,7 @@ fn load_verified_replay_authority(
     // corrupt entry. That made per-entry confinement unreachable no matter what
     // the coverage map said: a flipped byte in one hour's snapshot entry
     // aborted the authority here, before anything could associate that entry
-    // with its hour (Codex review round 1, finding 3). The report is computed
+    // with its hour. The report is computed
     // once, at the same point in the chain the old call occupied, and the
     // per-hour downgrade below reads it.
     let entry_report = container.verify_all_streaming_report().map_err(|err| {
@@ -4875,7 +4869,7 @@ fn load_verified_replay_authority(
             replay_path.display()
         )
     })?;
-    // NO ARTIFACT MAY ALSO BE SOME HOUR'S SNAPSHOT (Codex review round 5).
+    // NO ARTIFACT MAY ALSO BE SOME HOUR'S SNAPSHOT.
     //
     // `EntryVerification::hour_index` is resolved by matching an entry's path
     // against the container INDEX's snapshot file names, which says nothing
@@ -5129,8 +5123,7 @@ fn load_verified_replay_authority(
     let content_proof_kind = read_content_proof_kind(&embedded_manifest)?;
     let static_artifacts = match content_proof_kind {
         ContentProofKind::LaunchTimeStaticBundleV1 => {
-            // The other direction of the exclusivity (Codex review round 2,
-            // finding 1). A recording that took the attach-time proof and then
+            // The other direction of the exclusivity. A recording that took the attach-time proof and then
             // declared the launch-time kind would be certified against evidence
             // it does not have; refusing here means the declaration can never
             // outrank the evidence in either direction.
@@ -5217,8 +5210,7 @@ fn load_verified_replay_authority(
     //  * An hour excluded because its ENTRY rotted AFTER sealing is not a
     //    contradiction — it is exactly the per-hour loss this model exists to
     //    confine. Refusing the recording for it would convert a one-hour injury
-    //    back into a whole-recording refusal, which is the thing being retired
-    //    (Codex review round 3, finding 3).
+    //    back into a whole-recording refusal, which is the thing being retired.
     //
     // So the guard runs here, against what the recording claimed at seal time;
     // the damaged hours are then excluded below and simply not served.
@@ -5239,8 +5231,7 @@ fn load_verified_replay_authority(
     // the same stated reason.
     //
     // Without it the artifact's holes would be a SECOND, unjoined naming of the
-    // recording's injuries — the exact shape lane GY's GY-5 finding closed on
-    // the digests. A container could then serve eight hours while its index
+    // recording's injuries. A container could then serve eight hours while its index
     // blamed the ninth on something the seal never said, and nothing would
     // notice; or a hole could quietly appear over an hour the seal verified,
     // dropping a good hour with an invented excuse.
@@ -5537,8 +5528,8 @@ fn bind_index_holes_to_sealed_coverage(
 /// Read the recording's per-hour coverage map out of the CONTAINER-AUTHENTICATED
 /// recorder manifest.
 ///
-/// Required, not optional. Pre-production carries no backwards compatibility
-/// (`AGENTS.md`), and a compact recording that states no coverage is one whose
+/// Required, not optional. `PROJECT.md` — “Portable boundary” carries no
+/// pre-production compatibility obligation, and a compact recording that states no coverage is one whose
 /// per-hour claims a consumer would have to invent — which is the guessing the
 /// owner ruling forbids. The refusal names the field so a stale artifact is
 /// diagnosable rather than merely rejected.
@@ -6068,7 +6059,7 @@ fn certify_cache_only_recording(
         // publishes no per-hour snapshot entries at all, so the container's
         // snapshot index is empty and enumerating hours from it sees nothing —
         // which is how an excluded hour could still have been served out of the
-        // certified cache (Codex review round 1, finding 2). These are the rows
+        // certified cache. These are the rows
         // the per-hour coverage check is applied to.
         "indexed_hour_indexes": hour_index
             .hours()
@@ -7014,8 +7005,7 @@ fn scan_compact_stream_with_identity_mode(
         // independent scan must mirror that rule exactly — counting them here
         // made every probe-carrying stream disagree with its manifest
         // (record_count / domain_perf_record_count / domains_seen) and the
-        // exact-count comparison could never pass (R2 gate finding 3,
-        // pre-existing). Sequence ordering was already checked above.
+        // exact-count comparison could never pass. Sequence ordering was already checked above.
         if record_type == RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
             offset = offset.saturating_add(record_len);
             continue;
@@ -8694,7 +8684,7 @@ mod tests {
 
     #[test]
     fn probe_domain_records_are_excluded_from_all_stream_accounting() {
-        // R2 gate finding 3 (pre-existing): the recorder manifest excludes
+        // The recorder manifest excludes
         // reserved probe-domain (250) records from record/domain accounting,
         // but this independent scan counted them — every probe-carrying
         // stream (lane-wall lw_*, bt_*, so_* units ride domain 250) then
@@ -14307,8 +14297,7 @@ mod tests {
 
         // And the third direction: a launch-time recording that ALSO carries an
         // attach-time proof. Without this the two proofs could coexist and the
-        // declaration alone would pick which set of checks ran (Codex review
-        // round 2, finding 1).
+        // declaration alone would pick which set of checks ran.
         let dir = TmpDir::new("content_proof_route_both");
         let mut manifest = replay_test_manifest("g", &dir.0);
         manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] = json!({
@@ -14462,8 +14451,7 @@ mod tests {
     ///
     /// kills: dropping `bind_index_holes_to_sealed_coverage` from
     /// `load_verified_replay_authority`. The artifact's holes are then a
-    /// SECOND, unjoined naming of the recording's injuries — the same shape
-    /// lane GY's GY-5 finding closed on the digests — so a container could drop
+    /// SECOND, unjoined naming of the recording's injuries, so a container could drop
     /// a good hour on an excuse the seal never made and nothing would notice.
     #[test]
     fn a_cache_only_container_serves_around_a_named_interior_hole() {
@@ -14561,8 +14549,7 @@ mod tests {
     /// 2-3 are two whole windows, and rots the record of hour 2, which is the
     /// second window's CHECKPOINT.
     ///
-    /// kills, and each at the point it actually fails (Codex review round 4,
-    /// finding 1):
+    /// kills, and each at the point it actually fails:
     ///
     ///  * dropping the `CHECKPOINT_CACHE_ROLE` exemption from the unisolatable
     ///    refusal — the `expect` below fails, because the whole container is
@@ -14668,9 +14655,8 @@ mod tests {
     /// shapes of H4CP damage belong to no single hour. The first is the
     /// artifact growing LONGER than the index published, or shorter than its
     /// own header, refused by `CacheAudit::finish` and pinned on the snapshot
-    /// side by `an_audit_confines_a_short_cache_and_refuses_a_long_one` (Codex
-    /// review round 7, finding 2; narrowed to those two length shapes by task
-    /// #192, which confines an ordinary TRUNCATION to the hours past the
+    /// side by `an_audit_confines_a_short_cache_and_refuses_a_long_one`, narrowed
+    /// to those two length shapes because an ordinary TRUNCATION is confined to the hours past the
     /// verified prefix). Of the remaining four, two are pinned here:
     ///
     ///  * the file HEADER — the artifact's own identity and the framing every
@@ -14681,8 +14667,7 @@ mod tests {
     /// digest, yet a record disagrees with the seal" — is pinned by
     /// `every_broken_attestation_link_refuses_by_its_own_name`'s
     /// `corrupt_cache_bytes` cell, which damages the cache BEFORE packing so
-    /// the container's account covers the damaged bytes (Codex review round 6,
-    /// finding 2).
+    /// the container's account covers the damaged bytes.
     ///
     /// The fifth — "the container refused the entry, yet every record matches
     /// the seal" — is documented at its code site rather than pinned: it needs
@@ -14691,7 +14676,7 @@ mod tests {
     ///
     /// kills: this test pins the DIAGNOSIS each unattributable shape gets, not
     /// the refusal itself — the refusals are layered on purpose and each shape
-    /// has a fallback (Codex review round 1, finding 2). Delete the header
+    /// has a fallback. Delete the header
     /// validation and the rotted header is still refused, by the "the container
     /// refused the entry yet every record matches the seal" arm; delete the
     /// index-versus-seal comparison and the substituted index is still refused,
@@ -14753,7 +14738,7 @@ mod tests {
 
     /// A REPLAY ARTIFACT INDEXED AS AN HOUR'S SNAPSHOT REFUSES THE CONTAINER.
     ///
-    /// The concern is real and worth pinning (Codex review round 5, finding 1):
+    /// The concern is real and worth pinning:
     /// `EntryVerification::hour_index` is resolved by matching an entry's path
     /// against the container index's snapshot file names and says nothing about
     /// the entry's ROLE, so an index that listed the canonical H4CP as hour 9's
@@ -14764,7 +14749,7 @@ mod tests {
     /// keep.
     ///
     /// WHERE the alias is refused depends on its POSITION in the index, and
-    /// both positions are covered here (Codex review round 6, finding 1):
+    /// both positions are covered here:
     ///
     ///  * FIRST — `Container::open` decodes the first indexed snapshot as the
     ///    representative it checks mod and build identity against, so an H4CP
@@ -14842,9 +14827,8 @@ mod tests {
     ///
     /// The name join above binds an H4IX hole's HOUR and REASON to the sealed
     /// coverage map. It cannot bind the hole's BYTE RANGE, because the coverage
-    /// map is not a byte-range authority — measured in
-    /// `runs/gz_interior_holes/MATRIX.md`, residual GZ-1: a torn tail's row
-    /// reports `[0, 36)` for an hour at the end of the stream. So a container
+    /// map is not a byte-range authority: a torn tail's row reports `[0, 36)`
+    /// for an hour at the end of the stream. So a container
     /// could otherwise carry an index that names the right hours for the right
     /// reasons while placing a hole over the wrong records, or omitting one and
     /// letting a served hour's range stretch across the injured hour — hour

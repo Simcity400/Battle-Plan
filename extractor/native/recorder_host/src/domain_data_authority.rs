@@ -212,7 +212,7 @@ pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 pub const COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 pub const COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 pub const COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
-/// D45-LOCAL direct-history reset badge (`DELTA_WIRE_DESIGN.md` §7.3.1).
+/// D45-local direct-history reset badge.
 ///
 /// "This record's `frd_direct_*` extent begins a NEW history; discard the
 /// accumulation you hold for it." Its scope is the `frd_direct_*` maps and
@@ -614,7 +614,6 @@ pub const COMPACT_DIVISION_TYPE: u32 = 4713;
 pub const COMPACT_DIVISION_ROW_LEN: usize = 120;
 pub const LEGACY_COMPACT_DIVISION_ROW_LEN: usize = 104;
 /// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 pub const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -670,7 +669,6 @@ pub const COMPACT_MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000
 pub const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 pub const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
 /// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
 pub const COMPACT_ARMY_ORDER_ROW_LEN: usize = 48;
@@ -682,7 +680,6 @@ pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
 pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 pub const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
 /// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
-/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_ROW_LEN: usize = 80;
 pub const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
@@ -700,7 +697,6 @@ pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
 /// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 pub const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
@@ -815,7 +811,6 @@ pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS: u32 =
         | COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK;
 pub const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
 /// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
 pub const COMPACT_PROJECT_MAX_ITERATIONS: u32 = 1_000_000;
@@ -844,7 +839,6 @@ pub const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
 pub const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
 /// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
-/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_AIR_BASE_STATUS_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_CAPACITY: u32 = 1_000_000;
 pub const COMPACT_AIR_BASE_STATUS_MAX_BUILDING_LEVEL: u32 = 1_000;
@@ -887,7 +881,6 @@ pub const COMPACT_WEATHER_MIN_REGION_ROWS: usize = 1;
 pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 2;
 pub const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
 /// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
-/// Was a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
 pub const COMPACT_MAP_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// Province id space STRUCTURAL width (lane IA). This one was additionally
 /// spelled with the SLOT-COUNT value `65_536` rather than an id maximum -- an
@@ -1609,7 +1602,7 @@ fn decode_compact_country_identity_data_payload(
     }
 }
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=2b63a23c6f69d9b69c92f7ae67a2817d6902fbe515079f76a27dbc2f82984065
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
 fn decode_compact_production_data_payload(
     offset: usize,
     payload: &[u8],
@@ -3093,7 +3086,7 @@ fn decode_compact_focus_data_payload(
     }
 }
 
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=25f1c76e67752b9361fd14ce964dee9a78c33842e07d918ced7b8de4eb15369b
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=23069ce1f109dcd23d697b71e18be75dc806d6169733ea41b7d36e78a19d0c29
 fn decode_compact_tech_data_payload(
     offset: usize,
     payload: &[u8],
@@ -11438,7 +11431,7 @@ fn decode_compact_project_reward_history_trailer(
         aborted_countries,
     );
 }
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=fa52cc46d533f44061ac59034aae507a225696ea795d6a5270e647517bb27aa2
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=02163462bdcc964b65868afa16ad733c3d8c61631d4c779755037464a3f4a798
 const COMPACT_MARKET_TRADE_UNDECODABLE: &str = "market trade record is undecodable at byte ";
 
 const D43_AUTHORITY_DECODE_CONTEXT: d43_grammar::decode::DecodeContext =
@@ -17105,7 +17098,7 @@ fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
     ])
 }
 
-// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=4d68e6710f155e9f9598cd171526cc1134abb89685600ed063be18678f2d8f21
+// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=3349999ada55dc5ab043187ef1e8010e42db3edd125d851bf38ec2f06171779a
 fn decode_compact_power_balance_state_data_payload(
     offset: usize,
     payload: &[u8],
@@ -19135,7 +19128,7 @@ mod tests {
     /// Bit 7 of `depth_status_flags` is an ASSIGNED bit, on every schema
     /// version, and the decoder admits it.
     ///
-    /// `DELTA_WIRE_DESIGN.md` §7.3.1's D45-LOCAL direct-history reset badge.
+    /// D45-local direct-history reset badge.
     /// The decoder refuses any bit outside `admitted_depth_status_mask`, so a
     /// badge that was not registered there would be rejected as an unknown bit
     /// on exactly the records it exists to rescue -- the repair would announce
@@ -20079,7 +20072,7 @@ mod tests {
 
     /// D43 had three independent reader sites before this lane: fold 154 raw
     /// reads, authority 119, and lane gate 217, as recorded in
-    /// `runs/lx_d43_one_decoder/walker_census_before.md`. This test permits one
+    /// the pre-consolidation walker census. This test permits one
     /// implementation: the leaf. The marked fold, authority, lane and producer
     /// regions must have no byte-slice use except a fully-qualified leaf call
     /// or a forwarder defined inside the region whose body is itself scanned.
@@ -20583,7 +20576,7 @@ fn consumer(payload: &[u8]) {
     // did NOT do that** -- it found that this site cannot execute the leaf's
     // walk without either changing shipped behaviour or bypassing a leaf rule,
     // and left the question with the owner
-    // (`runs/lk_d43_one_site/authority_soft_structural_finding.md`). What it
+    // (the structural characterization below). What it
     // left behind is this test.
     //
     // The one thing that rewire must not do is change what this authority SAYS
@@ -20619,7 +20612,7 @@ fn consumer(payload: &[u8]) {
     /// an independent, encoder-generated CHARACTERIZATION matrix. Driving the
     /// hand-written vectors themselves needs the same public encoder calls with
     /// the goldens' exact inputs, which is work this lane did not do
-    /// (`runs/lk_d43_one_site/NOTES.md`, section 2).
+    /// (the characterization limits below).
     fn d43_oracle_payload() -> (Vec<u8>, BTreeMap<&'static str, usize>) {
         use d43_grammar::encode;
 
@@ -20974,7 +20967,7 @@ fn consumer(payload: &[u8]) {
     /// produced.
     ///
     /// It is a characterization matrix, not a proof of total coverage. What it
-    /// does NOT reach is written down in `runs/lk_d43_one_site/NOTES.md`
+    /// does NOT reach is written down in the characterization below
     /// section 2: no two-fields-malformed precedence case, `MTRF`/`MTRR`/`MTRD`
     /// v3 only rather than their full version sets, no duplicate
     /// `MTRF`/`MTRH`/`MTRR`/`MTRD` and no `MTRB`/`MTLL` rejection. Lane LR's
@@ -20988,7 +20981,7 @@ fn consumer(payload: &[u8]) {
     /// LK captured it from the warn-and-read-on walk. 90 of the 112 blocks
     /// changed, 22 are byte-identical, and every change is one of five kinds.
     /// The whole difference is kept at `runs/lr_mtd1_reject/oracle_diff.txt` and
-    /// read per-fixture in `runs/lr_mtd1_reject/NOTES.md`:
+    /// checked per fixture below:
     ///
     /// 1. **one added line** on a payload that was already being refused: the
     ///    record-level `is undecodable at byte N` verdict, which did not exist
@@ -25101,7 +25094,7 @@ fn consumer(payload: &[u8]) {
             println!("d43 header sweep {label}: {both} both, {neither} neither, {no_ops} no-op");
         }
         // ASSERTED per family as well as in total, because the per-family
-        // figures are quoted in `runs/lr_mtd1_reject/NOTES.md` and a figure a
+        // figures are asserted below and a figure a
         // test only prints is not evidence -- the battery log records this test
         // as PASS and nothing else. The order is the sweep's: the core, then the
         // seven families in payload order.
@@ -25184,7 +25177,7 @@ fn consumer(payload: &[u8]) {
         );
         // ASSERTED, not printed. Review was right that a number a test only
         // prints is not evidence: the battery log records the test as PASS and
-        // nothing else, so every figure quoted in `runs/lr_mtd1_reject/NOTES.md`
+        // nothing else, so every figure
         // has to be checkable from the source. These four are the sweep's whole
         // shape, and any of the changes this test is meant to kill moves one of
         // them.

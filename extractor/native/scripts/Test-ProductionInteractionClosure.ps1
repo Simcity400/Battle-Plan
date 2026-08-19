@@ -26,7 +26,7 @@ $validationPath = Join-Path $scriptDir 'ProductionCapture.Validation.ps1'
 $sinkReconciliationPath = Join-Path $scriptDir 'verify_sink_reconciliation.py'
 # Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
 $attestationPath = Join-Path $repoRoot 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
-$isolationPath = Join-Path $repoRoot 'extractor\documents\CLIENT_DRIVING_ISOLATION.md'
+$projectPath = Join-Path $repoRoot 'PROJECT.md'
 $lifecyclePath = Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1'
 $hostCargoPath = Join-Path $repoRoot 'extractor\native\recorder_host\Cargo.toml'
 $hostMainPath = Join-Path $repoRoot 'extractor\native\recorder_host\src\main.rs'
@@ -67,7 +67,7 @@ $promotionHelper = Get-Content -LiteralPath $promotionHelperPath -Raw
 $runner = Get-Content -LiteralPath $runnerPath -Raw
 $validation = Get-Content -LiteralPath $validationPath -Raw
 $sinkReconciliation = Get-Content -LiteralPath $sinkReconciliationPath -Raw
-$isolation = Get-Content -LiteralPath $isolationPath -Raw
+$project = Get-Content -LiteralPath $projectPath -Raw
 $lifecycle = Get-Content -LiteralPath $lifecyclePath -Raw
 $hostCargo = Get-Content -LiteralPath $hostCargoPath -Raw
 $hostMain = Get-Content -LiteralPath $hostMainPath -Raw
@@ -876,15 +876,15 @@ Assert-ClosureCase 'evidence client-driving is isolated from canonical package n
 $cases++
 
 # 'zero client mutation' was cited here but appears nowhere in the document, and
-# never did - it was a paraphrase, not a quotation, so this conjunct could not
-# pass. The document states the boundary as two separate guarantees; quote both
-# of them, and the surrounding hook-restoration duty, so a rewrite that drops
-# either half is caught instead of being paraphrased over.
-Assert-ClosureCase 'isolation document binds injected observation and minimal hooks' (
-    $isolation.Contains('Injected collection is allowed') -and
-    $isolation.Contains('evidence-backed') -and
-    $isolation.Contains('zero semantic game-state mutation and zero client control') -and
-    $isolation.Contains('was restored to its baseline')
+# PROJECT.md owns the durable passive-recording boundary. Pin its independent
+# client-control and teardown clauses so deleting a retired design document
+# cannot weaken this closure test.
+Assert-ClosureCase 'PROJECT binds passive observation and restored hooks' (
+    $project.Contains('never pauses the game') -and
+    $project.Contains('drives the UI') -and
+    $project.Contains('sends input') -and
+    $project.Contains('collector has no authority to control the client') -and
+    $project.Contains('restored byte-for-byte at teardown')
 )
 $cases++
 

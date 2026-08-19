@@ -1,8 +1,7 @@
 //! air_loss_stats_live (domain 61) — per-country CUMULATIVE air-combat loss statistics.
 //!
-//! This is the compact-packet DATA layer for the C1 crack (statistic id 23, the per-country
-//! 89-field aggregate air-loss history record). Cracked + orchestrator-verified root chain
-//! (see `extractor/native/runs/cracklist_c1_air_stats/EVIDENCE.md` and `EVIDENCE_FINISH`):
+//! This is the compact-packet DATA layer for statistic id 23, the per-country
+//! 89-field aggregate air-loss history record. Verified root chain:
 //!
 //! ```text
 //! CGameState  = u64[module_base + 0x3316E90]
@@ -22,7 +21,7 @@
 //!     (vtable RVA 0x27D0E90) whose `tag_db_id (@+0x08) == idx`. This binding is PROVEN
 //!     live (index self-consistent 437/440; the stat-bearing managers resolve through this
 //!     table to exactly the 1939.12 belligerent set — GER richest, SOV+FIN share the
-//!     Winter-War stat key, ITA at idx 16 carries air key 23; see EVIDENCE_FINISH §B).
+//!     Winter-War stat key, and ITA at idx 16 carries air key 23).
 //!   * Any torn/invalid read, a CLoopHistory vtable mismatch, a field_count != 89, an absent
 //!     air stat, a failed self-ref/yearly-window guard, or an out-of-bounds
 //!     value FAILS THE ROW CLOSED (absent, never 0).

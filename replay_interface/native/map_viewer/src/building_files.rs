@@ -254,7 +254,7 @@ pub fn building_file_derived_layer_from_resolver(
     }
     if !preview_all {
         gaps.push(
-            "--buildings-from-files prepared static placements and meshes but emitted zero instances; REPLAY_DATA_REQUIREMENTS item 10 must supply recorded state building levels before slot visibility is real".to_string(),
+            "--buildings-from-files prepared static placements and meshes but emitted zero instances; recorded state building levels are required before slot visibility is real".to_string(),
         );
     }
     for row in coverage.iter().filter(|row| !row.fully_resolved()) {
@@ -277,7 +277,7 @@ pub fn building_file_derived_layer_from_resolver(
         material_texture_resolved_count: textures.resolved,
         material_texture_unresolved,
         level_policy: if preview_all {
-            "visual gate override: render slot 0..show_on_map-1 per state at level>=1 assumption; real playback must gate slots on recorded building levels per REPLAY_DATA_REQUIREMENTS item 10".to_string()
+            "visual gate override: render slot 0..show_on_map-1 per state at level>=1 assumption; real playback must gate slots on recorded building levels".to_string()
         } else {
             "default preview policy: rows in map/buildings.txt are slots; without recorded building levels no slots are rendered, even under --buildings-from-files".to_string()
         },
@@ -813,8 +813,9 @@ pub fn building_mesh_vertex_buffer_from_model(
 /// file's own directory (FILE law, verified against shipped bytes:
 /// `gfx/models/buildings/bunker.mesh` → `bunkercomplex_diffuse.dds`, a sibling
 /// under `gfx/models/buildings/`). Every lookup goes through the mod-aware
-/// resolver so a modded recording's texture overrides win
-/// (MOD_COMPATIBILITY.md). Resolution tries the mesh-directory join first and
+/// resolver so a modded recording's texture overrides win (the `PROJECT.md`
+/// heading "Content and mod contract"). Resolution tries the mesh-directory
+/// join first and
 /// falls back to a root-relative lookup for any name that already carries a
 /// path separator; the tail that resolves to no shipped/overridden file is
 /// reported, never guessed.

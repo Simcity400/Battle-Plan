@@ -1,8 +1,8 @@
 //! d50 `naval_combat_members_live` — the ships and convoys inside each naval combat.
 //!
-//! Derived from `world_fold.rs:26807`-`:26897`
+//! Derived from `world_fold.rs:26778`-`:26868`
 //! (`fold_naval_combat_members`), the D49 fold it depends on
-// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=26807-26897 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=30d7d770f9f6b946373feebed0855cda4eb12489afe00dbcd2058d0196482f5d
+// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=26778-26868 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=665ec5ba04733b2e40052dcf0cbc232e441b50fe44beef73d1774381e7c94961
 //! (`:20040`-`:20128`, `fold_naval_combat_lifecycle`), the accumulator's JSON
 //! projection (`:8839`-`:8887`), the lane codec that defines the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`,
@@ -10,10 +10,7 @@
 //! and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:40095`-`:40177`,
 //! `:40194`-`:40243`, `:40799`-`:40814`, `:40930`-`:40962`).
-//! There is no `extractor/documents/domains/d50_*.md` dossier
-//! (`domains/UNDOCUMENTED_DOMAINS.md:24` lists d50 as production-complete and
-//! undocumented), so the fold, the lane codec and the collector read are the
-//! whole basis.
+//! The fold, lane codec, and collector read are the field-level basis.
 //!
 //! # Payload grammar
 //!
@@ -75,8 +72,7 @@
 //! first frame (empty previous baseline) and only changes thereafter, so no
 //! separate baseline record exists to gate on"*). That is the recipe's shape 3,
 //! so **`changed_rows == row_count` is not an invariant** — the header carries no
-//! `changed_rows` word at all, and asserting one would repeat the d10 round-1
-//! finding. Deletes ride in `DELETED`.
+//! `changed_rows` word at all. Deletes ride in `DELETED`.
 //!
 //! The key is the fold's own: `(combat_id, generation, side.wire_id(),
 //! battle_slot_index_raw)` (`world_fold.rs:20153`-`:20158`, and the accumulator's
@@ -157,7 +153,7 @@
 //! that handle has already disappeared from the live naval OOB"*). For every other
 //! ship a missing join tears the whole frame (`:40239`-`:40241`,
 //! `naval_member_cship_join_missing`). A sunk ship's task force and hull telemetry
-//! still exist as concepts — the read was skipped, not answered — which is §3's
+//! still exist as concepts — the read was skipped, not answered — which is record-state contract's
 //! **unknown**, "applicable, not captured". The four telemetry fields have a
 //! second unknown path: the join succeeded but the value failed its range filter
 //! (`attach_log.rs:40226`-`:40233`), which is a read rejection, unknown again.
@@ -167,8 +163,7 @@
 //! validation makes the two cases disjoint on every row it accepts, so the mapper
 //! never has to guess which one a clear bit is.
 //!
-//! **Note this corrects the survey.** `runs/batch3/domain_classification.md`'s d50
-//! entry reads *"`MEMBER_CSHIP_JOIN_VALIDATED` is the sibling-status word for
+//! **This corrects the survey:** the d50 entry read *"`MEMBER_CSHIP_JOIN_VALIDATED` is the sibling-status word for
 //! `ship_instance_id`. A clear join bit means the CShip read failed → **Unknown**,
 //! not Null."* `ship_instance_id` is the one field the join bit does **not**
 //! govern: the lane requires it present on every non-convoy row and forbids it on
@@ -185,12 +180,12 @@
 //! collector states the rule in the code: *"Ancillary fields
 //! (owner/max-strength/state/weight) fail closed as badged-absent Options, never
 //! coerced to 0"* (`attach_log.rs:40143`-`:40144`). Each is `read_*(…)` plus a
-//! range filter, so `None` means unreadable memory or an out-of-range word — §3's
+//! range filter, so `None` means unreadable memory or an out-of-range word — record-state contract's
 //! unknown, word for word. They apply to a convoy exactly as much as to a ship
 //! (all four are member-owned, not CShip-owned), so absent is wrong; nothing in
 //! either authority assigns "the relation points at nothing" to any of them, so
 //! null is wrong. Measured: `designed_max_strength_raw` is present **and zero** on
-//! all 308 convoy rows — a real §3 zero, not an empty state.
+//! all 308 convoy rows — a real record-state contract zero, not an empty state.
 //!
 //! `owner_tag_db_id` is the one tie-break here: its filter is
 //! `*owner > 0 && *owner <= MAX_OWNER_TAG_DB_ID` (`attach_log.rs:40147`), so a
@@ -246,7 +241,7 @@
 //!
 //! `sunk_convoys` is a count with no denominator anywhere and is `Monotone`.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing here changes deterministically with the clock: hull strength moves with
 //! damage and repair, organisation with combat, a member's slot on reordering. The
@@ -263,7 +258,7 @@ pub const DOMAIN: u32 = 50;
 /// One row per `(combat, generation, side, battle slot)` membership.
 pub const MEMBERS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const COMBAT_ID: u32 = 1;
     pub const GENERATION: u32 = 2;
@@ -380,7 +375,7 @@ pub const SIDE_DEFENDER: u32 = 2;
 /// domain is exactly these seven raw words.
 ///
 /// The wire carries the **dense code**, the index into this table, because
-/// `Kind::Enum` rejects a code at or above its cardinality (§4) and the raw words
+/// `Kind::Enum` rejects a code at or above its cardinality (schema-kind contract) and the raw words
 /// are sparse (`0x20` would need `enum_card(33)`). The map is a bijection over the
 /// accepted domain, so nothing is lost; [`state_code`] and [`state_raw`] are the
 /// two directions and the tests pin both.
@@ -419,7 +414,7 @@ pub fn schema() -> Schema {
             // Members persist across hours under a stable identity and the frame
             // grammar is pure cumulative upsert / DELETED-removes
             // (`world_fold.rs::fold_naval_combat_members`) — a keyed set's grammar, and only a
-            // keyed set has deltas (§7.3).
+            // keyed set has deltas (collection-shape contract).
             shape: Shape::KeyedSet,
             fields: vec![
                 // The fold's key, `world_fold.rs::fold_naval_combat_members`.
@@ -460,7 +455,7 @@ pub fn schema() -> Schema {
                 // The join witness. Always present — it is a flag bit, not a
                 // gated value — so no capability.
                 Field::new(f::CSHIP_JOIN_VALIDATED, Kind::Boolean),
-                // A country tag db id: content-defined (§5), so `ContentId`, the
+                // A country tag db id: content-defined (content-identity contract), so `ContentId`, the
                 // same way d63 keys its countries and d20 classes its `owner`.
                 // `unknown_capable` and nothing else — see the module docs; the
                 // Null-vs-Unknown tie-break is an open question.
@@ -504,7 +499,7 @@ pub fn schema() -> Schema {
                     .optional()
                     .unknown_capable(),
                 // A cumulative per-ship kill count. `Monotone` is an encoding hint
-                // and never a validity constraint (§4).
+                // and never a validity constraint (schema-kind contract).
                 Field::new(f::SUNK_CONVOYS, Kind::Monotone)
                     .optional()
                     .unknown_capable(),
@@ -996,7 +991,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// its stored Record. `row` is the raw 88-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); d50 has exactly one row
 /// form, so length selects nothing and a wrong length is rejected. `frame_tick` is
-/// §6's derived-field input (stored = v + c * (frame_tick >> u)); d50 declares no
+/// derived-field contract's derived-field input (stored = v + c * (frame_tick >> u)); d50 declares no
 /// derived field, so it is taken and ignored — every domain's mapper has the same
 /// shape.
 ///
@@ -1011,7 +1006,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d50 has no derived field; §6's transform input is unused. Named rather than
+    // d50 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // A collection built for another domain would otherwise be filled field by
@@ -1040,7 +1035,7 @@ fn record_from_parsed(
     parsed: &MemberRow,
 ) -> core::result::Result<Record, String> {
     // A convoy member has no CShip: the six join-derived concepts do not apply to
-    // it at all, which is §3's `absent`. A ship whose join was not answered has
+    // it at all, which is record-state contract's `absent`. A ship whose join was not answered has
     // them applicable and uncaptured, which is `unknown`. See the module docs.
     let joined = |value: Option<u64>| -> Value {
         if parsed.is_convoy {
@@ -1225,8 +1220,7 @@ const D49_KNOWN_FLAGS: u32 = D49_ROW_DELETED
 /// than the SPACE, which is why lane IA's name-based census -- built around
 /// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
 /// rounds. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other. Dossier:
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// a province id like any other.
 const D49_MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 const D49_MAX_REGION_ID: u32 = 100_000;
 const D49_MAX_POSITIONING_RAW: i32 = 100_000;

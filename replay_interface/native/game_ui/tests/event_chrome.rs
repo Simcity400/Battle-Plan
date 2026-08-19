@@ -1,5 +1,5 @@
 //! Event-chrome gates. Generic element geometry follows
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §§3 and 6.1; this suite does
+//! `game_ui::compose` and the structured UI-layout evidence fixture; this suite does
 //! not replace XUI21's packet-local production gates.
 //!
 //! Two FILE-derived gates against the shipped install. The central evidence

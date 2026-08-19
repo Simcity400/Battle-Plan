@@ -79,16 +79,12 @@ pub struct DecisionStatusCounters {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionTimedLiveRow {
     pub decision_id: String,
-    /// Raw signed integer carried without conversion.
-    ///
-    /// `extractor/documents/domains/d16_decisions_live.md:45` calls this a
-    /// "raw signed/nonnegative integer" and says its bounds are proven without
-    /// stating them. The fold reads it as `i32`; this view therefore enforces
-    /// only representability as `i32`, not an invented nonnegative bound. The
-    /// dossier does not prove that it is the UI countdown or that its unit is
-    /// days.
+    /// Raw signed integer carried without conversion. The producer/fold
+    /// contract stores an `i32`, so this view enforces representability only.
+    /// It does not assign a nonnegative bound, UI-countdown meaning, or time
+    /// unit.
     pub days_raw: i32,
-    /// Raw engine state word. The d16 dossier records `0 = ACTIVE`; this view
+    /// Raw engine state word. Zero is the only named active value; this view
     /// does not invent a lifecycle enum for any other value.
     pub state_raw: i32,
 }
@@ -171,26 +167,11 @@ fn parse_status_present(value: &Value, path: &str) -> Result<DecisionStatusCount
     })
 }
 
-/// Parse the raw timed-decision integer, enforcing NO bound of our own.
-///
-/// It is tempting to refuse a negative here, and an earlier version of this
-/// function did exactly that, citing a "proven nonnegative bound". The evidence
-/// does not support one. `extractor/documents/domains/d16_decisions_live.md:45`
-/// calls the field a "raw signed/nonnegative integer at `+0x18`" — naming BOTH
-/// readings — and says current-build evidence "proves the integer and its
-/// bounds" without ever stating what those bounds are. That is a hedge, and
-/// promoting it to an enforced bound would be inventing a fact.
-///
-/// The producer settles the direction anyway: the d16 fold reads this field with
-/// `read_i32` (`recorder_host/src/world_fold.rs:13830`), while the three
-/// `status_present` counters beside it use `read_u32` (`:13811`-`:13813`). A
-/// negative is therefore a value a real recording can carry, and because
-/// `parse_timed_live` is all-or-nothing per country, refusing it would discard
-/// every other measured row in that country's vector.
-///
-/// So the full `i32` range is carried through, unconverted and uninterpreted.
-/// The name `days_raw` is the dossier's own instruction: not proven to be the UI
-/// countdown, not proven to be in days.
+/// Parse the raw timed-decision integer without narrowing the producer's `i32`
+/// carrier. Adjacent status counters use unsigned carriers, but this field is
+/// decoded as `i32`; rejecting negative values would invent a bound and could
+/// discard the rest of the country-atomic vector. The full `i32` range is
+/// carried through without UI-countdown or time-unit interpretation.
 fn parse_days_raw(value: &Value, path: &str) -> Result<i32, String> {
     let raw = value
         .as_i64()
@@ -589,12 +570,10 @@ mod tests {
 
     /// A negative `days_raw` is CARRIED, not refused.
     ///
-    /// An earlier version rejected it against a "proven nonnegative bound". No
-    /// such bound is proven — the dossier says "raw signed/nonnegative", naming
-    /// both readings — and the producer reads the field with `read_i32`
-    /// (`world_fold.rs:13830`), so a real recording can carry a negative. Since
-    /// the vector is all-or-nothing per country, inventing that bound would have
-    /// discarded every sibling row alongside it, which this test also pins.
+    /// The producer reads this field as `i32`, so a real recording can carry a
+    /// negative. Since the vector is all-or-nothing per country, inventing a
+    /// nonnegative bound would discard every sibling row alongside it, which
+    /// this test also pins.
     #[test]
     fn a_negative_days_raw_is_carried_rather_than_refused_on_an_unproven_bound() {
         let (view, warnings) = build(json!({

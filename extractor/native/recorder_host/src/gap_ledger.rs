@@ -10,8 +10,7 @@
 //! ~105,000 game hours, so the flat shape is ~3.4 GB of JSON text, held as a
 //! `serde_json::Value` tree several times that size, and read whole and
 //! re-parsed at pack/finalize. It was the last term in finalize whose memory and
-//! IO scaled with session length; everything else there is world-size dominated
-//! and flat from 129 to 602 hours (lane FR, `runs/fr_recorder_mem/RESULTS.md`).
+//! IO scaled with session length; everything else there is world-size dominated.
 //!
 //! # The shape
 //!
@@ -1770,9 +1769,7 @@ impl ClassAccumulator {
 ///
 /// # What this used to hold, and why it stopped (task #179-1)
 ///
-/// Lane GE removed the derived gap ROWS and named this encoder as the largest
-/// remaining term in the finalize gap phase (`runs/ge_gap_stream/RESULTS.md`
-/// residual 2). It built three structures, each O(outcome rows), and none of
+/// The prior encoder built three structures, each O(outcome rows), and none of
 /// them survived into the output under the encoding a real capture uses:
 ///
 ///   * `lane_ordinal_firsts` collected every lane's `(hour, ordinal)` pairs and
@@ -2474,12 +2471,8 @@ pub fn read_compact_stream_gap_ledger(
 
 /// The pre-ledger `compact_stream.gaps` array.
 ///
-/// NOTHING READS THIS BACK and no manifest is written with it. It exists as the
-/// reference the size measurement compares against (`fv_gap_ledger_profile`'s
-/// `flat` arm is the "before" number) and as the expected rows in the
-/// cross-language conformance vector. Keeping the one function that renders it
-/// is what makes those two comparisons a measurement of this change rather than
-/// of a remembered number.
+/// NOTHING READS THIS BACK and no manifest is written with it. It remains the
+/// expected shape in the cross-language conformance tests.
 pub fn reference_flat_gaps_json(records: &[GapRecord]) -> Value {
     Value::Array(
         records

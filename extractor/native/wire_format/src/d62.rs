@@ -1,14 +1,15 @@
 //! d62 `hub_motorization_live` — exact per-node supply-hub motorization levels.
 //!
-//! Derived from `world_fold.rs:21524`-`:21587`
+//! Derived from `world_fold.rs:21500`-`:21563`
 //! (`fold_hub_motorization`), its JSON emission at `:9187`-`:9220`, and the
-// @world-fold-authority domain=62 functions=fold_hub_motorization lines=21524-21587 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=a966de68929d64f343c4560d5785876ae5eb53a68a80f3329bce1d566b51491e
+// @world-fold-authority domain=62 functions=fold_hub_motorization lines=21500-21563 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=1ee9ead95357d96716bde39106633ac141ab531dd3aa782aef6cfda35099c5c2
 //! payload codec the fold calls, which for this domain lives **outside** the fold
 //! in its own leaf crate: `extractor/native/lanes/hub_motorization_live/src/lib.rs`
 //! (`decode_payload_rows` at `:264`, `read_row` at `:325`, `validate_row` at
-//! `:340`). `extractor/documents/domains/d62_hub_motorization_live.md` carries the
-//! exact-a729 structure law and one field-level fact used below (levels 1 and 2
-//! are the only persisted values; 0 means "no entry" and is not stored).
+//! `:340`). `domain-62::Overview` in
+//! `extractor/documents/technical_evidence.json` retains the exact-a729
+//! structure law and one field-level fact used below: levels 1 and 2 are the
+//! only persisted values; 0 means "no entry" and is not stored.
 //!
 //! **Payload grammar** (`lib.rs:175`-`:196`, `:264`-`:323`): a 32-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `status_flags` u32 at
@@ -49,9 +50,9 @@
 //! that fails to decode marks the **domain-hour** unknown while retaining the
 //! previous accumulator (`world_fold.rs:15926`-`:15935`, `:15947`, `:15962`,
 //! `:15974`). That is an hour with no d62 state at all, not a row with an empty
-//! field — §3's four states are per field, and this domain's rows only ever
+//! field — record-state contract's four states are per field, and this domain's rows only ever
 //! carry values. Declaring a capability no mapper can emit would cost real bits
-//! (§3 sizes the null and unknown bitmaps by the fields that declare them) and
+//! (record-state contract sizes the null and unknown bitmaps by the fields that declare them) and
 //! assert a state that cannot occur.
 //!
 //! **The five flag bits are verification witnesses, not field gates, and are not
@@ -70,7 +71,7 @@
 //! Corroborated empirically: across all 467 940 rows of
 //! `runs/batch1/deepwar_t1/collector_stream.bin`, `flags` is `31` in every row.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; `record_index` and `map_entry_index` are engine array positions, which
 //! move when the engine reorders its node vector, not on a clock-linear rule.
 //! The mapper still takes `frame_tick` so every domain's boundary has one shape.
@@ -83,7 +84,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 62;
 pub const MOTORIZATION_ENTRIES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const OWNER_TAG_DB_ID: u32 = 1;
     pub const PROVINCE_ID: u32 = 2;
@@ -125,8 +126,7 @@ pub const MAX_COUNTRY_COUNT: u32 = (i32::MAX as u32) - 1;
 /// `65_535` and documented as "a REPRESENTATION ENVELOPE". Both were guesses:
 /// the 65 535 family's stated derivation cited three constants that are bare
 /// literals, and the engine stores a province id in 32 bits. It is now the
-/// province id space's STRUCTURAL width (`claim_347234c20a542ca79032`,
-/// `runs/ia_province_caps/SWEEP.md`).
+/// structural width of the signed province id accepted here.
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_STATE_ID`, `lib.rs:81` (`validate_row:359`). The state id space's
 /// structural width, on its own evidence (`claim_39c989ce13504504353c`) — a
@@ -153,11 +153,11 @@ pub const REQUIRED_FLAGS: u32 = ROW_FLAG_COUNTRY_VERIFIED
 pub const MIN_MOTORIZATION_LEVEL: u32 = 1;
 pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 
-/// §4 cardinality for `motorization_level`: **two** codes, not three.
+/// schema-kind contract cardinality for `motorization_level`: **two** codes, not three.
 ///
 /// The engine's own values are `1` (50 % truck fraction) and `2` (100 %); `0`
 /// means "this actor has no entry for this node" and is **never persisted**
-/// (dossier line 45, `lib.rs:657`-`:660`), which in a keyed set is the absence of
+/// (`lib.rs:657`-`:660`), which in a keyed set is the absence of
 /// the row, not a code the row can hold. Declaring `enum_card(3)` to keep the raw
 /// engine number would therefore make `Enum(0)` a decodable value meaning a level
 /// the fold rejects (`world_fold.rs::fold_hub_motorization`) — a record that passes
@@ -167,7 +167,7 @@ pub const MAX_MOTORIZATION_LEVEL: u32 = 2;
 /// [`level_to_code`] and [`code_to_level`].
 pub const MOTORIZATION_LEVEL_CARDINALITY: u32 = 2;
 
-/// Engine level (`1..=2`) to the stored §4 code (`0..=1`).
+/// Engine level (`1..=2`) to the stored schema-kind contract code (`0..=1`).
 pub fn level_to_code(level: u32) -> core::result::Result<u32, String> {
     if !(MIN_MOTORIZATION_LEVEL..=MAX_MOTORIZATION_LEVEL).contains(&level) {
         return Err(format!(
@@ -177,7 +177,7 @@ pub fn level_to_code(level: u32) -> core::result::Result<u32, String> {
     Ok(level - MIN_MOTORIZATION_LEVEL)
 }
 
-/// The stored §4 code back to the engine level. `None` for a code the schema's
+/// The stored schema-kind contract code back to the engine level. `None` for a code the schema's
 /// cardinality does not admit — the decoder rejects those before they get here,
 /// and a reader that reaches this must not invent a level.
 pub fn code_to_level(code: u32) -> Option<u32> {
@@ -198,9 +198,9 @@ pub fn schema() -> Schema {
         //
         // All three are `ContentId`: each is an id whose meaning a content
         // manifest must resolve — a country tag-db id and a province id are
-        // whatever the mod set defines (§5), which is the deciding question, and
+        // whatever the mod set defines (content-identity contract), which is the deciding question, and
         // d20 classes both `owner` (country) and `location_province` the same
-        // way. The §5 assignment now exists, but this mapper still casts the raw
+        // way. The content-identity contract assignment now exists, but this mapper still casts the raw
         // u32 until its resolver retrofit; that is recorded in the deliverable, and a
         // ContentId **key** is the heavier retrofit class because key components
         // sort and delta-encode by raw value.
@@ -215,7 +215,7 @@ pub fn schema() -> Schema {
         // CCSS node vector and `map_entry_index` the entry's index in that
         // node's motorization map (`lib.rs:666`-`:667`). They are neither
         // identity (the fold keys by owner/province/actor, not by these) nor
-        // content (no manifest resolves an array slot), so §5 puts them at
+        // content (no manifest resolves an array slot), so content-identity contract puts them at
         // `Unsigned`. Not `Monotone`: an index does not count anything and does
         // not usually rise — it is re-derived from the engine's current vector
         // order every frame.
@@ -237,7 +237,7 @@ pub fn schema() -> Schema {
             // fresh map), but the key triple is a stable identity that persists
             // across hours — measured churn on the real capture is under one
             // insert and one delete per hour against ~518 rows — and only a
-            // keyed set has a delta grammar (§7.3).
+            // keyed set has a delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -358,7 +358,7 @@ pub fn key_fields_of_row(row: &[u8]) -> core::result::Result<(u32, u32, u32), St
 /// it today, onto its stored Record. `row` is the raw 32-byte row slice (the
 /// caller has already consumed the table header via [`split_payload`]); d62 has
 /// exactly one row form, so length selects nothing and a wrong length is
-/// rejected. `frame_tick` is §6's derived-field input
+/// rejected. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); d62 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
@@ -372,7 +372,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d62 has no derived field; §6's transform input is unused. Named rather
+    // d62 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // Key words: validated here too, because a row's key being well-formed is
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d62 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d62 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         let c = collection();
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn a_zero_array_index_is_a_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states, and both array indices
+        // record-state contract keeps zero out of the three empty states, and both array indices
         // reach zero constantly in the real capture (the first node, the first
         // map entry).
         let c = collection();

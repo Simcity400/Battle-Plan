@@ -1,17 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "package_runtime",
     "map_viewer",
     "replay_core",
     "replay_fixture_gen",
     "replay_app",
     "game_ui",
-    "replay_qa",
     "replay_test_gates",
 ]
 
-# Native replay-interface workspace. See documents/REPLAY_ARCHITECTURE.md:
+# Native replay-interface workspace:
 # replay_core owns .battleplan ingest and the scrubbable world timeline,
 # replay_app is the product D3D11 replay surface, map_viewer owns map bundle
 # tooling and captured-pass validation/replay.

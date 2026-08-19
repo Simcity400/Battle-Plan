@@ -1,9 +1,9 @@
 //! d49 `naval_combat_lifecycle_live` — the per-battle scalars of every live
 //! naval combat.
 //!
-//! Derived from `world_fold.rs:26716`-`:26804`
+//! Derived from `world_fold.rs:26687`-`:26775`
 //! (`fold_naval_combat_lifecycle`, dispatched at `:4718`), the lane codec that
-// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=26716-26804 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=cc19cab3f28b18de8fa718ec0d7e2d0b501e6829fd7da825a891ddb5403b7bd5
+// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=26687-26775 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=af802195c4c25e937b536ad2a35f599277b555425391841a6ad2b65e2340886a
 //! owns the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`),
 //! the fold's own renderer (`world_fold.rs::build_naval_combats`), and the collector walk
@@ -33,7 +33,6 @@
 //!
 //! **There is no `changed_rows` word at all**, so there is no row-count invariant
 //! to enforce and none is invented. Asserting `changed_rows == row_count` on a
-//! pure incremental payload was the d10 round-1 finding; this payload does not
 //! even carry the word.
 //!
 //! Row (`:1721`-`:1734`):
@@ -141,8 +140,8 @@
 //! **unknown**: a naval battle always has two sides, so there is no relation
 //! pointing at nothing (not `null`) and the concept applies to every row (not
 //! `absent`); a clear gate could only mean the count was not reported, which is
-//! §3's "applicable, not captured". A side with genuinely no members reads `0`
-//! with its flag **set** — 0 is a measured value in this capture — and per §3 that
+//! record-state contract's "applicable, not captured". A side with genuinely no members reads `0`
+//! with its flag **set** — 0 is a measured value in this capture — and per record-state contract that
 //! is a real `Zero`. This is a tie-break under the recipe's "choose Unknown" rule,
 //! since no producer path exercises the clear gate; it is in the deliverable's
 //! open questions.
@@ -163,7 +162,7 @@
 //! reproduces its stored state; `duplicate_keys_in_one_payload_apply_in_order` is
 //! the test.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: positioning and anti-air move with the battle, and a member count moves
 //! when a ship joins or sinks. The mapper still takes `frame_tick` so every
 //! domain's boundary has one shape.
@@ -178,7 +177,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 49;
 pub const COMBATS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const COMBAT_ID: u32 = 1;
     pub const GENERATION: u32 = 2;
@@ -254,8 +253,7 @@ pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 /// than the SPACE, which is why lane IA's name-based census -- built around
 /// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
 /// rounds. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other. Dossier:
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// a province id like any other.
 pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_REGION_ID`, `:93`, enforced at `:1897` (zero also rejected).
 pub const MAX_REGION_ID: u32 = 100_000;
@@ -284,10 +282,10 @@ pub const MAX_POSITIONING_RAW: i32 = 100_000;
 /// magnitude nor establish that the exact magnitudes form a contiguous run.
 ///
 /// Above the band the stored value is still a legal point of the declared `10^-5`
-/// grid and encode/decode stays exactly self-consistent (§6's escape rule keeps an
+/// grid and encode/decode stays exactly self-consistent (derived-field contract's escape rule keeps an
 /// unstable integer off the quantized path, `value.rs:195`), but a consumer
 /// recovering the raw integer may see it differ by one. Closing that residue needs
-/// an integer-domain `Fixed` in the codec — a `WIRE_FORMAT.md` §13 item, not a
+/// an integer-domain `Fixed` in the codec, not a
 /// schema-side decision. It is in the deliverable's open questions.
 ///
 /// For scale: the band is ~2.25e10 in game units, and the largest anti-air raw
@@ -340,7 +338,7 @@ pub fn schema() -> Schema {
             // (`world_fold.rs::fold_naval_combat_lifecycle`) and it persists across hours: the fold
             // patches and deletes against it rather than rebuilding the table,
             // which is what a keyed set needs — and only a keyed set has a delta
-            // grammar (§7.3).
+            // grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields: vec![
                 // `Unsigned`, not `ContentId`: a naval combat id is a runtime
@@ -352,7 +350,7 @@ pub fn schema() -> Schema {
                 // combat id is reused on a new body (`attach_log.rs:40896`-`:40903`).
                 // Runtime, not content, and unconstrained by any authority.
                 Field::new(f::GENERATION, Kind::Unsigned).key(1),
-                // `ContentId`: a province id is content-defined (§5) — a manifest
+                // `ContentId`: a province id is content-defined (content-identity contract) — a manifest
                 // must resolve province 2757 for it to keep its meaning under
                 // another mod set, which is the deciding question for
                 // ContentId-vs-Unsigned. The fold renders this word as
@@ -377,7 +375,7 @@ pub fn schema() -> Schema {
                 // `Quant::Fixed(5)` is not a precision *budget*: the source is a
                 // signed CFixedPoint over a `10^5` denominator, so `fixed(5)` is
                 // the source's own grid and reproduces the source integer bit for
-                // bit. §6's "exact unless justified" bar is met by a stronger fact
+                // bit. derived-field contract's "exact unless justified" bar is met by a stronger fact
                 // than a precision argument — nothing is rounded at all. It also
                 // matters that the raw integer survives: the fold's renderer emits
                 // `attacker_positioning_raw` beside `attacker_positioning`
@@ -685,7 +683,7 @@ pub fn validate_row(row: &[u8]) -> core::result::Result<(), String> {
 /// One compact row of the `combats` table, as the collector emits it today, onto
 /// its stored Record. `row` is the raw 72-byte row slice (the caller has already
 /// consumed the table header via [`split_payload`]); d49 has exactly one row form,
-/// so length selects nothing and a wrong length is rejected. `frame_tick` is §6's
+/// so length selects nothing and a wrong length is rejected. `frame_tick` is derived-field contract's
 /// derived-field input (stored = v + c * (frame_tick >> u)); d49 declares no
 /// derived field, so it is taken and ignored — every domain's mapper has the same
 /// shape.
@@ -712,7 +710,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d49 has no derived field; §6's transform input is unused. Named rather than
+    // d49 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     validate_row(row)?;
@@ -774,7 +772,7 @@ pub fn record_from_row(
 }
 
 /// A gate that is clear means the count was not reported, not that there is
-/// nothing to count — see the module docs. §3 calls that **unknown**.
+/// nothing to count — see the module docs. record-state contract calls that **unknown**.
 fn gated_unsigned(present: bool, value: u64) -> Value {
     if present {
         Value::Unsigned(value)
@@ -1211,7 +1209,7 @@ mod tests {
 
     #[test]
     fn the_content_ids_are_exactly_the_province_and_the_region() {
-        // §13's manifest-id rule will rewrite every ContentId mapper, so the
+        // the manifest-id rule will rewrite every ContentId mapper, so the
         // retrofit sweep needs "checked, these two" rather than silence. Neither
         // is a key component, so this domain is in the lighter retrofit class.
         let c = collection();
@@ -1230,7 +1228,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d49 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d49 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
     }
@@ -1297,7 +1295,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every flag set, every measured word zero: a battle whose sides carry no
-        // members, no positioning advantage and no anti-air. §3 keeps zero out of
+        // members, no positioning advantage and no anti-air. record-state contract keeps zero out of
         // the three empty states, and this capture really does contain
         // `attacker_member_count == 0` rows with the flag set.
         let c = collection();
@@ -1787,7 +1785,7 @@ mod tests {
     #[test]
     fn the_mapper_maps_every_anti_air_the_lane_accepts() {
         // The lane range-checks nothing about the anti-air cells, so neither does
-        // the mapper. This is the d36 round-1 finding's property, swept over the
+        // the mapper. This is the same invariant, swept over the
         // magnitudes a cutoff would have caught.
         let c = collection();
         for raw in [

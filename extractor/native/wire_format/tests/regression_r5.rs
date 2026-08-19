@@ -1,6 +1,5 @@
-//! Regression tests for the two defects round 5 found. Both are round-4 fixes
-//! that were applied too narrowly — the lesson each encodes is coverage, so each
-//! test sweeps the whole space rather than the one input the reviewer named.
+//! Regression tests that sweep whole value and record-state spaces rather than
+//! pinning only one representative input.
 
 use wire_format::body::{key, KeyedState};
 use wire_format::columnar::encode_baseline_columnar;
@@ -19,13 +18,12 @@ fn one(fields: Vec<Field>) -> Schema {
     }
 }
 
-/// The round-4 fix gated the live variant with `matches_kind`, which blesses
+/// Gating the live variant with `matches_kind` blesses
 /// `Value::Signed` for `Kind::Monotone` — right for a *stored* monotone value,
 /// wrong for a live one. Capture accepted `Signed(-5)` on a derived monotone
 /// field, encoded it, and replay then refused the crate's own bytes.
 ///
-/// The round-4 test covered only `Unsigned` and `Signed`; this one covers every
-/// derived-capable kind, which is the actual property.
+/// This test covers every derived-capable kind.
 #[test]
 fn the_capture_boundary_is_a_bijection_for_every_derived_kind() {
     for (kind, live_ok, live_wrong) in [
@@ -50,8 +48,8 @@ fn the_capture_boundary_is_a_bijection_for_every_derived_kind() {
     }
 }
 
-/// Round 4 shared the per-value rules with the columnar arm but left §3 record
-/// validity and §7.4 key arity unshared, and they had drifted: a `Null` on a
+/// The columnar arm shares per-value rules but must also share record-state validity
+/// and key arity: a `Null` on a
 /// non-nullable field was silently dropped, leaving a column with fewer values
 /// than rows and nothing marking which; a wrong-arity record or key panicked.
 #[test]
@@ -72,7 +70,7 @@ fn the_columnar_arm_enforces_record_and_key_validity() {
         encode_baseline_columnar(c, &state, &mut out).map(|_| out)
     };
 
-    // The three §3 states this schema forbids — silently dropped before.
+    // The three record-state contract states this schema forbids — silently dropped before.
     assert_eq!(
         encode(vec![1, 1], vec![Value::Null]),
         Err(WireError::Corrupt("null on a non-nullable field"))
@@ -144,7 +142,7 @@ fn both_arms_agree_on_what_is_a_valid_record() {
     }
 }
 
-/// An update routes only *changed* fields through the value encoder, so a §3
+/// An update routes only *changed* fields through the value encoder, so a record-state contract
 /// violation sitting on an unchanged field reached the wire while
 /// `Record::encode` rejected the identical record. Both records are now
 /// validated in full.
@@ -181,7 +179,7 @@ fn an_update_validates_both_records_not_just_the_changed_fields() {
     assert_eq!(back.values, next.values);
 }
 
-/// §4's monotone difference is modulo 2^64, because both endpoints are `u64` and
+/// schema-kind contract's monotone difference is modulo 2^64, because both endpoints are `u64` and
 /// their mathematical difference need not fit an `i64`. The rule is now stated;
 /// this pins that every pair of valid endpoints round-trips exactly.
 #[test]

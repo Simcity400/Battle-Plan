@@ -1,19 +1,12 @@
-//! Lane HA — entry-damage fault-injection harness for the packaged H4IX/H4CP
-//! pair.
+//! Entry-damage fault-injection harness for the packaged H4IX/H4CP pair.
 //!
 //! # The question
 //!
-//! Owner ruling 2026-08-12 (task #191): a damaged H4CP ENTRY must cost its
-//! CHECKPOINT WINDOW, by name, and never the whole container. Lane GY's
-//! per-hour seal established the naming authority and lane GZ made an interior
-//! injury representable, but both are about hours the recorder never vouched
+//! A damaged H4CP ENTRY must cost its CHECKPOINT WINDOW, by name, and never the
+//! whole container. The per-hour seal establishes the naming authority and the
+//! interior-hole harness makes an injury representable, but both are about hours the recorder never vouched
 //! for. This is the other injury: the recorder vouched for every hour, sealed
 //! the artifacts, and the packaged bytes rotted afterwards.
-//!
-//! At this lane's base commit the answer was "the whole container", from one
-//! comparison: H4IX carried a single `cache_sha256` over the whole H4CP, so a
-//! flipped byte anywhere failed the admission of every hour at once, and
-//! nothing in the artifact pair could say which record had moved.
 //!
 //! # What this instrument does
 //!
@@ -39,24 +32,23 @@
 //! * **Real**: the artifact build, the artifacts, the admission path, the
 //!   per-hour reconstruction and every refusal string. The damage is a real
 //!   byte flip in a real packaged H4CP on disk.
-//! * **Not real**: the base stream BYTES, for the reason lanes GQ and GZ state
-//!   — no captured H4CR spool survives on this machine. The stream is
+//! * **Not real**: the base stream BYTES. No captured H4CR spool survives on
+//!   this machine. The stream is
 //!   synthesized with the record framing the collector writes, over two real
 //!   production domains (18 `country_identity`, 13 `tech_live`), and the clean
 //!   control cell proves the base pair builds and serves before anything is
 //!   injected.
 //! * **Not covered here**: the sealed CONTAINER. This harness stops at the
-//!   packaged artifact pair, exactly as lane GZ's did; the container-level
+//!   packaged artifact pair; the container-level
 //!   join — the cache-only certification chain and the coverage map the replay
 //!   authority publishes — is proved by unit tests in
-//!   `compact_replay_verification_gates`, named in `MATRIX.md`.
+//!   `compact_replay_verification_gates`.
 //!
 //! Usage: `ha_entry_confinement <scratch-dir>`; the matrix goes to stdout.
 
-
-// The stream synthesis, the production artifact build, the injection sites, the
-// consumer observation and the judging live in `entry_damage_fixture.rs`, which
-// lane HR extracted from this file verbatim so the truncation harness could
+// The stream synthesis, production artifact build, injection sites, consumer
+// observation, and judging live in `entry_damage_fixture.rs`. The truncation
+// harness shares these fixture components so it can
 // drive the same fixture through the same door. Nothing in it changed in the
 // move, so the matrix this binary prints is the matrix it printed before.
 #![allow(dead_code)]

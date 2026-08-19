@@ -10,7 +10,6 @@ pub mod compose;
 pub mod content_interpreter;
 pub mod dds;
 pub mod decision_chrome;
-pub mod decision_observer;
 pub mod decision_replay;
 pub mod definition_admission;
 pub mod design_catalog;

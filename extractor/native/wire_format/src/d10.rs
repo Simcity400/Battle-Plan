@@ -1,16 +1,15 @@
 //! d10 `fuel_live` — per-country fuel status.
 //!
-//! Derived from `world_fold.rs:12769`-`:12814`
+//! Derived from `world_fold.rs:12753`-`:12797`
 //! (`fold_fuel`), its scale constant at `:152`, the collector read that produces
-// @world-fold-authority domain=10 functions=fold_fuel lines=12769-12814 sha256=1ab92f138878297dc602291e5fb10a29e3aed69972c37219c70f824f979c3aee closure=2f375b37269dd1c980a14c717799dea25bac5624fc386d0c98d2643323111358
+// @world-fold-authority domain=10 functions=fold_fuel lines=12753-12797 sha256=39ef43d5bf9850374524292ee3b0b0083bb98cbfd92fb53d3cd59f4ed193a8b9 closure=504fc17390b988c45ae2b015f65facfcc37a56edc1fb9c200ce9b7e57e9257a8
 //! the rows (`extractor/native/collector/src/attach_log.rs:83846`-`:83885`), the
 //! collector's payload encoder (`:67976`-`:67999`), and the recorder's own
 //! structural decoder for this payload
 //! (`recorder_host/src/domain_data_authority.rs:932`-`:1011`).
-//! `extractor/documents/domains/d10_fuel_live.md` records the live source
-//! (`CCountry+0x1580 -> CCountryFuelStatus`, four signed i64 at `+0x08`, `+0x10`,
-//! `+0x18`, `+0x38`, scale `32768`) and nothing about precision or four-state
-//! semantics, so the fold and the collector read are the basis for those.
+//! The live source is `CCountry+0x1580 -> CCountryFuelStatus`: four signed i64
+//! values at `+0x08`, `+0x10`, `+0x18`, and `+0x38`, at scale `32768`.
+//! Precision and four-state semantics follow the fold and collector read.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_fuel`, `attach_log.rs:67982`-`:67996`):
 //! a 24-byte header — `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`,
@@ -104,9 +103,9 @@
 //! - `24 + row_count * 40` is unchecked arithmetic in the fold (`:9226`);
 //!   [`split_payload`] uses checked multiplication.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: `current` moves by production and consumption, and `gain`/`cost` are
-//! rates whose own value moves. §6 admits kinds `0`/`1`/`2` only, and all four
+//! rates whose own value moves. derived-field contract admits kinds `0`/`1`/`2` only, and all four
 //! measures are continuous. The mapper still takes `frame_tick` so every domain's
 //! boundary has one shape.
 
@@ -118,7 +117,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 10;
 pub const COUNTRIES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const TAG_DB_ID: u32 = 1;
     pub const CURRENT: u32 = 2;
@@ -167,7 +166,7 @@ pub fn schema() -> Schema {
     let fields = vec![
         // Key: the country's `tag_db_id` (`world_fold.rs:9232`), the identity the
         // fold indexes its country map by (`country_mut`, `world_fold.rs::country_mut`). ContentId
-        // because a country tag is content-defined (§5) — a manifest must resolve
+        // because a country tag is content-defined (content-identity contract) — a manifest must resolve
         // it for it to keep its meaning under another mod set. d20 classes its
         // `owner` country the same way, and d63 keys on the same id.
         Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
@@ -193,7 +192,7 @@ pub fn schema() -> Schema {
         collections: vec![Collection {
             collection_id: COUNTRIES,
             // `tag_db_id` is a stable identity that persists across hours, and
-            // only a keyed set has a delta grammar (§7.3). Note that the *state*
+            // only a keyed set has a delta grammar (collection-shape contract). Note that the *state*
             // a d10 keyed set holds is the fold's accumulated country map, not
             // one payload — the payload is an incremental update (module docs).
             shape: Shape::KeyedSet,
@@ -310,7 +309,7 @@ pub fn tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// onto its stored Record. `row` is the raw 40-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d10 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d10 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -322,11 +321,11 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d10 has no derived field; §6's transform input is unused. Named rather than
+    // d10 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row)?;
-    // `tag_db_id` is the key and so is not carried in the record body (§3), but
+    // `tag_db_id` is the key and so is not carried in the record body (record-state contract), but
     // its validity is still part of this row's validity.
     let tag_db_id = tag_db_id_of_row(row)?;
 
@@ -501,7 +500,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(c.fields.len(), 5, "1 key + current/max/gain/cost");
@@ -537,9 +536,9 @@ mod tests {
     #[test]
     fn no_continuous_field_is_quantized() {
         // Step 4's "quantization saves bytes" test does not apply: d10 declares
-        // no quantized field. §6 makes `exact` the default and requires the
+        // no quantized field. derived-field contract makes `exact` the default and requires the
         // domain document to justify anything else, and
-        // `domains/d10_fuel_live.md` records no precision at all. Both of §6's
+        // No retained evidence specifies reduced precision. Both quantizer
         // vetoes also have live edges here: the dossier's stated use of
         // `current`/`max` is the fuel *ratio* (a quotient of two rounded values
         // is not the rounded quotient), and `gain`/`cost` are per-hour rates a
@@ -556,7 +555,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d10 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d10 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         let c = collection();
@@ -599,7 +598,7 @@ mod tests {
             Value::Continuous(200_000.0 / 32_768.0)
         );
         // The reference capture's `cost` is 0 in every one of its 24,008 rows:
-        // a measured Zero, never an empty state (§3).
+        // a measured Zero, never an empty state (record-state contract).
         assert_eq!(r.values[index_of(&c, field::COST)], Value::Continuous(0.0));
     }
 
@@ -748,7 +747,7 @@ mod tests {
 
     #[test]
     fn a_cleared_presence_bit_maps_exactly_as_the_fold_maps_it() {
-        // Round-1 review input, generalized. `fold_fuel` never reads the row
+        // `fold_fuel` never reads the row
         // flags word and reads all four measures unconditionally
         // (`world_fold.rs::fold_fuel`), and `domain_data_authority.rs:989`
         // rejects only bits outside bit 0 — so a cleared bit 0 is a row both
@@ -821,7 +820,6 @@ mod tests {
         // (`domain_data_authority.rs:962`), so a payload that reports fewer
         // changed rows than it carries is accepted — the fold accepts it too, and
         // refusing it would be a rejection with no authority behind it. Only a
-        // count above the row count is refused. Round-1 review input.
         for allowed in [0u32, 1] {
             let mut patched = good.clone();
             patched[12..16].copy_from_slice(&allowed.to_le_bytes());
@@ -836,7 +834,7 @@ mod tests {
         }
         // A tag_db_id repeated inside one payload (`domain_data_authority.rs:984`):
         // the fold's upsert would take the last writer silently and a keyed set
-        // cannot hold both. Round-1 review input. Two DIFFERENT tags in the same
+        // cannot hold both. Two DIFFERENT tags in the same
         // shape are accepted, so the check is about identity, not about row count.
         let two_same = payload(&[full_row(), full_row()]);
         assert!(

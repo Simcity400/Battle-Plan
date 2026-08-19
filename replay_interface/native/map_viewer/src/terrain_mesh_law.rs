@@ -68,7 +68,7 @@
 //! (LODRING), ported from the decompiled `CPdxMap::UpdateTerrainTessellation`
 //! and byte-exact on the captured self-LOD (44/44, 47/47, 7/7). So the full
 //! terrain draw set is camera-derivable; the one open residual is the engine's
-//! frustum coarsening of off-screen neighbours (ledger §2.9 LODRING row).
+//! frustum coarsening of off-screen neighbours.
 
 use crate::*;
 use std::collections::BTreeMap;

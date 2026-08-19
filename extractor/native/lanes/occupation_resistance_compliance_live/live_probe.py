@@ -670,87 +670,6 @@ def scrub_rows_for_json(rows, include_addresses):
     return out
 
 
-def write_proof_md(out_dir, summary):
-    roots = summary["roots"]
-    country_status = summary.get("country_occupation_status", {})
-    md = [
-        "# Occupation Resistance Compliance Live Proof",
-        "",
-        "## Status",
-        "",
-        "- Domain: `%s` (`%d`)" % (DOMAIN_NAME, DOMAIN_ID),
-        "- Live exe SHA-256: `%s`" % summary["process"]["sha256"],
-        "- Rows emitted: `%d`" % summary["rows"]["emitted_state_rows"],
-        "- Occupied rows: `%d`" % summary["rows"]["occupied_state_rows"],
-        "- Wall-badged rows: `%d`" % summary["rows"]["wall_badge_rows"],
-        "- Invalid state rows: `%d`" % summary["rows"]["invalid_state_rows"],
-        "",
-        "## Validated Roots",
-        "",
-        "- `hoi4.exe + 0x%X -> CGameState*`: `%s`"
-        % (CG_STATE_DATE_OFFSET, roots["game_state"]),
-        "- `CGameState + 0x%X -> CProvince**`: `%s`"
-        % (CGAMESTATE_CPROVINCE_ARRAY, roots["province_array"]),
-        "- `CGameState + 0x%X -> province_count`: `%d`"
-        % (CGAMESTATE_CPROVINCE_COUNT, roots["province_count"]),
-        "- `CProvince + 0x%X -> CState*`, with `CProvince` vtable `module+0x%X`"
-        % (CPROVINCE_OFF_STATE, CPROVINCE_VTABLE_RVA),
-        "- `CState` vtable `module+0x%X`; `state_id +0x%X`, owner `+0x%X`, controller `+0x%X`"
-        % (STATE_VTABLE_RVA, STATE_OFF_SID, STATE_OFF_OWNER, STATE_OFF_CTRL),
-        "- Resistance raw `CState + 0x%X` and compliance raw `CState + 0x%X`, fixed scale `%d`"
-        % (STATE_OFF_RESISTANCE, STATE_OFF_COMPLIANCE, FIXED_SCALE_RAW),
-        "- Resistance speed signal `CState + 0x%X` and compliance speed signal `CState + 0x%X`, fixed scale `%d`"
-        % (STATE_OFF_RESISTANCE_SPEED, STATE_OFF_COMPLIANCE_SPEED, FIXED_SCALE_RAW),
-        "- `CCountry + 0x%X -> CCountryOccupationStatus*`; vtables `module+0x%X` and `module+0x%X`"
-        % (
-            COUNTRY_OFF_OCCUPATION_STATUS,
-            COUNTRY_OCCUPATION_STATUS_VTABLE_RVA,
-            COUNTRY_OCCUPATION_STATUS_SECONDARY_VTABLE_RVA,
-        ),
-        "- `CCountryOccupationStatus + 0x%X -> COccupationLaw*`; law vtable `module+0x%X`, law id string `+0x%X`"
-        % (
-            COUNTRY_OCCUPATION_STATUS_DEFAULT_LAW_OFF,
-            OCCUPATION_LAW_VTABLE_RVA,
-            OCCUPATION_LAW_NAME_OFF,
-        ),
-        "- `CCountryOccupationStatus + 0x%X -> CDivisionTemplate*`; template vtable `module+0x%X`, type `+0x%X`, id `+0x%X`"
-        % (
-            COUNTRY_OCCUPATION_STATUS_GARRISON_TEMPLATE_OFF,
-            DIVISION_TEMPLATE_VTABLE_RVA,
-            DIVISION_TEMPLATE_OFF_TYPE,
-            DIVISION_TEMPLATE_OFF_ID,
-        ),
-        "- `CCountry + 0x%X -> CCountryCollaborationStatus*`; vtable `module+0x%X`"
-        % (COUNTRY_OFF_COLLABORATION_STATUS, COUNTRY_COLLABORATION_STATUS_VTABLE_RVA),
-        "- Valid occupation-status roots: `%d`; default-law roots: `%d`; garrison-template roots: `%d`; collaboration-status roots: `%d`"
-        % (
-            country_status.get("valid_occupation_status_roots", 0),
-            country_status.get("valid_default_law_roots", 0),
-            country_status.get("valid_garrison_template_roots", 0),
-            country_status.get("valid_collaboration_status_roots", 0),
-        ),
-        "",
-        "## Honest Walls",
-        "",
-        "- Per-state occupation law override map: unavailable; rows carry only controller-country default/fallback law tokens and remain badged for per-state override.",
-        "- Legacy Python-probe garrison placeholder slots remain unavailable here. The production Rust collector separately emits the authenticated engine fields army_manpower_need, strength_ratio, and garrison_required; equilibrium/progress are not engine schema keys.",
-        "- Government-in-exile/collaboration detail payload: collaboration-status root is validated, but active per-target data remains fixture-gated.",
-    ]
-    oracle = summary.get("oracle_compare")
-    if oracle:
-        md.extend(
-            [
-                "",
-                "## Oracle Compare",
-                "",
-                "- Compared occupied states: `%s`" % oracle.get("compared_occupied_states"),
-                "- Exact resistance: `%s`" % oracle.get("exact_resistance"),
-                "- Exact compliance: `%s`" % oracle.get("exact_compliance"),
-            ]
-        )
-    (out_dir / "PROOF.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-
-
 def run(out_dir, oracle_state_detail=None, include_addresses=False):
     t0 = time.time()
     p = winmem.open_process("hoi4.exe")
@@ -906,7 +825,6 @@ def run(out_dir, oracle_state_detail=None, include_addresses=False):
         encoding="utf-8",
     )
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    write_proof_md(out_dir, summary)
     return summary
 
 

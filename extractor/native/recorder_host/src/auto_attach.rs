@@ -1,5 +1,4 @@
-//! Dual-order automatic attach (roadmap task #36, design of record
-//! `extractor/documents/AUTO_ATTACH_DESIGN.md`).
+//! Dual-order automatic attach. See `PROJECT.md` heading "Passive recording".
 //!
 //! Both launch orders attach with zero user precision (memory
 //! `product-session-semantics`): APP-FIRST (the watcher sees the game launch)
@@ -38,18 +37,18 @@ pub use coordinator::{Coordinator, CoordinatorConfig, CoordinatorDeps, Superviso
 pub use identity::{ProcessIdentity, ProcessKey};
 pub use state::CandidateState;
 
-/// Options for the resident supervisor (design §1, §7). No correctness policy is
-/// user-tunable; these are location/identity facts resolved at boot.
+/// Options for the resident supervisor. No correctness policy is user-tunable;
+/// these are location/identity facts resolved at boot.
 #[cfg(windows)]
 pub struct SupervisorOptions {
     /// Packaged collector DLL to stage per attempt (resolved relative to the
-    /// packaged app executable/manifest — never this repo; design §3, §7).
+    /// packaged app executable/manifest, never this repository).
     pub source_dll: std::path::PathBuf,
     /// Root under which per-attempt staging directories are created.
     pub staging_root: std::path::PathBuf,
     /// Root under which per-attempt run/output directories are created.
     pub out_root: std::path::PathBuf,
-    /// Path to the `auto_attach_journal.jsonl` (design §8).
+    /// Path to the `auto_attach_journal.jsonl`.
     pub journal_path: std::path::PathBuf,
     /// `collector_record` executable to spawn as the per-game worker (defaults
     /// to the current executable — the supervisor and worker are the same binary
@@ -66,7 +65,7 @@ pub struct SupervisorOptions {
     pub poll_ms: u64,
 }
 
-/// Run the resident coordinator until `should_stop` returns true (design §1).
+/// Run the resident coordinator until `should_stop` returns true.
 /// Wires the real Windows discovery/identity adapters and process-isolated
 /// worker invoked from `main.rs` under `--auto-attach`. Frozen activation keeps
 /// the explicit Legacy path; the jointly gated product path selects the
@@ -123,7 +122,7 @@ pub fn run_supervisor_with_events(
     };
 
     let mut coord = Coordinator::new(config, deps, opts.journal_path)?;
-    // Reconcile any prior journal before touching live processes (design §8).
+    // Reconcile any prior journal before touching live processes.
     coord.recover_from_journal()?;
 
     // PATCH DAY (owner ruling 2026-08-18). An unknown game build stops the
@@ -214,7 +213,7 @@ mod live {
         WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
     };
 
-    /// A per-boot coordinator instance id (design §8 `coordinator_instance_id`).
+    /// A per-boot coordinator instance id.
     pub fn coordinator_instance_id() -> String {
         use snapshot::sha256::{to_hex, Sha256};
         let mut h = Sha256::new();
@@ -262,12 +261,11 @@ mod live {
         }
 
         fn resolve_modset(&self, id: &ProcessIdentity) -> ModsetResolution {
-            // Reuse the existing fail-closed resolver. NOTE (design §3, §9): the
-            // resolver's user-dir CANDIDATE DISCOVERY still needs expansion
-            // (command-line -userdir, FOLDERID_Documents, runtime OneDrive
-            // roots) — a `modset.rs` change outside this lane's fence, tracked in
-            // the dossier. Its PID-held-log corroboration and fail-closed
-            // resolution are reused as-is.
+            // Reuse the existing fail-closed resolver. Its user-directory
+            // candidate discovery covers command-line overrides, Documents,
+            // and runtime OneDrive roots. PID-held-log corroboration and
+            // fail-closed resolution prevent an ambiguous modset from being
+            // admitted.
             let probe = ToolhelpProbe::new();
             let before = match probe.identify(id.key.pid) {
                 Ok(identity) if identity == *id => identity,
@@ -550,8 +548,8 @@ mod live {
     // -- Child-process worker spawner ------------------------------------
 
     /// Spawns `collector_record --pid <target> --dll <staged> --out-dir <run>`
-    /// as the per-game worker (design §5: reuse the existing hook injector; the
-    /// coordinator never injects directly). This is the SAME interface the dev
+    /// as the per-game worker, reusing the existing hook injector; the
+    /// coordinator never injects directly. This is the SAME interface the dev
     /// launcher uses (`Start-Hoi4ProductionSpeed5Capture.ps1`).
     /// Process-isolated worker adapter. A mintable product permit selects the child
     /// recorder's combined H4CR/H4CT backend plus authenticated stop event.

@@ -56,8 +56,7 @@
 //!   reported as a named deviation instead: a refused payload into
 //!   `d18_refused_records`, a failure-status record whose body the authority would
 //!   reject into `d18_failure_records_with_unwalkable_body`. Both are 0 on the
-//!   measured capture. Ported from `bench_real_d96.rs`, whose Codex rounds 1-3
-//!   established all three rulings.
+//!   measured capture.
 //!
 //! That is a documented **subset** of the production boundary contract:
 //! `recorder_host::stream_fold::verify_stream_logical_boundary` (`:537`) is the
@@ -99,8 +98,7 @@
 //! - **No d18 roster this hour** (`:10542`-`:10544`) and **the POV country absent
 //!   from the roster** (`:10546`-`:10551`): an **excluded hour**. These are a
 //!   dependency state, not a grammar failure — an entire capture can legitimately
-//!   be in it (`runs/batch3/domain_classification.md`, Finding 3: 3b never
-//!   scheduled d18, so every d67/d94/d95 hour there folds to an error). Counted
+//!   be in it when d18 was never scheduled, so every d67/d94/d95 hour folds to an error. Counted
 //!   and reported by reason; the shipping records of an excluded hour are charged
 //!   to neither arm.
 //! - **A capture sequence that does not strictly increase within the hour**
@@ -137,9 +135,9 @@
 //!
 //! # Gaps force a baseline
 //!
-//! An excluded hour is coverage this domain lost, which is §8's gap, and
-//! `WIRE_FORMAT.md:187`-`:190` forces the next state observation to be a `BASELINE`
-//! rather than a delta across unobserved time. [`opens_block`] implements that
+//! An excluded hour is coverage this domain lost.
+//! State after a gap to resume from a complete
+//! baseline rather than a delta across unobserved time. [`opens_block`] implements that
 //! beside the 48-hour cadence, and the block chain restarts there. The reference
 //! capture has no excluded hour, so no baseline is forced on it and the block
 //! spans `compress_arms.py` slices still coincide with the baselines written.
@@ -361,11 +359,8 @@ struct D18Fold {
 ///   such a record normally and commits its roster, so measuring it would measure
 ///   a stream production does not certify.
 ///
-/// Ported from `bench_real_d96.rs`, where the rule was Codex round-1 finding
-/// `019fa530-c013-74a2-b717-31f8e89e8639` and its over-reach — refusing a payload
-/// too short to carry the word, which the FOLD refuses too and the recorder
-/// tolerates — was round-2 finding `019fa53d-daf5-7810-a470-aeeb710e8166`. A
-/// short payload therefore returns `Ok` here and falls through to [`d18_roster`].
+/// A payload too short to carry the word is also refused by the FOLD and tolerated
+/// by the recorder, so it returns `Ok` here and falls through to [`d18_roster`].
 fn check_d18_payload_authority(payload: &[u8]) -> Result<(), String> {
     // Not a check: the authority's 20-byte minimum (`domain_data_authority.rs:1018`)
     // is also the FOLD's (`world_fold.rs:14155`), so it is `d18_roster`'s business.
@@ -592,8 +587,6 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
     //
     // The comment this replaces had the row walk running first, on the grounds
     // that production's payload authority is status-independent. Two things were
-    // conflated there, and the d96 port's round-3 review separated them (thread
-    // 019fa548-5e33-7061-9236-5c7151f92098): the authority's status-independence
     // decides what this harness must REPORT, while the FOLD's order decides how
     // the record is CLASSIFIED. So the body is still walked on the failure path —
     // only to record a body the authority (`domain_data_authority.rs:1042`) would
@@ -916,9 +909,8 @@ fn scan_stream(
     }
     // "No d95 records at all" and "records, but every hour excluded" are two
     // different things and only the first refuses the stream. A capture whose d18
-    // roster is never scheduled folds to an error on every d95 hour — batch-3's
-    // 3b stream is exactly that (`runs/batch3/domain_classification.md`,
-    // Finding 3) — and the recorder clears each domain-hour and continues. The
+    // roster is never scheduled folds to an error on every d95 hour, and the
+    // recorder clears each domain-hour and continues. The
     // caller reports those exclusions; refusing here would call a legitimate
     // capture corrupt.
     if scan.d95_records == 0 {
@@ -951,9 +943,8 @@ fn scan_stream(
 ///
 /// 1. the block chain reached its `BLOCK_HOURS` length;
 /// 2. **the previous measured hour is not this hour minus one.** An excluded hour
-///    is coverage this domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190`
-///    is explicit: "A gap affecting the state part forces the next state
-///    observation to be a `BASELINE`. State may have moved and returned while
+///    is coverage this domain lost.
+///    requires state after a gap to resume from a complete baseline. State may have moved and returned while
 ///    nobody was looking, so neither a delta nor an `UNCHANGED` can be justified
 ///    across unobserved time." Delta-encoding hour 102 against hour 100's state
 ///    because hour 101 was excluded would produce bytes that decode — the local
@@ -977,11 +968,10 @@ fn opens_block(hours_in_block: usize, previous_measured_hour: Option<i32>, game_
     }
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision (`opens_block`), the
+/// One wire-arm hour: the frame-run contract/block baseline decision (`opens_block`), the
 /// encode, and the per-hour reader replay over both collections. Factored out
 /// of `main` so the tests execute the PRODUCTION encode path over a scanned
 /// stream: a mutant that reverts the baseline decision here to
-/// chain-position-only fails the gap test (a Codex round-2 finding — the
 /// earlier test exercised the decision function but not this callsite).
 struct WireHourOutcome {
     opened_baseline: bool,
@@ -1029,7 +1019,7 @@ fn encode_wire_hour(
                 let Some(delta) = delta else { continue };
                 changed_rows += delta.changed.len();
                 tombstones += delta.tombstones.len();
-                // §7.1 minimality, checked rather than assumed.
+                // delta-minimality contract minimality, checked rather than assumed.
                 check_minimal(&schema.collections[i], prior.get(i), state.get(i), delta)
                     .unwrap_or_else(|e| panic!("hour {}: {e:?}", hour.game_hour));
             }
@@ -1668,62 +1658,10 @@ mod tests {
         }
     }
 
-    /// Every mutation below was run against THIS target alone
-    /// (`cargo test -p wire_format --release --bin bench_real_d95`), because
-    /// cargo's fail-fast means a lib-suite failure would otherwise keep this
-    /// target from running at all and the notes would be unobserved. Baseline
-    /// unmutated: `test result: ok. 29 passed; 0 failed`.
-    ///
-    /// MUTATION RUN: drop the two hour bits from `d95::KNOWN_FLAGS` — the state
-    /// this lane found, where the restatement refused a payload its own codec
-    /// emits. OBSERVED: FAILED -- `codec and port disagree on payload [53, 50,
-    /// 55, 31, 01, 00, 07, 00, ...]: Ok(SpottedUnitsSnapshot { ...
-    /// land_frame_hour_raw: Some(4100), taskforce_frame_hour_raw: None ... })
-    /// vs Err("pov_spotted_units SPU1 invalid: pov_spotted_units carrier
-    /// version 1/flags 0x7 mismatch")`.
-    ///
-    /// MUTATION RUN: widen `d95::KNOWN_FLAGS` to `u16::MAX`. OBSERVED: FAILED
-    /// -- `codec and port disagree on payload [53, 50, 55, 31, 01, 00, 01, 01,
-    /// ...]: Err("spotted-units carrier version/flags mismatch") vs Ok(())`,
-    /// i.e. a byte-patch mutant with bit 8 set that the codec refuses and the
-    /// widened port accepted. `a_malformed_d95_payload_is_refused_not_skipped`
-    /// failed alongside it: `unknown flag bit must refuse the stream, not be
-    /// skipped`.
-    ///
-    /// MUTATION RUN: drop the `hour_words` term from `split_payload`'s expected
-    /// length. OBSERVED: FAILED -- `... vs Err("pov_spotted_units SPU1 invalid:
-    /// pov_spotted_units carrier is truncated or has trailing bytes:
-    /// 76 != 68")`.
-    ///
-    /// MUTATION RUN: slice the task-force rows as `&payload[land_end..]`.
-    /// OBSERVED: FAILED -- `... vs Err("pov_spotted_units taskforce row region
-    /// 20 is not a multiple of 12")`: the 8-byte trailer landed in the
-    /// task-force row region, which is exactly the defect widening the mask
-    /// alone would have introduced.
-    ///
-    /// MUTATION RUN: drop the trailer's `i32::try_from` refusal. OBSERVED:
-    /// FAILED -- `codec and port disagree on payload [... ff, ff, ff, ff, ff,
-    /// ff, ff, 7f, ...]: Err("spotted-units producer hour is outside the
-    /// engine's date range") vs Ok(())`. The distinguishing bytes come from the
-    /// corpus's own patch sweep, not from a hand-written case.
-    ///
-    /// MUTATION RUN: never advance the trailer cursor, so both words are read
-    /// at slot 0. OBSERVED: FAILED -- `... [... 00, 00, 00, 80, ff, ff, ff, ff,
-    /// ff, ff, ff, ff, ...]: Err("spotted-units producer hour is outside the
-    /// engine's date range") vs Ok(())`.
-    ///
-    /// MUTATION RUN: make `d95::PayloadHeader::flags()` blind to the hour bits.
-    /// OBSERVED: FAILED -- ``assertion `left == right` failed: the port must
-    /// re-encode the codec's own flags word / left: 7 / right: 3``.
-    ///
-    /// MUTATION RUN (SURVIVED HERE, recorded rather than hidden): delete the
-    /// orphan-hour refusals from `d95::parse_header`. OBSERVED: `test result:
-    /// ok. 29 passed`. The codec's `validate` refuses an orphan hour, so
-    /// `encode` cannot build one and the corpus's `0x00`/`0x01`/`0xff` patches
-    /// cannot produce a flags word with an hour bit set and its frame bit
-    /// clear. That mutation is killed by the hand-built headers in
-    /// `d95::tests::parse_header_rejects_every_header_the_codec_rejects`, which
-    /// is why both tests exist.
+    /// The corpus covers defined and undefined flags, optional producer-hour
+    /// trailers, row boundaries, signed-hour limits, and both trailer cursors.
+    /// Hand-built library tests cover orphan hour flags that the shipping codec
+    /// cannot itself encode.
     #[test]
     fn the_harness_agrees_with_the_shipping_codec_on_what_a_payload_is() {
         // The differential check the recipe's "one derivation" rule is about: the
@@ -2034,7 +1972,7 @@ mod tests {
         assert_eq!(scan.hours.len(), 1);
         assert_eq!(scan.d18_failure_records + scan.d18_refused_records, 0);
 
-        // Round-2 finding, as a property rather than a comment: a refused d18
+        // a refused d18
         // record AFTER a successful one in the same hour changes nothing, because
         // the fold commits at the end and never un-commits (`:14149`-`:14156`).
         // The hour stays measured.
@@ -2118,7 +2056,7 @@ mod tests {
             assert_eq!(scan.hours[0].game_hour, 101, "second {second}");
         }
 
-        // Round-4 finding, as a property: clearing is not ending the hour. The
+        // clearing is not ending the hour. The
         // reviewer's own input — sequences 10, 10, then 1 — leaves the hour
         // MEASURED from the third record, because a cleared accumulator has no
         // sequence to compare against (`world_fold.rs:10553`, `:10559`).
@@ -2143,9 +2081,8 @@ mod tests {
 
     #[test]
     fn a_gap_in_measured_hours_forces_a_baseline() {
-        // Round-5 finding. An excluded hour is a state-affecting gap, and
-        // `WIRE_FORMAT.md:187`-`:190` forces the next state observation to be a
-        // BASELINE: a delta across unobserved time asserts a continuity the
+        // An excluded hour is a state-affecting gap, and the next state
+        // observation must be a complete baseline: a delta across unobserved time asserts a continuity the
         // capture does not have, and the local replay cannot see it because the
         // reader's prior is never invalidated.
         assert!(opens_block(0, None, 100), "the first hour is a baseline");
@@ -2221,7 +2158,7 @@ mod tests {
 
     #[test]
     fn a_capture_whose_every_hour_is_excluded_is_reported_not_refused() {
-        // Round-4 finding. A capture that never schedules d18 folds to an error on
+        // A capture that never schedules d18 folds to an error on
         // every d95 hour (batch-3's 3b stream is exactly that), and the recorder
         // clears each domain-hour and continues — so the scan must return those
         // exclusions rather than calling a legitimate capture corrupt. `main`
@@ -2595,7 +2532,7 @@ mod tests {
 
     #[test]
     fn an_unassigned_d18_status_bit_is_reported_and_still_committed() {
-        // Round-1 finding. The recipe's "reject an unassigned status bit before
+        // The recipe's "reject an unassigned status bit before
         // classifying" rule protects a domain's OWN measurement; applied to the
         // d18 dependency it makes the model stricter than the recorder, which
         // tests the failure mask alone and then commits the roster
@@ -2613,7 +2550,7 @@ mod tests {
             );
             assert_eq!(fold.unassigned_status_bits, 1 << bit, "bit {bit} reported");
         }
-        // The reviewer's own failing input, end to end: the d95 hour behind such
+        // The regression input, end to end: the d95 hour behind such
         // a d18 record must be MEASURED, not excluded.
         let mut s = Vec::new();
         s.extend(record(
@@ -2648,8 +2585,6 @@ mod tests {
         // This block used to assert the defect: that a MALFORMED failure-status
         // payload is an `Err`, "because production's payload authority is
         // status-independent". Two things were conflated, and the d96 port's
-        // round-3 review separated them (thread
-        // 019fa548-5e33-7061-9236-5c7151f92098). The authority's
         // status-independence decides what this harness must REPORT; the FOLD's
         // own order — status immediately after the header, `Ok` without reading
         // the body (`world_fold.rs:14158`-`:14164`) — decides how the record is
@@ -2670,8 +2605,6 @@ mod tests {
 
     #[test]
     fn a_d18_record_whose_changed_rows_exceeds_row_count_refuses_the_stream() {
-        // Ported from `bench_real_d96.rs`, Codex round-1 finding
-        // 019fa530-c013-74a2-b717-31f8e89e8639. `fold_country_identity` never reads
         // the word, so this mirror folded such a record normally and its hours were
         // measured — while production's status-independent d18 authority rejects it
         // (`domain_data_authority.rs:1029`-`:1033`) and the stream is not certified.
@@ -2717,8 +2650,7 @@ mod tests {
         }
         // A payload too short to carry the word is NOT this helper's business: the
         // fold refuses it and the recorder tolerates that refusal, so it must fall
-        // through to `d18_roster` rather than refusing the stream (d96 round-2
-        // finding, thread 019fa53d-daf5-7810-a470-aeeb710e8166).
+        // through to `d18_roster` rather than refusing the stream across every
         for len in 0..20usize {
             assert!(
                 check_d18_payload_authority(&vec![0u8; len]).is_ok(),
@@ -2739,8 +2671,6 @@ mod tests {
 
     #[test]
     fn a_failure_status_d18_record_is_classified_by_the_fold_not_by_its_body() {
-        // Ported from `bench_real_d96.rs`, Codex round-3 finding
-        // 019fa548-5e33-7061-9236-5c7151f92098, whose exact input this carries: a
         // 20-byte d18 payload claiming `row_count = 1` with no row body at all,
         // under a failure status. `fold_country_identity` checks the status
         // immediately after the header and returns `Ok` WITHOUT reading the body
@@ -2771,7 +2701,7 @@ mod tests {
 
     #[test]
     fn the_shipping_split_counts_only_the_records_the_arm_contains() {
-        // Round-1 finding: charging framing for every d95 record in the stream
+        // charging framing for every d95 record in the stream
         // underflows once an hour is excluded, because an excluded hour's records
         // are in neither arm. Two excluded hours, then one measured hour.
         let mut s = Vec::new();

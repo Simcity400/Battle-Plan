@@ -84,18 +84,14 @@
 //!    for a capture that has already settled rather than for the very first
 //!    frame after attach. The tracer records one frame and then costs nothing.
 //!
-//! 4. Reduce the sidecar. The tool is pure formatting over
-//!    [`crate::range_census`], which the library gate covers:
+//! 4. Reduce the sidecar with [`crate::range_census`]. The library gate covers
+//!    parsing, coalescing, span accounting, and truncation semantics; callers
+//!    choose their own presentation instead of relying on a second executable.
 //!
-//!    ```text
-//!    cargo run -p collector --release --bin range_census -- \
-//!        <sidecar.bin> --span 0x10000 --json census.json
-//!    ```
-//!
-//! 5. Read the verdict off two lines: `FULL SET / unique bytes` against the
-//!    plan's 70 MiB rejection threshold, and `FULL SET / distinct ranges`
-//!    against its 450k. If the header says TRUNCATED, both are lower bounds and
-//!    the run must be repeated with a larger
+//! 5. Compare [`crate::range_census::Census::full_set_unique_bytes`] with the
+//!    plan's 70 MiB rejection threshold and `full_set_distinct_ranges` with its
+//!    450k threshold. If [`crate::range_census::TraceFile::truncated`] is true,
+//!    both are lower bounds and the run must be repeated with a larger
 //!    `BATTLE_PLAN_RANGE_TRACE_MAX_ENTRIES` before either can reject anything —
 //!    a truncated trace can only ever CONFIRM an over-threshold verdict, never
 //!    an under-threshold one.

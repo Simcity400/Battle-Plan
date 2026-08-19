@@ -29,11 +29,11 @@
 //! holding at most three states at once. Up to ~1.75k ships × 903 hours does not
 //! fit as per-hour snapshots.
 //!
-//! **The symbol table is built in pass 1, before any record is mapped.** §5
+//! **The symbol table is built in pass 1, before any record is mapped.** content-identity contract
 //! requires symbol ids to be file-global and forbids in-stream interning — "it
 //! must be fully read before any seek" — so the `definition` vocabulary is
 //! collected over the whole validated stream first and frozen into a
-//! `d29::Symbols` that pass 2 only reads. See `d29`'s module docs for what §13
+//! `d29::Symbols` that pass 2 only reads. See `d29`'s module docs for what codec-measurement contract
 //! will replace.
 //!
 //! **Nothing here re-derives a contract it can call.** Row and payload decoding
@@ -159,9 +159,8 @@ const BLOCK_HOURS: usize = 48;
 /// Two reasons, and the second is not a cadence choice: the 48-hour block
 /// boundary, or a measured hour that does not immediately follow the previous
 /// measured one. An hour this domain did not successfully sample is coverage
-/// the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190` is
-/// explicit: "A gap affecting the state part forces the next state observation
-/// to be a `BASELINE`. State may have moved and returned while nobody was
+/// the domain lost. State
+/// after a gap to resume from a complete baseline. State may have moved and returned while nobody was
 /// looking, so neither a delta nor an `UNCHANGED` can be justified across
 /// unobserved time." Delta-encoding across the gap would produce bytes that
 /// decode — the reader's prior is never invalidated, so the local replay
@@ -240,7 +239,6 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 /// FOLD's `read_string` (`world_fold.rs:30167`-`:30170`) — and the fold returns
 /// before its row loop on an excluded record, so that rule never reaches one in
 /// production. Calling `parse_row` here would therefore make this harness refuse
-/// a stream the recorder accepts, which is its own defect (round-1 review
 /// finding). The fixed words are read directly instead, and the UTF-8 rule stays
 /// where the fold puts it: on the records that are actually folded.
 fn check_authority_payload(
@@ -311,7 +309,6 @@ fn check_authority_payload(
         // `:6155`-`:6164`: the authority owns the row's flag vocabulary too.
         // Dropping this when the walk stopped calling `d29::parse_row` would make
         // the harness LOOSER than production, which is the same defect as being
-        // stricter, in the other direction (round-3 review finding).
         const KNOWN_ROW_FLAGS: u32 =
             d29::FLAG_DELETED | d29::FLAG_TASK_FORCE | d29::FLAG_DEFINITION | d29::FLAG_OWNER;
         if flags & !KNOWN_ROW_FLAGS != 0 {
@@ -423,7 +420,7 @@ struct StreamScan {
     hours: Vec<D29Hour>,
     counts: ScanCounts,
     /// The `definition` vocabulary of the whole stream, frozen before any record
-    /// is mapped (§5).
+    /// is mapped (content-identity contract).
     symbols: Symbols,
 }
 
@@ -456,7 +453,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
     // `WorldFold::delta_baselines_seen` for domain 29 (`world_fold.rs:2927`).
     let mut baseline_seen = false;
     // Pass 1 cannot resolve symbols — the table is what this pass is building,
-    // and §5 forbids interning one as the stream is read. So it applies the
+    // and content-identity contract forbids interning one as the stream is read. So it applies the
     // fold's accumulation rules to a **key-only mirror** of the accumulator:
     // the same walk, the same per-row checks, the same clear/upsert/remove
     // rules, with no symbol dependency. The only failure pass 2 can then have
@@ -782,7 +779,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
         ));
     }
 
-    // §5: the table is complete before any record is mapped, and never grows
+    // content-identity contract: the table is complete before any record is mapped, and never grows
     // afterwards. Proving pass 2 cannot need a symbol pass 1 did not see is what
     // makes "no in-stream interning" a property of this harness rather than a
     // hope: pass 2 walks exactly these spans with exactly this parse.
@@ -833,7 +830,7 @@ fn main() {
     let mut reader: Option<KeyedState> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
-    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    // Baselines the gap handling forced outside a scheduled block start.
     let mut gap_forced_baselines = 0usize;
     let mut previous_measured_hour: Option<i32> = None;
     let mut baseline_bytes = 0usize;
@@ -960,7 +957,7 @@ fn main() {
         scan.counts.rows_folded, scan.counts.delete_rows, scan.counts.rowless_records
     );
     println!(
-        "definition symbols   {} (§5 vocabulary, frozen before mapping)",
+        "definition symbols   {} (frozen before mapping)",
         scan.symbols.len()
     );
     println!(
@@ -969,7 +966,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} every {BLOCK_HOURS} h, {gap_forced_baselines} \
-         forced by a gap in measured hours — WIRE_FORMAT §1.5)",
+         forced by a gap in measured hours —",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1250,7 +1247,7 @@ mod tests {
 
     #[test]
     fn the_symbol_table_covers_every_definition_in_the_stream() {
-        // §5: fully read before any mapping. A symbol that appears only in a late
+        // content-identity contract: fully read before any mapping. A symbol that appears only in a late
         // record must still be in the table pass 2 uses.
         let mut s = Vec::new();
         s.extend(record(
@@ -1883,7 +1880,6 @@ mod tests {
         // The two row predicates the authority owns that are easiest to lose
         // when the walk stops calling `d29::parse_row`: the flag vocabulary
         // (`domain_data_authority.rs:6155`) and the reserved word (`:6236`).
-        // Both must refuse an EXCLUDED record — production does (round-3 review
         // finding). Every unknown flag bit, not one sample.
         for bit in 4..32u32 {
             let mut row = ship_row(1, 100_000, "destroyer");
@@ -1942,7 +1938,6 @@ mod tests {
         // the definition and never decodes it, so an excluded row whose
         // definition is structurally well-formed but invalid UTF-8 is a stream
         // production certifies — and refusing it here would be stricter than
-        // production, which is its own defect (round-1 review finding).
         //
         // Every one-, two- and three-byte invalid sequence class, not one
         // sample: a lone continuation byte, a truncated two-byte lead, a
@@ -2107,8 +2102,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." An excluded or missing
+        // A complete
+        // baseline after a gap. An excluded or missing
         // hour between two measured ones is such a gap; delta-encoding across it
         // would decode cleanly while asserting a continuity the capture does not
         // have. The decision function, over its whole input space:

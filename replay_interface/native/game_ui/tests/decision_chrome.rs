@@ -1,5 +1,5 @@
 //! Decisions-panel chrome gates. Generic element geometry follows
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §§3 and 6.1; this suite does
+//! `game_ui::compose` and the structured UI-layout evidence fixture; this suite does
 //! not replace XUI19's packet-local production gates.
 //!
 //! Drives the SHIPPED vanilla files through `game_ui::decision_chrome`:

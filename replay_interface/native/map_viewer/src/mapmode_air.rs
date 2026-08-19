@@ -1,7 +1,6 @@
-//! Strategic-air map mode (E3 lane; the mode set and its selection law are in
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode manager").
+//! Strategic-air map mode.
 //!
-//! This module is a legacy diagnostic surface. Production XMAP18 does not use
+//! This module is a diagnostic surface. Production XMAP18 does not use
 //! its threshold-derived classifier: it consumes exact sparse raw friendly and
 //! enemy superiority score lanes for every observer/strategic-region cell,
 //! applies the exact-a729 ratio thresholds, and materializes the result through

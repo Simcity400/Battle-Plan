@@ -7,14 +7,12 @@
 //
 // Includers:
 //
-//  * `ha_entry_confinement.rs` — lane HA, task #191: a damaged RECORD costs its
+//  * `ha_entry_confinement.rs`: a damaged RECORD costs its
 //    checkpoint window (`runs/ha_entry_confinement/`).
-//  * `hr_truncated_prefix.rs` — lane HR, task #192: a TRUNCATED artifact costs
+//  * `hr_truncated_prefix.rs`: a TRUNCATED artifact costs
 //    the hours past its verified prefix (`runs/hr_standing_reds/`).
 //
-// It was extracted from `ha_entry_confinement.rs` by lane HR with no change to
-// any item, so lane HA's matrix regenerates byte-identically from the same
-// command its `MATRIX.md` documents.
+// It shares the production fixture components with `ha_entry_confinement.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -49,8 +47,7 @@ const GAME_ID: &str = "ha_entry_confinement";
 /// all: at the production interval every hour here would share one window and no cell could tell
 /// "confined to the window" from "confined to the recording". The interval is
 /// a build parameter of the same production function, not a code path of its
-/// own, and `runs/ha_entry_confinement/checkpoint_density_pricing.md` prices
-/// the production interval separately.
+/// own.
 const CHECKPOINT_INTERVAL: u32 = 4;
 
 fn raw_for(hour_index: i64) -> i32 {
@@ -63,7 +60,7 @@ fn hour_of(ordinal: usize) -> i64 {
 
 // ---------------------------------------------------------------------------
 // Stream construction — the H4CR record envelope the collector writes.
-// Spelled as lane GZ's harness spells it, over the same two domains.
+// Spelled identically across the harnesses, over the same two domains.
 // ---------------------------------------------------------------------------
 
 fn write_record(
@@ -521,7 +518,7 @@ fn one_line(text: &str) -> String {
 
 
 // ---------------------------------------------------------------------------
-// TRUNCATION (lane HR, task #192)
+// TRUNCATION
 // ---------------------------------------------------------------------------
 
 /// Copy the clean pair's H4CP into a cell directory with its tail cut off at

@@ -1,6 +1,6 @@
 //! M0 golden fixture: the no-fabrication contract.
 //! measured-zero, captured-null, and never-captured must be three DISTINCT states —
-//! never collapsed (Codex hardening §3.1: `null != 0`, missing-field != default).
+//! never collapsed: `null != 0`, and a missing field is not a default.
 
 use serde_json::{json, Value};
 use snapshot::Store;

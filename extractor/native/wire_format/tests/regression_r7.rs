@@ -1,5 +1,4 @@
-//! Regression tests for round 7. Five of the six were encoder/decoder
-//! asymmetries — a rule one side enforced and the other did not.
+//! Regression tests for encoder/decoder asymmetries.
 
 use wire_format::body::{decode_baseline, decode_delta, encode_delta, Key, KeyedDelta, KeyedState, Row};
 use wire_format::record::Record;
@@ -16,9 +15,9 @@ fn keyed(fields: Vec<Field>) -> Schema {
     }
 }
 
-/// §7.4's key chain is `prev + diff`, both off the wire, so it can manufacture a
+/// key-encoding contract's key chain is `prev + diff`, both off the wire, so it can manufacture a
 /// component no encoder would accept — first key `u64::MAX`, then a difference of
-/// 1. The chain stays correctly sorted, so §2's ordering checks do not catch it.
+/// 1. The chain stays correctly sorted, so canonical ordering contract's ordering checks do not catch it.
 #[test]
 fn the_key_chain_cannot_decode_an_out_of_range_component() {
     let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)]);

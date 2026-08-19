@@ -149,8 +149,7 @@ pub const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
 /// The province id space's STRUCTURAL width (lane IA). Was a guess --
 /// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
 /// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`); dossier
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_COMBAT_REF_COUNT: u32 = 1_000;
 pub const MAX_ORGANISATION_RAW: u32 = 100_000_000;

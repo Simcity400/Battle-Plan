@@ -134,7 +134,7 @@ const DECISION_TARGET_MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// in `collector/src/a34_a40_evidence.rs`. So this was a state ceiling under a
 /// role name -- `1_000_000` -- and a name-based census could not see it. It is
 /// now the state id space's STRUCTURAL width
-/// (`claim_39c989ce13504504353c`; `runs/ia_province_caps/SWEEP.md`).
+/// (`claim_39c989ce13504504353c`).
 const DECISION_TARGET_MAX_NUMERIC_ID: u32 = (i32::MAX as u32) - 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

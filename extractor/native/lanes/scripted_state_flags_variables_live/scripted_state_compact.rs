@@ -29,8 +29,8 @@ pub const VALUE_FLAG_NAMED: u32 = 2;
 pub const VALUE_FLAG_TOKEN_ONLY: u32 = 3;
 pub const VALUE_DELAYED_EVENT_OPAQUE: u32 = 4;
 pub const VALUE_SCRIPTED_GUI_OPAQUE: u32 = 5;
-/// Wave-3 pending delayed-event row (validated CDelayedEvent chain on build
-/// 870ebf; see WAVE3_CRACKS_870EBF_D04.md §5). Field packing reuses the
+/// Delayed-event row (validated CDelayedEvent chain on build
+/// 870ebf). Field packing reuses the
 /// existing row layout: `owner_id` = owner/originator tag_db_id
 /// (CDelayedEvent+0x18, copy +0xC0); `token_id` = combined event id
 /// (CEvent+0x0C = namespace*100000+index, 17/17 oracle); `date_hour_raw` =
@@ -59,8 +59,7 @@ pub const MAX_KEY_BYTES: usize = 512;
 pub const MAX_KEY_TABLE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 /// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
-/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
-/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`). A separate
 /// constant from the province one even though the numbers coincide.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// Combined event id = namespace*100000 + index (CEvent+0x0C). A live event

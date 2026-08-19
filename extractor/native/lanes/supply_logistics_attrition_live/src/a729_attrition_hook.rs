@@ -133,15 +133,9 @@ struct SavedRegisters {
 
 impl SavedRegisters {
     unsafe fn word(&self, index: usize) -> u64 { unsafe { self.base.add(index).read() } }
-    unsafe fn r15(&self) -> u64 { unsafe { self.word(0) } }
-    unsafe fn r14(&self) -> u64 { unsafe { self.word(1) } }
-    unsafe fn r13(&self) -> u64 { unsafe { self.word(2) } }
-    unsafe fn r12(&self) -> u64 { unsafe { self.word(3) } }
     unsafe fn rbx(&self) -> u64 { unsafe { self.word(11) } }
     unsafe fn rdx(&self) -> u64 { unsafe { self.word(12) } }
     unsafe fn rcx(&self) -> u64 { unsafe { self.word(13) } }
-    unsafe fn rax(&self) -> u64 { unsafe { self.word(14) } }
-    unsafe fn rbp(&self) -> u64 { unsafe { self.word(10) } }
     unsafe fn rsi(&self) -> u64 { unsafe { self.word(9) } }
     unsafe fn rdi(&self) -> u64 { unsafe { self.word(8) } }
     unsafe fn r8(&self) -> u64 { unsafe { self.word(7) } }

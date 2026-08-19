@@ -322,9 +322,8 @@ $domainFileMapTests = Join-Path $PSScriptRoot "test_map_files_to_domains.py"
 # mod override that stops winning fails here instead of on a modded recording.
 $templatesEquipmentGateTests =
     Join-Path $PSScriptRoot "test_templates_equipment_catalog_gate.py"
-# The Replay-side pair. `external_producer_dependencies.json` is the machine
-# authority eleven current documents cite for what Replay still needs from a
-# producer, and `EXTRACTOR_INPUT_RESIDUALS.md` is its generated human view.
+# The Replay-side pair. `external_producer_dependencies.json` is the
+# machine-readable boundary for what Replay still needs from a producer.
 # The checker also requires the renderer's own `PROMOTED_EXTERNAL_DEPENDENCY_
 # PACKETS` table to BE that ledger, row for row and in order, and requires each
 # shipping row to bind exactly one behavior test.
@@ -2707,9 +2706,7 @@ try {
         # The suites first: they are what proves the two gates below still fail
         # when they should, rather than passing because they stopped looking.
         Invoke-Checked -Program "python" -Arguments @($replayDependencyLedgerTests)
-        # --check-doc, never --write-doc. A gate that regenerates the document
-        # it is checking cannot report drift; it would launder it.
-        Invoke-Checked -Program "python" -Arguments @($replayDependencyLedger, "--check-doc")
+        Invoke-Checked -Program "python" -Arguments @($replayDependencyLedger)
         Invoke-Checked -Program "python" -Arguments @($replayFixtureProvenance)
     }
 

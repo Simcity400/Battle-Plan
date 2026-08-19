@@ -1,7 +1,6 @@
 //! End-to-end: `plan_stitch` -> canonical container files + snapshot payloads ->
 //! pack a real v2 `.battleplan` -> open with the snapshot reader and verify the
-//! main timeline, rollback access, the segment graph, integrity, and determinism
-//! (`STITCHING_DESIGN.md` §7, §8, §11 gates 1/7/8).
+//! main timeline, rollback access, the segment graph, integrity, and determinism.
 
 use std::collections::BTreeMap;
 
@@ -522,7 +521,7 @@ fn stitched_opts() -> PackOptions {
 }
 
 fn plan_rollback() -> StitchedPlan {
-    // §11 gate 1: rollback inside one campaign — S0=0..3, S1=2..2 (supersedes hour 2).
+    // Rollback inside one campaign: S0=0..3, S1=2..2 (supersedes hour 2).
     match plan_stitch(
         "g",
         stitch_inputs(),
@@ -560,7 +559,7 @@ fn stitched_plan_packs_and_reader_serves_main_and_rollback() {
 
     // main timeline: hours 0,1 from S0; hour 2 from S1. Hour 3 (S0's abandoned
     // future beyond S1's head=2) is REMOVED from main by S1's cutover and becomes
-    // rollback-only — playback ends at hour 2 (design §6 abandoned-future rule).
+    // Rollback-only: playback ends at hour 2.
     assert!(c.index().is_stitched());
     let hours: Vec<i64> = c
         .index()

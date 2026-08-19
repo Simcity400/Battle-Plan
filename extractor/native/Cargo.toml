@@ -46,9 +46,6 @@ members = [
     "scientists_live_lane",
     "replay_decoder",
     "fold_check",
-    # H4CP v3 stage-2 PROTOTYPE. Measurement only: nothing in the production
-    # fold, the collector, the wire format or the sealed cache depends on it.
-    "fold_v3",
     # Injected D3D11 map-frame capture DLL + attach helper. It patches live
     # game code through `inline_detour`, so it belongs with the rest of the
     # injected code, not in `replay_interface/native` where it used to sit.
@@ -62,10 +59,8 @@ members = [
     "lanes/compact_replay_verification_gates",
     "lanes/construction_buildings_state_damage_live",
     "lanes/country_dynamic_modifiers_live",
-    "lanes/country_economy_counters_live",
     "lanes/country_economy_production_stockpile_live",
     "lanes/diplomacy_intel_operatives_live",
-    "lanes/event_timeline_change_log_live",
     "lanes/direct_frd_transitions_live",
     "lanes/focus_research_decisions_depth_live",
     "lanes/division_combat_stats_live",
@@ -90,7 +85,6 @@ members = [
     "lanes/production_hook_receipt",
     "lanes/design_catalog_context_live",
     "lanes/hud_role_observer_live",
-    "lanes/weather_live",
     "lanes/character_presentation_live",
     "lanes/nuke_stockpile_live",
     "lanes/theatre_selector_live",

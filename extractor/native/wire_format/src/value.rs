@@ -1,5 +1,4 @@
-//! Field values and the four states, per `WIRE_FORMAT.md` §3, plus the §6
-//! quantization arithmetic.
+//! Field values, the four states, and quantization arithmetic.
 //!
 //! Absent, null, zero and unknown are four different things and stay four
 //! different things through encode and decode. Collapsing any pair loses the
@@ -18,7 +17,7 @@ pub enum Value {
     Unknown,
     Unsigned(u64),
     Signed(i64),
-    /// A `0..n-1` code; `>= n` is corrupt (§4).
+    /// A `0..n-1` code; `>= n` is corrupt (schema-kind contract).
     Enum(u32),
     Bool(bool),
     ContentId(u64),
@@ -33,10 +32,10 @@ pub enum Value {
 /// the update mask sets a bit iff a field changed — all three ask the same
 /// question, and IEEE answers it wrong in both directions.
 ///
-/// * `NaN != NaN` under IEEE, but §0 normalises every NaN to one bit pattern, so
+/// * `NaN != NaN` under IEEE, but canonical primitive contract normalises every NaN to one bit pattern, so
 ///   two NaNs are the same value. Left as IEEE, a field holding NaN re-encodes
 ///   on every tick forever and `check_minimal` rejects the differ's own output.
-/// * `-0.0 == 0.0` under IEEE, but they encode differently — §0 keeps the sign of
+/// * `-0.0 == 0.0` under IEEE, but they encode differently — canonical primitive contract keeps the sign of
 ///   zero, and the escape rule (`escapes`) fires on `-0.0` alone. Left as IEEE,
 ///   a transition between them is silently dropped and reconstructed state
 ///   diverges from captured state.
@@ -80,7 +79,7 @@ impl Value {
     /// Whether this value is a legal *stored* value for `field`.
     ///
     /// A derived field is the one case where the stored value's type is not the
-    /// field's kind: §6's transform "can carry an otherwise unsigned quantity
+    /// field's kind: derived-field contract's transform "can carry an otherwise unsigned quantity
     /// negative", so the stored domain is all of `i64` whatever the live kind,
     /// and `Value::Signed` is its one canonical representation. Letting the live
     /// variant through here instead is what made a derived monotone field encode
@@ -97,7 +96,7 @@ impl Value {
         match self {
             Value::Absent | Value::Null | Value::Unknown => true,
             Value::Unsigned(_) => matches!(kind, Kind::Unsigned | Kind::Monotone),
-            // NOT `Kind::Monotone`. §4 gives a monotone counter an unsigned
+            // NOT `Kind::Monotone`. schema-kind contract gives a monotone counter an unsigned
             // absolute form; the zigzag difference is a delta *encoding*, not a
             // value a record ever holds. Granting `Signed` here let a monotone
             // field carry one past `validate` on an unchanged field, where no
@@ -111,7 +110,7 @@ impl Value {
     }
 }
 
-/// §6: `scale(v, m)` is binary64 multiplication with round-to-nearest-even, then
+/// derived-field contract: `scale(v, m)` is binary64 multiplication with round-to-nearest-even, then
 /// the result rounded to an integer half-to-even.
 ///
 /// Both steps are named in the specification because they disagree: `0.15` under
@@ -127,7 +126,7 @@ fn round_half_even(x: f64) -> f64 {
 }
 
 /// `10^k` for `k <= 22`, where every power of ten is exactly representable in
-/// binary64. §6 bounds `k` at 22 precisely so this table is unambiguous — past
+/// binary64. derived-field contract bounds `k` at 22 precisely so this table is unambiguous — past
 /// it, repeated multiplication and decimal conversion land on adjacent doubles.
 pub fn pow10(k: u8) -> f64 {
     // `Schema::validate` rejects k > 22, but this is public and reachable from a
@@ -142,7 +141,7 @@ pub fn pow10(k: u8) -> f64 {
     TABLE[k as usize]
 }
 
-/// Whether the escape bit fires for `v` under `quant`, per §6. The rule is total:
+/// Whether the escape bit fires for `v` under `quant`, per derived-field contract. The rule is total:
 /// every `f64` takes exactly one branch, with no declared range to disagree about.
 /// Ordinary rounding loss is **not** an escape condition — quantization exists to
 /// round, and escaping on it would defeat the declaration entirely.
@@ -179,7 +178,7 @@ fn raw_quantized(v: f64, quant: Quant) -> Option<i64> {
 /// Whether the stored integer survives the reader's reconstruction unchanged —
 /// that is, whether `quantize(dequantize(q)) == q`.
 ///
-/// **This is an escape condition, and it has to be**, because §7.1 obliges a
+/// **This is an escape condition, and it has to be**, because delta-minimality contract obliges a
 /// writer to compare against the *reconstructed* prior. Where the property fails,
 /// an unchanged source value differs from its own reconstruction, the writer
 /// emits a delta, and the reader rejects it as a mask bit on a field that did not
@@ -190,7 +189,7 @@ fn raw_quantized(v: f64, quant: Quant) -> Option<i64> {
 /// rounding up, dequantizes to a float that scales back to `2^53 - 1`. Rather
 /// than bound `k` or the value range against that boundary — which is a claim
 /// about float round-trips that would need proving — the condition is checked
-/// directly. Every operation in it is pinned binary64 (§0, §6), so two
+/// directly. Every operation in it is pinned binary64 (canonical primitive contract, derived-field contract), so two
 /// implementations reach the same answer.
 fn is_stable(v: f64, quant: Quant) -> bool {
     let Some(raw) = raw_quantized(v, quant) else {
@@ -207,12 +206,12 @@ pub fn quantize(v: f64, quant: Quant) -> Option<i64> {
     raw_quantized(v, quant)
 }
 
-/// §0: a NaN is normalised to this pattern. Its payload and sign are not game
+/// canonical primitive contract: a NaN is normalised to this pattern. Its payload and sign are not game
 /// state, and leaving them unpinned lets two writers emit different bytes for the
 /// same value.
 pub const CANONICAL_NAN_BITS: u64 = 0x7FF8_0000_0000_0000;
 
-/// The bits written for any raw `f64`, per §0.
+/// The bits written for any raw `f64`, per canonical primitive contract.
 pub fn canonical_f64_bits(x: f64) -> u64 {
     if x.is_nan() {
         CANONICAL_NAN_BITS
@@ -223,7 +222,7 @@ pub fn canonical_f64_bits(x: f64) -> u64 {
 
 /// Whether two values are the same **as stored** under `field`.
 ///
-/// This, not `==`, is the equality §7.1 is written against. `==` compares what a
+/// This, not `==`, is the equality delta-minimality contract is written against. `==` compares what a
 /// value *is*; a quantized field stores something coarser, and minimality is a
 /// statement about the bytes. Under `fixed(2)`, `0.33` and `0.331` are different
 /// values and the same stored value — comparing them with `==` makes the encoder
@@ -263,7 +262,7 @@ mod tests {
 
     #[test]
     fn the_binary64_rule_is_what_the_spec_says_it_is() {
-        // §6 names this exact case: 0.15 under fixed(1) is 2 under binary64
+        // derived-field contract names this exact case: 0.15 under fixed(1) is 2 under binary64
         // multiplication and 1 under exact-real arithmetic. If this ever returns
         // 1, the implementation has silently switched arithmetic.
         assert_eq!(scale(0.15, pow10(1)), 2.0);
@@ -362,7 +361,7 @@ mod tests {
         assert_eq!(
             Value::Continuous(f64::NAN),
             Value::Continuous(f64::NAN),
-            "§0 normalises every NaN to one pattern, so two NaNs are one value"
+            "canonical primitive contract normalises every NaN to one pattern, so two NaNs are one value"
         );
         assert_eq!(
             Value::Continuous(f64::NAN),
@@ -372,7 +371,7 @@ mod tests {
         assert_ne!(
             Value::Continuous(0.0),
             Value::Continuous(-0.0),
-            "§0 keeps the sign of zero and they encode differently"
+            "canonical primitive contract keeps the sign of zero and they encode differently"
         );
         // The invariant both cases are really about.
         for (a, b) in [(f64::NAN, f64::NAN), (0.0, -0.0), (1.5, 1.5), (1.5, 2.5)] {

@@ -1,5 +1,5 @@
 //! Emit row-major and column-major encodings of a synthetic d20 campaign, so the
-//! §13 layout question can be decided by measurement.
+//! codec-measurement contract layout question can be decided by measurement.
 //!
 //! This writes raw bytes; `bench_layout.py` compresses them and reports. Splitting
 //! it that way reuses the same zstd path as the committed chunked-compression

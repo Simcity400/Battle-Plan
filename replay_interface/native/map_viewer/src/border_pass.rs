@@ -45,7 +45,7 @@
 //!   `BC3_UNORM_SRGB` (78) and its payload is byte-identical to the shipped
 //!   `map/terrain/border_state_0.dds` (all 7 mips), so the shipped per-class
 //!   DDS is PROVEN to be the bound texture; its decoded cross-section law
-//!   lives in `border_texture_law.rs` (BORDER_LAW.md).
+//!   lives in `border_texture_law.rs`.
 //!   Slots 1/2 still get the inert neutral
 //!   texel defensively (a no-op for this blob). ShadowMap doubles as the
 //!   shadow AND FOW
@@ -251,7 +251,7 @@ mod windows_impl {
     /// so decoding to RGBA8 and letting the GPU apply the sRGB-to-linear ramp
     /// on sample matches the engine's BC3_SRGB path (residual risk: BC
     /// interpolation rounding differences, an open unknown in
-    /// `replay_interface/documents/BORDER_LAW.md`).
+    /// `border_texture_law.rs`).
     unsafe fn create_rgba_mip_texture(
         device: &NativeD3d11Device,
         mips: &[RgbaImage],

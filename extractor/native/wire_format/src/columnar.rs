@@ -1,7 +1,6 @@
-//! Column-major encoding of a keyed-set baseline, for the §13 measurement.
+//! Column-major encoding of a keyed-set baseline for layout measurement.
 //!
-//! `WIRE_FORMAT.md` §13 leaves row-major versus column-major open and says the
-//! format commits to row-major only if it wins on the reference domain. This is
+//! The format uses row-major only if it wins on the reference domain. This is
 //! the other arm: identical information, grouped by field instead of by row, so
 //! like values sit together and the compressor sees them as one run.
 //!
@@ -32,12 +31,12 @@ pub fn encode_baseline_columnar(
     state: &KeyedState,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    // §7.3: this arm implements the keyed-set grammar only, exactly as the
+    // collection-shape contract: this arm implements the keyed-set grammar only, exactly as the
     // row-major one does. Without the gate it panicked on an occurrence list —
     // which has no key fields, so the key reader indexes an empty list — and
     // silently encoded an ordered keyed list with the sorted-delta key grammar,
-    // whose components §7.4 requires to be absolute and in source order.
-    // This is a deliberate section 13 measurement-arm boundary: no columnar
+    // whose components key-encoding contract requires to be absolute and in source order.
+    // This is a deliberate measurement-arm boundary: no columnar
     // delta or ordered-collection grammar was specified, so extending it would
     // invent a new wire format rather than measure the closed row/column question.
     if !matches!(collection.shape, Shape::KeyedSet) {
@@ -47,14 +46,14 @@ pub fn encode_baseline_columnar(
     }
     write_varint(out, state.len() as u64);
 
-    // Key column, using the same sorted-difference scheme as row-major (§7.4).
+    // Key column, using the same sorted-difference scheme as row-major (key-encoding contract).
     let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
     if kinds.is_empty() {
         return Err(crate::varint::WireError::Corrupt("keyed collection has no key fields"));
     }
     let keys: Vec<&Key> = state.keys().collect();
 
-    // The same §3 and §7.4 checks the row-major path makes, before any bytes are
+    // The same record-state contract and key-encoding contract checks the row-major path makes, before any bytes are
     // written. Sharing only the per-value rules was not enough: key arity is
     // checked here because the component loop indexes `kinds` directly, and
     // record validity because a row this arm cannot represent must be an error

@@ -2,15 +2,13 @@
 //!
 //! d64 is a genuine hybrid. Its 20-byte base rows are mutable per-country
 //! pending state, while its optional `DEL2` suffix is an independently produced,
-//! append-only lifecycle ledger (`world_fold.rs:13056`-`:13189`, including the
+//! append-only lifecycle ledger (`world_fold.rs:13039`-`:13172`, including the
 //! delegated lifecycle-row fold).
-// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=13056-13189 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=b136709f40784cff1511de5709288c9ef066a1b0a3f9a5b16354ceb847daf7ca
-//! The state table is an ordered occurrence list: physical vector order is
-//! authoritative and duplicates are legitimate
-//! (`extractor/documents/domains/d64_delayed_events_live.md:27`,
-//! `WIRE_FORMAT.md:628`-`:655`). The §7.3 codec can represent that shape, but
+// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=13039-13172 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=445a5440abe5f9b67fa964e34fbb936a757f4b421023cccc457901882fd5ce85
+//! The state table is an ordered occurrence list whose physical vector order
+//! must be preserved. The ordered-occurrence codec can represent that shape, but
 //! the d64 pending-state collection remains independently unported and
-//! unevidenced. This module therefore implements only the §9 event part; it
+//! unevidenced. This module therefore implements only the event-continuity contract event part; it
 //! neither invents a key nor treats codec availability as migration evidence.
 //!
 //! # DEL2 grammar and call order
@@ -35,7 +33,7 @@
 //! # Mapping decisions
 //!
 //! - `sequence` is not a field. The fold requires row `sequence ==
-//!   first_sequence + index` (`world_fold.rs::parse_delayed_event_lifecycle`), so §9 derives it
+//!   first_sequence + index` (`world_fold.rs::parse_delayed_event_lifecycle`), so event-continuity contract derives it
 //!   from event position and the after-frontier.
 //!   [`event_batch_from_lifecycle_payload`] enforces the header bounds and every
 //!   row's expected position before omitting it.
@@ -51,7 +49,7 @@
 //!   d20 country-id precedent. `event_id` is also `ContentId`: its meaning is a
 //!   mod-defined event definition and needs the content manifest across mod
 //!   sets, unlike a runtime instance id. All three currently use the shipping
-//!   raw numeric id as the §5 stand-in; their resolver retrofit remains open.
+//!   raw numeric id as the content-identity contract stand-in; their resolver retrofit remains open.
 //! - `scope_random` is the full `u64` seed as `Unsigned`; no precision or bit is
 //!   lost. It is neither a quantity nor a content-manifest identity.
 //! - `game_hour_raw` is a signed `i32`; `i32::MIN` is refused (`:9734`,
@@ -59,7 +57,7 @@
 //!   record's observation hour.
 //!
 //! The ContentId retrofit sweep is therefore: `owner_tag_db_id`, `event_id`,
-//! and `originator_tag_db_id`. None is a key because §9 event parts have no key.
+//! and `originator_tag_db_id`. None is a key because event-continuity contract event parts have no key.
 
 use crate::events::EventBatch;
 use crate::record::Record;
@@ -414,7 +412,7 @@ pub fn check_authority_payload(payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate and map one DEL2 row to its full §3 event record. `frame_tick` is
+/// Validate and map one DEL2 row to its full record-state contract event record. `frame_tick` is
 /// intentionally unused: no d64 lifecycle field is clock-derived.
 fn require_canonical_event_part(part: &EventPart) -> Result<(), String> {
     let canonical = schema()
@@ -498,7 +496,7 @@ fn validate_lifecycle_row_for_mapping(row: &LifecycleRow) -> Result<(), String> 
 }
 
 /// Validate the payload-level facts omitted from each record, then build the
-/// §9 batch. `sequence` is enforced against `(first_sequence, position)` here
+/// event-continuity contract batch. `sequence` is enforced against `(first_sequence, position)` here
 /// and represented only by the after-frontier; `due_after` is enforced by the
 /// row mapper and represented only by `(reason, due_before)`.
 pub fn event_batch_from_lifecycle_payload(
@@ -518,7 +516,7 @@ pub fn event_batch_from_lifecycle_payload(
         if lifecycle.first_sequence != 0 || lifecycle.last_sequence != 0 {
             return Err("d64 empty lifecycle batch has non-zero sequence bounds".into());
         }
-        return Err("d64 empty lifecycle observation has no §9 event batch".into());
+        return Err("d64 empty lifecycle observation has no event batch".into());
     } else {
         let count_u64 =
             u64::try_from(count).map_err(|_| "d64 lifecycle event count exceeds u64")?;
@@ -531,7 +529,7 @@ pub fn event_batch_from_lifecycle_payload(
             return Err("d64 lifecycle batch sequence bounds do not match event count".into());
         }
         if lifecycle.last_sequence < count_u64 {
-            return Err("d64 lifecycle batch cannot derive positive §9 identities".into());
+            return Err("d64 lifecycle batch cannot derive positive identities".into());
         }
         for (index, row) in lifecycle.events.iter().enumerate() {
             let expected = lifecycle
@@ -557,7 +555,7 @@ pub fn event_batch_from_lifecycle_payload(
     ))
 }
 
-/// Reconstruct the fold's rows from a decoded §9 batch, including the sequence
+/// Reconstruct the fold's rows from a decoded event-continuity contract batch, including the sequence
 /// and `due_after` values that are derived rather than carried.
 pub fn rows_from_event_batch(
     part: &EventPart,
@@ -663,7 +661,7 @@ pub fn rows_from_event_batch(
 pub enum TablePart {
     /// Failure status: production drops only the table half.
     StoppedUnavailable,
-    /// The table parsed far enough to be present, but §7.3 support is absent.
+    /// The table parsed far enough to be present, but collection-shape contract support is absent.
     StoppedPresent { row_count: u32 },
     /// The clean-status table refused structurally. Production retains the
     /// prior table state but still publishes an independently valid ledger.
@@ -688,7 +686,7 @@ pub struct FoldOutcome {
 
 /// Production's cross-hour d64 lifecycle state
 /// (`world_fold.rs::settle_delayed_event_lifecycle`). The sticky poison is intentionally mirrored,
-/// even though §9 recovers after a recorded gap; that divergence is measured and
+/// even though event-continuity contract recovers after a recorded gap; that divergence is measured and
 /// reported rather than silently "fixed" at this boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct State {
@@ -1101,7 +1099,7 @@ mod tests {
         };
         assert_eq!(
             event_batch_from_lifecycle_payload(&part, &zero_identity, 0),
-            Err("d64 lifecycle batch cannot derive positive §9 identities".into())
+            Err("d64 lifecycle batch cannot derive positive identities".into())
         );
     }
 
@@ -1129,7 +1127,7 @@ mod tests {
         };
         assert_eq!(
             event_batch_from_lifecycle_payload(&part, &empty, 0),
-            Err("d64 empty lifecycle observation has no §9 event batch".into())
+            Err("d64 empty lifecycle observation has no event batch".into())
         );
 
         let mut reduced = part.clone();
@@ -1227,7 +1225,7 @@ mod tests {
     fn no_quantization_or_derived_field_test_applies() {
         // There is no Continuous field and all inputs are exact-width integers,
         // so recipe step 8's "quantization saves bytes" test is inapplicable.
-        // Sequence and due_after are event-level derived facts, not §6
+        // Sequence and due_after are event-level derived facts, not derived-field contract
         // clock-linear stored fields.
         let part = event_part();
         assert!(part
@@ -1514,7 +1512,7 @@ mod tests {
                     .unwrap()
                     .ledger,
                 LedgerPart::Unknown,
-                "production poison is sticky (the §9 recovery divergence)"
+                "production poison is sticky across recovery"
             );
         }
 

@@ -56,13 +56,11 @@ modules is free text: it drifts on the next insertion into ``world_fold.rs`` and
 nothing notices.  Those have been rewritten to name the item they point at, and
 the ones that could not be are ratcheted -- see ``verify_prose_references``.
 
-The DESIGN DOCUMENTS cite ``world_fold.rs`` by line number too, and until this
-was added nothing checked them at all -- ``DOMAIN_SCHEMA_RECIPE.md``, the
-document every domain lane reads before writing a schema, carries eighteen bare
-line numbers on its own.  A drifted line number in prose is worse than one in a
-module: nothing compiles it, nobody reviews it against the source, and a lane
-that follows it lands on whatever item moved into that position.  Documents are
-therefore ratcheted exactly like the modules -- see
+Documents can cite ``world_fold.rs`` by line number too, and until this was
+added nothing checked those references at all. A drifted line number in prose
+is worse than one in a module: nothing compiles it, nobody reviews it against
+the source, and a reader lands on whatever item moved into that position.
+Documents are therefore ratcheted exactly like the modules -- see
 ``verify_document_references``.
 
 The two ports which also transcribe a capture-lane payload decoder (d51 and d52)
@@ -1619,8 +1617,7 @@ def verify_document_references(repo_root: Path, allowance: dict) -> int:
     module's stale line number sits next to a digest-gated marker that a reader
     can fall back on; a document's does not.  Nothing compiles prose, no gate
     read these before this one, and the citation's only reader is a human who
-    opens ``world_fold.rs`` at that line and believes whatever is there --
-    ``DOMAIN_SCHEMA_RECIPE.md`` alone carried eighteen of them.
+    opens ``world_fold.rs`` at that line and believes whatever is there.
 
     The budget is per (document, line number), exactly as for modules, with the
     same accepted hole: deleting one occurrence and citing the SAME number again

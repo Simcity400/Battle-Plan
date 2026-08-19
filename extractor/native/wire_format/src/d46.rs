@@ -2,9 +2,9 @@
 //! table, plus the `ACE1` air-ace-roster trailer that ships inside the same
 //! record.
 //!
-//! Derived from `world_fold.rs:21590`-`:21812`
+//! Derived from `world_fold.rs:21566`-`:21788`
 //! (`fold_air_variant_archetypes`, dispatched at `:4723`), the row grammar and
-// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=21590-21812 sha256=4436a62252b4f0f0b2c3716ab07adadcb4686ff7fb351b704527f367896aeaab closure=81e5bc9f1898ae9d6155d9a2bc0dd17e9d366e235b1fef2427f03eb9f1e08c90
+// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=21566-21788 sha256=909606bb88fb11fd6dcb23ab321bc0929e9f5da384ae20a39d44b2e4c183797f closure=8ea6448529aaf1ed01e02f7a6ad9368b6eda20ffec433877c3ebef0a1e993eb9
 //! bounds in
 //! `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs`
 //! (authority #2 — production's status-independent payload check), the trailer
@@ -100,7 +100,7 @@
 //!   equipment token's name out of a heap-scanned token dictionary and sets the
 //!   flag only when the lookup succeeded
 //!   (`extractor.rs:249`-`:255`, `attach_log.rs:53125`-`:53131`). A clear gate is
-//!   "the dictionary had no entry", i.e. applicable and not captured — §3's
+//!   "the dictionary had no entry", i.e. applicable and not captured — record-state contract's
 //!   **unknown**. The lane's own comment is the same fail-closed rule:
 //!   "Missing dictionary entries therefore remain unresolved" (`extractor.rs:270`-`:275`).
 //! * `base_airframe_token`, `role_token` (`1<<2`, `1<<3`): the static-catalog
@@ -185,10 +185,10 @@
 //! The **strings** are the other half of that same story and go the other way:
 //! `archetype_token` is the content-defined name the process-local handle points
 //! at (`small_plane_cas_airframe_2`), and `base_airframe_token`/`role_token` are
-//! catalog classification tokens. §5 settles it — "the stream carries manifest ids
+//! catalog classification tokens. content-identity contract settles it — "the stream carries manifest ids
 //! as varints, never text" — so all three are `ContentId` resolved through a
 //! caller-supplied [`Symbols`] table, d29's device. d46 therefore has ContentId
-//! **values** and no ContentId **key**, which is the lighter §13 retrofit class.
+//! **values** and no ContentId **key**, which is the lighter codec-measurement contract retrofit class.
 //!
 //! # The stop: the `ACE1` ace roster
 //!
@@ -199,7 +199,7 @@
 //! manifest resolves *that ace's* name: the strings are drawn and composed at
 //! runtime per ace instance, so the recipe's Scope applies exactly as it does to
 //! d11's player-typed division name — text no manifest can ever resolve stops the
-//! collection carrying it. This is not the step-3 case: the §5 symbol rule is for a
+//! collection carrying it. This is not the step-3 case: the content-identity contract symbol rule is for a
 //! vocabulary that comes from mod content, and an ace's identity is not in any
 //! catalog. (The archetype table's own three tokens pass that test and are
 //! ported — the split is between the two collections, not between two readings of
@@ -212,8 +212,8 @@
 //! `PARTIAL_DATA` it **retains prior state and marks the domain problem**, because
 //! "a read failure must never be written into the replay as ground-truth absence"
 //! (`:16546`-`:16554`). A keyed set cannot say "this collection's membership was
-//! not measured this hour" — that is `WIRE_FORMAT.md` §8's gap record at a
-//! `(domain, part)` scope, and §8 has no implementation at all
+//! not measured this hour" — that requires a capture gap at a
+//! `(domain, part)` scope, and gap contract has no implementation at all
 //! (`lib.rs` module docs). Encoding a retained hour as an unchanged keyed set would
 //! assert measured continuity across an interval nobody measured.
 //!
@@ -238,10 +238,10 @@
 //! authority's; the measurement bin runs the second on every record and the first
 //! only on the records the fold folds. Everything the stop hands forward — offsets,
 //! versions, bounds, kinds, the retain semantics — is in [`ace`] beside the
-//! validator, so implementing §8 plus a symbol/free-text answer does not have to
+//! validator, so implementing gap contract plus a symbol/free-text answer does not have to
 //! rediscover it.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing here changes deterministically with the clock; the mapper takes
 //! `frame_tick` and ignores it so every domain's boundary has one shape.
@@ -271,7 +271,7 @@ pub const ARCHETYPES: u32 = 1;
 /// blockers in the module docs are answered.
 pub const ACE_ROSTER: u32 = 2;
 
-/// Archetype field ids. Stable and append-only; §11 forbids reuse.
+/// Archetype field ids. Stable and append-only; schema-identity contract forbids reuse.
 pub mod field {
     pub const VARIANT_ID: u32 = 1;
     pub const EQUIPMENT_TOKEN_RAW: u32 = 2;
@@ -520,7 +520,7 @@ pub mod ace {
     /// here needs a quantizer.
     ///
     /// * `tag_db_id`, `killer_country_tag_db_id` — `ContentId` (a country tag is
-    ///   content-defined, §5; d56's `owner_tag_db_id` and d63's `tag_db_id`).
+    ///   content-defined, content-identity contract; d56's `owner_tag_db_id` and d63's `tag_db_id`).
     /// * `ace_id`, `killer_ace_id`, `wing_id`, `country_ace_index` — `Unsigned`
     ///   runtime instance identities (d20's `div_id` rule).
     /// * `alive`, `handled` — `Boolean`, each `unknown_capable`: the flags say
@@ -548,7 +548,7 @@ pub fn schema() -> Schema {
         collection_id: ARCHETYPES,
         // `variant_id` is the fold's own map key (`world_fold.rs::fold_air_variant_archetypes`), a stable
         // identity that persists across hours — what a keyed set needs, and only a
-        // keyed set has a delta grammar (§7.3), which this domain needs because
+        // keyed set has a delta grammar (collection-shape contract), which this domain needs because
         // every frame after the first is a sparse patch.
         shape: Shape::KeyedSet,
         fields: vec![
@@ -571,7 +571,7 @@ pub fn schema() -> Schema {
             // the collector never reads the value (`attach_log.rs:53768`).
             Field::new(f::AIR_SUPERIORITY_WEIGHT_RAW, Kind::Signed).unknown_capable(),
             // Content-defined text -> `ContentId` through the caller's symbol
-            // table (§5, d29's device). Unknown on a clear gate: the token
+            // table (content-identity contract, d29's device). Unknown on a clear gate: the token
             // dictionary did not resolve, the static catalog was not supplied.
             Field::new(f::ARCHETYPE_TOKEN, Kind::ContentId).unknown_capable(),
             Field::new(f::BASE_AIRFRAME_TOKEN, Kind::ContentId).unknown_capable(),
@@ -603,11 +603,11 @@ pub fn schema() -> Schema {
     }
 }
 
-// --- §5 symbols --------------------------------------------------------------
+// --- content-identity contract symbols --------------------------------------------------------------
 
 /// The content-set symbol table the three token fields resolve through.
 ///
-/// §5: symbol ids are **file-global**, assigned from the content set, and
+/// content-identity contract: symbol ids are **file-global**, assigned from the content set, and
 /// "in-stream interning is forbidden — it must be fully read before any seek". So
 /// the table is an **input** to this boundary, built once before any record is
 /// mapped; it is never grown by the mapper.
@@ -623,7 +623,7 @@ pub fn schema() -> Schema {
 /// and this domain's key is not a `ContentId`, so no ordering or delta layout
 /// depends on the choice), and the measurement is invariant under any assignment
 /// over **this domain's own vocabulary** while it stays under 128 symbols, which
-/// is a one-byte varint either way. §5's ids are file-global, so an assignment
+/// is a one-byte varint either way. content-identity contract's ids are file-global, so an assignment
 /// over the whole content set can still widen the varint; the measurement claims
 /// only the invariance it measured.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -998,7 +998,7 @@ pub fn decode_payload(payload: &[u8]) -> core::result::Result<DecodedPayload, St
 }
 
 /// Every token string a payload carries, for the harness's pass-1 vocabulary
-/// (§5 forbids in-stream interning, so the table must be complete before pass 2
+/// (content-identity contract forbids in-stream interning, so the table must be complete before pass 2
 /// maps anything). The walk is [`decode_payload`]'s, so a payload the fold would
 /// refuse contributes no symbols and refuses here too.
 pub fn tokens_in_payload(payload: &[u8]) -> core::result::Result<Vec<String>, String> {
@@ -1128,7 +1128,7 @@ pub struct RowTokens<'a> {
 /// it today, onto its stored Record.
 ///
 /// `row` is the raw 32-byte row slice (the caller has already consumed the table
-/// header); there is no legacy form. `frame_tick` is §6's derived-field input —
+/// header); there is no legacy form. `frame_tick` is derived-field contract's derived-field input —
 /// this domain has no derived field, so it is taken and ignored, which keeps every
 /// domain's mapper the same shape.
 ///
@@ -1139,7 +1139,7 @@ pub struct RowTokens<'a> {
 ///   variable-length region rather than in the row (`world_fold.rs::fold_air_variant_archetypes`);
 /// * `stamp` — the two header words the fold copies into every stored row
 ///   (`world_fold.rs::fold_air_variant_archetypes`), d35's header-carried-value shape;
-/// * `symbols` — §5's resolver for the content-defined tokens (step 3, d29).
+/// * `symbols` — content-identity contract's resolver for the content-defined tokens (step 3, d29).
 ///
 /// Fail-closed throughout: a row the fold would reject is an `Err`, never a
 /// coerced value, and nothing here can panic on any byte string.
@@ -1239,7 +1239,7 @@ pub fn record_from_parsed_row(
             field::INTERFACE_TYPE_RAW => Value::Unsigned(u64::from(parsed.interface_type_raw)),
             // `world_fold.rs::fold_air_variant_archetypes`: the flag decides whether the word is
             // stored at all. Clear gate = the collector never read it
-            // (`attach_log.rs:53768`) — §3's unknown. Carried RAW; the divisor is
+            // (`attach_log.rs:53768`) — record-state contract's unknown. Carried RAW; the divisor is
             // its own field (d61).
             field::AIR_SUPERIORITY_WEIGHT_RAW => {
                 if parsed.flags & ROW_FLAG_AIR_SUPERIORITY_WEIGHT != 0 {
@@ -1958,7 +1958,7 @@ impl State {
             ));
         }
         let collection = &schema.collections[0];
-        // §6's derived-field input. This domain has no derived field, so the tick
+        // derived-field contract's derived-field input. This domain has no derived field, so the tick
         // is taken and ignored — every domain's boundary has one shape.
         let _ = frame_tick;
 
@@ -2388,7 +2388,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states. `interface_type_raw == 0`
+        // record-state contract keeps zero out of the three empty states. `interface_type_raw == 0`
         // is a real engine code the authority admits (`:294`-`:298`), and a
         // present `air_superiority_weight_raw` of 0 is a measured zero, not the
         // clear-gate Unknown.
@@ -2513,7 +2513,7 @@ mod tests {
 
     #[test]
     fn no_field_is_a_content_id_key() {
-        // "Checked, none" rather than silence: a ContentId KEY is the heavier §13
+        // "Checked, none" rather than silence: a ContentId KEY is the heavier codec-measurement contract
         // retrofit class (a manifest remap reorders keys), and this domain has
         // none. It does carry three ContentId VALUES, listed in the open questions.
         let c = collection();
@@ -3278,7 +3278,7 @@ mod tests {
     fn the_ace_stop_hands_forward_its_offsets_and_bounds() {
         // The facts the stop report promises, pinned so they cannot drift out of
         // the module docs: the two row lengths, the header length, the version
-        // pair, and the row word offsets a §8 implementer will slice by.
+        // pair, and the row word offsets a gap contract implementer will slice by.
         assert_eq!(ace::TRAILER_HEADER_LEN, 40);
         assert_eq!(ace::TRAILER_ROW_LEN_V1, 32);
         assert_eq!(ace::TRAILER_ROW_LEN_V2, 40);

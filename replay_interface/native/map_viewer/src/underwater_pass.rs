@@ -4,7 +4,7 @@
 //! `B8G8R8A8_UNORM` non-sRGB) is NOT a transform of the final scene. It is a
 //! SEPARATE terrain render: `pdxmap.shader` `Effect underwater` re-renders the
 //! terrain geometry with `PixelShaderUnderwater` (a clipped, depth-fogged,
-//! lit seafloor) into an offscreen LDR target. See `documents/WATER_LAW.md`
+//! lit seafloor) into an offscreen LDR target. See `water_law.rs`
 //! and [`crate::water_law::underwater_defines`].
 //!
 //! This module reconstructs that pass, files-first:
@@ -644,7 +644,7 @@ mod windows_impl {
     /// terrain-chunk-library session (which is the only capture shape that
     /// carries the resolved seafloor textures + real ShadowMap). The geometry
     /// is the SYNTHESIZED tiled terrain, not the engine's exact underwater
-    /// rasterization — see documents/WATER_LAW.md.
+    /// rasterization.
     pub(crate) fn native_d3d11_render_underwater_synthesis(
         device: &NativeD3d11Device,
         pass: &NativeD3d11UnderwaterPass,

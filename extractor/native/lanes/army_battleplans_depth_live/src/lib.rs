@@ -77,15 +77,13 @@ pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 const MAX_CHILD_ROWS: u32 = 5_000;
 const MAX_INLINE_CHILD_ROWS: u32 = 256;
 /// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
-/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
-/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`). A separate
 /// constant from the province one even though the numbers coincide.
 const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// The province id space's STRUCTURAL width (lane IA). Was a guess --
 /// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
 /// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`); dossier
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_SLOT_INDEX: u32 = 64;

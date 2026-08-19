@@ -56,7 +56,7 @@
     "fixture": "paused_D04_same_tick_save_live",
     "rows": 303,
     "stale_rows": 0,
-    "source": "extractor/documents/archive/WAVE3_CRACKS_870EBF_D04.md"
+    "source": "paused_D04_same_tick_save_live"
   },
   "rejected_aliases": [
     {

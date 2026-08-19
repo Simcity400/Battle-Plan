@@ -1,9 +1,9 @@
 //! d96 `country_preferred_tactic_weight_live` — the multiplier the land-combat
 //! consumer applies to each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:14172`-`:14210`
+//! Derived from `world_fold.rs:14154`-`:14192`
 //! (`fold_country_preferred_tactic_weights`, dispatched at `:4763`) together with
-// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=14172-14210 sha256=17f387e1fca03b7d7b389c122b989b579a6f8f2b0b3de733f573c9551c36793c closure=c4aeac680a37c658fe86fc67b51ea2937121f1b6cc0669fd340aaf12e994d969
+// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=14154-14192 sha256=17f387e1fca03b7d7b389c122b989b579a6f8f2b0b3de733f573c9551c36793c closure=6cfc5f9ea4e1ac2213c31a48e3a7efd0e1042c2a8a28ad05e77f2cf3a9ed8849
 //! the deferred fold it delegates to,
 //! `extractor/native/recorder_host/src/tactic_weight_fold.rs:32`-`:80`
 //! (`TacticWeightFoldState::fold_payload`); its payload codec
@@ -65,7 +65,7 @@
 //! `accumulator_raw` (`tactic_weight.rs:112`-`:113`), and the codec makes the
 //! pairing a hard invariant: a row with the bit clear and a non-zero
 //! `accumulator_raw` does not decode (`:328`). The survey flagged it as a
-//! four-state decision (`runs/batch3/domain_classification.md:1202`-`:1205`), and
+//! four-state decision, and
 //! the decision is that **it is not a field**: it is exactly the empty state of
 //! `accumulator_raw`.
 //!
@@ -78,7 +78,7 @@
 //!   does `resolve_sorted_accumulator` binary-search the key and return
 //!   `(0, false)` when it is not there (`tactic_weight.rs:156`-`:159`). So a clear
 //!   bit means the array was captured in full and genuinely holds no entry for
-//!   this tactic's modifier key — §3's **null**, "applicable, the relation
+//!   this tactic's modifier key — record-state contract's **null**, "applicable, the relation
 //!   genuinely points at nothing", not `unknown` and not a fabricated zero. The
 //!   recipe's Null/Unknown tie-break does not run: the evidence is direct.
 //! - **Why the bool itself is left off the wire.** With `accumulator_raw`
@@ -91,7 +91,7 @@
 //!   pinned by tests in both directions.
 //! - **A real zero is a real zero.** `present == true, accumulator_raw == 0` is a
 //!   country whose accumulator carries an explicit zero override, and it maps to
-//!   `Value::Signed(0)` — §3 keeps zero out of the three empty states.
+//!   `Value::Signed(0)` — record-state contract keeps zero out of the three empty states.
 //! - **A contradicting row is refused, not mapped.** The mapping above is lossless
 //!   only because a clear bit implies a zero word; a clear bit beside a non-zero
 //!   word would have its captured value replaced by `Null`. That is d17's shape
@@ -137,7 +137,7 @@
 //!   decodes: `validate_snapshot` refuses any other value (`:321`-`:325`) and so
 //!   does the collector before it ever builds a row (`attach_log.rs:32992`-`:32996`).
 //!   The survey called it "a sibling gate … check what it actually means before
-//!   mapping" (`domain_classification.md:1206`-`:1207`); read against its
+//!   mapping"; read against its
 //!   authorities it gates nothing in v1 — it is an *admission* precondition,
 //!   because a non-zero gate means the engine's getter takes a callback-dependent
 //!   branch that external reading cannot reproduce (`tactic_weight.rs:109`-`:111`).
@@ -192,8 +192,7 @@
 //!   (`tactic_weight.rs:355`-`:359`). Dropping it would make the binding
 //!   unverifiable from the wire.
 //! - **`observed_country_count`**, the roster witness. It is the D92 roster the
-//!   producer walked — *not* D18's filtered cache — and the 2026-07-27 gate fix
-//!   turns on exactly that distinction: `fold_payload` compares it against
+//!   producer walked — *not* D18's filtered cache. `fold_payload` compares it against
 //!   `preferred_rows.len()` (`tactic_weight_fold.rs:45`-`:56`), where the old code
 //!   compared it against a D18 count it could never equal. It is not a function of
 //!   anything d96 carries (the rows are the *selected* subset, `rows.len() <=
@@ -266,7 +265,7 @@ use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Schema, Shape};
 use crate::value::Value;
 
-/// §5 symbol resolution is **shared with d92**, deliberately.
+/// content-identity contract symbol resolution is **shared with d92**, deliberately.
 ///
 /// `tactic_id` is the same token in both domains — the fold's join requires the
 /// two to be equal string-for-string (`tactic_weight_fold.rs:70`) — so two
@@ -282,7 +281,7 @@ pub const COUNTRIES: u32 = 1;
 /// The payload-level scalars carried under a constant key — see the module docs.
 pub const FRAME: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. Numbered uniquely across the whole domain, not per collection, so a
 /// later reader cannot confuse two collections' ids.
 pub mod field {
@@ -433,16 +432,16 @@ pub fn schema() -> Schema {
                 // Full replace each hour (`tactic_weight_fold.rs:74`), but
                 // `tag_db_id` is a stable identity that persists across hours,
                 // which is what a keyed set needs — and only a keyed set has a
-                // delta grammar (§7.3). The selected-country set is constant at
+                // delta grammar (collection-shape contract). The selected-country set is constant at
                 // 76 rows on the measured capture, so the delta path is what this
                 // domain actually costs.
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The country's `tag_db_id` (`tactic_weight_fold.rs:60`), the
                     // identity D92 keys its rows by and the join is defined over.
-                    // `ContentId` because a country tag is content-defined (§5);
+                    // `ContentId` because a country tag is content-defined (content-identity contract);
                     // d63, d83 and d92 class theirs the same. This is a ContentId
-                    // **key**, the heavier §13 retrofit class — key components
+                    // **key**, the heavier codec-measurement contract retrofit class — key components
                     // sort and delta-encode by raw value.
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     // D92's identity pair, re-read and re-verified per row
@@ -485,7 +484,7 @@ pub fn schema() -> Schema {
                     // content manifest resolves (`d68.rs:255`-`:259`).
                     Field::new(f::FRAME_SINGLETON, Kind::Unsigned).key(0),
                     // The producer advances it once per captured hour
-                    // (`attach_log.rs:33175`-`:33178`). §4 makes `Monotone` an
+                    // (`attach_log.rs:33175`-`:33178`). schema-kind contract makes `Monotone` an
                     // encoding hint and never a validity constraint, so a
                     // producer that reset it would still encode. Always present.
                     Field::new(f::SOURCE_SEQUENCE, Kind::Monotone),
@@ -861,9 +860,9 @@ pub fn key_from_frame() -> Key {
 /// [`split_payload`], which is also what decoded and validated this row; d96 has
 /// exactly one row form, so nothing here selects between forms.
 ///
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d96 declares no derived field, so it is taken and ignored — every domain's
-/// mapper has the same shape. `symbols` is step 3's §5 resolver, the typed input a
+/// mapper has the same shape. `symbols` is step 3's content-identity contract resolver, the typed input a
 /// content-defined text field requires (d29's `symbols: &Symbols`), shared with
 /// d92. `country_factor_raw` is the frame-level value this row's invariants are
 /// defined against and the row itself does not carry — the recipe's step-7 typed
@@ -880,7 +879,7 @@ pub fn record_from_row(
     symbols: &Symbols,
     country_factor_raw: i64,
 ) -> core::result::Result<Record, String> {
-    // d96 has no derived field; §6's transform input is unused. Named rather
+    // d96 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // A record built for the wrong collection would otherwise come out shaped by
@@ -891,7 +890,7 @@ pub fn record_from_row(
             collection.collection_id
         ));
     }
-    // The key is not carried in the record body (§3), but its validity is still
+    // The key is not carried in the record body (record-state contract), but its validity is still
     // part of this row's validity.
     let _ = key_from_row(row)?;
     // `WeightRow` is publicly constructible, so `split_payload` having checked the
@@ -902,7 +901,7 @@ pub fn record_from_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            // The raw cast is §13's open manifest-id assignment: today's boundary
+            // The raw cast is the unresolved manifest-id assignment: today's boundary
             // mappers cast the source id straight into `ContentId`, and this field
             // is listed in the deliverable's retrofit sweep.
             field::TACTIC_DATABASE_ID => Value::ContentId(row.tactic_database_id as u64),
@@ -976,7 +975,7 @@ pub fn record_from_frame_header(
 }
 
 /// Every `tactic_id` token one payload carries, for building a [`Symbols`] table
-/// over a whole capture before any record is mapped (§5: fully read first).
+/// over a whole capture before any record is mapped (content-identity contract: fully read first).
 ///
 /// Shares [`split_payload`] rather than re-walking the payload, so the vocabulary
 /// and the records can never disagree about what a row says.
@@ -1032,7 +1031,7 @@ pub fn check_join(
     // D18's: the producer sets `observed_country_count` from the same complete
     // country walk that produced the D92 rows and proves the two agree before it
     // encodes (`tactic_weight.rs:355`). Substituting D18's filtered count here is
-    // the defect the 2026-07-27 gate fix removed.
+    // the roster-source mismatch this gate prevents.
     if header.observed_country_count as usize != preferred.rows.len()
         || header.source_sequence != preferred.source_sequence
     {
@@ -1499,7 +1498,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(
@@ -1532,8 +1531,7 @@ mod tests {
     #[test]
     fn the_domain_has_exactly_two_collections() {
         // The survey read d96 as "country rows plus a modifier-accumulator child"
-        // keyed `(tag_db_id, key)` (`runs/batch3/domain_classification.md:1176`,
-        // `:1264`). PTW1 v1 carries no such child: `encode_payload` writes the
+        // keyed `(tag_db_id, key)`. PTW1 v1 carries no such child: `encode_payload` writes the
         // header and the rows and nothing else (`tactic_weight.rs:162`-`:204`),
         // and `ModifierAccumulatorEntry` never appears on the wire — it is the
         // collector-side input to `resolve_sorted_accumulator` (`:146`-`:160`),
@@ -1596,7 +1594,7 @@ mod tests {
     fn a_present_accumulator_entry_maps_to_a_value_and_a_missing_one_to_null() {
         // The four-state ruling, at the mapper: the carried presence bool IS the
         // null state of `accumulator_raw`, and a present entry holding zero is a
-        // real measured zero (§3 keeps zero out of the empty states).
+        // real measured zero (record-state contract keeps zero out of the empty states).
         let c = countries();
         let factor = -25_000i64;
         let payload = payload_with(
@@ -1630,7 +1628,7 @@ mod tests {
         assert_eq!(
             missing.values[at],
             Value::Null,
-            "no accumulator entry for the key is §3's null, not unknown and not zero"
+            "no accumulator entry for the key is record-state contract's null, not unknown and not zero"
         );
     }
 
@@ -2370,7 +2368,7 @@ mod tests {
 
     #[test]
     fn the_roster_witness_is_d92s_count_and_the_sequence_must_agree() {
-        // The 2026-07-27 gate fix, pinned: the witness is `preferred.rows.len()`,
+        // The roster witness is `preferred.rows.len()`,
         // never a D18 count. A D92 map of 3 rows and a PTW1 header claiming a
         // roster of 356 — D18's filtered size on `deepwar_c` — must be refused.
         let factor = 0i64;
@@ -2659,11 +2657,11 @@ mod tests {
         // the recipe's d61 raw-carry rule and d67's precedent (`d67.rs:461`), so
         // there is no quantizer to choose and no precision band to state.
         //
-        // Nor is any field §6-derived. `source_sequence` is the candidate — the
+        // Nor is any field derived-field contract-derived. `source_sequence` is the candidate — the
         // collector computes it as `hour_index_from_raw(game_hour_raw) + 1`
         // (`attach_log.rs:33175`-`:33178`) — and d92 declines the declaration for
         // reasons that apply verbatim here (`d92.rs:108`-`:117`): the fold
-        // enforces nothing of the kind, and §6's `u` is a container decision.
+        // enforces nothing of the kind, and derived-field contract's `u` is a container decision.
         for c in schema().collections {
             for f in &c.fields {
                 assert!(
@@ -2679,7 +2677,7 @@ mod tests {
 
     #[test]
     fn every_content_id_field_is_declared_for_the_retrofit_sweep() {
-        // §13's manifest-id assignment rule will change every mapper that emits a
+        // the manifest-id assignment rule will change every mapper that emits a
         // ContentId, and a ContentId **key** is the heavier class. "This domain
         // has no ContentId" is a sweep result and not a silence (d35's rule), so
         // the list is asserted rather than described.
@@ -2701,7 +2699,7 @@ mod tests {
         assert_eq!(
             values,
             vec![field::TACTIC_DATABASE_ID, field::TACTIC_ID],
-            "a raw i32 cast and a §5 symbol id"
+            "a raw i32 cast and a content-identity contract symbol id"
         );
     }
 }

@@ -1,10 +1,9 @@
-//! Timing policy: reconciliation cadence, readiness backoff, handshake deadline
-//! (design §2, §4). These are policy constants, not rig-fitted measurements —
-//! the design says so explicitly and the idle-cost gate bounds them.
+//! Timing policy: reconciliation cadence, readiness backoff, and handshake
+//! deadline. These are explicit policy constants, not rig-fitted measurements,
+//! and their idle cost is bounded by tests.
 
 /// Watcher health drives the reconciliation cadence. WMI is the low-latency
-/// signal; when it fails we fall back to faster polling until it recovers
-/// (design §2).
+/// signal; when it fails we fall back to faster polling until it recovers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WatcherHealth {
     /// WMI subscription alive: event-first, slow reconciliation.
@@ -13,13 +12,13 @@ pub enum WatcherHealth {
     Degraded,
 }
 
-/// Reconciliation cadence in milliseconds (design §2):
+/// Reconciliation cadence in milliseconds:
 /// healthy => 30 s; degraded => 2 s.
 pub const HEALTHY_RECONCILE_MS: u64 = 30_000;
 pub const DEGRADED_RECONCILE_MS: u64 = 2_000;
 
 /// Process-lifetime handshake deadline: a liveness policy, not measured the game
-/// startup (design §4). If a heartbeat does not arrive within this window the
+/// startup. If a heartbeat does not arrive within this window the
 /// attempt fails loudly and retains diagnostics.
 pub const HANDSHAKE_DEADLINE_MS: u64 = 30_000;
 
@@ -63,8 +62,8 @@ pub const GRACEFUL_STOP_STALL_DEADLINE_MS: u64 = 120_000;
 /// forever. Neither bound authorizes reinjection.
 pub const GRACEFUL_STOP_DEADLINE_MS: u64 = 3_600_000;
 
-/// Readiness backoff for `WaitingForIdentity` / `WaitingForWindow`
-/// (design §4): 250 ms, 500 ms, 1 s, then every 2 s while the process lives.
+/// Readiness backoff for `WaitingForIdentity` / `WaitingForWindow`: 250 ms,
+/// 500 ms, 1 s, then every 2 s while the process lives.
 pub const READINESS_BACKOFF_MS: [u64; 3] = [250, 500, 1_000];
 pub const READINESS_STEADY_MS: u64 = 2_000;
 
@@ -86,19 +85,16 @@ pub fn readiness_delay_ms(attempt: usize) -> u64 {
 }
 
 /// Upper bound on *reconciliation* snapshots over a window (excludes the single
-/// startup snapshot). Design §10 idle-cost gate degraded figure (<= 900 in
-/// 30 min) is stated in these terms.
+/// startup snapshot). At the degraded cadence this permits at most 900
+/// reconciliations in 30 minutes.
 pub fn max_reconciliations_in_window(health: WatcherHealth, window_ms: u64) -> u64 {
     window_ms / reconcile_interval_ms(health)
 }
 
 /// Upper bound on TOTAL snapshots over a window, INCLUDING the one startup
-/// snapshot. Design §10 healthy figure (<= 61 in 30 min) is stated in these
-/// terms. NOTE: the design's degraded figure of "900" is stated as
-/// reconciliations-only (see [`max_reconciliations_in_window`]); the inclusive
-/// total is 901. The enforced policy — a 2 s cadence — is identical either way;
-/// the discrepancy is a wording asymmetry in the design, recorded in the
-/// dossier, not a behavioural difference.
+/// snapshot. At the healthy cadence this permits at most 61 total snapshots in
+/// 30 minutes. The degraded reconciliation-only bound is 900 (see
+/// [`max_reconciliations_in_window`]), so its inclusive total is 901.
 pub fn max_snapshots_in_window(health: WatcherHealth, window_ms: u64) -> u64 {
     1 + max_reconciliations_in_window(health, window_ms)
 }
@@ -124,7 +120,7 @@ mod tests {
 
     #[test]
     fn idle_cost_bounds_hold() {
-        // Design §10 idle-cost gate: 30 minutes = 1_800_000 ms.
+        // Idle-cost window: 30 minutes = 1_800_000 ms.
         let thirty_min = 1_800_000u64;
         // Healthy figure is stated inclusive of the startup snapshot: 61.
         assert_eq!(

@@ -136,11 +136,9 @@ struct D83Hour {
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences:
-/// the 48-hour block cadence (every block opens with its own baseline, §1.5's
-/// closing paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap
-/// affecting the state part forces the next state observation to be a
-/// `BASELINE`." Every hour this domain did not successfully sample is such a
+/// Two reasons: the 48-hour block cadence and a capture gap.
+/// State after a gap to resume from a
+/// complete baseline. Every hour this domain did not successfully sample is such a
 /// gap — the excluded failure-status hour, and any non-contiguous hour step —
 /// and d83's cadence is hourly, so a measured hour that does not follow the
 /// previous measured one by exactly one is preceded by one. Neither a delta
@@ -149,15 +147,14 @@ fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay over both collections. Factored out of `main` so the
 /// tests execute the PRODUCTION encode path over a scanned stream: a mutant
 /// that reverts the baseline decision here to block-position-only fails the
-/// gap test (a Codex round-1 finding — the earlier tests exercised the
 /// decision function but not this callsite).
 struct WireHourOutcome {
     opened_baseline: bool,
-    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    /// The baseline sits outside a scheduled block start — gap-forced.
     gap_forced: bool,
     emitted: bool,
     bytes: usize,
@@ -198,7 +195,7 @@ fn encode_wire_hour(
                 let Some(delta) = delta else { continue };
                 changed_rows += delta.changed.len();
                 tombstones += delta.tombstones.len();
-                // §7.1 minimality, checked rather than assumed: `diff` is
+                // delta-minimality contract minimality, checked rather than assumed: `diff` is
                 // supposed to produce the one minimal delta, and this is the
                 // rule that says so.
                 check_minimal(&schema.collections[i], prior.get(i), state.get(i), delta)
@@ -722,7 +719,7 @@ fn main() {
         let state = fold_span(&schema, &stream[hour.payload_span.clone()]);
         rows_total += state.rows();
 
-        // New arm: BASELINE at each block start — and at every §1.5 gap, which
+        // New arm: BASELINE at each block start — and at every capture gap, which
         // forces a fresh baseline and restarts the delta chain (`opens_baseline`).
         // The wire-arm hour — baseline decision, encode and reader replay —
         // through the SAME function the tests execute (`encode_wire_hour`).
@@ -794,7 +791,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
-         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+         {gap_forced_baselines} forced by a state gap)",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1400,8 +1397,8 @@ mod tests {
 
     #[test]
     fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." Both gap shapes d83
+        // A complete
+        // baseline after a gap. Both gap shapes d83
         // can meet — an excluded failure-status hour, and a whole hour the
         // capture never scheduled — must clear `follows_previous`, and
         // `opens_baseline` must open a baseline on it wherever it lands in a

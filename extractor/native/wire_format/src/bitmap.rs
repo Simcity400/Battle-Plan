@@ -1,4 +1,4 @@
-//! Bitmaps, per `WIRE_FORMAT.md` §0: field `i` is bit `i & 7` of byte `i >> 3`,
+//! Bitmaps: field `i` is bit `i & 7` of byte `i >> 3`,
 //! LSB-first, unused trailing bits zero, zero bits occupying zero bytes.
 //!
 //! The zero-bit case is not a degenerate corner — it is what makes the four field

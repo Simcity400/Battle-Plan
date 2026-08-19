@@ -1,5 +1,5 @@
 //! Lane HR — truncation fault-injection harness for the packaged H4IX/H4CP
-//! pair (task #192, residual HA-2).
+//! pair.
 //!
 //! # The question
 //!
@@ -39,7 +39,7 @@
 //!
 //! # What is real here and what is not
 //!
-//! Identical to lane HA's harness, and stated there: real build, real
+//! Identical to the entry-confinement harness: real build, real
 //! artifacts, real admission, real per-hour reconstruction, real refusal
 //! strings; synthetic base stream bytes, because no captured H4CR spool
 //! survives on this machine. The clean control cell proves the pair builds and
@@ -81,7 +81,7 @@ fn main() {
     // not, because their records are not in the artifact.
     //
     // Note the shape difference from a damaged RECORD at the same position
-    // (lane HA's cell c1, which confines 5,6,7): lost bytes are not confined to
+    // (which confines 5,6,7): lost bytes are not confined to
     // a window, because every LATER window's records are missing too. The
     // confinement law is unchanged — each unvouched position costs its own
     // window from itself onward — and the union over a contiguous tail is that

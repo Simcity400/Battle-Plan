@@ -5888,35 +5888,6 @@ impl std::fmt::Display for ReplayCacheError {
 
 impl std::error::Error for ReplayCacheError {}
 
-/// Lane CE size-lever measurement instrument. It walks the v2 record grammar
-/// from inside this module — the grammar's own private constants and reader —
-/// so the decomposition it publishes cannot drift from the encoder it is
-/// measuring. Never on by default and never packaged.
-#[cfg(feature = "ce-cache-anatomy")]
-#[path = "ce_anatomy.rs"]
-pub mod ce_anatomy;
-
-/// Lane DQ H4CP v3 prototype instrument: price ONE section's v2 delta with the
-/// production encoder.
-///
-/// The prototype's central byte question is whether a mutation journal emits
-/// more or fewer bytes per hour than the structural diff it would replace, per
-/// section. Answering it with a reimplemented diff would answer a different
-/// question, so the instrument reaches the real [`diff_value`] and
-/// [`encode_patch`] -- the very pair `encode_prepared` runs -- and applies them
-/// to a subtree instead of to a whole document. Never on by default and never
-/// packaged; it writes nothing and no production path calls it.
-#[cfg(feature = "dq-v3-prototype")]
-pub fn measure_section_patch_bytes(
-    old: &CanonValue,
-    new: &CanonValue,
-) -> Result<usize, ReplayCacheError> {
-    let patch = diff_value(old, new, None, 0)?;
-    // The GRAMMAR cost, not the physical one: a section has no marginal record
-    // of its own, and this instrument compares sections against each other.
-    grammar_cost(&patch, 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

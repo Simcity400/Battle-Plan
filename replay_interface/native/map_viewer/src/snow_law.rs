@@ -147,7 +147,7 @@
 //! byte-exact `SnowMudData`; it synthesizes the deterministic floor and
 //! provides the addressing/packing law, and the validation bin characterizes
 //! the residual honestly. The above-floor accumulated field is proposed as a
-//! `REPLAY_DATA_REQUIREMENTS` extractor item (see documents/SNOW_LAW.md).
+//! typed snow/mud carrier contract.
 
 use crate::*;
 use std::collections::BTreeMap;

@@ -5,7 +5,7 @@
 //!   * `<012 hour_index>.snapshot.json`   — one full-world snapshot per in-game hour
 //!   * `timeline.json`                    — diff/event stream (not read here)
 //!
-//! Design: mirror only the STABLE top-level shape of `replay/SCHEMA.md`; every
+//! Design: mirror only the stable top-level portable boundary; every
 //! domain payload (countries, states, provinces,
 //! divisions, designs, ...) stays a raw `serde_json::Value` so the reader NEVER
 //! breaks when the schema grows — old snapshots stay readable. Strong typing happens
@@ -96,7 +96,7 @@ pub(crate) fn decode_json_strict<T: DeserializeOwned>(
 /// A plain (v1) index carries only `game_id`/`schema_version`/`snapshots`. A
 /// **stitched** (container v2) index additionally carries `index_schema`
 /// (`"stitched-main-v1"`), `segments_file`, `main_head`, and visible `coverage`
-/// gaps (`STITCHING_DESIGN.md` §7.1). All of the stitched fields are
+/// gaps (the `PROJECT.md` heading "Loss and coverage"). All of the stitched fields are
 /// `#[serde(default)]`, so a v1 index still parses and a stitched index never
 /// loses its extra fields.
 #[derive(Debug, Clone, Deserialize)]
@@ -131,7 +131,8 @@ impl Index {
 }
 
 /// The authoritative branch graph of a stitched container (`segments.json`;
-/// `STITCHING_DESIGN.md` §7.2). Read-only and forward-compatible: known fields are
+/// the `PROJECT.md` heading "Time, identity, sessions, and files"). Read-only
+/// and forward-compatible: known fields are
 /// typed, everything else stays a raw `Value` so the reader never breaks as the
 /// graph grows.
 #[derive(Debug, Clone, Deserialize)]
@@ -153,7 +154,7 @@ pub struct SegmentGraph {
 }
 
 /// One segment entry in the branch graph. Visible and superseded spans are span
-/// properties (§6), not whole-segment labels — a segment can carry both.
+/// properties, not whole-segment labels — a segment can carry both.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SegmentRecord {
     pub segment_id: u32,
@@ -621,7 +622,7 @@ impl Store {
             Backend::Dir { .. } => {
                 // Resolve the file through the INDEX, exactly like the container
                 // backend: `index.snapshots[*].file` is the only filename
-                // authority (spec §1/§4.3), and both in-the-wild forms —
+                // authority, and both in-the-wild forms —
                 // `%012d.snapshot.json` and segment-prefixed rollback names —
                 // must load. Never synthesize a name from hour_index.
                 let index = self.index(game)?;
@@ -955,7 +956,7 @@ mod tests {
         path
     }
 
-    /// Spec §1/§4.3: `index.snapshots[*].file` is the ONLY filename authority.
+    /// `index.snapshots[*].file` is the only filename authority.
     /// A directory store whose index names a segment-prefixed rollback file must
     /// load it by hour_index — never synthesize `%012d.snapshot.json`.
     #[test]

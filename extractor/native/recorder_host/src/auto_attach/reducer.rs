@@ -1,12 +1,12 @@
-//! The idempotent candidate registry and reducer (design §2 "reduce both
-//! sources through one idempotent reducer").
+//! The idempotent candidate registry and reducer shared by all discovery
+//! sources.
 //!
 //! WMI start events, the startup snapshot, and every reconciliation snapshot
 //! all feed the SAME reducer keyed by `(pid, creation_filetime)`. A game that
 //! starts before we subscribe appears only in the snapshot; one that starts
 //! after appears in WMI and may appear in both — full-identity dedup collapses
-//! them to one candidate (design §2, gates 1 & 2). A reused PID with a new
-//! FILETIME is a new identity with no inherited state (gate 3).
+//! them to one candidate. A reused PID with a new FILETIME is a new identity
+//! with no inherited state.
 //!
 //! This module is the heart of the SINGLE-INJECTION LAW: the registry is the
 //! one authority on whether an identity has (or may have) been injected, and
@@ -125,7 +125,7 @@ impl CandidateRegistry {
 
     /// Fold an observation that a given live identity is present. Idempotent:
     /// the same identity observed via snapshot AND via WMI collapses to one
-    /// candidate (design §2 dedup). Only `hoi4.exe` identities are admitted;
+    /// candidate. Only `hoi4.exe` identities are admitted;
     /// anything else is ignored (defensive — callers already filter).
     pub fn observe_present(&mut self, identity: ProcessIdentity, now_ms: u64) -> ObserveOutcome {
         if !identity.is_hoi4() {
@@ -171,7 +171,7 @@ impl CandidateRegistry {
     }
 
     /// Record a WMI stop hint for a pid. It is only a hint: liveness is proven
-    /// by reconciliation (design §2). Marks every live candidate carrying that
+    /// by reconciliation. Marks every live candidate carrying that
     /// pid so the coordinator reconciles promptly.
     pub fn stop_hint(&mut self, pid: u32) {
         for cand in self.by_key.values_mut() {
@@ -188,7 +188,7 @@ impl CandidateRegistry {
     ///
     /// Pre-injection exit => `ProcessExitedBeforeAttach` (clean terminal).
     /// Post-commit exit => flagged `process_gone_after_commit` and left in place
-    /// for the coordinator to finalize/preserve the prefix (design §6).
+    /// for the coordinator to finalize/preserve the prefix.
     pub fn reconcile_live_set(
         &mut self,
         live_keys: &BTreeSet<ProcessKey>,
@@ -238,9 +238,8 @@ impl CandidateRegistry {
     /// The SINGLE-INJECTION LAW guard. Returns true ONLY when it is provably
     /// safe to begin an injection for `key`: the candidate exists, is in a
     /// pre-injection state, and has never committed an injection. Fails closed
-    /// on an unknown key or any committed/terminal state (design §5, §5 "Attach
-    /// transaction", self-refutation "Fresh DLL path makes automatic retry
-    /// safe: refuted").
+    /// on an unknown key or any committed/terminal state because a fresh DLL
+    /// path does not make automatic retry safe.
     pub fn may_start_injection(&self, key: &ProcessKey) -> bool {
         match self.by_key.get(key) {
             Some(c) => !c.state.injection_committed() && !c.state.is_terminal(),
@@ -286,7 +285,7 @@ impl CandidateRegistry {
     }
 
     /// Seed a recovered identity directly into a given state during crash
-    /// recovery (design §8). Used to poison a committed-but-unproven identity as
+    /// recovery. Used to poison a committed-but-unproven identity as
     /// `Failed` so `may_start_injection` stays closed and the live process is
     /// never re-injected (SINGLE-INJECTION LAW under supervisor restart).
     pub fn seed_recovered(
@@ -346,7 +345,7 @@ mod tests {
 
     #[test]
     fn dedup_snapshot_and_wmi_collapse_to_one() {
-        // Design §2 / gate 2: same identity seen via snapshot then via WMI is
+        // The same identity seen via snapshot then via WMI is
         // ONE candidate, one attempt.
         let mut reg = CandidateRegistry::new();
         assert_eq!(
@@ -362,7 +361,7 @@ mod tests {
 
     #[test]
     fn reused_pid_is_a_new_identity_with_no_old_state() {
-        // Design §2 / gate 3.
+        // A reused PID with a different creation time is a distinct identity.
         let mut reg = CandidateRegistry::new();
         reg.observe_present(ident(100, 5), 0);
         // Drive first identity to Complete.
@@ -488,7 +487,7 @@ mod tests {
 
     #[test]
     fn two_simultaneous_identities_are_independent() {
-        // Design §7 / gate 9: two games, both tracked, no merge.
+        // Two games are tracked independently and never merged.
         let mut reg = CandidateRegistry::new();
         reg.observe_present(ident(600, 1), 0);
         reg.observe_present(ident(601, 2), 0);

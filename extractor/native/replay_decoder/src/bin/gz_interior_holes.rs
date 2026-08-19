@@ -1,17 +1,12 @@
-//! Lane GZ — interior-hole fault-injection harness for the H4IX/H4CP
-//! composition.
+//! Interior-hole fault-injection harness for the H4IX/H4CP composition.
 //!
 //! # The question
 //!
-//! Owner ruling 2026-08-12 (task #189): a cache-only composition must BUILD
-//! over an INTERIOR excluded hour by skipping it BY NAME, instead of refusing
-//! the whole build. Lane GY's per-hour seal established the naming authority —
-//! `recorder_host::hour_coverage` — and recorded, as residual GY-4, that the
-//! certified hour index and checkpoint cache are contiguous by construction, so
-//! an interior excluded hour could not be represented in them and was refused
-//! by name instead.
+//! A cache-only composition must BUILD over an INTERIOR excluded hour by
+//! skipping it BY NAME, instead of refusing the whole build. The naming
+//! authority is `recorder_host::hour_coverage`.
 //!
-//! This instrument answers the ruling by measurement. For each cell it injects
+//! For each cell the instrument injects
 //! one structural fault into an otherwise clean H4CR stream, runs the REAL
 //! production artifact build (`build_certified_replay_artifacts`), and reports:
 //!
@@ -31,17 +26,15 @@
 //!   H4IX/H4CP files it writes to disk, read back through
 //!   `snapshot::CertifiedReplayCache`. The per-hour coverage map is the one the
 //!   build publishes and the seal seals.
-//! * **Not real**: the base stream BYTES, for the reason lane GQ's harness
-//!   states — no captured H4CR spool survives on this machine. The stream is
+//! * **Not real**: the base stream BYTES. No captured H4CR spool survives on
+//!   this machine. The stream is
 //!   synthesized with the record framing the collector writes, over two real
 //!   production domains (18 `country_identity`, 13 `tech_live`), and the clean
 //!   control cell proves the base stream builds before anything is injected.
 //! * **Not covered here**: the sealed CONTAINER. This harness stops at the
 //!   packaged artifact pair; the container-authenticated join between an H4IX
 //!   hole row and the sealed coverage map is proved by unit tests in
-//!   `compact_replay_verification_gates`, named in `MATRIX.md`. Stated
-//!   explicitly because lane GY's matrix was read as covering more of the chain
-//!   than it did.
+//!   `compact_replay_verification_gates`.
 //!
 //! Usage: `gz_interior_holes <scratch-dir>`; the matrix goes to stdout.
 
@@ -137,7 +130,7 @@ fn write_record(
     out.extend_from_slice(payload);
 }
 
-/// Domain 18 `country_identity`, spelled exactly as lane GQ's harness spells it.
+/// Domain 18 `country_identity`, shared by the fault-injection harnesses.
 fn d18_payload(rows: &[(u32, &str)], status_flags: u32) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes());
@@ -153,7 +146,7 @@ fn d18_payload(rows: &[(u32, &str)], status_flags: u32) -> Vec<u8> {
     p
 }
 
-/// Domain 13 `tech_live`, spelled exactly as lane GQ's harness spells it.
+/// Domain 13 `tech_live`, shared by the fault-injection harnesses.
 fn d13_payload(countries: &[(u32, u32, u32)], status_flags: u32) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes());
@@ -207,7 +200,7 @@ struct Synth {
 /// The sequence is assigned as though every record were present, so a dropped
 /// hour leaves a SEQUENCE HOLE — the production shape of "an hour's records
 /// never reached the spool", and what makes the loss detectable at all. This is
-/// deliberately not lane GQ's `build_stream_omitting`, which renumbers around
+/// deliberately does not renumber around
 /// the hole and therefore models a different (undetectable) failure.
 fn synthesize(absent: &BTreeSet<usize>) -> Synth {
     let mut w = StreamWriter::new();
@@ -315,7 +308,7 @@ struct Built {
     ///
     /// This is what decides whether a replay consumer holding only the two
     /// container-authenticated documents can bind a hole to the injured hour's
-    /// bytes, or only to its name (Codex review round 1, finding 1).
+    /// bytes, or only to its name.
     range_join: Vec<RangeJoin>,
 }
 
@@ -426,8 +419,7 @@ fn build(scratch: &Path, tag: &str, bytes: &[u8]) -> Result<Built, String> {
 /// recording does not vouch for, carrying the exact reason its coverage map
 /// gave.
 ///
-/// At this lane's base commit (`bf1429bc`, which produced `matrix_before.md`)
-/// this returned nothing, because the H4IX had no way to say "this hour is a
+/// An older H4IX shape returned nothing here because it had no way to say "this hour is a
 /// hole": every entry it carried was an hour it served, and a gap between two
 /// entries was a structural violation rather than a statement.
 fn read_h4ix_holes(index: &snapshot::ReplayHourIndex) -> Vec<(i64, String)> {
@@ -642,7 +634,7 @@ fn main() {
         &build(&scratch, "h4_trailing_delivered", &bytes),
     ));
 
-    // (h5) TRAILING exclusion, TORN TAIL: the crashed-recorder shape lane GY's
+    // (h5) TRAILING exclusion, TORN TAIL: the crashed-recorder shape
     // residual says already builds over the verified prefix. Here as the
     // control that it still does.
     let torn = synthesize(&BTreeSet::new()).truncated_inside(HOURS - 1);

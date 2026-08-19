@@ -36,8 +36,8 @@
 //! gap structure, not by the change rate. D41 published 353 `DOMAIN_GAP`
 //! records against its 291 `DOMAIN_DATA` records (148 backpressure, 170
 //! hour-label mismatch, 35 torn), and 91 of the 290 post-first data records had
-//! at least one D41 gap since their own previous data record. §2.3 of
-//! `DELTA_WIRE_DESIGN.md` forces a keyframe after a rejected bracket for that
+//! at least one D41 gap since their own previous data record. The stream
+//! forces a keyframe after a rejected bracket for that
 //! domain, so those 91 records re-send the whole payload however little changed.
 //! The test below models EVERY own gap as a reset, which is the conservative
 //! bound: fewer resets can only make the delta stream smaller.
@@ -623,7 +623,7 @@ fn replay_t26(path: &std::path::Path) -> ReplayOutcome {
                     outcome.records
                 );
 
-                // §2.3: a rejected bracket for THIS domain drops its pin, so the
+                // A rejected bracket for THIS domain drops its pin, so the
                 // next read is a keyframe. Modelled for EVERY own gap, which is
                 // the conservative bound on the delta stream's size.
                 if gap_since_last_data && outcome.records > 1 {

@@ -261,7 +261,7 @@ fn both_collections_are_keyed_sets_with_the_folds_own_identities() {
     assert_eq!(
         keys[0].kind,
         Kind::ContentId,
-        "a country tag is content-defined (§5), so a manifest must resolve it"
+        "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
     );
     assert!(keys[0].kind.legal_as_key());
     assert_eq!(c.fields.len(), 4, "1 key + 2 counts + 1 capture flag");
@@ -358,7 +358,7 @@ fn a_fully_gated_off_row_roundtrips_byte_for_byte() {
 fn the_schema_declares_only_unknown_and_the_mapper_emits_only_unknown() {
     // Nothing here is inapplicable to a row this schema carries, and nothing is
     // a relation that can point at nothing, so no field is `optional` or
-    // `nullable`. Every empty state this domain has is §3's "applicable, not
+    // `nullable`. Every empty state this domain has is record-state contract's "applicable, not
     // captured".
     for c in [countries(), active()] {
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
@@ -399,7 +399,7 @@ fn the_schema_declares_only_unknown_and_the_mapper_emits_only_unknown() {
 #[test]
 fn a_real_zero_is_a_value_not_an_empty_state() {
     // Every flag set, every value zero: a country that has researched nothing and
-    // a slot that has just started. §3 keeps zero out of the three empty states.
+    // a slot that has just started. record-state contract keeps zero out of the three empty states.
     let c = countries();
     let r = record_from_country_row(
         &c,
@@ -631,7 +631,7 @@ fn no_field_is_continuous_so_the_quantization_test_does_not_apply() {
 
 #[test]
 fn no_field_is_derived() {
-    // §6 derived fields are clock-linear integers. `progress_raw` rises at a rate
+    // derived-field contract derived fields are clock-linear integers. `progress_raw` rises at a rate
     // the clock does not fix and resets when a slot takes a new technology, so it
     // is not `v + c * (frame_tick >> u)`. The tick still enters this domain — via
     // the A29 same-hour gate, not via a transform.
@@ -1169,10 +1169,9 @@ fn xui09_tail(dictionary: &[&str], measured: u32, refused: u32, vectors: &[(u32,
 /// did until now, and which made it refuse every payload a shipping recorder
 /// writes, `active_count == 0` included.
 ///
-/// This is the same defect that cost the t53 capture all 59 of its D13 records
-/// (`runs/jt_a29_values/LIVE_D13_EXCLUSION.md`): a decoder that has not been
-/// taught the tail reports it as trailing bytes. The canonical validator was
-/// the third D13 decoder with this gap; this port was the fourth.
+/// A decoder that has not been taught the tail reports valid tail bytes as
+/// trailing data, so the splitter must measure the witness before its final
+/// boundary check.
 #[test]
 fn the_active_table_splitter_measures_the_xui09_witness_tail() {
     let rows = vec![

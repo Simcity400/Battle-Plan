@@ -1,15 +1,11 @@
-//! Regression tests for the two defects round 3 found.
-//!
-//! Each is the reviewer's failing input with the assertion inverted, plus the
-//! invariant the defect violated — pinning the case alone would leave the
-//! property it stands for untested.
+//! Regression tests for malformed values and the invariants they exercise.
 
 use wire_format::record::Record;
 use wire_format::schema::{Collection, Field, Quant, Schema, Shape};
 use wire_format::value::{dequantize, escapes, quantize, stored_eq, Value};
 use wire_format::{Kind, WireError};
 
-/// §7.1 makes the writer compare against the **reconstructed** prior, so a
+/// delta-minimality contract makes the writer compare against the **reconstructed** prior, so a
 /// stored integer that does not survive reconstruction breaks the format: an
 /// unchanged source reads as changed, the writer emits a delta, and the reader
 /// rejects it as a mask bit on a field that did not change.
@@ -72,7 +68,7 @@ fn every_non_escaping_value_survives_reconstruction() {
     assert!(checked > 500, "the sweep must actually cover something, got {checked}");
 }
 
-/// §4: "a value the writer cannot map into 0..n-1 is a failed sample, never a
+/// schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample, never a
 /// coerced code." The record path enforced it; the update path truncated to the
 /// field's bit width and produced silently wrong data.
 #[test]
@@ -114,7 +110,7 @@ fn an_out_of_range_enum_is_rejected_on_every_path() {
     assert_eq!(back.values, vec![Value::Enum(2)]);
 }
 
-/// §7.4's ordered-keyed keys are absolute, and an occurrence list has no key
+/// key-encoding contract's ordered-keyed keys are absolute, and an occurrence list has no key
 /// prefix at all. The shaped decoder must choose those grammars without
 /// misreading 5,6 as the keyed-set delta chain 5,11 or indexing an empty key.
 #[test]
@@ -181,7 +177,7 @@ fn an_over_range_block_identity_is_rejected_not_aliased() {
     assert_eq!(BlockHeader::decode(&ok, 0).unwrap().0.domain, u32::MAX);
 }
 
-/// §6's whole purpose, end to end: a value that falls by one every tick has a
+/// derived-field contract's whole purpose, end to end: a value that falls by one every tick has a
 /// constant stored value, so an entire run of ticks collapses to `UNCHANGED`.
 /// Before the transform existed, each tick emitted a changed row.
 #[test]

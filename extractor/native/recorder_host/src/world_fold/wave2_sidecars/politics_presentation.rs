@@ -48,8 +48,7 @@
 //! text at replay, which is a REPLAY-side change (decoder, port spec and the
 //! pinned `producer_contract_manifest.json`) and therefore an owner decision.
 //!
-//! Full derivation and the closure list:
-//! `runs/ik_gp_u1/DOSSIER_EIR_NE_003_xui11_panel_build_only.md` §5.
+//! The closure list below is enforced by the producer and consumer implementations.
 
 use serde_json::Value;
 
@@ -75,8 +74,7 @@ pub(super) const CARRIER: Wave2Carrier = Wave2Carrier {
                  points at panel-build-only (one CCountryPoliticsView, and d72 is hover-bound \
                  and descheduled), but the source closure over the engine's politics text and \
                  tooltip formatters has not been run and formatter-level tooltip producers \
-                 exist for other domains. See runs/ik_gp_u1/\
-                 DOSSIER_EIR_NE_003_xui11_panel_build_only.md section 5",
+                 exist for other domains.",
     },
     paired_key: None,
     fill,
@@ -127,7 +125,6 @@ mod tests {
             "tooltip",
             "UNSETTLED",
             "NOT refused",
-            "runs/ik_gp_u1/DOSSIER_EIR_NE_003_xui11_panel_build_only.md",
         ] {
             assert!(
                 reason.contains(fragment),

@@ -44,7 +44,7 @@ pub const COMPACT_STATUS_SOURCE_EMPTY: u32 = 1 << 14;
 ///
 /// Every other whole payload on this stream is a keyframe, and a keyframe is NOT
 /// a resync point: once a domain has a delta baseline the fold applies every
-/// later record SPARSELY (`DELTA_WIRE_DESIGN.md` §2.3), so a whole payload is
+/// later record SPARSELY, so a whole payload is
 /// merged and a key that vanished is retained until something tombstones it.
 /// That is correct — absence is not deletion — but it leaves the producer with
 /// no way to say "my baseline and yours have parted company; here is the whole
@@ -73,8 +73,7 @@ pub const COMPACT_STATUS_SOURCE_EMPTY: u32 = 1 << 14;
 ///
 /// # Old readers
 ///
-/// Bit 15 was the next free global bit and this is the assignment §2.5 of
-/// `DELTA_WIRE_DESIGN.md` anticipated. A consumer built against the old mask
+/// Bit 15 was the next free global bit. A consumer built against the old mask
 /// sees an unassigned bit and HARD-REJECTS the record, which is the intended
 /// outcome: a reader that would merge a resync record has misread the stream,
 /// and refusing is strictly better than that.

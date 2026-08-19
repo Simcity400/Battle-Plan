@@ -6,31 +6,5 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "construction_buildings_state_damage_lane_proof"
-path = "src/bin/proof_from_fixture.rs"
-
-[[bin]]
-name = "construction_buildings_state_damage_fixture_gate"
-path = "src/bin/fixture_contract_gate.rs"
-
-[[bin]]
-name = "construction_buildings_state_damage_target_state_fixture_blocker"
-path = "src/bin/target_state_fixture_blocker.rs"
-
-[[bin]]
-name = "construction_buildings_state_damage_target_state_oracle_contract"
-path = "src/bin/target_state_oracle_contract.rs"
-
-[[bin]]
-name = "construction_buildings_state_damage_mini_stack_proof"
-path = "src/bin/mini_stack_proof.rs"
-
-[[bin]]
-name = "construction_buildings_state_damage_replay_pack_proof"
-path = "src/bin/replay_pack_proof.rs"
-
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
-serde_json = "1"
-snapshot = { path = "../../snapshot" }

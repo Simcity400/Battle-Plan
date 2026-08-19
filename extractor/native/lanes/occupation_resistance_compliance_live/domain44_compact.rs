@@ -47,8 +47,7 @@ pub const ROW_FLAG_COUNTRY_DEFAULT_LAW_TOKEN: u32 = 1 << 14;
 pub const ROW_FLAG_GARRISON_SCALARS: u32 = 1 << 15;
 
 /// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
-/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`);
-/// dossier `extractor/native/runs/ia_province_caps/SWEEP.md`. A separate
+/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`). A separate
 /// constant from the province one even though the numbers coincide.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 /// The `_CountryLinkTags` index space, not the country database's (see

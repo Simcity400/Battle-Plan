@@ -1,4 +1,4 @@
-//! Reference implementation of `extractor/documents/WIRE_FORMAT.md`.
+//! Reference implementation of the replay wire format.
 //!
 //! The specification is the authority; this crate exists to make it executable,
 //! and its golden vectors are what turn "two implementers produce identical bytes"
@@ -8,8 +8,8 @@
 //! Section numbers in comments refer to that document.
 //!
 //! **Scope.** The crate implements the frame, record and schema codec surfaces
-//! through §11, including every state collection shape in §7.3, gap records and
-//! normalisation in §8, and event bodies plus frontier continuity in §9. The §5
+//! through schema-identity contract, including every state collection shape in collection-shape contract, gap records and
+//! normalisation in gap contract, and event bodies plus frontier continuity in event-continuity contract. The content-identity contract
 //! assignment lives in the content-manifest crate; its container integration,
 //! older domain-mapper resolver retrofits, domain ports and measurements remain
 //! independently gated. Codec availability is not evidence that a particular
@@ -87,7 +87,7 @@ pub use record::Record;
 pub use value::Value;
 pub use varint::{Result, WireError};
 
-/// §1.1. The container declares this once; every timestamp in the format is a
+/// tick-grid contract. The container declares this once; every timestamp in the format is a
 /// tick index from campaign hour 0, and a domain's cadence says only how often it
 /// samples — not what unit time is measured in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,7 +98,7 @@ pub struct TickGrid {
 impl TickGrid {
     pub const HOURLY: Self = Self { ticks_per_hour_log2: 0 };
 
-    /// §1.1 counts ticks in a `u64`, so the grid exponent must be representable.
+    /// tick-grid contract counts ticks in a `u64`, so the grid exponent must be representable.
     pub const MAX_LOG2: u8 = 63;
 
     /// The field is private and this is the only constructor, so an out-of-range
@@ -120,12 +120,12 @@ impl TickGrid {
         1u64 << self.ticks_per_hour_log2
     }
 
-    /// §1.1: a domain samples on ticks that are multiples of its stride.
+    /// tick-grid contract: a domain samples on ticks that are multiples of its stride.
     pub fn sample_stride(self, cadence_log2: u8) -> u64 {
         1u64 << (self.ticks_per_hour_log2.saturating_sub(cadence_log2))
     }
 
-    /// The frame hour a `derived` field's shift resolves to, §6. A shift past the
+    /// The frame hour a `derived` field's shift resolves to, derived-field contract. A shift past the
     /// grid is not a legal declaration (`Schema::validate`), but this is public,
     /// so it saturates to zero rather than shifting a `u64` by 64 or more.
     pub fn shifted_clock(self, tick: u64, shift: u8) -> u64 {
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn the_derived_shift_recovers_the_game_hour() {
-        // §6: u = ticks_per_hour_log2 makes the term the game hour, which is what
+        // derived-field contract: u = ticks_per_hour_log2 makes the term the game hour, which is what
         // makes d64's due-hour transform constant. At u = 0 it would drift by
         // (ticks_per_hour - 1) every hour.
         let grid = TickGrid::new(2).unwrap();

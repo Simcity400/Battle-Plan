@@ -2,10 +2,10 @@
 //!
 //! The whole coordinator keys on `(pid, creation_filetime)` — the single fact
 //! that lets us prove "this is the same process I already attached to" and
-//! "this reused PID is a *different* process" (design §2, §3). The FILETIME is
+//! "this reused PID is a *different* process". The FILETIME is
 //! kept at full 100 ns precision on purpose: flooring two sub-second-apart
-//! launches into one equal second is exactly the collision the design forbids
-//! (mirrors the note in `modset.rs::query_process_start`).
+//! launches into one equal second would collapse distinct processes (mirrors
+//! the note in `modset.rs::query_process_start`).
 //!
 //! Nothing here reads live memory or opens a process handle — those live in
 //! `sources.rs` behind the `ProcessProbe` trait, so this file (the identity
@@ -32,7 +32,7 @@ impl ProcessFiletime {
 }
 
 /// The identity key. Two processes are the same iff BOTH fields match. A reused
-/// PID with a new creation FILETIME is a brand-new identity (design §2, gate 3).
+/// PID with a new creation FILETIME is a brand-new identity.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ProcessKey {
     pub pid: u32,
@@ -49,9 +49,8 @@ impl ProcessKey {
 }
 
 /// Fully-resolved live process identity, produced by a `ProcessProbe` reading
-/// the real OS handle. Every field is authority-grade evidence: the design
-/// requires the live token/handle to be authority and WMI's SID/session fields
-/// to be treated only as hints (design §3).
+/// the real OS handle. The live token/handle is authoritative; WMI's SID and
+/// session fields are only hints.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessIdentity {
     pub key: ProcessKey,
@@ -60,15 +59,15 @@ pub struct ProcessIdentity {
     /// Windows terminal-services session id (`ProcessIdToSessionId`).
     pub session_id: u32,
     /// SHA-256 (hex) of the process token user SID. Raw SID is never stored or
-    /// journalled (design §8 "Do not log raw SID"); the hash is enough to prove
+    /// journalled; the hash is enough to prove
     /// same-user equality.
     pub user_sid_hash: String,
 }
 
 impl ProcessIdentity {
     /// Lowercased basename of the image path, e.g. `hoi4.exe`. Windows file
-    /// names are case-insensitive, so the coordinator's `hoi4.exe` gate must be
-    /// too (design §2/§3).
+    /// names are case-insensitive, so the coordinator's `hoi4.exe` comparison
+    /// must be too.
     pub fn image_basename_lower(&self) -> String {
         let norm = self.image_path.replace('\\', "/");
         norm.rsplit('/')
@@ -85,7 +84,7 @@ impl ProcessIdentity {
 
 /// The game executable basename we attach to. Kept as a constant (not a
 /// hard-coded path) so it stays portable: the live process supplies its own
-/// full path; we never assume a drive or Steam library (design §3, §7).
+/// full path; we never assume a drive or Steam library.
 pub const BATTLE_PLAN_EXE_LOWER: &str = "hoi4.exe";
 
 /// Case-insensitive `hoi4.exe` basename test over an arbitrary process name /
@@ -104,7 +103,7 @@ mod tests {
     #[test]
     fn filetime_full_precision_not_floored_to_seconds() {
         // Two launches 1 tick (100 ns) apart within the same wall-clock second
-        // must remain distinct — the exact sub-second collision the design bans.
+        // must remain distinct.
         const BASE: u64 = 133_000_000_000_000_000; // arbitrary post-epoch tick
         let a = ProcessKey::new(9, BASE);
         let b = ProcessKey::new(9, BASE + 1);

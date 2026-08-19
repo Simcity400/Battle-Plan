@@ -33,7 +33,7 @@ Archetype names are resolved from the top-level ``equipments`` index (same join
 parse_production.py uses); an unresolved (id,type) keeps ``archetype=null`` and
 is counted in ``stats.unknown_equipment_ids`` (NO fabricated default).
 
-WHY this is a rehost backstop (DESIGN 11.3): when the host crashes mid-session,
+WHY this is a rehost backstop: when the host crashes mid-session,
 in-flight equipment transfers (who is supplying whom, how much, delivery
 progress) are NOT reconstructable from the live-memory daily layer alone after a
 rehost; the save is the authoritative record of the trade graph. parse_oob.py

@@ -1,5 +1,4 @@
-//! Regression tests for the four defects round 4 found — three in code, one in
-//! the specification.
+//! Regression tests for derived-value, quantization, and schema invariants.
 
 use wire_format::derived::{from_stored, to_stored};
 use wire_format::record::Record;
@@ -16,7 +15,7 @@ fn one(fields: Vec<Field>) -> Schema {
     }
 }
 
-/// §6 zigzags a derived stored value "because the transform can carry an
+/// derived-field contract zigzags a derived stored value "because the transform can carry an
 /// otherwise unsigned quantity negative", so the stored domain is all of `i64`
 /// whatever the live kind. Forcing the result back into the live variant made
 /// every count-up field — the mirror of a countdown — unrepresentable.
@@ -31,7 +30,7 @@ fn a_derived_unsigned_field_can_store_a_negative_value() {
     assert_eq!(to_stored(&f, Value::Unsigned(5), 10), Ok(Value::Signed(-5)));
     assert_eq!(from_stored(&f, Value::Signed(-5), 10), Ok(Value::Unsigned(5)));
 
-    // It survives the wire as zigzag, which is why §6 chose zigzag.
+    // It survives the wire as zigzag, which is why derived-field contract chose zigzag.
     let c = &s.collections[0];
     let mut bytes = Vec::new();
     Record::new(vec![Value::Signed(-5)]).encode(c, &mut bytes).unwrap();
@@ -87,7 +86,7 @@ fn a_derived_stored_value_has_one_representation() {
     );
 }
 
-/// §6's fourth condition forces an unstable integer to escape, so no legal
+/// derived-field contract's fourth condition forces an unstable integer to escape, so no legal
 /// writer emits one unescaped — and two unstable integers can share a
 /// reconstruction, which would give one value two reader-accepted encodings.
 #[test]
@@ -120,7 +119,7 @@ fn the_reader_rejects_an_unescaped_unstable_integer() {
     assert_eq!(quantize(dequantize(unstable - 1, q), q), Some(unstable - 1));
 }
 
-/// §6 now pins `dequantize` to a binary64 **division** by the same multiplier
+/// derived-field contract now pins `dequantize` to a binary64 **division** by the same multiplier
 /// `scale` used. Multiplying by a precomputed reciprocal is the other literal
 /// reading of an unpinned rule, and because the escape condition is a
 /// computation over `dequantize`, the two disagree about which values escape —
@@ -157,7 +156,7 @@ fn dequantize_is_a_division_not_a_reciprocal_multiply() {
 
 /// `frame_tick` is a `u64` and the clock term is computed in `i64`, so the
 /// conversion has to be checked too — casting first made `u64::MAX` become `-1`
-/// and the `checked_mul` below it never saw the overflow §6 calls a hard error.
+/// and the `checked_mul` below it never saw the overflow derived-field contract calls a hard error.
 #[test]
 fn a_frame_tick_too_large_for_i64_is_a_hard_error() {
     let mut f = Field::new(2, Kind::Unsigned);

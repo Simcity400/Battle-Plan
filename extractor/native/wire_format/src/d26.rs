@@ -1,15 +1,14 @@
 //! d26 `division_equipment_live` — per-division equipment inventories.
 //!
-//! Derived from `world_fold.rs:23664`-`:23971`
+//! Derived from `world_fold.rs:23638`-`:23944`
 //! (`fold_division_equipment`), its payload constants at `:810`-`:816`, the
-// @world-fold-authority domain=26 functions=fold_division_equipment lines=23664-23971 sha256=af84cc2efe59d5c53e03619e0830fffef0aaa71842239f2ff3acc032cd644aff closure=46cd486934075a21ae0a3013c3439e7e4c2a0e18ed967b3ce0084d949bbb2ea1
+// @world-fold-authority domain=26 functions=fold_division_equipment lines=23638-23944 sha256=0725f8cae2fdd737e1b5c288762be80cc2e5d6b031d776f22a36881ef44323a0 closure=e176487e67795616e9260ad21829472b9e50c11633e538b673d24758a298910e
 //! accumulator's own JSON projection (`:24160`-`:24176`), and the collector read
 //! that produces the row flags and the entry rows
 //! (`extractor/native/collector/src/attach_log.rs:45789`-`:46005`,
 //! `:58210`-`:58401`, `:69877`-`:69930`).
-//! `extractor/documents/domains/d26_division_equipment_live.md` carries no
-//! field-level grammar, so the fold and the collector read are the basis; where
-//! the dossier and the fold could be read differently the fold wins.
+//! The fold and collector read are the field-level basis; where another account
+//! and the fold could be read differently, the fold wins.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_division_equipment`): a 40-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
@@ -71,7 +70,7 @@
 //!   only when the template pointer is not a map-control heap pointer, its
 //!   vtable is not `DIVISION_TEMPLATE_VTABLE_RVA`, its type word is not
 //!   `DIVISION_TEMPLATE_TYPE`, or its id fails the range filter
-//!   (`:16697`-`:16717`) — four read/validation failures, which is §3's
+//!   (`:16697`-`:16717`) — four read/validation failures, which is record-state contract's
 //!   "applicable, not captured", not a relation pointing at nothing and not a
 //!   concept that fails to apply. Every division in the D20 root bridge has a
 //!   template, so `absent` is wrong; and the recipe's tie-break points the same
@@ -118,13 +117,13 @@
 //! division identities are not serialized. That unknown is a statement about
 //! *which keys the frame failed to mention*, not about any field of any row it
 //! did mention — the rows in a sparse frame are ordinary measured rows. A keyed
-//! set has no way to say "keys I did not look at may exist"; that is §8 gap
+//! set has no way to say "keys I did not look at may exist"; gap
 //! normalisation, which has no implementation in this crate (`lib.rs`). So no
 //! field becomes `unknown_capable` because of it, and the gap is reported
 //! instead. See [`FrameMode`] for where the mode does bite: it relaxes three of
 //! the fold's header invariants.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; `frame_tick` is taken and ignored so every domain's boundary has one
 //! shape.
 
@@ -139,9 +138,9 @@ pub const DIVISIONS: u32 = 1;
 /// One row per equipment line, keyed by its root plus the variant.
 pub const EQUIPMENT: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. `OWNER_TAG_DB_ID` and `DIV_ID` appear in both collections because they
-/// are the same field in both — the division's identity — which is what §11
+/// are the same field in both — the division's identity — which is what schema-identity contract
 /// forbids reusing an id *against*.
 pub mod field {
     pub const OWNER_TAG_DB_ID: u32 = 1;
@@ -195,7 +194,7 @@ pub fn schema() -> Schema {
                 // Roots persist across hours and the frame grammar is
                 // baseline-clears / delta-upserts / DELETED-removes
                 // (`world_fold.rs::fold_division_equipment`), which is exactly
-                // a keyed set's grammar — and only a keyed set has deltas (§7.3).
+                // a keyed set's grammar — and only a keyed set has deltas (collection-shape contract).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the `(owner_tag_db_id, div_id)` pair
@@ -203,7 +202,7 @@ pub fn schema() -> Schema {
                     // both are concrete in every row.
                     //
                     // `owner_tag_db_id` is a country tag db id — content-defined
-                    // (§5): a manifest must resolve it for it to keep its
+                    // (content-identity contract): a manifest must resolve it for it to keep its
                     // meaning under another mod set. d63 keys its countries the
                     // same way and d20 classes its `owner` the same way. This is
                     // a ContentId **key**, the heavier retrofit class.
@@ -235,16 +234,16 @@ pub fn schema() -> Schema {
                     // and the fold itself leaves `"archetype"` and `"equip_type"`
                     // null because it has no catalog (`world_fold.rs:24171`).
                     // Under another mod set the same number names other
-                    // equipment, which is §5's deciding question. A ContentId
+                    // equipment, which is content-identity contract's deciding question. A ContentId
                     // **key**, so the heavier retrofit class again.
                     Field::new(f::VARIANT_ID, Kind::ContentId).key(2),
                     // `Continuous` because the fold's projection is
                     // `amount_raw as f64 / scale_raw` (`world_fold.rs:24170`) and
                     // the replay leaf is an `f64` (`world.rs:476`).
                     //
-                    // `Quant::Exact` on §6's own default: "a field is exact
+                    // `Quant::Exact` on derived-field contract's own default: "a field is exact
                     // unless its quantization is justified in the domain
-                    // document", and `domains/d26_division_equipment_live.md`
+                    // evidence",
                     // records no precision for the amount at all. The outcome
                     // test has a live edge here too — that document's stated
                     // replay use is exact per-variant old/new/delta arithmetic
@@ -320,7 +319,7 @@ pub struct DivisionRow {
     pub div_id: u32,
     pub flags: u32,
     /// `None` when `TEMPLATE_PRESENT` is clear — the collector could not read
-    /// the template, which is §3's `unknown`.
+    /// the template, which is record-state contract's `unknown`.
     pub template_id: Option<u32>,
     pub entry_first: usize,
     pub entry_count: usize,
@@ -645,7 +644,7 @@ pub fn key_from_equipment_row(
 /// today, onto its stored Record. `row` is the raw 24-byte root row slice (the
 /// caller has already consumed the payload header via [`split_payload`]); d26
 /// has exactly one root row form, so length selects nothing and a wrong length
-/// is rejected. `frame_tick` is §6's derived-field input
+/// is rejected. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); d26 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
@@ -660,7 +659,7 @@ pub fn record_from_division_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d26 has no derived field; §6's transform input is unused. Named rather
+    // d26 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_division_row(row)?;
@@ -675,7 +674,7 @@ pub fn record_from_division_row(
     for f in collection.value_fields() {
         let value = match f.field_id {
             // A clear TEMPLATE_PRESENT gate means the collector's template read
-            // failed, not that the division has no template — §3's `unknown`.
+            // failed, not that the division has no template — record-state contract's `unknown`.
             field::TEMPLATE_ID => match parsed.template_id {
                 Some(id) => Value::Unsigned(id as u64),
                 None => Value::Unknown,
@@ -865,7 +864,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert_eq!(keys[1].field_id, field::DIV_ID);
         assert_eq!(
@@ -899,7 +898,7 @@ mod tests {
         // emit one empty state and only there. Absent would claim the concept
         // does not apply; Null would claim we know there is nothing. The
         // collector clears the template gate only when the read failed
-        // (`attach_log.rs:16697`-`:16717`), which is §3's "applicable, not
+        // (`attach_log.rs:16697`-`:16717`), which is record-state contract's "applicable, not
         // captured".
         for c in [divisions(), equipment()] {
             assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
@@ -923,9 +922,9 @@ mod tests {
     #[test]
     fn no_continuous_field_is_quantized() {
         // Step 4's "quantization saves bytes" test does not apply: d26 declares
-        // no quantized field. §6 makes `exact` the default and requires the
+        // no quantized field. derived-field contract makes `exact` the default and requires the
         // domain document to justify anything else, and
-        // `domains/d26_division_equipment_live.md` records no precision for the
+        // No retained evidence specifies reduced precision for the
         // equipment amount — while the replay use it does record (exact
         // per-variant old/new/delta arithmetic and an `unexplained_influx`
         // conservation badge) is an outcome test a rounded amount would falsify.
@@ -946,7 +945,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d26 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d26 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         for c in schema().collections {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -1007,7 +1006,7 @@ mod tests {
         //   * a real ZERO — `template_id == 0` with the gate SET. The fold does
         //     not reject it (`world_fold.rs::fold_division_equipment` only rejects a
         //     non-zero word with the gate CLEAR), so it is a value the grammar
-        //     admits and §3 keeps zero out of the three empty states,
+        //     admits and record-state contract keeps zero out of the three empty states,
         //   * `unknown` — the gate clear.
         //
         // There is no absent case and no null case because no field declares

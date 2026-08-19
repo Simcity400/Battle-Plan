@@ -5,7 +5,7 @@
 //! 38 engine `mapname` labels decoded from captured vertex buffers (cap
 //! height, baseline arc length, tracking, natural text width in font px) and
 //! joined 1:1 against the 1936 bundle placements. Captures validate, they
-//! never drive (`MAP_LABEL_LAW.md` §5) — the law here recomputes placements
+//! never drive — the law here recomputes placements
 //! from the bundle raster and must reproduce the engine sizes:
 //!
 //!   h_engine ≈ min(arc_ours / W_nat × cap_px, world_height)

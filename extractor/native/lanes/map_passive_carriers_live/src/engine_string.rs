@@ -1,6 +1,6 @@
 //! The engine's string object, read passively.
 //!
-//! `DOSSIER_ENGINE_PRIMITIVES.md` §3a proves the layout from the empty-string
+//! (`out[3] = 0xf`, `out[2] = 0`,
 //! `*(u8*)out = 0`) — MSVC `std::string`:
 //!
 //! ```text

@@ -1,9 +1,9 @@
 //! d36 `air_variant_reserves` — per-country stockpiled reserves of each air
 //! variant.
 //!
-//! Derived from `world_fold.rs:20813`-`:20931`
+//! Derived from `world_fold.rs:20789`-`:20907`
 //! (`fold_air_variant_reserves`), its payload constants at `:989`-`:990` and
-// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=20813-20931 sha256=0494555a8f3fb15f3c2401694cf45d691d481cc20aa9170d0a7c64477408f3bb closure=6f4e9d00e5e0e29c15d405f153cb8439a98874fc0761459fa2123d07c857fc27
+// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=20789-20907 sha256=0494555a8f3fb15f3c2401694cf45d691d481cc20aa9170d0a7c64477408f3bb closure=4a0a058f31a6608bce4a92ad731b6021c41f0ae10d6d2fd7db4b3deae0746f5f
 //! `:156`, the render at `world_fold.rs::build_designs`, and the collector read that produces
 //! the rows (`extractor/native/collector/src/attach_log.rs:55392`-`:55530`,
 //! `:71487`-`:71523`). There is no `extractor/documents/domains/d36_*.md`, so the
@@ -55,7 +55,7 @@
 //! `handle_compact_failure` (`:15320`) discards the whole record. There is
 //! therefore no path on which a d36 row exists and its amount does not. A
 //! stockpile of genuinely zero planes reads `amount_raw == 0`, and per
-//! `WIRE_FORMAT.md` §3 that is a real **Zero**, never one of the three empty
+//! that is a real **Zero**, never one of the three empty
 //! states.
 //!
 //! **`scale_raw` is not a field.** The fold asserts it equal to `FIXED_SCALE`
@@ -83,10 +83,10 @@
 //! `amount_raw` not at all, so neither does this mapper: a cutoff here would
 //! reject rows the recorder folds and make the measurement harness refuse a valid
 //! capture. [`EXACT_AMOUNT_RAW_BAND`] records where the raw-integer recovery
-//! stops being exact and why that residue is a `WIRE_FORMAT.md` §13 codec item
+//! stops being exact and why that residue requires a codec change
 //! rather than something the schema can fix.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: a reserve pool moves when production delivers or a wing draws, not on a
 //! clock-linear ramp. The mapper still takes `frame_tick` so every domain's
 //! boundary has one shape.
@@ -101,7 +101,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 36;
 pub const RESERVES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const TAG_DB_ID: u32 = 1;
     pub const VARIANT_ID: u32 = 2;
@@ -167,11 +167,11 @@ pub const SCALE_DIGITS: u8 = 5;
 ///
 /// Above the band the stored value is still a legal point of the declared
 /// `10^-5` grid and still within one unit in the last place of the source, and
-/// encode/decode remains exactly consistent (§6's escape rule keeps an unstable
+/// encode/decode remains exactly consistent (derived-field contract's escape rule keeps an unstable
 /// integer off the quantized path entirely, `value.rs:195`), but a consumer
 /// recovering the raw integer may see it differ by one. That residue is the same
 /// class of gap the recipe already records for `/32768` sources: closing it needs
-/// an integer-domain `Fixed` in the codec, a `WIRE_FORMAT.md` §13 item, not a
+/// an integer-domain `Fixed` in the codec, not a
 /// schema-side or mapper-side decision. It is in the deliverable's open
 /// questions.
 ///
@@ -217,15 +217,15 @@ pub fn schema() -> Schema {
             // (`world_fold.rs:15359`-`:15362`) and it persists across hours: the
             // fold patches and deletes against it rather than rebuilding the
             // table, which is what a keyed set needs — and only a keyed set has a
-            // delta grammar (§7.3).
+            // delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields: vec![
-                // ContentId because a country tag is content-defined (§5): a
+                // ContentId because a country tag is content-defined (content-identity contract): a
                 // manifest must resolve id 42 for it to keep its meaning under
                 // another mod set, which is the deciding question for
                 // ContentId-vs-Unsigned. d63 classes the same `tag_db_id` this
                 // way and d20 classes its `owner` country the same way. This is a
-                // ContentId **key** component — see the open questions; §13's
+                // ContentId **key** component — see the open questions; codec-measurement contract's
                 // manifest-id rule reorders keys, not just values.
                 Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                 // `Unsigned`, not `ContentId`: `variant_id` is a runtime catalog
@@ -250,7 +250,7 @@ pub fn schema() -> Schema {
                 // be exactly `10^5` before folding anything (`world_fold.rs::fold_air_variant_reserves`), so
                 // `fixed(5)` is the source's own grid and reproduces the source
                 // integer bit for bit over the whole accepted range (proved in
-                // `fixed_five_reproduces_every_raw_in_the_band`). §6's "exact
+                // `fixed_five_reproduces_every_raw_in_the_band`). derived-field contract's "exact
                 // unless justified" bar is met by a stronger fact than a precision
                 // argument: nothing is rounded at all. It also matters that the
                 // raw integer survives — the fold's own renderer emits
@@ -267,7 +267,7 @@ pub fn schema() -> Schema {
                 // quantizations share, so `exact` recovers the source integer over
                 // exactly the same band and spends 8 bytes doing it. Above that
                 // band (`EXACT_AMOUNT_RAW_BAND`) neither carries the integer
-                // exactly, and §6's escape rule (`value.rs:149`-`:165`) keeps the
+                // exactly, and derived-field contract's escape rule (`value.rs:149`-`:165`) keeps the
                 // wire *self*-consistent either way by pushing an unstable value
                 // onto the raw-f64 path. So `fixed(5)` never loses anything
                 // `exact` would have kept, and it is smaller and recovers the
@@ -458,7 +458,7 @@ pub fn row_flags(row: &[u8]) -> core::result::Result<u32, String> {
 /// onto its stored Record. `row` is the raw 24-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d36 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d36 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -474,7 +474,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d36 has no derived field; §6's transform input is unused. Named rather
+    // d36 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row)?;
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert_eq!(
             keys[1].kind,
@@ -848,7 +848,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; a reserve pool moves on
+        // derived-field contract derived fields are clock-linear integers; a reserve pool moves on
         // production and attrition, not on the clock, so `frame_tick` never
         // enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     fn a_zero_amount_is_a_value_not_an_empty_state() {
         // A country holding no planes of a variant it has designed: the row
-        // exists, the amount is 0. §3 keeps zero out of the three empty states.
+        // exists, the amount is 0. record-state contract keeps zero out of the three empty states.
         let c = collection();
         let r = record_from_row(&c, &live_row(41, 7318, 0), 0).expect("maps");
         let v = r.values[index_of(&c, field::AMOUNT)];
@@ -1099,7 +1099,6 @@ mod tests {
         assert!(record_from_row(&c, &raw_row(1, 2, ROW_FLAG_DELETED, 0, 0), 0).is_err());
         // ...and the fold rejects NOTHING about `amount_raw`, so neither does the
         // mapper: every `i64`, including the whole range outside the exactness
-        // band, maps. Regression for the round-1 review finding, whose reported
         // input was `2^51 + 1` — a value the collector and the fold both accept.
         for raw in [
             EXACT_AMOUNT_RAW_BAND,
@@ -1125,7 +1124,7 @@ mod tests {
         // stopped gating on magnitude: whatever the mapper produced, the bytes
         // reproduce it exactly and re-encode identically. Above
         // `EXACT_AMOUNT_RAW_BAND` the recovered *raw integer* may drift by one
-        // (see that constant), but the wire never disagrees with itself — §6's
+        // (see that constant), but the wire never disagrees with itself — derived-field contract's
         // escape rule puts an unstable value on the raw-f64 path instead.
         let c = collection();
         let mut raws: Vec<i64> = vec![

@@ -58,8 +58,8 @@
 //! closed here by design (named in the error): `u2`/`u3` UV sets, `lodperc`,
 //! and 3-component (non-uniform) anim scale.
 //!
-//! Mod compatibility (MOD_COMPATIBILITY.md, "the one rule"): all game-file
-//! reads go through [`GameFileResolver`]; `*_from_game_dir` helpers exist for
+//! Mod compatibility (the `PROJECT.md` heading "Content and mod contract"): all
+//! game-file reads go through [`GameFileResolver`]; `*_from_game_dir` helpers exist for
 //! tests and debug bins only and construct a vanilla resolver internally.
 
 use crate::{GameFileResolver, Result};
@@ -1840,7 +1840,7 @@ mod tests {
         assert!(err.to_string().contains("out of bounds"), "{err}");
     }
 
-    // --- resolver contract (MOD_COMPATIBILITY.md) ---
+    // --- resolver contract (`PROJECT.md`: "Content and mod contract") ---
 
     fn write_bytes(root: &Path, rel: &str, bytes: &[u8]) {
         let path = rel

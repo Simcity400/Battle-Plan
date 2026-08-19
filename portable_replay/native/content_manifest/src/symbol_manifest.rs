@@ -1,4 +1,5 @@
-//! Deterministic file-global symbol assignment for `WIRE_FORMAT.md` section 5.
+//! Deterministic file-global symbol assignment for the `PROJECT.md` heading
+//! "Time, identity, sessions, and files".
 //!
 //! The container supplies append ordinals, branch ids, ticks, and authenticated
 //! branch visibility. This module assigns stable ids and preserves the complete

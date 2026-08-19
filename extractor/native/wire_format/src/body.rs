@@ -1,6 +1,6 @@
-//! `BASELINE` and `DELTA` bodies, per `WIRE_FORMAT.md` §7.
+//! `BASELINE` and `DELTA` bodies.
 //!
-//! The minimality rules in §7.1 are enforced here rather than left to the caller:
+//! The minimality rules in delta-minimality contract are enforced here rather than left to the caller:
 //! every one of them exists because the alternative is a second legal encoding of
 //! "nothing happened", which both splits byte-identity and wastes bytes.
 
@@ -11,7 +11,7 @@ use crate::value::Value;
 use crate::varint::{read_varint, read_zigzag, write_varint, write_zigzag, Result, WireError};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A key tuple. §7.4 restricts components to kinds `0`, `1` and `5`, the three
+/// A key tuple. key-encoding contract restricts components to kinds `0`, `1` and `5`, the three
 /// that encode as a self-delimiting varint or zigzag on their own.
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Key(pub Vec<i128>);
@@ -33,7 +33,7 @@ pub struct Row {
 pub type KeyedState = BTreeMap<Key, Record>;
 
 /// The reconstructed content of one collection, preserving the semantics its
-/// §7.3 shape declares. A map is correct only for a keyed set: either ordered
+/// collection-shape contract shape declares. A map is correct only for a keyed set: either ordered
 /// variant would lose source order, and an occurrence list would additionally
 /// collapse legitimate duplicates.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +63,7 @@ impl From<KeyedState> for CollectionState {
     }
 }
 
-/// §7.4 key components are `varint` or `zigzag`, so each has a representable
+/// key-encoding contract key components are `varint` or `zigzag`, so each has a representable
 /// range. `Key` holds `i128` to carry both without a per-kind enum, which means
 /// the range has to be checked rather than assumed — an unchecked `as u64` maps
 /// `u64::MAX + 1` onto `0` and emits another key's bytes.
@@ -115,7 +115,7 @@ fn read_key_component(buf: &[u8], pos: usize, kind: Kind) -> Result<(i128, usize
     })
 }
 
-/// §7.4 ordered-keyed rows carry every component absolute. There is no previous
+/// key-encoding contract ordered-keyed rows carry every component absolute. There is no previous
 /// key because source order need not be monotone in any component.
 fn write_absolute_key(out: &mut Vec<u8>, collection: &Collection, key: &Key) -> Result<()> {
     let kinds: Vec<Kind> = collection.key_fields().iter().map(|f| f.kind).collect();
@@ -143,13 +143,13 @@ fn read_absolute_key(
     }
     let key = Key(components);
     // An absolute component is decoded by its kind, but this check is kept on
-    // the read side deliberately: §7.4's range rule is a property of every key
+    // the read side deliberately: key-encoding contract's range rule is a property of every key
     // path, not an assumption tied to today's varint implementation.
     check_key(&kinds, &key)?;
     Ok((key, pos))
 }
 
-/// §7.4. In a sorted list the first component is non-decreasing, so its
+/// key-encoding contract. In a sorted list the first component is non-decreasing, so its
 /// difference is never negative and a plain `varint` beats `zigzag` by a bit.
 /// Later components jump around under sort and would not compress, so they are
 /// absolute.
@@ -159,7 +159,7 @@ fn write_sorted_keys(out: &mut Vec<u8>, collection: &Collection, keys: &[Key]) -
     let mut previous_key: Option<&Key> = None;
     for key in keys {
         check_key(&kinds, key)?;
-        // §2 sorts by the FULL key tuple, so checking the first component alone
+        // canonical ordering contract sorts by the FULL key tuple, so checking the first component alone
         // would accept (1,5) before (1,3).
         if let Some(prev) = previous_key {
             if key <= prev {
@@ -218,8 +218,8 @@ fn read_sorted_key(
 }
 
 /// Encode one collection's complete contribution. This is deliberately shared
-/// by `BASELINE` and ordered `DELTA`: §7 requires the replacement bytes to be
-/// identical, so a second ordered-row encoder would itself violate §2.
+/// by `BASELINE` and ordered `DELTA`: state-delta contract requires the replacement bytes to be
+/// identical, so a second ordered-row encoder would itself violate canonical ordering contract.
 fn encode_complete_collection(
     collection: &Collection,
     state: &CollectionState,
@@ -349,7 +349,7 @@ fn complete_collection_bytes(
     Ok(bytes)
 }
 
-/// `BASELINE` body for all §7.3 shapes.
+/// `BASELINE` body for all collection-shape contract shapes.
 pub fn encode_shaped_baseline(
     schema: &Schema,
     states: &[CollectionState],
@@ -405,7 +405,7 @@ pub fn decode_baseline(
     Ok((keyed, pos))
 }
 
-/// What one collection contributes to a `DELTA` (§7).
+/// What one collection contributes to a `DELTA` (state-delta contract).
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyedDelta {
     /// Exactly the keys that are new plus the surviving keys whose record differs.
@@ -422,7 +422,7 @@ impl KeyedDelta {
 
 /// What one collection contributes to a shaped `DELTA`. Ordered variants are
 /// complete replacement content; they deliberately have no changed-row or
-/// tombstone form (§7.3).
+/// tombstone form (collection-shape contract).
 #[derive(Clone, Debug, PartialEq)]
 pub enum CollectionDelta {
     Keyed(KeyedDelta),
@@ -430,7 +430,7 @@ pub enum CollectionDelta {
     OrderedOccurrence(Vec<Record>),
 }
 
-/// §7.1 violations. Each admits a second encoding of the same state.
+/// delta-minimality contract violations. Each admits a second encoding of the same state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MinimalityError {
     /// The delta or prior-state list does not have one entry per collection.
@@ -441,7 +441,7 @@ pub enum MinimalityError {
     EmptyContribution { collection_id: u32 },
     /// A key appearing twice in one list.
     DuplicateKey { collection_id: u32 },
-    /// A key list not ascending by the full tuple (§2). Distinct from a
+    /// A key list not ascending by the full tuple (canonical ordering contract). Distinct from a
     /// duplicate: `(1,5)` before `(1,3)` repeats no key and is still illegal.
     KeysNotSorted { collection_id: u32 },
     /// A key whose component count is not the schema's.
@@ -460,7 +460,7 @@ pub enum MinimalityError {
     MissingChangedRow { collection_id: u32 },
     /// The typed state or contribution does not match the schema's shape.
     ShapeMismatch { collection_id: u32 },
-    /// An ordered set bit re-emits the reconstructed prior content (§7.1).
+    /// An ordered set bit re-emits the reconstructed prior content (delta-minimality contract).
     ReplacementMatchesPrior { collection_id: u32 },
     /// A changed row for a key that is not in the next state.
     RowNotInNextState { collection_id: u32 },
@@ -468,7 +468,7 @@ pub enum MinimalityError {
     RowDoesNotMatchNextState { collection_id: u32 },
 }
 
-/// Build the one minimal delta from prior to next, per §7.1. This is the differ:
+/// Build the one minimal delta from prior to next, per delta-minimality contract. This is the differ:
 /// producing it by rule rather than by hand is what makes minimality checkable.
 pub fn diff(collection: &Collection, prior: &KeyedState, next: &KeyedState) -> KeyedDelta {
     let mut changed = Vec::new();
@@ -489,7 +489,7 @@ pub fn diff(collection: &Collection, prior: &KeyedState, next: &KeyedState) -> K
     KeyedDelta { changed, tombstones }
 }
 
-/// Verify a delta is the minimal one for this transition (§7.1).
+/// Verify a delta is the minimal one for this transition (delta-minimality contract).
 pub fn check_minimal(
     collection: &Collection,
     prior: &KeyedState,
@@ -746,7 +746,7 @@ pub fn collection_stored_eq(
         == complete_collection_bytes(collection, right)?)
 }
 
-/// Build the sole legal contribution for a transition. Keyed sets use §7.2;
+/// Build the sole legal contribution for a transition. Keyed sets use update-row contract;
 /// ordered shapes replace their complete content when (and only when) it differs.
 pub fn diff_shaped(
     collection: &Collection,
@@ -774,7 +774,7 @@ pub fn diff_shaped(
     }
 }
 
-/// `DELTA` body for all §7.3 shapes.
+/// `DELTA` body for all collection-shape contract shapes.
 pub fn encode_shaped_delta(
     schema: &Schema,
     priors: &[CollectionState],

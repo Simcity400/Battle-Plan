@@ -1,14 +1,14 @@
-//! Timeline → topbar / ideology bindings (D1 + D2 lane). The chrome law the
-//! layout side is gated against is `replay_interface/documents/UI_LAYOUT_LAW.md`.
+//! Timeline → topbar / ideology bindings. The chrome law the
+//! layout side is gated by the owning composition modules and tests.
 //!
 //! This module is the *population* seam: it maps `replay_core`'s typed
 //! `WorldFrame` views (topbar scalars, country identity) onto the
 //! layout-only [`TopbarBinding`] and the ideology-keyed flag/localisation
 //! candidates. It parses no recording bytes — every value comes through a
-//! typed view (Constraint 2). It fabricates no value: a `Leaf` that is
+//! typed view. It fabricates no value: a `Leaf` that is
 //! `Absent`/`Unobtained`, or a view whose status is not `Present`, renders
 //! the **fail-closed absent form** (a `None` field / empty candidate set),
-//! never a default like `0` (Constraint 3).
+//! never a default like `0`.
 //!
 //! ## Number formatting is UNKNOWN
 //!
@@ -90,7 +90,7 @@ fn measured_ratio(leaf: &Leaf<f64>) -> Option<f32> {
 fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.political_power = raw_f64(&scalars.political_power);
     // stability / war_support are recorded as 0.0..=1.0 ratios
-    // (REPLAY_SCHEMA.md "stability"/"war_support") and the shipped topbar
+    // and the shipped topbar
     // shows them as percentages. They therefore take the SAME percent
     // projection as the sibling `world_tension_percent` below
     // (`topbar::format_percent`), not the generic raw fallback.
@@ -743,7 +743,7 @@ pub fn world_tension_consumers_from_frame(
 
 /// The LAB4 ideology-resolved country **display-name** localisation key
 /// candidates, most specific first (the label law in
-/// `replay_interface/documents/MAP_LABEL_LAW.md`):
+/// `map_label_law.rs`):
 /// `<cosmetic>_<ideology>` → `<cosmetic>` → `<tag>_<ideology>` → `<tag>` →
 /// bare `<tag>`. A key is only emitted when its inputs exist; the bare tag is
 /// always the final fail-closed fallback.
@@ -777,8 +777,8 @@ pub fn country_name_key_candidates(
 
 /// The ideology-keyed flag-texture candidates for a POV's topbar shield, in
 /// engine precedence (cosmetic before tag, `_<ideology>` before base), pinned
-/// to the `gfx/flags/medium/` folder (UI_LAYOUT_LAW §2 / topbar
-/// `GFX_shield_medium`). Thin wrapper over [`flag_candidates_for_size`] keyed
+/// to the `gfx/flags/medium/` folder used by topbar `GFX_shield_medium`. Thin
+/// wrapper over [`flag_candidates_for_size`] keyed
 /// off a [`CountryIdentity`] view.
 pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<String> {
     flag_candidates_for_size(
@@ -824,7 +824,7 @@ pub fn resolve_country_name(
 //     the game's outliner shows a formatted unit *name* + status; no shipped file
 //     citation for that formatter exists in this decoupled context, so the row
 //     label is the raw stable identity string (UNKNOWN formatting, rendered
-//     raw per Constraint 3).
+//     raw rather than interpreted).
 //   * Row *progress* is fail-closed `None` — no cited law maps unit
 //     strength/org onto the outliner progress bar.
 //
@@ -1102,7 +1102,7 @@ fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
 ///
 /// The d18 `_r2_tag_db_id` map is authoritative: when the frame carries a
 /// measured id for `pov_tag`, that id is the ONLY numeric identity used. The
-/// canonical-numeric-spelling fallback (REPLAY_SCHEMA.md, subject-autonomy
+/// canonical-numeric-spelling fallback (subject-autonomy
 /// identity law) applies only when `pov_tag` is NOT a recorded country tag —
 /// a real three-character tag may be all digits (e.g. `"123"`), and parsing
 /// it would otherwise match unrelated rows whose `*_tag_db_id` happens to
@@ -1268,8 +1268,8 @@ pub struct ClockDate {
     pub hour: u32,
 }
 
-/// Parse a Clausewitz recording date string (`Y.M.D.H`, the REPLAY_SCHEMA
-/// `date` shape). Fail-closed: returns `None` unless year/month/day/hour all
+/// Parse a Clausewitz recording date string (`Y.M.D.H`). Fail-closed: returns
+/// `None` unless year/month/day/hour all
 /// parse, `month` is 1..=12, `day` is 1..=31, and `hour` is 0..=23. A
 /// date-only `Y.M.D` string is refused — the clock renders the hour, and a
 /// missing hour must not become a fabricated midnight.
@@ -1378,9 +1378,9 @@ pub fn apply_clock(binding: &mut TopbarBinding, clock: &ClockBinding) {
 // the game's state tooltip is computed-not-stored (a localised sentence + building
 // breakdown). Only the *data* it keys on — the state's owner and controller
 // tags — is timeline-derived; this seam surfaces exactly that, fail-closed, and
-// leaves the localised sentence composition descoped (D7 lane).
+// leaves the localised sentence composition descoped.
 // Row text formatting is UNKNOWN → the raw stable tag is carried, never a
-// fabricated localised phrase (Constraint 3).
+// fabricated localised phrase.
 
 /// Read-only state tooltip data bound from the timeline (D7). `owner` comes
 /// from `owner_by_state`, `controller` from `control_by_state`; each is `Some`

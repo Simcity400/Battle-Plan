@@ -44,15 +44,6 @@ pub const ACE_ROW_BIND_RVA: u32 = 0x0201_EDC0;
 pub const SPRITE_SET_RVA: u32 = 0x0229_A780;
 pub const TRAIT_TOOLTIP_FORMATTER_RVA: u32 = 0x01CF_F880;
 
-// Retained exact-a729 ABI/sentinel authorities:
-// - trait refresh decompile d44c1228..., instructions ea9ad44f...;
-// - ace refresh decompile cfc1c6ea..., instructions 6059b45a...;
-// - ace bind decompile abb2ce24..., instructions ae58cf9c...;
-// - sprite assignment decompile d26b9550..., instructions d9794c3d...; and
-// - trait tooltip formatter decompile 7283c463..., instructions 87bf138e....
-// The complete hashes and closed historical job identities are recorded in
-// H_A39_PREREQUISITE_ENGINEERING_20260720.md.
-
 /// The current eight-site owner (four local D82 hooks plus four shared A25
 /// runtime-text hooks) is UI-conditional. It is not an unconditional
 /// simulation source and therefore is not promotable for passive production.

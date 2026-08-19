@@ -548,15 +548,6 @@ pub fn weather_visibility_law(
     })
 }
 
-/// Exact-a729 camera alpha multiplier for the primary precipitation role.
-///
-/// This compatibility helper cannot represent the separate fading/cloud role;
-/// production callers consume [`WeatherVisibilityLaw`] directly.
-#[deprecated(note = "use weather_visibility_law for role-specific primary/fading visibility")]
-pub fn weather_camera_fade(camera_distance: f32, defines: &WeatherFadeDefines) -> Result<f32> {
-    Ok(weather_visibility_law(camera_distance, defines)?.primary_alpha)
-}
-
 /// Exact `standardfuncsgfx.fxh` distance-fog factor.
 pub fn weather_distance_fog_factor(
     camera_position: [f32; 3],
@@ -1352,170 +1343,6 @@ pub const MAP_PLANE_X: f32 = 5632.0;
 /// See [`MAP_PLANE_X`].
 pub const MAP_PLANE_Z: f32 = 2048.0;
 
-/// Legacy diagnostic top-down weather overlay: RGBA8
-/// premultiplied-over-nothing atop a transparent map plane. It draws every
-/// resolved cloud emitter at its
-/// `map/weatherpositions.txt` `(x,z)` location, sprite-splatted at the asset
-/// `size_mean` (map units -> pixels), tinted by `ToLinear(color)` and composited
-/// with the asset's `ParticleBlend`.
-///
-/// This is not a production rendering or promotion authority. The shipped
-/// `particle.shader` draws camera-facing billboards through the viewer-owned
-/// XMAP03 `ViewProjectionMatrix`, and XMAP20 owns the full particle simulation.
-/// This diagnostic is a deliberately *orthographic top-down* projection so
-/// some file-derived
-/// parameters (position, size, color, blend, alpha curve) can be verified
-/// without inventing a camera. The per-particle `smoke_fade` phase is sampled at
-/// the curve peak (the representative brightest frame); the live per-particle
-/// ages are runtime state.
-pub struct WeatherOverlay {
-    /// Overlay width in pixels.
-    pub width: usize,
-    /// Overlay height in pixels.
-    pub height: usize,
-    /// Straight-alpha RGBA8, row-major, top-left origin.
-    pub rgba: Vec<u8>,
-}
-
-/// Render a top-down [`WeatherOverlay`] for one weather type applied to every
-/// region that has a `map/weatherpositions.txt` emitter (or, if
-/// `only_regions` is `Some`, just those). `width`/`height` set the output raster;
-/// the map plane `[0,MAP_PLANE_X] x [0,MAP_PLANE_Z]` maps linearly to it.
-#[deprecated(
-    note = "diagnostic mean/peak preview only; production weather is XMAP19 content plus XMAP20 simulation"
-)]
-pub fn render_weather_overlay(
-    resolver: &GameFileResolver,
-    weather: WeatherType,
-    width: usize,
-    height: usize,
-    only_regions: Option<&[u32]>,
-) -> Result<WeatherOverlay> {
-    let positions = weather_emitters_from_resolver(resolver)?;
-
-    // Resolve the two cloud laws (big/small) + their textures once.
-    let mut resolved: std::collections::HashMap<
-        WeatherPositionSize,
-        (CloudRenderLaw, (usize, usize, Vec<u8>)),
-    > = std::collections::HashMap::new();
-    for size in [WeatherPositionSize::Big, WeatherPositionSize::Small] {
-        if let Some(law) = cloud_law_from_resolver(resolver, weather, size)? {
-            let tex = cloud_texture_rgba_from_resolver(resolver, &law)?;
-            resolved.insert(size, (law, tex));
-        }
-    }
-
-    // Accumulate as linear-ish straight RGBA in f32 over a transparent plane.
-    let mut acc = vec![[0.0f32; 4]; width * height];
-
-    for pos in &positions.emitters {
-        if let Some(regions) = only_regions {
-            if !regions.contains(&pos.region_id) {
-                continue;
-            }
-        }
-        let Some((law, tex)) = resolved.get(&pos.size) else {
-            continue;
-        };
-        // Peak phase of the alpha curve is the representative frame — the
-        // curve's actual maximum, computed from the asset when the law was
-        // resolved (the shipped snow_clouds smoke_fade peaks at 0.914, not
-        // 1.0).
-        let anim_mul = law.alpha_anim_peak;
-        let vcolor = law.linear_vertex_color(anim_mul);
-        splat_sprite(
-            &mut acc,
-            width,
-            height,
-            pos.position[0],
-            pos.position[2],
-            law.size_mean,
-            tex,
-            vcolor,
-            law.blend,
-        );
-    }
-
-    // Convert accumulated linear color back to gamma8 for a viewable PNG.
-    let mut rgba = vec![0u8; width * height * 4];
-    for (i, px) in acc.iter().enumerate() {
-        let g = |c: f32| (c.clamp(0.0, 1.0).powf(1.0 / TO_LINEAR_GAMMA) * 255.0 + 0.5) as u8;
-        rgba[i * 4] = g(px[0]);
-        rgba[i * 4 + 1] = g(px[1]);
-        rgba[i * 4 + 2] = g(px[2]);
-        rgba[i * 4 + 3] = (px[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-    }
-
-    Ok(WeatherOverlay {
-        width,
-        height,
-        rgba,
-    })
-}
-
-/// Splat one sprite (its RGBA texture * linear vertex color) centred at world
-/// `(wx, wz)` with world `size` (a square), onto the accumulation buffer using
-/// the given blend. The sprite's own texel alpha multiplies the vertex alpha
-/// (matching `tex2D(DiffuseMap,uv) * vColor` where the texture supplies alpha).
-#[allow(clippy::too_many_arguments)]
-fn splat_sprite(
-    acc: &mut [[f32; 4]],
-    width: usize,
-    height: usize,
-    wx: f32,
-    wz: f32,
-    size: f32,
-    tex: &(usize, usize, Vec<u8>),
-    vcolor: [f32; 4],
-    blend: ParticleBlend,
-) {
-    let (tw, th, ref data) = *tex;
-    if tw == 0 || th == 0 {
-        return;
-    }
-    // World -> pixel scale.
-    let px_per_wx = width as f32 / MAP_PLANE_X;
-    let pz_per_wz = height as f32 / MAP_PLANE_Z;
-    let half_w = size * 0.5 * px_per_wx;
-    let half_h = size * 0.5 * pz_per_wz;
-    let cx = wx * px_per_wx;
-    let cy = wz * pz_per_wz;
-    let x0 = (cx - half_w).floor().max(0.0) as usize;
-    let x1 = ((cx + half_w).ceil() as i64).clamp(0, width as i64) as usize;
-    let y0 = (cy - half_h).floor().max(0.0) as usize;
-    let y1 = ((cy + half_h).ceil() as i64).clamp(0, height as i64) as usize;
-
-    for py in y0..y1 {
-        for px in x0..x1 {
-            // Sprite UV in [0,1].
-            let u = ((px as f32 + 0.5) - (cx - half_w)) / (2.0 * half_w).max(f32::EPSILON);
-            let v = ((py as f32 + 0.5) - (cy - half_h)) / (2.0 * half_h).max(f32::EPSILON);
-            if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
-                continue;
-            }
-            let tx = ((u * tw as f32) as usize).min(tw - 1);
-            let ty = ((v * th as f32) as usize).min(th - 1);
-            let toff = (ty * tw + tx) * 4;
-            // Texture is straight sRGB8 RGBA; linearize RGB, keep alpha.
-            let tr = (data[toff] as f32 / 255.0).powf(TO_LINEAR_GAMMA);
-            let tg = (data[toff + 1] as f32 / 255.0).powf(TO_LINEAR_GAMMA);
-            let tb = (data[toff + 2] as f32 / 255.0).powf(TO_LINEAR_GAMMA);
-            let ta = data[toff + 3] as f32 / 255.0;
-            let src = [
-                tr * vcolor[0],
-                tg * vcolor[1],
-                tb * vcolor[2],
-                ta * vcolor[3],
-            ];
-            let idx = py * width + px;
-            let dst = [acc[idx][0], acc[idx][1], acc[idx][2]];
-            let out = blend.blend_over(src, dst);
-            // Track coverage alpha for the PNG (max of contributions).
-            acc[idx] = [out[0], out[1], out[2], acc[idx][3].max(src[3])];
-        }
-    }
-}
-
 // -------------------------------------------------------------------------
 // Small parsing helpers (self-contained; no external PDX parser dependency).
 // -------------------------------------------------------------------------
@@ -2285,7 +2112,6 @@ entity = {
         assert_eq!(at(300.0).playback_rate, 1.0);
         assert!((at(400.0).playback_rate - 0.575).abs() < 1e-6);
         assert_eq!(at(500.0).playback_rate, 0.15);
-        assert_eq!(weather_camera_fade(900.0, &d).expect("fade"), 1.0);
     }
 
     #[test]

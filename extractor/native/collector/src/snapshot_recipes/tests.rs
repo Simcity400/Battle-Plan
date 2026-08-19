@@ -156,7 +156,7 @@ fn proximity_alone_never_merges() {
     assert_eq!(plan_copies(&unrelated_objects, &policy).len(), 2);
 }
 
-/// SENTINEL. The gap-curve verdict's §4 correction: a window anchor is a
+/// SENTINEL. A window anchor is a
 /// DEREFERENCED POINTER VALUE, never a root read event. Treating
 /// `AnchorKind::Root` as a generic anchor makes this fail.
 #[test]
@@ -3408,8 +3408,8 @@ fn windowed_report(through_pointer: bool, gap: u64) -> RecipeReport {
 /// element address it computed. If the rebuild ever names the wrong ADDRESS,
 /// two windows under one pointer stop sharing an anchor and the generic tier
 /// stops bridging between them. If it ever names the wrong KIND, a root's
-/// windows start bridging — which is the proximity merge §4 of the gap-curve
-/// verdict refuses, and it would over-copy across an unproven neighbourhood.
+/// windows start bridging — a proximity merge that would over-copy across an
+/// unproven neighbourhood.
 ///
 /// Both directions are asserted here, on window pairs that differ in nothing
 /// else. A production change that made `TaskAnchor::at` return a constant

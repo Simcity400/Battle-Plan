@@ -1,6 +1,6 @@
-//! Regression tests for round 6. Three of the four findings were the same shape:
-//! a rule enforced in the encoder but missing from the shared `validate`, so an
-//! update — which touches only its changed fields — carried the violation past.
+//! Regression tests for rules shared by the encoder and `validate`. A rule
+//! enforced only in the encoder lets an
+//! update — which touches only its changed fields — carry the violation past.
 
 use wire_format::body::{key, KeyedState};
 use wire_format::columnar::encode_baseline_columnar;
@@ -52,7 +52,7 @@ fn an_out_of_range_enum_on_an_unchanged_field_is_rejected() {
     assert_eq!(back.values, next.values);
 }
 
-/// §4 gives a monotone counter an unsigned absolute form; the zigzag difference
+/// schema-kind contract gives a monotone counter an unsigned absolute form; the zigzag difference
 /// is a delta *encoding*, not a value a record holds. `matches_kind` granted
 /// `Signed` for `Kind::Monotone`, and once `validate` became its own consumer
 /// that grant let one past on an unchanged field.

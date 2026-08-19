@@ -1,6 +1,6 @@
-//! B2 label residuals — shipped glyph-atlas laws (FILE, byte/float-exact).
+//! Shipped glyph-atlas laws (byte/float-exact).
 //!
-//! Two of the four B2 map-label residuals are pure shipped-file laws about the
+//! These map-label properties are pure shipped-file laws about the
 //! country-name font `gfx/fonts/hoi_mapfont4.dds` / `.fnt`. This gate locks
 //! them against the shipped bytes (skips when the vanilla install is absent, as
 //! the other label gates do — captures/rasters validate, they never drive).
@@ -8,8 +8,8 @@
 //! 1. **Per-glyph advance table source + NO kerning.** The engine advances the
 //!    label pen by the AngelCode BMFont `xadvance` field of each `char` line in
 //!    `hoi_mapfont4.fnt`; the font ships **zero** `kerning` pairs, so there is
-//!    no kerning term to port. The LAB3 "V->I negative kerning" sub-0.4-wu
-//!    residual (`MAP_LABEL_LAW.md` §5) is the per-glyph `xoffset` placement
+//!    no kerning term to port. The apparent "V->I negative kerning" sub-0.4-wu
+//!    residual is the per-glyph `xoffset` placement
 //!    delta (BMFont draws each quad at `pen + xoffset`), not a kerning law —
 //!    computed here from the shipped metrics (I.xoffset - V.xoffset = 4 font
 //!    px). Closes the "kerning table / glyph advance source" residual as FILE.
@@ -77,7 +77,7 @@ fn glyph_advance_table_is_fnt_xadvance_with_no_kerning() {
 
     // Every glyph carries a parseable `xadvance` — this IS the advance table.
     // Space (id 32) carries a nonzero advance with a near-zero rect (the engine
-    // advances the pen over the space but emits no quad, LAB3 gap test).
+    // advances the pen over the space but emits no quad).
     let advance_of = |id: u32| -> Option<i32> {
         char_lines
             .iter()
@@ -94,12 +94,12 @@ fn glyph_advance_table_is_fnt_xadvance_with_no_kerning() {
     assert_eq!(advance_of(b'V' as u32), Some(47), "V xadvance = 47 font px");
     assert_eq!(advance_of(b'I' as u32), Some(33), "I xadvance = 33 font px");
 
-    // The LAB3 "V->I negative kerning" residual is the per-glyph `xoffset`
+    // The apparent "V->I negative kerning" residual is the per-glyph `xoffset`
     // delta, NOT a kerning term: BMFont places each quad at `pen + xoffset`, so
     // the quad-origin-to-quad-origin distance differs from the pen advance by
     // `xoffset[next] - xoffset[prev]`. For V->I that is I(1) - V(-3) = 4 font
     // px; at the GAPS_4 SOVIETUNION scale ~0.0751 wu/px that is ~0.30 wu, which
-    // is the "<=0.4 wu, largest V->I" residual MAP_LABEL_LAW §5 attributed to
+    // is the measured "<=0.4 wu, largest V->I" residual attributed to
     // kerning. There is no kerning pair for (V,I) — the font has none at all.
     let v_off = xoffset_of(b'V' as u32).expect("V xoffset");
     let i_off = xoffset_of(b'I' as u32).expect("I xoffset");
@@ -112,7 +112,7 @@ fn glyph_advance_table_is_fnt_xadvance_with_no_kerning() {
     );
 
     // Bound the placement-vs-advance residual family over the alphabet the
-    // engine actually draws map labels in: uppercase A-Z (LAB4 — the 23 decoded
+    // engine actually draws map labels in: uppercase A-Z (the 23 decoded
     // engine labels are all caps). Every A-Z xoffset lies in [-3, 3], so the
     // per-glyph placement term is <= 3 font px and any consecutive-pair delta
     // <= 6 font px (~0.45 wu at the label scale) — it is NOT a hidden kerning

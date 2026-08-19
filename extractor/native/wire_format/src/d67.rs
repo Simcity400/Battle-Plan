@@ -1,15 +1,14 @@
 //! d67 `country_dynamic_modifiers_live` — the per-country active
 //! dynamic-modifier **instance** set, schema-v2 (`DMI2`) grammar only.
 //!
-//! Derived from `world_fold.rs:13372`-`:13825`
+//! Derived from `world_fold.rs:13355`-`:13807`
 //! (`fold_country_dynamic_modifiers` and the
 //! `fold_country_dynamic_modifier_instances` it delegates to), the payload codec
-// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=13372-13825 sha256=e7139ddd48b64d81eaabb1ef67183603160c15e33813bfcd8275d9b475d674b1 closure=25092ccac099010f8b4c904c8c8cd4dcc6362b3a3613a2b0e9cce4642c42bbc5
+// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=13355-13807 sha256=5b2eba3729d00a42e478e09dc13445adaa7b273bf1d61c9b1c00d38cb7b40a17 closure=11c4c23cf82fe15e9bd2f5ba29ed5b1e8ecc0521a551e8e84fe38a98eebd6118
 //! `extractor/native/compact_contract/src/dynamic_modifiers.rs`, the collector
 //! read at `extractor/native/collector/src/attach_log.rs:61148`-`:61371`, and the
 //! entry decoder `extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs`.
-//! `domains/UNDOCUMENTED_DOMAINS.md` — d67 has no dossier, so those four are the
-//! whole basis.
+//! Those four sources are the field-level basis.
 //!
 //! # Which grammar this module implements
 //!
@@ -64,7 +63,7 @@
 //! | `+20` | u32 | `id_blob_bytes` | |
 //! | `+24` | u32 | `total_value_count` | |
 //! | `+28` | u32 | `status_flags` | the failure/exclusion word |
-//! | `+32` | u32 | `zero_removal_count` | §9 events — stop-reported, see below |
+//! | `+32` | u32 | `zero_removal_count` | event-continuity contract events — stop-reported, see below |
 //! | `+36` | u32 | `authority_kind` = 1 | `:31` |
 //! | `+40` | 32×u8 | `executable_sha256` | must equal a729, `:32` |
 //! | `+72` | 32×u8 | `static_authority_receipt_sha256` | must equal, `:37` |
@@ -98,7 +97,7 @@
 //!
 //! # Shape: two collections, and why the value vector is a child keyed set
 //!
-//! One instance carries a **variable-arity** `values_raw: Vec<i64>`. §7 has no
+//! One instance carries a **variable-arity** `values_raw: Vec<i64>`. state-delta contract has no
 //! variable-arity field, so the vector is either a child collection or a stop.
 //! It is a child collection, keyed `(owner_tag_db_id, modifier_id,
 //! value_ordinal)`, on the recipe's step-5 test: **the position must persist
@@ -153,7 +152,7 @@
 //!   modifier has no expiry countdown, so the concept does not apply to that row
 //!   — d20's `move_target_province` on a division that is not moving, not d20's
 //!   `owner` pointing at no country. The fold's JSON says `null` for it
-//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`, `Option<u32>` serialized), which per §3 decides
+//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`, `Option<u32>` serialized), which per record-state contract decides
 //!   value-vs-nothing and nothing else; the three-way choice is made here.
 //!
 //! Every other field is concrete in every row the grammar admits, so **no field
@@ -162,11 +161,11 @@
 //!
 //! # What this port does not carry
 //!
-//! - **`zero_removals` are §9 events and are stop-reported.** They are a
+//! - **`zero_removals` are event-continuity contract events and are stop-reported.** They are a
 //!   happened-at-tick history — a synchronous zero observed inside the engine's
 //!   erase path before the row is destroyed (`dynamic_modifiers.rs:60`-`:63`) —
 //!   admitted only against the frame's own hour and against a lifecycle prior
-//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`). The §9 event codec is available, but this
+//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`). The event-continuity contract event codec is available, but this
 //!   d67 event sub-stream remains independently unported and unevidenced.
 //!   [`fold_payload`] therefore **refuses** a frame carrying one instead of
 //!   dropping the events silently:
@@ -179,7 +178,7 @@
 //!   are the recipe's "value the fold hard-enforces as a function of carried
 //!   state": a reader recomputes them from this schema's own instance sequence.
 //!   The one input they need that state does not carry is the *continuity* flag,
-//!   which is a stream-level gap signal. The §8 codec exists, but d67's reader
+//!   which is a stream-level gap signal. The gap contract codec exists, but d67's reader
 //!   integration has not yet wired that continuity input — recorded as a
 //!   caveat, not encoded.
 //! - **`elapsed_wall_ms`** is frame timing, not state.
@@ -194,12 +193,12 @@
 //! `None` reproduces "no roster this hour". The capture carries d18 on
 //! 1033/1033 hours.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! `remaining_days` is a *day* counter decremented on the owning country's daily
 //! tick, whose phase is deliberately not encoded (`timed_instance_exact.rs:5`-`:9`),
 //! so it is not a clock-linear function of the hourly frame tick and cannot be a
-//! §6 derived field. The mappers still take `frame_tick` so every domain's
+//! derived-field contract derived field. The mappers still take `frame_tick` so every domain's
 //! boundary has one shape.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -221,7 +220,7 @@ pub const INSTANCES_INDEX: usize = 0;
 pub const VALUES_INDEX: usize = 1;
 pub const COLLECTION_COUNT: usize = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. They are assigned per domain, so the two collections share the ids of
 /// the concepts they share (d23's convention, `d23.rs:9`).
 pub mod field {
@@ -291,13 +290,13 @@ pub const FLAG_REMAINING_DAYS: u16 = 1 << 1;
 /// unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u16 = FLAG_ENABLED | FLAG_REMAINING_DAYS;
 
-// --- §5 symbols --------------------------------------------------------------
+// --- content-identity contract symbols --------------------------------------------------------------
 
 /// The `modifier_id` vocabulary, as a symbol table.
 ///
-/// §5: "Country tags, equipment names, province and state ids are
+/// content-identity contract: "Country tags, equipment names, province and state ids are
 /// content-defined. The stream carries manifest ids as varints, never text"
-/// (`WIRE_FORMAT.md:346`-`:351`). A dynamic-modifier definition id is a mod-set
+/// A dynamic-modifier definition id is a mod-set
 /// content token — `GER_wunderwaffen_modifier` names whatever the loaded content
 /// defines — so it travels as a `ContentId` resolved through a table the caller
 /// supplies, and because `ContentId` is a legal key kind
@@ -321,7 +320,7 @@ pub const KNOWN_FLAGS: u16 = FLAG_ENABLED | FLAG_REMAINING_DAYS;
 /// the second byte. The measurement therefore reports the stand-in's cost **and
 /// the exact band** over all assignments of this vocabulary
 /// (`bin/bench_real_d67.rs` prints the best- and worst-case symbol-id byte
-/// totals). §5's ids are file-global, so an assignment over the whole content
+/// totals). content-identity contract's ids are file-global, so an assignment over the whole content
 /// set can widen the varint further; that is claimed nowhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
@@ -424,16 +423,16 @@ pub fn schema() -> Schema {
         // known country's list before writing the measured ones), but
         // `(owner_tag_db_id, modifier_id)` is a stable identity that persists
         // across hours — which is what a keyed set needs, and only a keyed set
-        // has a delta grammar (§7.3). Measured: 162 instances an hour for 1033
+        // has a delta grammar (collection-shape contract). Measured: 162 instances an hour for 1033
         // hours with 13 changed rows in total.
         shape: Shape::KeyedSet,
         fields: vec![
             // The owning country. `ContentId` because a country tag is
-            // content-defined (§5) — the same identity d63 keys by
+            // content-defined (content-identity contract) — the same identity d63 keys by
             // (`d63.rs:127`) and d20 classes as `ContentId`.
             Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),
             // The modifier definition id. Content-defined text → a `ContentId`
-            // through [`Symbols`] (§5, step 3's rule; d29 is the worked
+            // through [`Symbols`] (content-identity contract, step 3's rule; d29 is the worked
             // example).
             Field::new(f::MODIFIER_ID, Kind::ContentId).key(1),
             // The instance's position in its owner's emission order
@@ -479,7 +478,7 @@ pub fn schema() -> Schema {
         // (`world_fold.rs::fold_country_dynamic_modifier_instances`).
         cadence_log2: 0,
         collections: vec![instances, values],
-        // §9 event bodies have no implementation in this crate (`lib.rs:13`) and
+        // event-continuity contract event bodies have no implementation in this crate (`lib.rs:13`) and
         // `zero_removals` are stop-reported — see the module docs.
         event_part: None,
     }
@@ -879,7 +878,7 @@ fn symbol_id(modifier_id: &str, symbols: &Symbols) -> core::result::Result<u64, 
 /// - `roster` — the current hour's d18 `country_identity` roster. The fold
 ///   refuses an instance whose owner is not in it (`world_fold.rs::fold_country_dynamic_modifier_instances`).
 ///
-/// `frame_tick` is §6's derived-field input; d67 declares no derived field, so
+/// `frame_tick` is derived-field contract's derived-field input; d67 declares no derived field, so
 /// it is taken and ignored — every domain's mapper has the same shape.
 ///
 /// Fail-closed throughout: an instance the shipping decoder would have rejected
@@ -891,7 +890,7 @@ pub fn record_from_instance_row(
     frame_tick: u64,
     roster: &CountryRoster,
 ) -> core::result::Result<Record, String> {
-    // d67 declares no derived field; §6's transform input is unused. Named
+    // d67 declares no derived field; derived-field contract's transform input is unused. Named
     // rather than `_frame_tick` because the signature is the cross-domain
     // contract.
     let _ = frame_tick;
@@ -1070,13 +1069,13 @@ impl State {
 /// Typed inputs, each mirroring something the fold reads:
 ///
 /// - `frame_hour` — the fold's **own clock**, `hour_index_from_raw(game_hour_raw)`
-///   as `apply_domain_data` computes it (`world_fold.rs::apply_domain_data`), not §6's
+///   as `apply_domain_data` computes it (`world_fold.rs::apply_domain_data`), not derived-field contract's
 ///   `frame_tick`. `None` reproduces the fold's own refusal (`:9867`-`:9868`),
 ///   which is also what the generic `fold_domain_data` dispatcher hands it
 ///   (`world_fold.rs::fold_domain_data`).
 /// - `roster` — the current hour's d18 roster; `None` reproduces "no d18 record
 ///   folded this hour" (`:9869`-`:9874`).
-/// - `symbols` — §5 symbol resolution for the content-defined `modifier_id`.
+/// - `symbols` — content-identity contract symbol resolution for the content-defined `modifier_id`.
 ///
 /// **Error contract: all-or-nothing.** The returned state is built in full
 /// before anything is published, mirroring the fold, whose own errors all
@@ -1142,12 +1141,12 @@ pub fn fold_payload(
                 );
             }
         }
-        // The d67 event-port stop. The generic §9 grammar exists, but mapping
+        // The d67 event-port stop. The generic event-continuity contract grammar exists, but mapping
         // this frame while dropping its still-unported synchronous events would
         // charge this arm's size against a shipping arm that carries them.
         return Err(format!(
             "country_dynamic_modifiers DMI2 frame carries {} synchronous zero-removal event(s); \
-             the d67 §9 event sub-stream is unported and unevidenced, so this port \
+             the d67 lifecycle event sub-stream is unported and unevidenced, so this port \
              stop-reports it",
             frame.zero_removals.len()
         ));
@@ -1397,12 +1396,12 @@ mod tests {
         let keys = c.key_fields();
         assert_eq!(keys.len(), 2, "the fold's identity is (owner, modifier_id)");
         assert_eq!(keys[0].field_id, field::OWNER_TAG_DB_ID);
-        assert_eq!(keys[0].kind, Kind::ContentId, "a country tag is content (§5)");
+        assert_eq!(keys[0].kind, Kind::ContentId, "a country tag is content (content-identity contract)");
         assert_eq!(keys[1].field_id, field::MODIFIER_ID);
         assert_eq!(
             keys[1].kind,
             Kind::ContentId,
-            "a modifier definition id is content-defined text carried as a symbol (§5)"
+            "a modifier definition id is content-defined text carried as a symbol (content-identity contract)"
         );
         assert!(keys.iter().all(|f| f.kind.legal_as_key()));
         assert_eq!(c.fields.len(), 5, "2 key + source_ordinal + enabled + remaining_days");
@@ -1486,7 +1485,7 @@ mod tests {
 
     #[test]
     fn every_content_id_field_is_declared_for_the_retrofit_sweep() {
-        // §13's symbol/manifest-id assignment rule will change every mapper that
+        // the symbol/manifest-id assignment rule will change every mapper that
         // emits a ContentId, and a ContentId **key** is the heavier class: key
         // components sort and delta-encode by raw value, so a remap reorders keys
         // and changes the byte layout of every baseline. This asserts exactly
@@ -1805,7 +1804,7 @@ mod tests {
             values_raw: vec![5],
             // `hour_index_from_raw(TEST_HOUR_RAW) == Some(TEST_HOUR)`, so this
             // event passes the fold's own admission and is refused only by the
-            // §9 stop.
+            // event-continuity contract stop.
             observed_game_hour_raw: TEST_HOUR_RAW,
         };
         let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[event.clone()]);
@@ -1859,7 +1858,7 @@ mod tests {
             &empty
         )
         .is_err());
-        // And the fold's own clock (`:9867`), which is not §6's frame_tick.
+        // And the fold's own clock (`:9867`), which is not derived-field contract's frame_tick.
         let err = fold_payload(&s, &frame, None, Some(&roster()), &symbols(), 0)
             .expect_err("refused");
         assert!(err.contains("invalid frame hour"), "{err}");

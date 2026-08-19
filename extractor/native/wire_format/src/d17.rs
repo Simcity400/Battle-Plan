@@ -1,15 +1,14 @@
 //! d17 `diplomacy_live` — per-country diplomatic standing, and a **stopped**
 //! war-graph collection.
 //!
-//! Derived from `world_fold.rs:19084`-`:19158`
+//! Derived from `world_fold.rs:19064`-`:19137`
 //! (`fold_diplomacy`), the `ascii8` token decoder it calls (`world_fold.rs::ascii8`), and the
-// @world-fold-authority domain=17 functions=fold_diplomacy lines=19084-19158 sha256=229bd3daf47768f8f0c6da3c5f0365d7d2ec22d73e38ba31c79424b65bbdf247 closure=db530cf9a8112a0fa2bc4964bc70dce64f553de08fa1499e8007b120cbdc0f4e
+// @world-fold-authority domain=17 functions=fold_diplomacy lines=19064-19137 sha256=82e558081568ce64c0e4bd005367ac677db91caa45bc1e144490f1c77a6fd6c3 closure=63cab62973fb648b0a7cf1625b1f8ec4c40c0fb54035be59df3587be24f9a804
 //! collector reads and writes that produce the payload
 //! (`extractor/native/collector/src/attach_log.rs:69650`-`:69710` writer,
 //! `:80136`-`:80290` reads, `:59759`-`:59780` war-segment accounting).
-//! `extractor/documents/domains/d17_diplomacy_live.md` carries one field-level
-//! fact — that status bit 13 is d17-only informational war-segment accounting
-//! outside the shared failure mask — and it agrees with the fold.
+//! Status bit 13 is d17-only informational war-segment accounting outside the
+//! shared failure mask, matching the fold.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_diplomacy`, written at
 //! `attach_log.rs:69666`-`:69708`): a 24-byte header — `elapsed_wall_ms` u64 at
@@ -44,8 +43,8 @@
 //! `ascii8` (`world_fold.rs::ascii8`). There is no conformant way to store that
 //! today, and both candidate encodings are wrong for the same reason:
 //!
-//! * §4 has **no string kind**. Every scalar kind is a number.
-//! * §5 says, of exactly this datum: "Country tags, equipment names, province and
+//! * schema-kind contract has **no string kind**. Every scalar kind is a number.
+//! * content-identity contract says, of exactly this datum: "Country tags, equipment names, province and
 //!   state ids are content-defined. The stream carries **manifest ids as
 //!   varints, never text**." So the conformant field is a `ContentId` holding a
 //!   manifest symbol id. This older mapper has not yet received the file-global
@@ -53,9 +52,9 @@
 //! * Packing the token's bytes into a numeric word is reversible and lossless,
 //!   but it is still text on the wire. Declaring that word a `ContentId` would
 //!   assert it is a resolved manifest symbol id, which is false and would make
-//!   every future §5 retrofit sweep skip it; declaring it `Unsigned` states the
+//!   every future content-identity contract retrofit sweep skip it; declaring it `Unsigned` states the
 //!   truth about the container while still shipping embedded text, which is what
-//!   §5 forbids. Neither is conformant, so neither is shipped.
+//!   content-identity contract forbids. Neither is conformant, so neither is shipped.
 //!
 //! The recipe's rule for this situation is to report rather than build, and that
 //! is what happens: [`schema`] declares **one** collection, the country table,
@@ -66,15 +65,15 @@
 //! at-war row it cannot store and prints the count, and the fact each row
 //! contributes to — *how many* countries this country is at war with — is stored
 //! in full, on the country row's `at_war_count` field. What the stop costs is
-//! the enemies' identities, and what it needs is its §5 resolver retrofit.
+//! the enemies' identities, and what it needs is its content-identity contract resolver retrofit.
 //! Field ids `5` and `6` are reserved for that collection so a later port does
-//! not reuse them for something else (§11 is append-only).
+//! not reuse them for something else (schema-identity contract is append-only).
 //!
 //! A second, independent blocker sits on the same collection, recorded here so a
 //! future port does not discover it late: even with a symbol id, a keyed set has
 //! no way to say "this collection's membership was not measured this hour",
 //! which is the state **903 of 903 hours** of the one available capture are in
-//! (see the war-segment section below). That is §8 gap normalisation, which has
+//! (see the war-segment section below). That is gap normalization, which has
 //! no implementation in this crate (`lib.rs`).
 //!
 //! # The row `flags` word: what the fold discards
@@ -85,7 +84,7 @@
 //! exactly when `casualties` was captured, and packs a **zero** in the field
 //! otherwise (`attach_log.rs:69679`-`:69698`). So a fold reading `casualties: 0`
 //! cannot tell a country that has taken no casualties from one whose war data
-//! was never read — which is precisely the distinction §3 exists to keep, and
+//! was never read — which is precisely the distinction record-state contract exists to keep, and
 //! precisely the one the collector went out of its way to record
 //! (`attach_log.rs:59771`-`:59779`, quoted below). This schema keeps both flags
 //! as gates and reports the difference; that is a fidelity gain over the fold
@@ -102,13 +101,13 @@
 //!   segment was read and applied (`attach_log.rs:59764`-`:59770`). A country
 //!   with a clear gate was compared against the whole relation table and appears
 //!   in none: it is at war with nobody and has no war casualties. That is a real
-//!   measured **zero** (§3), not an empty state.
+//!   measured **zero** (record-state contract), not an empty state.
 //! * bit 13 **set** — the segment did not capture at all (no bridge, an invalid
 //!   bridge, a bridge read that returned nothing, or a panicked country worker:
 //!   `attach_log.rs:59776`-`:59779` and `:44980`-`:44988`). The collector's own
 //!   words for why the bit exists: *"a diplomacy frame whose war-relations
 //!   segment did not capture … says so FIRST-CLASS — per-row `at_war: None` is
-//!   otherwise ambiguous with 'not at war'."* That is §3's **unknown**,
+//!   otherwise ambiguous with 'not at war'."* That is record-state contract's **unknown**,
 //!   "applicable, not captured", word for word.
 //!
 //! Neither field is ever `null` (nothing here is a relation that points at
@@ -145,7 +144,7 @@
 //! fold's `diplomacy` object (`world_fold.rs::project_market_trade_lend_lease` lend-lease projection, `world_fold.rs::project_domain53_country_overlays` d53
 //! overlay) add their own keys and never touch these three fields.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; the mapper takes `frame_tick` and ignores it so every domain's
 //! boundary has one shape.
 
@@ -162,7 +161,7 @@ pub const COUNTRIES: u32 = 1;
 /// does not reuse it.
 pub const AT_WAR_RESERVED: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field.
 pub mod field {
     pub const TAG_DB_ID: u32 = 1;
@@ -210,7 +209,7 @@ pub enum WarSegment {
     /// Bit 13 clear: the segment was read and applied. A clear per-row gate is a
     /// measured "no wars".
     Captured,
-    /// Bit 13 set: the segment did not capture. A clear per-row gate is §3's
+    /// Bit 13 set: the segment did not capture. A clear per-row gate is record-state contract's
     /// unknown.
     Absent,
 }
@@ -221,14 +220,14 @@ pub fn schema() -> Schema {
         collection_id: COUNTRIES,
         // Upsert accumulator across hours (see the module docs): a country's
         // `tag_db_id` is a stable identity that persists, which is what a keyed
-        // set needs — and only a keyed set has a delta grammar (§7.3).
+        // set needs — and only a keyed set has a delta grammar (collection-shape contract).
         shape: Shape::KeyedSet,
         fields: vec![
             // The country's `tag_db_id` (`world_fold.rs::fold_diplomacy`), the identity d18
             // keys its roster by. `ContentId` because a country is content-defined
-            // (§5) — a manifest must resolve it for it to keep its meaning under
+            // (content-identity contract) — a manifest must resolve it for it to keep its meaning under
             // another mod set. This is the raw-source-id cast every ported domain
-            // makes today pending §5's assignment rule; d63's `tag_db_id` and
+            // makes today pending the manifest-id assignment rule; d63's `tag_db_id` and
             // d20's `owner` are the same call, and it is listed in the
             // deliverable's open questions as a ContentId KEY, whose retrofit
             // relayouts baselines rather than one field's value.
@@ -251,7 +250,7 @@ pub fn schema() -> Schema {
             Field::new(f::AT_WAR_COUNT, Kind::Unsigned).unknown_capable(),
             // Lifetime war casualties, summed raw over this country's side of
             // every live relation (`attach_log.rs:80272`-`:80278`). `Monotone`
-            // is an encoding hint and never a validity constraint (§4), so a
+            // is an encoding hint and never a validity constraint (schema-kind contract), so a
             // total that drops when a war ends still declares it — d20's
             // `cumulative_losses` is the same case.
             Field::new(f::CASUALTIES, Kind::Monotone).unknown_capable(),
@@ -416,7 +415,7 @@ pub fn enemy_tag_is_collector_shaped(word: u64, token_len: u32) -> bool {
 /// one country row form, so length selects nothing and a wrong length is
 /// rejected. `war_segment` is the frame's war-segment status, which decides
 /// whether a clear gate is a measured zero or an uncaptured value.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d17 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -429,11 +428,11 @@ pub fn record_from_country_row(
     war_segment: WarSegment,
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d17 has no derived field; §6's transform input is unused. Named rather
+    // d17 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row, COUNTRY_ROW_LEN, "country")?;
-    // The key is not carried in the record body (§3), but its validity is still
+    // The key is not carried in the record body (record-state contract), but its validity is still
     // part of this row's validity.
     let _ = key_from_country_row(row)?;
 
@@ -463,7 +462,7 @@ pub fn record_from_country_row(
             u32_at(row, 0)
         ));
     }
-    // `Kind::Monotone` is carried as `Value::Unsigned` (§4's absolute form), so
+    // `Kind::Monotone` is carried as `Value::Unsigned` (schema-kind contract's absolute form), so
     // a negative total has no representation. The collector validates every
     // summand into `0..=WR_MAX_CASUALTIES` before adding it
     // (`attach_log.rs:80200`-`:80205`), so a negative total is not this grammar.
@@ -499,7 +498,7 @@ pub fn record_from_country_row(
 }
 
 /// A gate that is clear means the war-relations segment either found no relation
-/// for this country (a measured zero) or did not capture at all (§3's unknown).
+/// for this country (a measured zero) or did not capture at all (record-state contract's unknown).
 /// The frame's status word is the only thing that can tell them apart — see the
 /// module docs.
 fn gated(present: bool, war_segment: WarSegment, value: Value) -> Value {
@@ -540,7 +539,7 @@ pub struct FoldReport {
     /// The frame's war segment did not capture, so nothing this frame says about
     /// wars is a measurement of this hour. The field-level half of that is
     /// encoded (`at_war_count`/`casualties` are `Unknown`); the collection-level
-    /// half has no wire representation (§8 has no code here) and is reported.
+    /// half has no wire representation (gap contract has no code here) and is reported.
     pub at_war_hour_gap: bool,
 }
 
@@ -567,9 +566,8 @@ impl Accumulator {
     /// the module docs' stop condition).
     ///
     /// A failure-status record is folded here too, and the caller accounts for
-    /// it separately. `world_fold.rs::fold_diplomacy` used to return early on any
-    /// failure bit; owner ruling 2026-08-05 replaced that discard with
-    /// apply-and-account (`world_fold.rs::record_degraded_rows_applied`), because
+    /// it separately. `world_fold.rs::fold_diplomacy` applies and accounts for
+    /// degraded rows (`world_fold.rs::record_degraded_rows_applied`), because
     /// the rows a partly-failed read produced are real and throwing them away
     /// loses measured state. A caller that mirrors the fold must therefore fold
     /// the rows AND record the failure; a caller that only wants clean frames
@@ -760,10 +758,9 @@ mod tests {
 
     #[test]
     fn the_war_graph_collection_is_stopped_not_encoded() {
-        // Round-2 review input, kept as a regression. The at-war table's enemy
-        // identity is an 8-byte ASCII country TAG. §4 has no string kind and §5
+        // identity is an 8-byte ASCII country TAG. schema-kind contract has no string kind and content-identity contract
         // requires a manifest symbol id, "never text", while this mapper has not
-        // yet been retrofitted with the file-global §5 resolver. Packing the token into a
+        // yet been retrofitted with the file-global content-identity contract resolver. Packing the token into a
         // numeric word — under `ContentId` (which would claim it IS a symbol id)
         // or under `Unsigned` (which would still ship embedded text) — is not
         // conformant either way, so no collection is declared and the rows are
@@ -833,7 +830,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d17 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d17 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(countries().fields.iter().all(|f| f.derived.is_none()));
     }
@@ -936,7 +933,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every flag set, every value zero: the row for a country in faction
-        // group 0 that is at war with nobody and has taken no casualties. §3
+        // group 0 that is at war with nobody and has taken no casualties. record-state contract
         // keeps zero out of the three empty states.
         let c = countries();
         let row = country_row(1, FLAG_AT_WAR | FLAG_CASUALTIES, 0, 0, 0);

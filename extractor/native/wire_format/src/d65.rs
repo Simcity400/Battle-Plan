@@ -1,8 +1,8 @@
 //! d65 `special_project_programs_live` — per-country special-project facilities.
 //!
-//! Derived from `world_fold.rs:16677`-`:16771`
+//! Derived from `world_fold.rs:16657`-`:16751`
 //! (`fold_special_project_programs`), its payload constants at `:191`-`:196`, the
-// @world-fold-authority domain=65 functions=fold_special_project_programs lines=16677-16771 sha256=5cd8a0d5f4dc1a3cb1d55efb7b0e3855e51f1d01748c14e1da6f9b2bd1402e8b closure=3db2fadd30a21c32f7ebf828b69ed255c58ddda2ba83f5e0fd7c0a4bb70deb1a
+// @world-fold-authority domain=65 functions=fold_special_project_programs lines=16657-16751 sha256=5cd8a0d5f4dc1a3cb1d55efb7b0e3855e51f1d01748c14e1da6f9b2bd1402e8b closure=887fe723e3392e54581a4232fbd26ce6ee3ca543c8cd8df847ed4722544765b5
 //! status-independent payload authority
 //! `decode_compact_special_project_programs_data_payload`
 //! (`recorder_host/src/domain_data_authority.rs:12305`-`:12384`), and the
@@ -31,7 +31,7 @@
 //! written field by field, because a transposition between two adjacent u32s is
 //! the same failure class a wrong scale would be and no round-trip can see it.
 //!
-//! **No field can reach any of §3's three empty states, so the schema declares
+//! **No field can reach any of record-state contract's three empty states, so the schema declares
 //! no capabilities** — no `.optional()`, no `.nullable()`, no
 //! `.unknown_capable()`. This is not an assumption about the fold's uniform
 //! `Null`; it is a property of the collector, which is fail-closed **at row
@@ -86,7 +86,7 @@
 //! is ever added, the branch becomes live and this module's exclusion rule must
 //! be revisited with it.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: `unread_prototype_rewards` is a pending-notification count the player
 //! consumes, and the other three words are identities. The mapper still takes
 //! `frame_tick` so every domain's boundary has one shape.
@@ -110,7 +110,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 65;
 pub const PROGRAMS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const OWNER_TAG_DB_ID: u32 = 1;
     pub const PROGRAM_ID: u32 = 2;
@@ -137,17 +137,17 @@ pub fn schema() -> Schema {
         // what makes the pair a real identity rather than a convenience.
         //
         // `owner_tag_db_id` is `ContentId`: a country tag-db id is
-        // content-defined (§5), a manifest must resolve it for it to keep its
+        // content-defined (content-identity contract), a manifest must resolve it for it to keep its
         // meaning under another mod set, and d20's `owner`, d62's
         // `owner_tag_db_id` and d63's `tag_db_id` are all classed this way.
-        // The §5 assignment now exists, but this mapper still casts the raw u32
+        // The content-identity contract assignment now exists, but this mapper still casts the raw u32
         // until its resolver retrofit; that is recorded in the deliverable, and a ContentId
         // **key** is the heavier retrofit class because key components sort and
         // delta-encode by raw value.
         Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),
         // `program_id` is `Unsigned`, NOT `ContentId`: it identifies the running
         // program instance, not the special-project definition the instance was
-        // started from. The deciding question of §5 — must a content manifest
+        // started from. The deciding question of content-identity contract — must a content manifest
         // resolve this id for it to keep its meaning? — is answered no: a
         // program is created during play, and program 5 next campaign is
         // whichever program was created fifth. The collector reads it out of the
@@ -165,7 +165,7 @@ pub fn schema() -> Schema {
         // province id is whatever province the mod set defines. Not part of the
         // fold's key, so it rides as a value.
         Field::new(f::PROVINCE, Kind::ContentId),
-        // `Unsigned`, not `Monotone`. §4 makes `Monotone` a hint for a counter
+        // `Unsigned`, not `Monotone`. schema-kind contract makes `Monotone` a hint for a counter
         // that *usually* rises, and this one does not: it is a pending-rewards
         // queue that the player consumes, so it is reset as often as it is
         // incremented. Measured on the capture, all five of its transitions in
@@ -186,7 +186,7 @@ pub fn schema() -> Schema {
             // but `(owner, program_id)` is a stable identity that persists across
             // hours — measured churn on the real capture is 5 changed rows in 513
             // transitions with no insert and no delete — and only a keyed set has
-            // a delta grammar (§7.3).
+            // a delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -292,7 +292,7 @@ pub fn identity_of_row(row: &[u8]) -> core::result::Result<(u32, u32), String> {
 /// onto its stored Record. `row` is the raw 16-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d65 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d65 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -310,7 +310,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d65 has no derived field; §6's transform input is unused. Named rather
+    // d65 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     if collection.collection_id != PROGRAMS {
@@ -320,14 +320,14 @@ pub fn record_from_row(
         ));
     }
     check_row_len(row)?;
-    // The key words are not carried in the record body (§3), but their validity
+    // The key words are not carried in the record body (record-state contract), but their validity
     // is still part of this row's validity.
     let _ = identity_of_row(row)?;
 
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         // Every field is an unconditional read of one raw u32: no gate, no
-        // scale, no empty state. A zero is a measured zero (§3).
+        // scale, no empty state. A zero is a measured zero (record-state contract).
         let value = match f.field_id {
             field::PROVINCE => Value::ContentId(u32_at(row, 8) as u64),
             field::UNREAD_PROTOTYPE_REWARDS => Value::Unsigned(u32_at(row, 12) as u64),
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag-db id is content-defined (§5)"
+            "a country tag-db id is content-defined (content-identity contract)"
         );
         assert_eq!(
             keys[1].kind,
@@ -522,7 +522,7 @@ mod tests {
         // Recipe step 8 case 4, recorded rather than skipped: the
         // "quantization saves bytes" comparison has nothing to compare. d65 has
         // no `Kind::Continuous` field at all — all four words are identities or
-        // integer counts, and §6 quantization applies only to continuous
+        // integer counts, and derived-field contract quantization applies only to continuous
         // fields — so there is no drawn-versus-interpolated judgement to make.
         let c = collection();
         assert_eq!(
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d65 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d65 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         // And the mapper proves it: the same row under wildly different ticks
@@ -635,7 +635,6 @@ mod tests {
         // no swap of any pair passes. In particular `row_count` and
         // `changed_rows` are adjacent, both plausible small integers, and the
         // ONLY pair a same-valued fixture would hide — so this fixture uses two
-        // rows with `changed_rows = 1`. (A round-1 fixture used one row and
         // `changed_rows = 1`, under which swapping `+8` and `+12` still passed
         // this test.)
         let rows = [full_row(), raw_row(2, 3, 13_070, 2)];
@@ -664,7 +663,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states. Both value fields can be
+        // record-state contract keeps zero out of the three empty states. Both value fields can be
         // a genuine zero: a province id of 0 and an unread count of 0 are what
         // the collector publishes when it read exactly that, since neither has a
         // gate to be clear. 8,932 of the capture's 13,878 unread cells are zero.

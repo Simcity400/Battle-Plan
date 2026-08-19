@@ -18,9 +18,9 @@
 //! `compact_contract`'s own parser and stateful validator; failure classification
 //! goes through `compact_contract`'s own predicate rather than a copied bit mask.
 //!
-//! # Two passes, because the §5 symbol table must be frozen before any mapping
+//! # Two passes, because the content-identity contract symbol table must be frozen before any mapping
 //!
-//! §5 requires symbol ids to be file-global and forbids in-stream interning — the
+//! content-identity contract requires symbol ids to be file-global and forbids in-stream interning — the
 //! table "must be fully read before any seek" — so the scripted-key vocabulary is
 //! collected over the whole validated stream first and frozen into a
 //! `d51::Symbols` that pass 2 only reads. Pass 1 therefore cannot call a mapper at
@@ -170,10 +170,9 @@ struct D51Hour {
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences: the block
-/// cadence (every block opens with its own baseline, §1.5's closing paragraph),
-/// and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-/// the next state observation to be a `BASELINE`." Every hour this domain did not
+/// Two reasons: the block cadence and a capture gap.
+/// State after a gap to resume from a complete
+/// baseline. Every hour this domain did not
 /// successfully sample is such a gap — an excluded hour, and any non-contiguous
 /// hour step — and d51's cadence is hourly, so a measured hour that does not
 /// follow the previous measured one by exactly one is preceded by one. Neither a
@@ -182,13 +181,13 @@ fn opens_baseline(hours_seen: usize, block_hours: usize, follows_previous: bool)
     hours_seen % block_hours == 0 || !follows_previous
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay over every collection. Factored out of `main` so the
 /// tests execute the PRODUCTION encode path over a scanned stream: a mutant that
 /// reverts the baseline decision here to block-position-only fails the gap test.
 struct WireHourOutcome {
     opened_baseline: bool,
-    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    /// The baseline sits outside a scheduled block start — gap-forced.
     gap_forced: bool,
     emitted: bool,
     changed_by_collection: [usize; COLLECTION_COUNT],
@@ -209,7 +208,7 @@ fn encode_wire_hour(
     symbol_occurrences: &mut SymbolOccurrences,
 ) -> WireHourOutcome {
     let hour_start = wire.len();
-    // BASELINE at each block start — and at every §1.5 gap, which forces a fresh
+    // BASELINE at each block start — and at every capture gap, which forces a fresh
     // baseline and restarts the delta chain (`opens_baseline`).
     let block_start = opens_baseline(hours_seen, block_hours, follows_previous);
     let gap_forced = block_start && hours_seen % block_hours != 0;
@@ -247,7 +246,6 @@ fn encode_wire_hour(
                     tombstones_by_collection[i] = delta.tombstones.len();
                     // A delta writes the key of every changed row and of every
                     // tombstone, and those keys carry symbol ids too. Omitting
-                    // them understates the §5 assignment band (round-1 finding).
                     symbol_occurrences.count_delta(&schema.collections[i], delta);
                 }
             }
@@ -328,7 +326,7 @@ struct StreamScan {
     hours: Vec<D51Hour>,
     counts: ScanCounts,
     /// The scripted-key vocabulary of the whole stream, frozen before any record
-    /// is mapped (§5).
+    /// is mapped (content-identity contract).
     vocabulary: BTreeSet<String>,
 }
 
@@ -641,7 +639,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                         // and the recorder publishes the whole d51 surface as Null
                         // for the hour, so skipping it from both arms loses
                         // nothing. It still forces the next measured hour to open
-                        // a §1.5 baseline, via `follows_previous`.
+                        // a frame-run contract baseline, via `follows_previous`.
                         scan.counts.delta_before_baseline_records += 1;
                     }
                     (outcome, contribution) => {
@@ -727,7 +725,7 @@ fn varint_len(value: u64) -> usize {
 /// The symbol ids the wire arm actually wrote, counted per id.
 ///
 /// Both collections that carry a symbol carry it as key component 2, which
-/// §7.4 writes as an ABSOLUTE varint (`body.rs:88`-`:116`) — only component 0 is
+/// key-encoding contract writes as an ABSOLUTE varint (`body.rs:88`-`:116`) — only component 0 is
 /// delta-chained. So a re-assignment of the symbol ids changes the wire arm's
 /// size by exactly the change in `sum(varint_len(id))` over these occurrences,
 /// and the band over all assignments is computable rather than a permutation
@@ -737,14 +735,13 @@ fn varint_len(value: u64) -> usize {
 /// **Every hour the wire arm emits is counted, baseline and delta alike.** A
 /// baseline writes every key of every collection; a delta writes the key of each
 /// changed row and of each tombstone (`body.rs:encode_delta`), and those keys
-/// carry symbol ids too. Counting baselines only understates the band — a round-1
-/// review finding, regression-tested by
+/// carry symbol ids too. Counting baselines only understates the band, as pinned by
 /// [`a_delta_key_is_counted_toward_the_symbol_band`].
 #[derive(Default)]
 struct SymbolOccurrences(BTreeMap<u64, usize>);
 
 impl SymbolOccurrences {
-    /// The key position at which this collection carries a §5 symbol, if any.
+    /// The key position at which this collection carries a content-identity contract symbol, if any.
     fn symbol_key_position(collection: &wire_format::schema::Collection) -> Option<usize> {
         collection.key_fields().iter().position(|f| {
             f.field_id == d51::field::VARIABLE_NAME || f.field_id == d51::field::NAMED_FLAG_NAME
@@ -799,8 +796,7 @@ impl SymbolOccurrences {
     /// frozen vocabulary.
     ///
     /// **`vocabulary_len` is the whole `Symbols` table, not the number of symbols
-    /// the wire arm happened to emit**, and the difference is the round-2 review
-    /// finding. §5 assigns ids across the entire content set, so an assignment is
+    /// finding. content-identity contract assigns ids across the entire content set, so an assignment is
     /// a bijection onto `0..vocabulary_len-1`; the emitted symbols may receive
     /// ANY distinct ids from that range, including the highest ones. A vocabulary
     /// member the wire arm never emits — a key that only ever appeared on a
@@ -865,7 +861,7 @@ fn main() {
     };
     std::fs::create_dir_all(&out_dir).expect("out dir");
 
-    // §5: the table is frozen from the whole validated stream before any record is
+    // content-identity contract: the table is frozen from the whole validated stream before any record is
     // mapped, and never grown by the mapper.
     let symbols = Symbols::from_vocabulary(scan.vocabulary.iter().cloned());
 
@@ -982,7 +978,7 @@ fn main() {
     }
 
     // The wire arm's baseline/delta raw split, from the per-hour baseline
-    // decisions the encode loop actually made (a §1.5 gap-forced baseline is a
+    // decisions the encode loop actually made (a gap-forced baseline is a
     // baseline wherever it sits in the block, so block position alone cannot
     // classify these bytes).
     let mut baseline_bytes = 0usize;
@@ -1038,12 +1034,12 @@ fn main() {
     }
     println!();
     println!(
-        "symbols              {} scripted keys (\u{a7}5 vocabulary, frozen before mapping)",
+        "symbols              {} scripted keys (vocabulary frozen before mapping)",
         symbols.len()
     );
     println!(
         "baselines            {baselines} ({} at a {block_hours}-h block start, \
-         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+         {gap_forced_baselines} forced by a state gap)",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1294,8 +1290,8 @@ mod tests {
 
     #[test]
     fn an_excluded_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces the
-        // next state observation to be a `BASELINE`." Both gap shapes d51 can
+        // A complete
+        // baseline after a gap. Both gap shapes d51 can
         // meet — an excluded failure-status hour, and a whole hour the capture
         // never scheduled — must clear `follows_previous`, and `opens_baseline`
         // must open a baseline on it wherever it lands in a block. A delta would
@@ -1574,15 +1570,15 @@ mod tests {
         assert!(best <= stand_in && stand_in <= worst);
     }
 
-    /// Round-2 review finding, regression-tested with the reviewer's own input.
+    /// regression-tested with the regression input.
     ///
     /// The band sized the id space by the number of symbols the wire arm EMITTED
-    /// rather than by the frozen vocabulary. §5 assigns ids across the whole
+    /// rather than by the frozen vocabulary. content-identity contract assigns ids across the whole
     /// content set, so a vocabulary member the arm never emits — a key that only
     /// ever appeared on a tombstone, for instance — still occupies an id and can
     /// push an emitted symbol into a wider varint.
     ///
-    /// The reviewer's input: a 130-symbol vocabulary of which the wire arm emits
+    /// The regression input: a 130-symbol vocabulary of which the wire arm emits
     /// exactly one symbol, once. Sizing by the emitted set reported `1..1`, a band
     /// the sorted stand-in (id 129, two bytes) falls OUTSIDE. The correct band is
     /// `1..2`.
@@ -1662,7 +1658,7 @@ mod tests {
         assert!(!wire.is_empty());
     }
 
-    /// Round-1 review finding, regression-tested with the reviewer's own input.
+    /// regression-tested with the regression input.
     ///
     /// The band counted only the symbols a BASELINE writes, but `encode_delta`
     /// writes the key of every changed row and of every tombstone, and those keys

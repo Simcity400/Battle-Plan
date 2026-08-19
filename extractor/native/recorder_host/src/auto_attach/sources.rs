@@ -1,15 +1,14 @@
-//! Abstract seams (design §9 "Abstract ProcessEventSource, ProcessProbe, Clock,
-//! PayloadStager, WorkerSpawner for deterministic race, PID-reuse, and WMI-loss
-//! tests") plus the real Windows adapters.
+//! Abstract seams plus the real Windows adapters. `ProcessEventSource`,
+//! `ProcessProbe`, `Clock`, `PayloadStager`, and `WorkerSpawner` support
+//! deterministic race, PID-reuse, and WMI-loss tests.
 //!
 //! Everything the coordinator depends on that touches the OS or another process
 //! is a trait here, so the coordinator's logic is driven by fakes in tests and
 //! by these adapters in production. The real adapters use the same raw
-//! `extern "system"` FFI style already established in `modset.rs` — this crate
-//! deliberately carries no `windows`/`windows-sys` dependency (that Cargo change
-//! is design §9, outside this lane's fence; see the dossier).
+//! `extern "system"` FFI style already established in `modset.rs`; this crate
+//! deliberately carries no `windows`/`windows-sys` dependency.
 
-/// Real standard-user WMI process-event source (design §2), selected by the
+/// Real standard-user WMI process-event source, selected by the
 /// production `run_supervisor`. [`SnapshotOnlyEventSource`] remains the explicit
 /// degraded/fake source used by tests and fallback compositions.
 pub mod wmi;
@@ -25,8 +24,8 @@ pub trait Clock: Send {
 }
 
 /// A live process enumeration + per-pid identity probe. Snapshot is the
-/// authoritative liveness source (design §2); identify resolves the full
-/// authority-grade identity from the live handle (design §3).
+/// authoritative liveness source; identify resolves the full identity from the
+/// live handle.
 pub trait ProcessProbe: Send {
     /// All currently-live processes as `(pid, image-name-or-path)`. Used to find
     /// `hoi4.exe` candidates and to prove liveness during reconciliation.
@@ -93,31 +92,30 @@ pub struct SnapshotEntry {
 }
 
 /// Low-latency push source (WMI in production). Health drives the reconciliation
-/// cadence (design §2). `drain_events` is non-blocking.
+/// cadence. `drain_events` is non-blocking.
 pub trait ProcessEventSource: Send {
     fn drain_events(&mut self) -> Vec<RawProcessEvent>;
     fn health(&self) -> super::policy::WatcherHealth;
 }
 
 /// A raw push event before identity resolution. Start events carry only the pid
-/// and name; the coordinator probes to get the FILETIME/identity (WMI SID/
-/// session are hints only, design §3).
+/// and name; the coordinator probes to get the FILETIME/identity. WMI SID and
+/// session fields are hints only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawProcessEvent {
     Start { pid: u32, name: String },
     Stop { pid: u32, name: String },
 }
 
-/// Window-readiness + modset resolution for a resolved identity (design §3, §6).
+/// Window-readiness and modset resolution for a resolved identity.
 pub trait AttachEnvironment: Send {
-    /// The injector requires a visible PID-owned window (design §6); until then
+    /// The injector requires a visible PID-owned window; until then
     /// the candidate stays in `WaitingForWindow`.
     /// PID alone is not authority because Windows may reuse it while a
     /// candidate waits or while its payload is staged.
     fn has_visible_window(&self, key: ProcessKey) -> bool;
     /// Resolve the modset for this identity. `resolved == false` blocks
-    /// injection (design §3: "auto-attach blocks injection while preserving
-    /// errors").
+    /// injection while preserving the resolution errors.
     fn resolve_modset(&self, identity: &ProcessIdentity) -> ModsetResolution;
     /// Is this game a build the recorder's offsets were derived against?
     ///
@@ -151,8 +149,8 @@ pub struct ModsetResolution {
     pub reasons: Vec<String>,
 }
 
-/// Stages a fresh, never-before-used collector DLL directory per attempt
-/// (design §5 unique DLL path — never reuse a path hooked into a live game).
+/// Stages a fresh, never-before-used collector DLL directory per attempt. A
+/// path hooked into a live game is never reused.
 pub trait PayloadStager: Send {
     /// Retire the durable one-injection commitment only after the coordinator
     /// has proved the exact prior staged DLL absent from the same live process
@@ -192,8 +190,8 @@ pub struct StagedPayload {
     pub rearmed_after_proven_unload: bool,
 }
 
-/// Spawns and supervises one `collector_record` worker per game process
-/// (design §5, §7). The worker performs the actual single hook injection; the
+/// Spawns and supervises one `collector_record` worker per game process. The
+/// worker performs the actual single hook injection; the
 /// coordinator never injects directly.
 pub trait WorkerSpawner: Send {
     fn spawn(&self, spec: &WorkerSpec) -> Result<Box<dyn WorkerHandle>, String>;
@@ -211,10 +209,9 @@ pub struct WorkerSpec {
     pub control_challenge: [u8; 16],
 }
 
-/// A running worker's reported status, polled by the coordinator. This is the
-/// collector-proof ladder: hook success alone is NOT "attached" (design
-/// self-refutation) — the coordinator only advances on these worker-proven
-/// milestones.
+/// A running worker's reported status, polled by the coordinator. Hook success
+/// alone is NOT "attached"; the coordinator only advances on these
+/// worker-proven milestones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerStatus {
     /// Hook installed; waiting for a session-matching heartbeat.
@@ -288,11 +285,9 @@ impl Clock for SystemClock {
 }
 
 /// A snapshot-only event source: reports `Degraded` health so the coordinator
-/// relies on reconciliation polling alone (the design's WMI-loss fallback,
-/// which is fully functional for both app-first and game-first, just at the 2 s
-/// discovery latency). The real WMI `Win32_ProcessStartTrace` source needs the
-/// COM binding from design §9 (a Cargo change outside this lane) — documented in
-/// the dossier. Until it lands, this keeps the product correct and shippable.
+/// relies on reconciliation polling alone. This fallback supports both
+/// app-first and game-first startup with up to the degraded polling interval of
+/// discovery latency.
 #[derive(Default)]
 pub struct SnapshotOnlyEventSource;
 
@@ -427,7 +422,7 @@ impl ToolhelpProbe {
     }
 
     /// The coordinator's OWN (session_id, sid_hash), used to prove a candidate
-    /// is same-user/same-session (design §3). Read once at startup.
+    /// is same-user/same-session. Read once at startup.
     pub fn current_session_and_sid_hash() -> Result<(u32, String), String> {
         unsafe {
             let pid = ffi::GetCurrentProcessId();
@@ -455,7 +450,7 @@ fn process_session_id(pid: u32) -> Result<u32, String> {
 }
 
 /// SHA-256 hex of the process token's user SID string. Raw SID is never
-/// returned (design §8).
+/// returned.
 #[cfg(windows)]
 unsafe fn process_sid_hash(handle: ffi::Handle) -> Result<String, String> {
     use snapshot::sha256::{to_hex, Sha256};

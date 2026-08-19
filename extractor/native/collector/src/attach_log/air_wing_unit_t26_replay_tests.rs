@@ -4,9 +4,8 @@
 //!
 //! # Why this exists
 //!
-//! `DELTA_WIRE_DESIGN.md` §7.1 stated the defect in numbers taken off the t26
-//! corpus, and the ruling that authorised the unit asked for the same numbers
-//! back after the repair. This module is that instrument. It is `#[ignore]`d
+//! The t26 corpus quantified the defect, and this module reproduces the same
+//! measurements after the repair. It is `#[ignore]`d
 //! because it needs a 2.6 GB capture that is not in the repository, and it is
 //! pointed at that capture by `BATTLE_PLAN_T26_COLLECTOR_STREAM` (or found relative to
 //! the workspace when the checkout has its own `runs/`).
@@ -490,8 +489,8 @@ fn replay(corpus: &Corpus) -> ReplayResult {
 
 /// **The measurement the ruling asked for.**
 ///
-/// Baselines, taken from the shipped stream by an independent walker before this
-/// lane changed anything (and matching `DELTA_WIRE_DESIGN.md` §7.1):
+/// Baselines taken from the shipped stream by an independent walker before the
+/// repair:
 ///
 /// | | shipped encoder |
 /// |---|---|

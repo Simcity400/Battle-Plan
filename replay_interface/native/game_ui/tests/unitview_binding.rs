@@ -1,5 +1,4 @@
-//! U1 selected-unit view gates (REPLAY_PRODUCTION_PLAN §6a / UI_COVERAGE_MATRIX
-//! §2 "Selected-unit panel").
+//! Selected-unit view layout and binding gates.
 //!
 //! Two gate classes:
 //!   1. **Layout** — parse vanilla `interface/unitview.gui` through the shared
@@ -20,12 +19,12 @@
 //!     "infantry"`, `organisation = 42.0`, `strength = 0.95`, `equipment = []`.
 //!     Div 101 `location_province`: `1000` (tick<4), `1001` (tick<8), else
 //!     `2000`; `moving = tick<8`.
-//!   * `fx_naval_air_activity` — task force `501:1` (owner ENG, fleet `500`,
+//!   * `fx_naval_air_activity` — task force `501` (owner ENG, fleet `500`,
 //!     mission `PATROL` — the generator's `mission_name`, which is the engine
 //!     enum token `replay_core`'s `MISSION_NAMES[1]` derives, upper case —
 //!     `dominant_hull_class "capital"`, `location_province
 //!     3000`, `ship_count = 8 + tick`, no inline `ships` array → Absent) and air
-//!     wing `800:1` (owner ENG, name `Fighter Wing`, `count = 100 + tick`,
+//!     wing `800` (owner ENG, name `Fighter Wing`, `count = 100 + tick`,
 //!     mission `air_superiority`, strategic_region `301`, air_base `3000:1`,
 //!     state_id `30`, `effective_planes = 90 + tick`; no experience/manpower/
 //!     plane_definition → Absent).
@@ -199,8 +198,8 @@ fn naval_task_force_panel_binds_fixture_ground_truth() {
     for (tick, &hour) in hours.iter().enumerate() {
         let frame = tl.frame(hour).unwrap();
 
-        let tf = naval_unit_view_from_frame(&frame, "501:1")
-            .unwrap_or_else(|| panic!("task force 501:1 present @h{hour}"));
+        let tf = naval_unit_view_from_frame(&frame, "501")
+            .unwrap_or_else(|| panic!("task force 501 present @h{hour}"));
         assert!(tf.available, "naval view available @h{hour}");
         assert_eq!(tf.owner.as_deref(), Some("ENG"));
         assert_eq!(tf.fleet_uid.as_deref(), Some("500"));
@@ -226,7 +225,7 @@ fn naval_task_force_panel_binds_fixture_ground_truth() {
         assert!(!tf.ships_available, "ships Absent @h{hour}");
         assert!(tf.ships.is_empty());
 
-        assert!(naval_unit_view_from_frame(&frame, "404:1").is_none());
+        assert!(naval_unit_view_from_frame(&frame, "404").is_none());
     }
 }
 
@@ -241,8 +240,8 @@ fn air_wing_panel_binds_fixture_ground_truth() {
     for (tick, &hour) in hours.iter().enumerate() {
         let frame = tl.frame(hour).unwrap();
 
-        let wing = air_wing_view_from_frame(&frame, "800:1")
-            .unwrap_or_else(|| panic!("wing 800:1 present @h{hour}"));
+        let wing = air_wing_view_from_frame(&frame, "800")
+            .unwrap_or_else(|| panic!("wing 800 present @h{hour}"));
         assert!(wing.available, "air view available @h{hour}");
         assert_eq!(wing.owner.as_deref(), Some("ENG"));
         assert_eq!(wing.display_name.as_deref(), Some("Fighter Wing"));
@@ -266,7 +265,7 @@ fn air_wing_panel_binds_fixture_ground_truth() {
         assert_eq!(wing.manpower, None);
         assert_eq!(wing.plane_definition, None);
 
-        assert!(air_wing_view_from_frame(&frame, "808:1").is_none());
+        assert!(air_wing_view_from_frame(&frame, "808").is_none());
     }
 }
 
@@ -280,9 +279,9 @@ fn detail_binders_are_domain_isolated() {
     // The base snapshot still carries the two land divisions.
     assert!(land_unit_view_from_frame(&frame, "101:1").is_some());
     // A land binder never resolves a naval/air UID, and vice versa.
-    assert!(land_unit_view_from_frame(&frame, "501:1").is_none());
+    assert!(land_unit_view_from_frame(&frame, "501").is_none());
     assert!(naval_unit_view_from_frame(&frame, "101:1").is_none());
-    assert!(air_wing_view_from_frame(&frame, "501:1").is_none());
+    assert!(air_wing_view_from_frame(&frame, "501").is_none());
     assert_eq!(
         frame.wings_status(),
         ViewStatus::Present,

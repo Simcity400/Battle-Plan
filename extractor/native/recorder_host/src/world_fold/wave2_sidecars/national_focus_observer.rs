@@ -53,9 +53,8 @@
 //!   item vector, `ITEM_PRESENTATION_STATE_OFFSET` (0x540) for the state code,
 //!   and `DISPLAY_PROGRESS_PRODUCER_RVA` for the percent. There is ONE such
 //!   view, for the country the client is looking at, and only while the focus
-//!   panel is open. That is precisely why d89 is descheduled
-//!   (`compact_contract/src/lib.rs::DESCHEDULED_CAPTURE_DOMAIN_IDS`, ruling
-//!   `documents/DECISIONS.md`).
+//!   panel is open. That is precisely why d89 is descheduled in
+//!   `compact_contract/src/lib.rs::DESCHEDULED_CAPTURE_DOMAIN_IDS`.
 //!
 //! So EIR-NE-002 does not want a wider read of the same thing; it wants the
 //! GUI scene of every country's focus tree, and no such scene exists unless
@@ -66,8 +65,7 @@
 //!
 //! Replay's own XUI10 contract says where the remaining route is: the
 //! carrier-independent seam `game_ui::focus_observer::prepare_observer_focus_scene`
-//! already joins a scene back to the D12/FILE model
-//! (`rendering_laws/XUI10/D12_FOCUS_OBSERVER_CONTRACT.md:23`-`:26`), and the
+//! already joins a scene back to the D12/FILE model, and the
 //! authored focus definitions own tree membership, icons and sprites. Deriving
 //! the scene at replay from D12 plus the effective files is therefore a real
 //! option and a replay-side one — an owner routing decision, recorded as this
@@ -86,8 +84,8 @@ use super::{SidecarEmission, SidecarScope, Wave2Carrier, Wave2Feed, WorldFold};
 
 /// Identity the consumer pins, transcribed from its own constants.
 ///
-/// These are the producer half of the `exact_a729_passive_*` vocabulary split
-/// recorded in the gap map's section 2.2: until an extractor file spells them,
+/// These are the producer half of the `exact_a729_passive_*` vocabulary: until
+/// an extractor file spells them,
 /// `authority_vocab_diff.py` reports the name replay-only. Transcription is not
 /// evidence on its own, so `runs/ie_gp_u3/xui_identity_crosscheck.py` re-reads
 /// each value from the consumer's own source.
@@ -802,8 +800,7 @@ mod tests {
     }
 
     /// kills: rescheduling d89 and re-pointing its POV-local carrier at this
-    /// key -- the mistake the gap map's section 4.3 warns each brief about by
-    /// name. The THREE families d89's view produces — the node presentation
+    /// key. The THREE families d89's view produces — the node presentation
     /// state, the node canvas position and the laid-out link geometry — must
     /// stay recorded as panel products; recording any of them as obtainable
     /// would move

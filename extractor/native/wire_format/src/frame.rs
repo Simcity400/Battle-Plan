@@ -1,4 +1,4 @@
-//! Frames, blocks and the two time chains, per `WIRE_FORMAT.md` §1.
+//! Frames, blocks and the two time chains.
 //!
 //! A block carries frames for exactly one `(domain, branch)` on two independent
 //! chains — state and event. `kind` says which, so a reader that cannot decode a
@@ -21,7 +21,7 @@ pub enum Kind {
     Delta = 1,
     Unchanged = 2,
     Events = 3,
-    /// §1.3 assigns reserved kinds to a part in advance.
+    /// frame-tag contract assigns reserved kinds to a part in advance.
     ReservedState4 = 4,
     ReservedState5 = 5,
     ReservedEvent6 = 6,
@@ -62,14 +62,14 @@ impl Kind {
         )
     }
 
-    /// §1.5: only `BASELINE` and `DELTA` terminate an `UNCHANGED` run. `EVENTS`
+    /// frame-run contract: only `BASELINE` and `DELTA` terminate an `UNCHANGED` run. `EVENTS`
     /// belongs to the other chain and never does.
     pub fn terminates_run(self) -> bool {
         matches!(self, Kind::Baseline | Kind::Delta)
     }
 }
 
-/// §1.3 `tag = (tick_delta << 3) | kind`.
+/// frame-tag contract `tag = (tick_delta << 3) | kind`.
 pub fn pack_tag(tick_delta: u64, kind: Kind) -> Result<u64> {
     if tick_delta > u64::MAX >> 3 {
         return Err(WireError::Corrupt("tick_delta does not fit alongside kind"));
@@ -128,7 +128,7 @@ impl BlockHeader {
 pub struct Frame {
     pub kind: Kind,
     pub tick: u64,
-    /// For `UNCHANGED`, the run length in **sample ticks** (§1.5). Ignored otherwise.
+    /// For `UNCHANGED`, the run length in **sample ticks** (frame-run contract). Ignored otherwise.
     pub run_len: u64,
     pub body: Vec<u8>,
 }
@@ -146,7 +146,7 @@ impl Frame {
         Self { kind: Kind::Events, tick, run_len: 1, body }
     }
 
-    /// §1.5: an `UNCHANGED` run covers `N` consecutive sample ticks, so its last
+    /// frame-run contract: an `UNCHANGED` run covers `N` consecutive sample ticks, so its last
     /// covered tick is `t + (N-1)*stride`. Every other kind covers one tick.
     ///
     /// `None` if that endpoint does not fit a `u64`. Both operands come off the
@@ -165,34 +165,34 @@ impl Frame {
     }
 }
 
-/// Why a block does not satisfy §1.
+/// Why a block does not satisfy frame contract.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BlockError {
-    /// §1.5: a `DELTA` or `UNCHANGED` before this block's first `BASELINE`.
+    /// frame-run contract: a `DELTA` or `UNCHANGED` before this block's first `BASELINE`.
     DeltaBeforeBaseline { tick: u64 },
-    /// §1.4: frames must be nondecreasing by their own tick.
+    /// frame-order contract: frames must be nondecreasing by their own tick.
     TickWentBackwards { part: Part, from: u64, to: u64 },
-    /// §1.4: the block's opening frame carries `tick_delta = 0`.
+    /// frame-order contract: the block's opening frame carries `tick_delta = 0`.
     FirstFrameNotAtFirstTick { first_tick: u64, tick: u64 },
-    /// §1.1: every frame lands on a multiple of the domain's sample stride.
+    /// tick-grid contract: every frame lands on a multiple of the domain's sample stride.
     OffGrid { tick: u64, stride: u64 },
-    /// §1.5: runs are maximal, so two `UNCHANGED` frames cannot be time-adjacent.
+    /// frame-run contract: runs are maximal, so two `UNCHANGED` frames cannot be time-adjacent.
     AdjacentUnchangedRuns { first: u64, second: u64 },
-    /// §1.5: a run of zero ticks is not a run.
+    /// frame-run contract: a run of zero ticks is not a run.
     EmptyRun { tick: u64 },
-    /// §1.4: at equal ticks the state frame precedes the `EVENTS` frame.
+    /// frame-order contract: at equal ticks the state frame precedes the `EVENTS` frame.
     EventBeforeStateAtSameTick { tick: u64 },
-    /// §1.4: one state observation and one event batch per tick.
+    /// frame-order contract: one state observation and one event batch per tick.
     DuplicateObservation { part: Part, tick: u64 },
     /// A tick or run endpoint that does not fit a `u64`.
     TickOverflow { tick: u64 },
-    /// A `tick_delta` too large to pack alongside its kind (§1.3).
+    /// A `tick_delta` too large to pack alongside its kind (frame-tag contract).
     TickDeltaTooLarge { delta: u64 },
-    /// §1.2: `first_tick` is the first frame's tick, so a block has one.
+    /// block-header contract: `first_tick` is the first frame's tick, so a block has one.
     EmptyBlock,
 }
 
-/// §1's invariants, in one place so the writer and the reader cannot enforce
+/// frame contract's invariants, in one place so the writer and the reader cannot enforce
 /// different rules.
 ///
 /// A block that only the writer validates is a block a hostile or corrupt stream
@@ -223,14 +223,14 @@ impl BlockValidator {
         }
     }
 
-    /// Check `frame` against every §1 rule, then advance.
+    /// Check `frame` against every frame contract rule, then advance.
     ///
     /// **Every check runs before any mutation.** A rejected frame that had
     /// already moved `seen_baseline` or a chain cursor would leave the validator
     /// describing a block that was never written — accept `EVENTS@0`, reject
     /// `BASELINE@0`, accept `DELTA@1`, and the result is a delta with no baseline.
     fn accept(&mut self, frame: &Frame) -> core::result::Result<(), BlockError> {
-        // §1.1: a domain samples on ticks that are multiples of its stride —
+        // tick-grid contract: a domain samples on ticks that are multiples of its stride —
         // absolutely, not merely congruent to whatever first_tick happened to be.
         if frame.tick % self.stride != 0 {
             return Err(BlockError::OffGrid { tick: frame.tick, stride: self.stride });
@@ -288,7 +288,7 @@ impl BlockValidator {
             }
         }
 
-        // §1.4 byte order: nondecreasing by own tick, state first at equal ticks.
+        // frame-order contract byte order: nondecreasing by own tick, state first at equal ticks.
         if let Some((previous_tick, previous_part)) = self.last_frame {
             if frame.tick < previous_tick {
                 return Err(BlockError::TickWentBackwards {
@@ -322,7 +322,7 @@ impl BlockValidator {
     }
 }
 
-/// Writes a block, enforcing §1's invariants rather than trusting the caller.
+/// Writes a block, enforcing frame contract's invariants rather than trusting the caller.
 pub struct BlockWriter {
     header: BlockHeader,
     stride: u64,
@@ -392,7 +392,7 @@ impl BlockWriter {
     }
 }
 
-/// Reads a block back, reconstructing both chains and enforcing the same §1
+/// Reads a block back, reconstructing both chains and enforcing the same frame contract
 /// invariants the writer does — see `BlockValidator`. A block that decodes here
 /// is one `BlockWriter` could have produced.
 pub fn read_block(buf: &[u8], stride: u64) -> Result<(BlockHeader, Vec<Frame>)> {
@@ -449,7 +449,7 @@ pub fn read_block(buf: &[u8], stride: u64) -> Result<(BlockHeader, Vec<Frame>)> 
 
         validator
             .accept(&frame)
-            .map_err(|_| WireError::Corrupt("block violates a §1 invariant"))?;
+            .map_err(|_| WireError::Corrupt("block violates a frame contract invariant"))?;
 
         match kind.part() {
             Part::State => {
@@ -466,7 +466,7 @@ pub fn read_block(buf: &[u8], stride: u64) -> Result<(BlockHeader, Vec<Frame>)> 
         frames.push(frame);
         pos = end;
     }
-    // §1.2: `first_tick` is the tick of the block's first frame, so a header with
+    // block-header contract: `first_tick` is the tick of the block's first frame, so a header with
     // no frames names a tick nothing occupies.
     if frames.is_empty() {
         return Err(WireError::Corrupt("block carries no frames"));
@@ -474,7 +474,7 @@ pub fn read_block(buf: &[u8], stride: u64) -> Result<(BlockHeader, Vec<Frame>)> 
     Ok((header, frames))
 }
 
-/// A domain's sample stride on the container's grid, §1.1. Takes a `TickGrid`
+/// A domain's sample stride on the container's grid, tick-grid contract. Takes a `TickGrid`
 /// rather than a raw exponent so the shift cannot be handed an unrepresentable
 /// one.
 pub fn stride_for(schema: &Schema, grid: crate::TickGrid) -> u64 {
@@ -491,7 +491,6 @@ mod tests {
 
     #[test]
     fn tag_packing_is_collision_free_for_every_kind() {
-        // The round-2 defect: without shifting first, zigzag(0)|kind=1 and
         // zigzag(-1)|kind=0 both yielded 1.
         let mut seen = Vec::new();
         for delta in 0..4u64 {
@@ -507,7 +506,7 @@ mod tests {
 
     #[test]
     fn one_byte_tag_holds_delta_up_to_fifteen() {
-        // §1.1's byte arithmetic: a one-byte varint holds 127, and the low three
+        // tick-grid contract's byte arithmetic: a one-byte varint holds 127, and the low three
         // bits are the kind, so tick_delta <= 15.
         let mut out = Vec::new();
         write_varint(&mut out, pack_tag(15, Kind::Baseline).unwrap());
@@ -540,7 +539,6 @@ mod tests {
 
     #[test]
     fn the_two_chains_can_start_at_different_ticks() {
-        // The round-5 defect: forcing both first frames to delta 0 made a hybrid
         // block with a late first event unframeable.
         let mut w = BlockWriter::new(header(), 1);
         w.push(Frame::state(Kind::Baseline, 0, vec![1])).unwrap();
@@ -554,7 +552,7 @@ mod tests {
 
     #[test]
     fn an_unchanged_run_spans_ticks_that_carry_events() {
-        // §10: the parts are independent, so an event does not break a run.
+        // part-independence contract: the parts are independent, so an event does not break a run.
         let mut w = BlockWriter::new(header(), 1);
         w.push(Frame::state(Kind::Baseline, 0, vec![1])).unwrap();
         w.push(Frame::unchanged(1, 10)).unwrap();
@@ -568,7 +566,7 @@ mod tests {
 
     #[test]
     fn run_length_is_counted_in_sample_ticks() {
-        // §1.5 with a stride of 8: 3 samples cover ticks 0, 8, 16.
+        // frame-run contract with a stride of 8: 3 samples cover ticks 0, 8, 16.
         let f = Frame::unchanged(0, 3);
         assert_eq!(f.last_covered_tick_checked(8).unwrap(), 16);
         // The next frame's delta measures from 16, not from 2.
@@ -614,7 +612,7 @@ mod tests {
     #[test]
     fn runs_separated_by_a_gap_are_legal() {
         // Reduced cadence: a gap terminates the run, and the next observation is a
-        // BASELINE (§1.5), so two runs are separated by that baseline in time.
+        // BASELINE (frame-run contract), so two runs are separated by that baseline in time.
         let mut w = BlockWriter::new(header(), 1);
         w.push(Frame::state(Kind::Baseline, 0, vec![1])).unwrap();
         w.push(Frame::unchanged(1, 2)).unwrap();
@@ -656,7 +654,7 @@ mod tests {
 
     #[test]
     fn a_year_static_domain_costs_four_bytes_of_frame() {
-        // §1.5's worked figure, at ticks_per_hour_log2 = 0 so the tag is one byte.
+        // frame-run contract's worked figure, at ticks_per_hour_log2 = 0 so the tag is one byte.
         let mut w = BlockWriter::new(header(), 1);
         w.push(Frame::state(Kind::Baseline, 0, Vec::new())).unwrap();
         let baseline_only = w.finish().unwrap().len();

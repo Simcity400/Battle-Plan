@@ -1,5 +1,5 @@
 //! Decisions-panel chrome. Generic element geometry follows
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §§3 and 6.1; shipping XUI19
+//! `compose.rs` and the structured UI-layout evidence fixture; shipping XUI19
 //! presentation is governed by its packet-local production contract.
 //!
 //! the game renders decisions and missions through the authored

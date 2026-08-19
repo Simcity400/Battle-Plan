@@ -1,9 +1,8 @@
 """Does column-major beat row-major for d20, after compression?
 
-`WIRE_FORMAT.md` §13 leaves the record layout open and says the format commits to
-row-major only if it wins on the reference domain. ~80 encoders get built against
-whichever survives, and after they exist the layout cannot change without
-rewriting all of them, so this is measured rather than argued.
+The record layout is selected by measurement on the reference domain. ~80
+encoders get built against whichever layout survives, so changing it later
+would require rewriting all of them.
 
 Run `cargo run -p wire_format --bin bench_layout` first to emit the two encodings,
 then:
@@ -137,7 +136,7 @@ def main() -> None:
     if comp_ratio < 95.0:
         verdict = "column-major wins; the format should not commit to row-major"
     elif comp_ratio > 105.0:
-        verdict = "row-major wins; §13 can close in its favour"
+        verdict = "row-major wins; the format can commit to row-major"
     else:
         verdict = "within noise; decide on decode cost and seek, not size"
     print("verdict  : %s" % verdict)

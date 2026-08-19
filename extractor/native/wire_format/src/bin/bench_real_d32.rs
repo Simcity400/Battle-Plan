@@ -136,9 +136,8 @@ const BLOCK_HOURS: usize = 48;
 /// Two reasons, and the second is not a cadence choice: the 48-hour block
 /// boundary, or a measured hour that does not immediately follow the previous
 /// measured one. An hour this domain did not successfully sample is coverage
-/// the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190` is
-/// explicit: "A gap affecting the state part forces the next state observation
-/// to be a `BASELINE`. State may have moved and returned while nobody was
+/// the domain lost. State
+/// after a gap to resume from a complete baseline. State may have moved and returned while nobody was
 /// looking, so neither a delta nor an `UNCHANGED` can be justified across
 /// unobserved time." Delta-encoding across the gap would produce bytes that
 /// decode — the reader's prior is never invalidated, so the local replay
@@ -939,7 +938,7 @@ fn main() {
     let mut reader: Option<(KeyedState, KeyedState)> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
-    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    // Baselines the gap handling forced outside a scheduled block start.
     let mut gap_forced_baselines = 0usize;
     let mut previous_measured_hour: Option<i32> = None;
     let mut baseline_bytes = 0usize;
@@ -993,7 +992,7 @@ fn main() {
                 if de.is_empty() {
                     equipment_unchanged_in_delta_hour += 1;
                 }
-                // §7.1: a collection that did not change contributes `None` (its
+                // delta-minimality contract: a collection that did not change contributes `None` (its
                 // bitmap bit stays clear), never an empty contribution — the
                 // encoder rejects the latter outright. With two collections the
                 // two are genuinely independent: a placement can move while every
@@ -1113,7 +1112,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} every {BLOCK_HOURS} h, {gap_forced_baselines} \
-         forced by a gap in measured hours — WIRE_FORMAT §1.5)",
+         forced by a gap in measured hours —",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1738,7 +1737,7 @@ mod tests {
         // but production's second payload authority independently reads every
         // DOMAIN_DATA payload (`domain_data_authority.rs:6579`-`:6823`).
         //
-        // The reviewer's exact input: a header declaring one wing row and no row
+        // The exact regression input: a header declaring one wing row and no row
         // bytes, DELTA_DATA set, arriving before any baseline.
         let mut truncated = d32_payload(COMPACT_STATUS_DELTA_DATA, &[], &[]);
         truncated[8..12].copy_from_slice(&1u32.to_le_bytes()); // row_count
@@ -2437,8 +2436,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." An excluded or missing
+        // A complete
+        // baseline after a gap. An excluded or missing
         // hour between two measured ones is such a gap; delta-encoding across it
         // would decode cleanly while asserting a continuity the capture does not
         // have. The decision function, over its whole input space:

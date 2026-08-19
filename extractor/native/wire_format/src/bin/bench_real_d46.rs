@@ -9,16 +9,16 @@
 //! exactly what the recorder stores today. This tool replays those records into
 //! per-hour states — the same fold `world_fold::fold_air_variant_archetypes`
 //! performs (`world_fold.rs:16319`) — and re-encodes every hour with this crate's
-//! grammar: a BASELINE at each 48-hour block start and at every `WIRE_FORMAT.md`
-//! §1.5 state gap, field-granular stored-minimal DELTAs between.
+//! grammar: a BASELINE at each 48-hour block start and after every capture gap,
+//! with field-granular stored-minimal DELTAs between.
 //!
 //! **The ace roster is stop-reported** (`d46.rs` module docs): its free text has no
-//! representable target and its retain-on-incomplete membership needs §8's gap
+//! representable target and its retain-on-incomplete membership needs gap contract's gap
 //! record, which has no implementation. Its bytes are therefore accounted for in
 //! the shipping arm both ways the recipe allows — a byte split, and a second cut
 //! arm — and never silently charged to the wire arm.
 //!
-//! **Two passes, because this domain carries content-defined text.** §5 forbids
+//! **Two passes, because this domain carries content-defined text.** content-identity contract forbids
 //! in-stream interning ("it must be fully read before any seek"), so the symbol
 //! table is an input to the mapper and pass 2 cannot mint ids as it goes. Pass 1
 //! validates the whole stream and collects the vocabulary with
@@ -205,7 +205,7 @@ struct StreamScan {
     failure_records: usize,
     /// Measured d46 hours that do not follow the previous measured one by one.
     non_contiguous: usize,
-    /// Pass 1's §5 vocabulary — see the module docs' completeness proof.
+    /// Pass 1's complete content-token vocabulary.
     vocabulary: BTreeSet<String>,
     /// Records that carried an `ACE1` trailer at all.
     ace_trailer_records: usize,
@@ -216,10 +216,9 @@ struct StreamScan {
 
 /// Whether the wire arm opens a BASELINE at this measured hour.
 ///
-/// Two reasons, and both are `WIRE_FORMAT.md` rules, not conveniences: the
-/// 48-hour block cadence (every block opens with its own baseline, §1.5's closing
-/// paragraph), and a gap — `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state
-/// part forces the next state observation to be a `BASELINE`." Every hour this
+/// Two reasons: the 48-hour block cadence and a capture gap.
+/// State after a gap to resume from a
+/// complete baseline. Every hour this
 /// domain did not successfully sample is such a gap — the excluded failure-status
 /// hours, and any non-contiguous hour step — and d46's cadence is hourly, so a
 /// measured hour that does not follow the previous measured one by exactly one is
@@ -229,13 +228,13 @@ fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay. Factored out of `main` so the tests execute the
 /// PRODUCTION encode path over a scanned stream — a mutant that reverts the
 /// baseline decision here to block-position-only must fail the gap test.
 struct WireHourOutcome {
     opened_baseline: bool,
-    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    /// The baseline sits outside a scheduled block start — gap-forced.
     gap_forced: bool,
     emitted: bool,
     bytes: usize,
@@ -396,7 +395,7 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 }
 
 /// Pass 1. Validate the whole stream against the canonical contract, classify every
-/// d46 DATA record, and collect the §5 vocabulary and the per-hour byte composition.
+/// d46 DATA record, and collect the content-token vocabulary and per-hour byte composition.
 /// Every rejection path is an `Err`, never a silently shorter measurement and never
 /// a panic.
 fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<StreamScan, String> {
@@ -665,7 +664,7 @@ fn scan_stream(stream: &[u8], identity_mode: StreamIdentityMode) -> Result<Strea
                 continue;
             }
 
-            // A folded record: decode it once — the FOLD's own walk — for the §5
+            // A folded record: decode it once — the FOLD's own walk — for the content-identity contract
             // vocabulary and the byte composition. Pass 2 re-folds the same span
             // through `State::fold_payload`, which repeats this decode; an `Err`
             // here is therefore an `Err` there, which is why pass 2 cannot fail
@@ -991,7 +990,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} at a {BLOCK_HOURS}-h block start, \
-         {gap_forced_baselines} forced by a WIRE_FORMAT \u{a7}1.5 state gap)",
+         {gap_forced_baselines} forced by a state gap)",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1256,7 +1255,7 @@ mod tests {
         (outcomes, wire.len())
     }
 
-    // --- §1.5: a gap forces a baseline ---------------------------------------
+    // --- frame-run contract: a gap forces a baseline ---------------------------------------
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
@@ -1311,7 +1310,7 @@ mod tests {
         assert!(outcomes[0].opened_baseline && !outcomes[0].gap_forced);
         assert!(
             outcomes[1].opened_baseline && outcomes[1].gap_forced,
-            "the hour after the excluded one is a \u{a7}1.5 gap-forced baseline"
+            "the hour after the excluded one is a gap-forced baseline"
         );
         // The excluded hour's rows were never folded, so the gap is real: variant 2
         // is absent from the post-gap state.
@@ -1622,7 +1621,7 @@ mod tests {
     fn the_symbol_ids_are_the_sorted_vocabulary_index() {
         // The stand-in assignment is deterministic and order-independent, so two
         // callers over the same content set mint the same ids — which is what makes
-        // the measurement reproducible while §5's rule is open.
+        // the measurement reproducible while content-identity contract's rule is open.
         let a = d46::Symbols::from_vocabulary(["b", "a", "c", "a"]);
         let b = d46::Symbols::from_vocabulary(["c", "a", "b"]);
         for (symbol, id) in [("a", 0u64), ("b", 1), ("c", 2)] {

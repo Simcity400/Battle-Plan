@@ -42,7 +42,7 @@ pub fn tiled_light_grid_cb2_bytes(bits: [u32; 4]) -> [u8; 16] {
 /// * `water_full == true` → the mechanism-correct WATER2 seafloor render
 ///   (`UnderwaterPass`, `pdxmap.shader` `Effect underwater` over the
 ///   synthesized tiles). The underwater pass is therefore selected **only**
-///   under `--water-full`; see documents/WATER_LAW.md §2a.
+///   under `--water-full`.
 #[cfg(windows)]
 pub(crate) fn world_synthesis_water_refraction_source(
     water_full: bool,
@@ -182,7 +182,7 @@ pub struct NativeD3d11TerrainRenderer {
     /// `--water-full` mode (WATER1). Default `false` => flag-OFF, byte-identical
     /// to prior behaviour. When `true`, the world-synthesis water pass uploads
     /// the REAL reflection cube (byte-identical to the shipped, mod-resolvable
-    /// map/terrain/reflection.dds; see documents/WATER_LAW.md) instead of the
+    /// map/terrain/reflection.dds) instead of the
     /// 1x1x6 mean-color flatten. WATER1 fixed reflection; WATER2 (below) makes
     /// refraction mechanism-correct too, so under `--water-full` the water pass
     /// now binds a real seafloor render as `WaterRefraction` instead of the
@@ -203,7 +203,7 @@ pub struct NativeD3d11TerrainRenderer {
     /// renders the synthesized thin-border mesh (all classes) over the terrain
     /// target with the shipped `gfx/FX/border.shader` compiled byte-exact,
     /// per-class `BorderDiffuse` textures, and camera-height fade per
-    /// [`crate::border_transparency`]. See documents/BORDER_LAW.md.
+    /// [`crate::border_transparency`].
     pub(crate) borders_from_files: bool,
     /// BORD2: resolver used to synthesize the border mesh and resolve the border
     /// shader + `map/terrain/border_*.dds` textures (mod-aware). Required when
@@ -247,7 +247,7 @@ pub struct NativeD3d11TerrainRenderer {
     /// When absent, the captured `.d3d11` payload is uploaded verbatim
     /// (byte-identical to prior behaviour). Provenance-only: the descriptor,
     /// SRV, and DXGI 91 (`B8G8R8A8_UNORM_SRGB`) view stay bound from the
-    /// capture; only the byte SOURCE flips. See documents/WATER_LAW.md.
+    /// capture; only the byte source flips.
     #[cfg(windows)]
     pub(crate) reflection_resolver: Option<GameFileResolver>,
 }
@@ -276,7 +276,7 @@ pub struct NativeD3d11PreparedProductionMap {
     pub(crate) trees: Option<NativeD3d11PreparedMapPass>,
     /// BORD2 `--borders-from-files`: the synthesized thin-border pass. `None`
     /// when the flag is off (byte-identical) or on the reference-replay path.
-    /// Renders after water/rivers, before trees (BORDER_LAW.md draw order).
+    /// Renders after water/rivers, before trees.
     #[cfg(windows)]
     pub(crate) borders_files: Option<NativeD3d11BorderFilesPass>,
 }
@@ -1543,7 +1543,7 @@ impl NativeD3d11TerrainRenderer {
         let dependent_passes = prepared.dependent_passes_in_order();
         // BORD2 (--borders-from-files): same overlay position as the
         // captured-terrain path — after water/rivers, before trees (diag23b
-        // pass order; BORDER_LAW.md).
+        // pass order).
         let border_insert_index = prepared.borders_files.as_ref().map(|_| {
             dependent_passes
                 .iter()
@@ -2230,7 +2230,7 @@ impl NativeD3d11TerrainRenderer {
         // BORD2 (--borders-from-files): the synthesized border overlay draws
         // after water/rivers and BEFORE trees, matching the one captured pass
         // sequence (diag23b: terrain, water, rivers, borders, trees; see
-        // BORDER_LAW.md). `border_insert_index` is the dependent-pass index the
+        // `border_insert_index` is the dependent-pass index the
         // overlay renders in front of (`len()` = after every captured pass).
         let border_insert_index = prepared.borders_files.as_ref().map(|_| {
             dependent_passes
@@ -2475,7 +2475,7 @@ impl NativeD3d11TerrainRenderer {
     /// terrain (culled/LOD-selected chunk draws), which is not guaranteed to be
     /// the exact geometry the engine rasterized for its underwater pass. This
     /// is a strong reconstruction/oracle test, not a definitive byte-exact
-    /// engine proof — see documents/WATER_LAW.md.
+    /// engine proof in `water_law.rs`.
     #[cfg(windows)]
     pub fn render_underwater_validation_from_chunk_library(
         &self,

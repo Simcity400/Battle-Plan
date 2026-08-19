@@ -23,8 +23,8 @@
 //! factors over time) remains an acknowledged [ENGINE-LAW] gap — this
 //! module makes every ingredient ready for the census evidence.
 //!
-//! Mod compatibility: reads go through [`GameFileResolver`]
-//! (MOD_COMPATIBILITY.md).
+//! Mod compatibility: reads go through [`GameFileResolver`] (the `PROJECT.md`
+//! heading "Content and mod contract").
 
 use crate::*;
 

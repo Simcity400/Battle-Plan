@@ -64,7 +64,7 @@ pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 // Current-state (NOT delta): one row per active combat per side, emitted every
 // frame for every live combat, so the fold always has the latest per-side
 // scalars regardless of whether the participant/phase delta changed this hour.
-// Offsets validated 50/50 on both sides vs the melt (FINAL_SWEEP §T2). Damage
+// Offsets validated 50/50 on both sides against the melt. Damage
 // fields are i64 fixed-point ×100000; counts are u32. Schema v4 additionally
 // carries the exact progress accumulator and the validated tactic identity.
 // `losses` remains undisambiguated on the all-zero-loss oracle and is omitted.
@@ -172,14 +172,11 @@ pub const KNOWN_FLAG_MASK: u32 = FLAG_LOCATION_PRESENT
 
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_DIVISION_ID: u32 = 0x7fff_ffff;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
+/// Province id space STRUCTURAL width (`claim_347234c20a542ca79032`).
 ///
 /// Was `1_000_000`. This constant is named for the FIELD (`location`) rather
-/// than the SPACE, which is why lane IA's name-based census -- built around
-/// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
-/// rounds. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other. Dossier:
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// than the SPACE. The value it bounds is read from an authenticated `CProvince` and is
+/// a province id like any other.
 pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_AGE_DAYS: u32 = 100_000;
 pub const MAX_SIDE_UNITS: usize = 128;
@@ -236,7 +233,8 @@ pub const WIDTH_REQUIRED_FLAG_MASK: u32 = WIDTH_FLAG_PRODUCER_SENTINEL
 
 /// One row per changed equipment identity in one exact current-epoch writer
 /// observation. Manpower before/after is repeated so each grouped row remains
-/// independently auditable. The carrier remains inactive pending X2-LOSS.
+/// independently auditable. The carrier remains inactive until its production
+/// loss-observation authority is complete.
 pub const CURRENT_LOSS_OBSERVATION_ROW_LEN: usize = 72;
 pub const CURRENT_LOSS_FLAG_WRITER_SENTINEL: u32 = 1 << 0;
 pub const CURRENT_LOSS_FLAG_ACTIVE_EPOCH_BOUND: u32 = 1 << 1;

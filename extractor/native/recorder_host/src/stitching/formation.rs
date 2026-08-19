@@ -1,23 +1,22 @@
-//! Pre-fold **segment formation** (design `STITCHING_DESIGN.md` §5).
+//! Pre-fold **segment formation**.
 //!
 //! The live stream driver must stage exactly one logical frame — all `DOMAIN_DATA`
 //! records for one game hour plus its matching `FRAME_END` — and decide its segment
 //! membership **before** applying it to any [`WorldFold`](crate::world_fold::WorldFold)
-//! (§5.1). This module is the pure decision core the driver drives:
+//! instance. This module is the pure decision core the driver drives:
 //! [`SegmentCutter::route`] takes the staged frame's identity / epoch / hour facts
 //! and returns whether the frame extends the currently open segment or **cuts** a
-//! new one, detecting all four §5.2 cut triggers and producing the §5.3 rollback
-//! cut-transaction record.
+//! new one, detecting the cut triggers and producing the rollback transition.
 //!
 //! It owns no I/O and no fold: the caller performs the fsync / index-and-byte seal /
-//! fresh-`WorldFold` construction the routing prescribes (per §5.3 the caller
+//! fresh-`WorldFold` construction the routing prescribes (the caller
 //! spins up [`WorldFold::new_file_backed_for_segment`](crate::world_fold::WorldFold::new_file_backed_for_segment)
 //! for the new ordinal so no accumulator crosses the cut). Keeping the decision core
 //! I/O-free is what makes every trigger unit-testable offline.
 //!
 //! ## Determinism
 //!
-//! Segment ordinals are scanned from zero in observation order (§8 rule 2) — never a
+//! Segment ordinals are scanned from zero in observation order — never a
 //! PID, wall clock, mtime, or thread order. The `session-local` ordinal this cutter
 //! assigns is the segment's in-session sequence; the finalize planner
 //! ([`plan_stitch`](super::plan_stitch)) assigns the canonical cross-session global
@@ -33,7 +32,7 @@
 //! * retaining reload-uncertain / torn bytes as Failed coverage and building the
 //!   final [`SegmentInput`](super::SegmentInput) coverage maps from fold results;
 //! * the epoch/baseline completeness gate that decides whether the new segment may
-//!   publish a snapshot (§5.3 step 6).
+//!   publish a snapshot.
 
 use super::SegmentReason;
 
@@ -80,22 +79,22 @@ impl std::fmt::Display for FormationInputError {
 impl std::error::Error for FormationInputError {}
 
 /// The staged logical frame's identity / epoch / coverage facts, computed by the
-/// live driver before the frame is applied to any fold (§5.1). A `hour_index` of
+/// live driver before the frame is applied to any fold. A `hour_index` of
 /// `None` marks a torn / incomplete / epoch-uncertain frame that never produced a
 /// matching `FRAME_END`: it is retained Failed and can never open visible history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameFacts {
-    /// Session / process-start identity token. A bare PID is **not** one (§3): the
+    /// Session / process-start identity token. A bare PID is **not** one: the
     /// driver forms this from process-start identity, not the PID alone.
     pub session_identity: String,
     /// Verified save-epoch token for this frame. Empty while the epoch is not yet
     /// verified (an unverified epoch never triggers a clean [`SegmentReason::EpochChange`]
-    /// cut; reload-uncertainty is the signal that seals instead — §5.2 #3).
+    /// cut; reload uncertainty is the signal that seals instead.
     pub epoch_token: String,
     /// The frame's closed game `hour_index`, or `None` for a torn frame.
     pub hour_index: Option<i64>,
     /// The collector reported that reload may have begun at/just before this frame
-    /// (§5.2 #3). Seals the prior segment immediately, even if the new epoch is not
+    /// Seals the prior segment immediately, even if the new epoch is not
     /// yet identified.
     pub reload_uncertain: bool,
     /// Decoded record sequence of the frame's FIRST record.
@@ -108,8 +107,8 @@ pub struct FrameFacts {
     pub end_byte_offset: u64,
 }
 
-/// The observed backward-time transition recorded when a rollback cuts a segment
-/// (§5.3 step 3): `(old_hour, new_hour, record_sequence, byte_offset)`.
+/// The observed backward-time transition recorded when a rollback cuts a segment:
+/// `(old_hour, new_hour, record_sequence, byte_offset)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollbackTransition {
     pub old_head_hour: i64,
@@ -124,23 +123,23 @@ pub struct RollbackTransition {
 /// stream extent at these bounds and records the reasons in segment provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedSegment {
-    /// Session-local (in-session) ordinal, scanned from zero (§8 rule 2).
+    /// Session-local (in-session) ordinal, scanned from zero.
     pub segment_ordinal: u64,
     pub session_identity: String,
     pub epoch_token: String,
     pub start_reason: SegmentReason,
     pub stop_reason: SegmentReason,
-    /// First observed owned hour, or `None` for an empty recovery segment (§3).
+    /// First observed owned hour, or `None` for an empty recovery segment.
     pub cutover_hour: Option<i64>,
     /// Greatest complete observed hour, or `None` for an empty recovery segment.
     pub head_hour: Option<i64>,
     /// Half-open decoded byte extent `[start, end)` of the segment's records. On a
     /// contiguous stream `end` equals the triggering frame's `first_byte_offset`
-    /// (§5.3 step 2: seal at the byte immediately before the backward frame).
+    /// The cut seals at the byte immediately before the backward frame.
     pub byte_bounds: (u64, u64),
     /// Inclusive decoded record-sequence bounds `[start, end]` of the segment.
     pub record_seq_bounds: (u64, u64),
-    /// Present only for a [`SegmentReason::TimeRollback`] stop (§5.3 step 3).
+    /// Present only for a [`SegmentReason::TimeRollback`] stop.
     pub rollback_transition: Option<RollbackTransition>,
 }
 
@@ -148,7 +147,7 @@ pub struct SealedSegment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameRouting {
     /// The frame extends the currently open segment (a same-hour observation or a
-    /// forward jump — neither cuts, §5.2 note). `ordinal` is the open segment's.
+    /// forward jump; neither cuts. `ordinal` is the open segment's.
     Extend { ordinal: u64 },
     /// A cut trigger fired. `sealed` is the prior open segment sealed at its stop
     /// reason (`None` on the very first frame); the staged frame is applied to the
@@ -159,12 +158,12 @@ pub enum FrameRouting {
         sealed: Option<SealedSegment>,
         new_ordinal: u64,
     },
-    /// Reload may have begun (§5.2 #3): the prior segment is sealed immediately
+    /// Reload may have begun: the prior segment is sealed immediately
     /// (`None` if none was open) and the cutter enters an uncertainty hold. The
     /// staged frame is Failed and opens no visible segment.
     UncertainSeal { sealed: Option<SealedSegment> },
-    /// A frame observed while the cutter is in the reload-uncertainty hold (§5.3
-    /// step 6): retained Failed by the driver, opens no visible history until a new
+    /// A frame observed while the cutter is in the reload-uncertainty hold is
+    /// retained Failed by the driver and opens no visible history until a new
     /// verified epoch resumes.
     HeldUncertain,
 }
@@ -185,7 +184,7 @@ struct OpenSegment {
     last_byte_end: u64,
 }
 
-/// The pre-fold segment-formation state machine (design §5). Feed it one staged
+/// The pre-fold segment-formation state machine. Feed it one staged
 /// [`FrameFacts`] per logical frame in observation order; seal the tail with
 /// [`SegmentCutter::finish`].
 #[derive(Debug, Clone, Default)]
@@ -196,7 +195,7 @@ pub struct SegmentCutter {
     /// reload-uncertain seal, retaining the sealed segment's (old, trusted) epoch
     /// identity: visible history resumes only when a frame carries a *genuinely
     /// different* verified epoch, so a same-epoch late frame during the hold stays
-    /// Failed (§5.2 #3 / §5.3 step 6, fail-closed). The held value is empty when there
+    /// Failed, fail-closed. The held value is empty when there
     /// was no prior trusted epoch (a reload-uncertain very-first frame), in which case
     /// any verified epoch resumes. `None` means no hold is active.
     held_epoch: Option<String>,
@@ -279,8 +278,8 @@ impl SegmentCutter {
     /// Route one staged frame, mutating the open-segment state.
     pub fn route(&mut self, frame: &FrameFacts) -> FrameRouting {
         // (1) Uncertainty hold: only a GENUINELY DIFFERENT verified epoch on a complete
-        // frame that is not itself reload-uncertain resumes visible history (§5.3 step
-        // 6). The hold retains the sealed segment's (old, trusted) epoch identity, so a
+        // frame that is not itself reload-uncertain resumes visible history. The
+        // hold retains the sealed segment's (old, trusted) epoch identity, so a
         // same-epoch late frame observed after the reload-uncertain seal stays Failed
         // (fail-closed) instead of opening a new visible segment — it does not resume
         // until a genuinely changed verified epoch is seen. An empty held epoch means
@@ -328,7 +327,7 @@ impl SegmentCutter {
             };
         };
 
-        // (3) Reload may have begun (§5.2 #3): seal immediately and enter the
+        // (3) Reload may have begun: seal immediately and enter the
         // uncertainty hold. This is evaluated BEFORE the session-identity trigger
         // because it is the more conservative, fail-closed state: a frame carrying BOTH
         // a reload-uncertain signal AND a new session identity must be held Failed under
@@ -343,7 +342,7 @@ impl SegmentCutter {
             };
         }
 
-        // (4) New session / process-start identity (§5.2 #1).
+        // (4) New session or process-start identity.
         if frame.session_identity != open_session {
             let sealed = self.seal_open(SegmentReason::SessionStart, None);
             let ordinal = self.open_new(frame, SegmentReason::SessionStart);
@@ -354,7 +353,7 @@ impl SegmentCutter {
             };
         }
 
-        // (5) Verified save-epoch token changed (§5.2 #2). Both tokens must be
+        // (5) Verified save-epoch token changed. Both tokens must be
         // verified (non-empty); an unverified token never forces a clean cut.
         if !frame.epoch_token.is_empty()
             && !open_epoch.is_empty()
@@ -369,8 +368,8 @@ impl SegmentCutter {
             };
         }
 
-        // (6) Backward hour = rollback (§5.2 #4 / §5.3). `== head` is NOT a rollback
-        // (§5.2): a same-hour observation stays in the segment.
+        // (6) Backward hour is a rollback. `== head` is NOT a rollback: a
+        // same-hour observation stays in the segment.
         if let (Some(hour), Some(prev)) = (frame.hour_index, open_last_hour) {
             if hour < prev {
                 let transition = RollbackTransition {
@@ -398,7 +397,7 @@ impl SegmentCutter {
         }
     }
 
-    /// Seal the currently open segment at session end (§5.2 [`SegmentReason::SessionEnd`]).
+    /// Seal the currently open segment at session end.
     /// Returns `None` if nothing is open (e.g. the tail was reload-uncertain).
     pub fn finish(&mut self) -> Option<SealedSegment> {
         if self.open.is_some() {
@@ -509,7 +508,7 @@ mod tests {
             cutter.route(&frame("s0", "e0", 15)),
             FrameRouting::Extend { ordinal: 0 }
         );
-        // Same hour: NOT a rollback (§5.2), stays in the segment.
+        // Same hour: not a rollback, stays in the segment.
         assert_eq!(
             cutter.route(&frame("s0", "e0", 15)),
             FrameRouting::Extend { ordinal: 0 }
@@ -737,7 +736,7 @@ mod tests {
         torn.hour_index = None; // never closed
         cutter.route(&torn);
         let sealed = cutter.finish().unwrap();
-        // A frame with no hour contributes no cutover/head (§3).
+        // A frame with no hour contributes no cutover or head.
         assert_eq!(sealed.cutover_hour, None);
         assert_eq!(sealed.head_hour, None);
     }

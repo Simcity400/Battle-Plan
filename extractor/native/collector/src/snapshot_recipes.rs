@@ -40,9 +40,8 @@
 //!    decoded, and never wider than [`MAX_PROVEN_WINDOW_GAP_BYTES`]. Merging
 //!    on address proximity alone is not expressible: the merge entry point
 //!    takes [`policy::Provenance`], not bare addresses, and two ranges with no
-//!    shared provenance get an allowance of zero bytes. Per the gap-curve
-//!    verdict (`runs/s0_census/t35_gap_curve/verdict.txt` §4) a window anchor
-//!    is a DEREFERENCED POINTER VALUE, never a root read event — see
+//!    shared provenance get an allowance of zero bytes. A window anchor is a
+//!    DEREFERENCED POINTER VALUE, never a root read event — see
 //!    [`policy::AnchorKind`].
 //!
 //! 4. **One global interval ownership map.** [`dedup::OwnershipMap`] copies a
@@ -55,8 +54,8 @@
 //!    translated through a page/radix index onto the frozen arena. Nothing on
 //!    that type returns a live address or a live pointer.
 //!
-//! CUSTODY. The arena holds at most [`DEFAULT_CUSTODY_BUDGET_BYTES`] (512 MiB,
-//! the owner-amended figure from the re-pricing's §4.4). Budget exhaustion and
+//! CUSTODY. The arena holds at most [`DEFAULT_CUSTODY_BUDGET_BYTES`] (512 MiB).
+//! Budget exhaustion and
 //! allocation failure are both [`CustodyRefusal`]s that abort the observation;
 //! neither is recoverable by copying less.
 //!
@@ -188,9 +187,8 @@ pub const FORWARD_WAVES: u32 = MAX_RECIPE_DEPTH + 1;
 pub const TOTAL_PHASES: u32 = FORWARD_WAVES + 1;
 
 /// Raw custody ceiling for one observation's arena, opening and closing images
-/// together. The re-pricing raised this from 256 MiB because a 75–100 MiB
-/// image, two A/B witnesses and two overlapping hours can transiently need
-/// 300–400 MiB plus metadata.
+/// together. A 75–100 MiB image, two A/B witnesses and two overlapping hours
+/// can transiently need 300–400 MiB plus metadata.
 pub const DEFAULT_CUSTODY_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Generic merge allowance: two ranges reached through the SAME dereferenced
@@ -201,13 +199,13 @@ pub const GENERIC_GAP_BYTES: u32 = 32;
 pub const PROVEN_OBJECT_GAP_BYTES: u32 = 64;
 
 /// Default merge allowance inside a decoded container extent. 128 B is the
-/// smallest threshold in the measured global curve that meets both of the
-/// re-pricing's rejection ceilings (151,528 ranges, 67.380 MiB).
+/// smallest threshold in the measured global curve that meets both rejection
+/// ceilings (151,528 ranges, 67.380 MiB).
 pub const DEFAULT_PROVEN_EXTENT_GAP_BYTES: u32 = 128;
 
-/// Hard ceiling on any configured merge allowance. The re-pricing permits
-/// "128–4,096-byte windows only for a family whose allocation and maximum
-/// extent are proven"; nothing may be configured past the top of that band.
+/// Hard ceiling on any configured merge allowance. The policy permits
+/// 128–4,096-byte windows only for a family whose allocation and maximum
+/// extent are proven; nothing may be configured past the top of that band.
 pub const MAX_PROVEN_WINDOW_GAP_BYTES: u32 = 4096;
 
 /// Terms a [`executor::CountExpr`] may sum. d81's derived extent is

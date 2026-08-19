@@ -489,8 +489,7 @@ Assert-Policy `
 #    rebuild kept appending that zero, and because installing an inline detour
 #    freezes the process, every capture that installs one was refused on
 #    `ready_payload_sha256` alone until the count was published on the receipt
-#    and read here (runs t57-t60 on C:, t62 and t63 on L:, all reporting 13 --
-#    `runs/lp_refusal_volume/EVIDENCE.md`). Nothing caught
+#    and read here (runs t57-t60 on C:, t62 and t63 on L:, all reporting 13). Nothing caught
 #    it because every pinned case at the time predated the field and genuinely
 #    authenticated a zero there. Two DISTINCT nonzero counts are required for the
 #    reason a constant 1 was not enough above, and 1000 additionally does not fit

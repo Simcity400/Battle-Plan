@@ -1,7 +1,7 @@
 //! Clausewitz date parsing (`Y.M.D` or `Y.M.D.H`).
 //!
 //! Recordings carry a per-frame `date` string in this format (see
-//! `replay_fixture_gen::fixture_time` / `REPLAY_SCHEMA.md`). The transport
+//! `replay_fixture_gen::fixture_time`). The transport
 //! layer resolves jump-to-date and day-boundary seek-bar ticks against these
 //! strings ONLY — it never invents an epoch or hour-index arithmetic, so the
 //! recording's own dates stay the single authority.

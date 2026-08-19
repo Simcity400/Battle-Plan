@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""C0 domain closure census v3 (PRODUCTION_ENDGAME_PLAN.md Wave C; blocks O8 wiring).
+"""C0 domain closure census v3.
 
-AUDIT INSTRUMENT: the exit code IS the C0 gate, so every path that could exit
-0 without positive evidence is a false green. v2 closed the first tooling
-gate's 5 CRITICALs; v3 closes the combined gate's 4 CRITICAL + 2 MEDIUM
-(tids in ~/.claude/codex_threads.log: c0-tooling-gate, combined-stagea-census).
+The exit code is the C0 gate, so every path that could exit 0 without positive
+evidence is a false green.
 
 Fail-closed guarantees (each pinned by --selftest through the REAL entry
 path, not a private helper):
@@ -18,7 +16,7 @@ path, not a private helper):
     problems/expected_domains are exact lists, coverage errors exactly [],
     session_id a nonempty unique string (finding 3)
   * duplicate JSON object members anywhere are rejected (finding 4)
-  * plus everything from v2: roster/coverage/dark-domain/fold-problem
+  * roster/coverage/dark-domain/fold-problem
     blocking, domain-aware bits (d49/d51/d53/d60 lane-local), unknown-bit
     blocking, bit13 validity, ATTRIBUTED policies that never clear C0
     (must_be_zero enforced; candidates label but still block).
@@ -126,8 +124,8 @@ ROSTER = {
     "frame": (1000, False),
 }
 # d72, d75, d79, d85, d88 and d89 are pinned out of the profile because the
-# owner ruled them out of capture scope -- five on 2026-08-03 (POV-local
-# presentation) and d85 on 2026-08-13; see `documents/DECISIONS.md`. They keep a production status and stay schedulable,
+# owner ruled them out of capture scope as POV-local presentation. They keep a
+# production status and stay schedulable,
 # so `schedulable and status` alone still classifies them as in-profile;
 # `descheduled_capture_ids()` is what makes the computed value agree with these
 # pins. See the KNOWN GATE DRIFT note below for what this file still owes.

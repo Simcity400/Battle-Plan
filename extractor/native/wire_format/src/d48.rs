@@ -2,9 +2,9 @@
 //! per-location building levels/damage, per-state resources, and the RLC1
 //! railway-construction trailer.
 //!
-//! Derived from `world_fold.rs:26900`-`:27237`
+//! Derived from `world_fold.rs:26871`-`:27208`
 //! (`fold_construction_buildings_state_damage`), its accumulator type at
-// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=26900-27237 sha256=9d8154f0e46b7fe29b1894a2a39c562b69563431d16b20dbdb6161fc3d5e869b closure=4d1426b254efad92c120a914c7111c555c189bd7a3b0a576f0f331ef5f90dd62
+// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=26871-27208 sha256=9d8154f0e46b7fe29b1894a2a39c562b69563431d16b20dbdb6161fc3d5e869b closure=76ba3177c9770bcc49582188d75839f57fe92d43fdf21dd117b8d41da9211b97
 //! `:2123`-`:2131` and its key helpers at `:25681`-`:25696`; the row grammar is
 //! the lane crate `extractor/native/lanes/construction_buildings_state_damage_live/src/lib.rs`
 //! (`decode_lane_frame` at `:1118`, `gate_decoded_frame` at `:1413`, the row
@@ -13,7 +13,7 @@
 //! `lanes/construction_buildings_state_damage_live/src/collector_module.rs` and
 //! `extractor/native/collector/src/attach_log.rs:41560`-`:41645`.
 //! There is no dossier under `extractor/documents/domains/` for d48, which
-//! `domains/UNDOCUMENTED_DOMAINS.md` says is expected; the fold and the lane are
+//! This mixed shape is expected; the fold and the lane are
 //! the whole basis.
 //!
 //! # Payload grammar
@@ -144,7 +144,7 @@
 //! The fold answers value-vs-nothing only: it emits JSON `Null` for
 //! `template_id`/`healthy_level` (`option_u32_json`, `world_fold.rs::option_u32_json`) and
 //! omits the key for `created_date_raw`, `target_location_id`, `target_scope`,
-//! `repair_levels_remaining` and `partial_health_raw`. §3's three-way choice is
+//! `repair_levels_remaining` and `partial_health_raw`. record-state contract's three-way choice is
 //! made here, per field, from the collector read:
 //!
 //! * `template_id` — `None` when the line's construction sub-object pointer is
@@ -155,7 +155,7 @@
 //! * `target_state_id` — **Unknown** when the frame bit is set (the join was not
 //!   captured this frame) or the row carries no value. A row can only carry no
 //!   value because the frame that admitted it was itself badged, so both cases
-//!   are §3's "applicable, not captured".
+//!   are record-state contract's "applicable, not captured".
 //! * `target_location_id`, `target_scope` — **Unknown** when absent, for the same
 //!   reason: they are the other two thirds of the one promoted tuple the
 //!   collector clears together. Note the fold gates these two on the row's own
@@ -208,7 +208,7 @@
 //! is only bounded below (`lib.rs:1356`), so a `Fixed(5)` continuous encoding
 //! would have carried d36's `2^51` reproduction band for no gain.
 //!
-//! # No derived field (§6)
+//! # No derived field (derived-field contract)
 //!
 //! Nothing here changes deterministically with the clock. `created_date_raw` is a
 //! *fixed* creation stamp, not a countdown, and `remaining_hours_raw` moves with
@@ -237,7 +237,7 @@ pub const STATE_RESOURCES_INDEX: usize = 2;
 pub const RAILWAY_CONSTRUCTION_INDEX: usize = 3;
 pub const RAILWAY_ROUTE_INDEX: usize = 4;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// different field. One concept keeps one id across collections (d26's and
 /// d83's convention), which is why the railway table reuses `TAG_DB_ID`,
 /// `LINE_ID`, `ACTIVE_FACTORIES`, `COST_RAW`, `PRODUCED_RAW` and
@@ -274,7 +274,7 @@ pub mod field {
     pub const ROUTE_PROVINCE_ID: u32 = 29;
 }
 
-/// `target_scope` codes. §4 rejects a code at or above the cardinality, so the
+/// `target_scope` codes. schema-kind contract rejects a code at or above the cardinality, so the
 /// wire uses a dense `0..2` rather than the payload's `1`/`2` words.
 pub mod scope_code {
     pub const STATE: u32 = 0;
@@ -338,10 +338,8 @@ pub const SCOPE_STATE: u32 = 1;
 pub const SCOPE_PROVINCE: u32 = 2;
 /// `build_profile::MAX_STATE_ID` / `::MAX_PROVINCE_ID`. Both were `65_535`, a
 /// guess with a circular derivation; both are now their id space's STRUCTURAL
-/// width, proven from the engine's own signed-int subscript law
-/// (`claim_39c989ce13504504353c` for states, `claim_347234c20a542ca79032` for
-/// provinces; the dossier is `runs/ia_province_caps/SWEEP.md`). Spelled per
-/// space, and pinned to the producer's spelling by
+/// width of the signed integer admitted by the producer. Each is spelled per
+/// id space and pinned to the producer's spelling by
 /// `tests/producer_consumer_admission_agreement.rs`.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
@@ -384,7 +382,7 @@ pub fn schema() -> Schema {
         collection_id: CONSTRUCTION,
         shape: Shape::KeyedSet,
         fields: vec![
-            // A country tag is content-defined (§5): a manifest must resolve it
+            // A country tag is content-defined (content-identity contract): a manifest must resolve it
             // for it to keep its meaning under another mod set. d63's key and
             // d20's `owner` are classed the same way. This is a ContentId KEY —
             // flagged separately in the open questions, because a manifest remap
@@ -485,7 +483,7 @@ pub fn schema() -> Schema {
             Field::new(f::TARGET_LEVEL, Kind::Unsigned),
             Field::new(f::COMPLETION_FLAG, Kind::Boolean),
             // `-1` is the engine's explicit no-current-edge sentinel
-            // (`lib.rs:315`-`:317`) — §3's null, not a failed read and not a
+            // (`lib.rs:315`-`:317`) — record-state contract's null, not a failed read and not a
             // magic number to carry as a Signed word.
             Field::new(f::CURRENT_SEGMENT_INDEX, Kind::Unsigned).nullable(),
             // Fixed-5 over 100000 (`lib.rs:316`-`:317`), carried as the raw
@@ -497,7 +495,7 @@ pub fn schema() -> Schema {
 
     // --- The railway route, a child collection of the row above.
     //
-    // §4 declares no array kind, so the route rides as its own keyed set with
+    // schema-kind contract declares no array kind, so the route rides as its own keyed set with
     // the position in the key — recipe step 5's third ordinal case, for rows
     // that have no identity of their own. The position persists across hours as
     // the same thing here: a line's route is the path it was planned on, and
@@ -1449,7 +1447,7 @@ pub fn key_from_railway_route_row(parent: (u32, u32), ordinal: u32) -> Key {
 ///
 /// `row` is the raw 52-byte row slice (the caller has already consumed the table
 /// header via [`split_payload`]); d48 has exactly one construction row form, so
-/// length selects nothing and a wrong length is rejected. `frame_tick` is §6's
+/// length selects nothing and a wrong length is rejected. `frame_tick` is derived-field contract's
 /// derived-field input; d48 declares no derived field, so it is taken and
 /// ignored — every domain's mapper has the same shape.
 ///
@@ -1778,7 +1776,7 @@ impl Domain48State {
     ///
     /// **`railway == None` is refused here, and that is a recorded divergence.**
     /// A keyed set has no way to say "this collection's membership was not
-    /// measured" — that is §8 gap normalisation, which has no implementation
+    /// measured" — that is gap normalization, which has no implementation
     /// (`lib.rs`) — so emitting zero railway rows for a state that has never
     /// seen an `RLC1` trailer would publish "measured, no rail lines", which is
     /// a false statement rather than a missing one. Producer evidence that this
@@ -1834,7 +1832,7 @@ impl Domain48State {
         let Some(rows) = self.railway.as_ref() else {
             return Err(
                 "construction_buildings_state_damage state has never observed an RLC1 trailer; a \
-                 keyed set cannot express an unmeasured collection (WIRE_FORMAT.md §8)"
+                 keyed set cannot express an unmeasured collection"
                     .into(),
             );
         };
@@ -2546,7 +2544,7 @@ mod tests {
 
     #[test]
     fn the_content_ids_are_enumerated_for_the_section_13_retrofit_sweep() {
-        // The §5 assignment now exists, but every one of these remains a raw
+        // The content-identity contract assignment now exists, but every one of these remains a raw
         // cast until this mapper receives the file-global resolver.
         // Asserting the list is what lets the sweep tell "checked" from "not
         // checked" (d35's `no_field_is_a_content_id`, inverted).
@@ -2619,7 +2617,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers. `created_date_raw` is a
+        // derived-field contract derived fields are clock-linear integers. `created_date_raw` is a
         // fixed creation stamp and `remaining_hours_raw` moves with construction
         // progress, not with the tick, so `frame_tick` never enters a value.
         for collection in &s().collections {
@@ -3304,7 +3302,7 @@ mod tests {
 
     #[test]
     fn a_state_that_never_saw_a_trailer_is_refused_rather_than_published_as_empty() {
-        // The recorded §8 divergence: a keyed set cannot say "not measured", so
+        // The recorded gap contract divergence: a keyed set cannot say "not measured", so
         // publishing zero railway rows would state something false.
         let schema = s();
         let mut fold = Domain48Fold::new();
@@ -4114,11 +4112,10 @@ mod tests {
         assert_eq!(fold.delta_baseline.construction.len(), 1);
     }
 
-    /// Codex round-2 finding, class 6, carried in as its own regression test.
     ///
     /// `fold_payload` has TWO fallible steps — the fold, and the
     /// wire-representability check in `to_states` — and it used to commit
-    /// between them, so the reviewer's input (a valid legacy clean `CBSD` frame
+    /// between them, so the regression input (a valid legacy clean `CBSD` frame
     /// with no `RLC1` trailer) advanced both accumulators and *then* returned
     /// `Err`. Swept over both steps and over all three frame modes, because the
     /// property is "no `Err` from this boundary leaves a mutation behind", not
@@ -4127,7 +4124,7 @@ mod tests {
     fn fold_payload_is_all_or_nothing_over_both_of_its_fallible_steps() {
         let schema = s();
 
-        // Step 2 — the reviewer's own trigger, from a virgin accumulator.
+        // Step 2 — the regression trigger, from a virgin accumulator.
         let mut legacy = Payload::clean();
         legacy.railway = None;
         let mut fold = Domain48Fold::new();

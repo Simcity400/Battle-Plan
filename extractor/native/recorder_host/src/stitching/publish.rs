@@ -1,8 +1,8 @@
-//! Atomic publication of a stitched container (design `STITCHING_DESIGN.md` §7.4).
+//! Atomic publication of a stitched container.
 //!
 //! This is the finalize-routing seam: given a sealed [`StitchedPlan`](super::StitchedPlan)
 //! and a source of the retained snapshot / raw-stream payloads, it assembles the v2
-//! container payload set, packs a STORE-only `.battleplan` (§8 rule 7 —
+//! container payload set, packs a STORE-only `.battleplan`
 //! `{level:none}`), and publishes it **build-beside-then-atomic-rename**:
 //!
 //! 1. derive every container entry from ONE immutable plan (never file enumeration);
@@ -16,15 +16,15 @@
 //!    no pathname reopen or payload-sized post-commit readback is required.
 //!
 //! Any pre-commit failure leaves the prior published replay and all standalone /
-//! session inputs untouched, and removes the temp artifact — matching §7.4 and the
-//! §11 gate 10 crash-injection requirement. The plan/payload model is a pure input,
+//! session inputs untouched, and removes the temp artifact. The plan/payload
+//! model is a pure input,
 //! so this is fully exercisable offline with synthetic segment fixtures. The
 //! legacy in-memory publisher remains only as a small-fixture reference path;
 //! product callsites use the retained-source publisher.
 //!
 //! What this does NOT do (explicit later-lane interfaces): it does not itself run
 //! the per-segment folds, form segments from the live byte stream
-//! ([`super::formation`]), or emit the new compact-stream wire major (§9). The live
+//! ([`super::formation`]), or emit the new compact-stream wire major. The live
 //! `main.rs` finalize path calls this once the sealed [`SegmentInput`](super::SegmentInput)
 //! set and its spilled payloads exist.
 
@@ -159,8 +159,8 @@ pub struct PublishReport {
     pub segments: usize,
 }
 
-/// The v2 STORE publication options a stitched container declares (§8 rule 7 /
-/// §9). STORE-only because v2 open can only independently re-verify the `{level:none}`
+/// The v2 STORE publication options a stitched container declares. STORE-only
+/// because v2 open can only independently re-verify the `{level:none}`
 /// profile; the plan's `compression_method` must agree.
 fn stitched_pack_options() -> PackOptions {
     PackOptions {
@@ -172,7 +172,7 @@ fn stitched_pack_options() -> PackOptions {
 
 /// The pack identity a stitched publication records. `created_utc` and the schema /
 /// mod bindings come from the plan's immutable required-inputs, never sampled at
-/// pack time (§8: `created_utc` is an input).
+/// pack time; `created_utc` is an input.
 fn pack_identity(
     plan: &StitchedPlan,
     content_manifest: Option<portable_content_manifest::ContentManifest>,
@@ -700,7 +700,7 @@ fn borrowed_wire_sessions(
 /// stored bytes do not match the recorded stored digest. Only embeddable
 /// (`EmbeddedCampaign`) raw sources are packed; standalone sources are referenced by
 /// the segments graph but never embedded. Entries are sorted by path so the packed
-/// container is byte-deterministic (§8).
+/// container is byte-deterministic.
 #[cfg(test)]
 pub fn build_stitched_entries<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
@@ -725,7 +725,7 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
     }
 
     // Each exact raw source is stored ONCE, byte-for-byte, independent of how many
-    // segments reference its participation bounds (§7). Deduplicate by source path.
+    // segments reference its participation bounds. Deduplicate by source path.
     let mut raw_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for segment in &plan.segments {
         let raw = segment.input.raw_source.as_ref().ok_or_else(|| {
@@ -783,7 +783,7 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
 
     // Every snapshot hour of every segment (visible + rollback), named by the
     // segment's assigned global ordinal. Each payload must hash to the recorded
-    // coverage sha256 — the build-time half of §7.4 reference validation.
+    // coverage sha256 — the build-time half of reference validation.
     for segment in &plan.segments {
         for (hour, disposition) in segment.input.coverage.iter() {
             if let CoverageDisposition::Snapshot { sha256, .. } = disposition {
@@ -825,13 +825,13 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
         &plan.game_id,
         &entries,
         &pack_identity(plan, None),
-        false, // STORE, not deflate — §8 rule 7
+        false, // STORE, not deflate
         &stitched_pack_options(),
     )
     .map_err(|error| format!("pack stitched container failed: {error}"))?;
 
     // Full manifest / hash / reference validation from the CONTAINER BYTES before
-    // publish (§7.4): open (which cross-checks the stitched index, segments graph,
+    // publish: open (which cross-checks the stitched index, segments graph,
     // ticket order, digests, ZIP order, created_utc, and STORE profile), verify
     // every retained payload hash, and confirm the stitched shape.
     let container = Container::from_bytes(bytes.clone(), &ExpectedIdentity::default())
@@ -1611,7 +1611,7 @@ impl RetainedPublishDirectory {
     }
 }
 
-/// Publish a stitched plan to `dest` build-beside-then-atomic-rename (§7.4).
+/// Publish a stitched plan to `dest` build-beside-then-atomic-rename.
 ///
 /// The container is packed and fully re-validated in memory first; only then are the
 /// bytes written to a sibling temp file, fsynced, and atomically renamed over `dest`.
@@ -1973,7 +1973,7 @@ fn sibling_temp_path(dest: &Path, attempt: u32) -> PathBuf {
 }
 
 /// Compose a publish-failure message, surfacing a temp-file cleanup failure when one
-/// occurred. The atomic-publish contract (§7.4 / §11 gate 10) is that a failed publish
+/// occurred. The atomic-publish contract is that a failed publish
 /// leaves NO partial `.stitch-tmp-*` artifact behind; if the OS denies the delete
 /// (Windows file lock / ACL) that guarantee is broken, so the caller must be told a
 /// partial temp remains rather than have the error silently swallowed. `primary` (the
@@ -2395,7 +2395,7 @@ mod tests {
         }
     }
 
-    /// Multi-segment synthetic session with an in-stream rollback (§11 gate 1):
+    /// Multi-segment synthetic session with an in-stream rollback:
     /// S0=0..3 then S1=2..2 supersedes hour 2; hour 3 is abandoned-future rollback.
     fn rollback_plan() -> StitchedPlan {
         match plan_stitch(
@@ -3091,7 +3091,7 @@ mod tests {
 
     #[test]
     fn tampered_snapshot_payload_aborts_before_publish() {
-        // §7.4 reference validation: a payload that does not hash to its recorded
+        // Reference validation: a payload that does not hash to its recorded
         // coverage sha256 must abort at build, before any pack/publish.
         let plan = rollback_plan();
         let mut source = MemorySource::for_plan(&plan);
@@ -3118,7 +3118,7 @@ mod tests {
         assert!(error.contains("stored digest"), "{error}");
     }
 
-    /// §11 gate 10 crash-injection: a failure during the publish (here a payload the
+    /// Crash injection: a failure during the publish (here a payload the
     /// source cannot supply, standing in for a mid-finalize crash) must leave the
     /// PRIOR published replay at the destination untouched and leave no temp behind.
     #[test]

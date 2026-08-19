@@ -6,7 +6,8 @@ numbers with `%` / `%%` suffixes, negatives and decimals.
 
 This module is deliberately permissive: it never throws on unexpected tokens, it
 preserves source order, and it keeps raw token text where the meaning is unclear
-(e.g. `100%%`) so downstream consumers can decide. See game_assets/README.md.
+(e.g. `100%%`) so downstream consumers can decide. See the `PROJECT.md`
+heading "Fidelity and truth states".
 """
 from __future__ import annotations
 

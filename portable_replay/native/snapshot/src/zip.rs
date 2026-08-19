@@ -3,7 +3,7 @@
 //! Scope on purpose: just enough to enumerate the central directory and read one
 //! entry's decompressed bytes (STORE, DEFLATE, or Zstandard method 93). It does
 //! NOT extract to disk, so zip-slip/symlink/device-name *extraction* attacks do
-//! not apply to this path, but it still validates every path (spec section 4.2)
+//! not apply to this path, but it still validates every path
 //! so a caller that does materialize files is handed only safe names.
 //!
 //! Hardening: rejects duplicate entry names, validates paths, supports Zip64

@@ -1,14 +1,12 @@
 //! XUI13 design/template/variant production admission.
 //!
 //! Definitions may originate in resolved static artifacts or live extractor
-//! rows. The legacy d78 path below retains its captured player-local display
-//! order; the observer path uses an explicit deterministic replay-side order.
+//! rows. The observer path uses an explicit deterministic replay-side order.
 
 use crate::readonly_design_peace::DesignerViewKind;
-use replay_core::world::{DesignCatalogContextView, ViewStatus};
 use replay_core::{
-    CurrentDesignCatalog, DesignCatalogJoinError, ObserverDesignerCandidate,
-    ObserverDesignerCountryFilterRow, ObserverDesignerFamily, WorldFrame,
+    ObserverDesignerCandidate, ObserverDesignerCountryFilterRow, ObserverDesignerFamily,
+    WorldFrame,
 };
 pub use replay_core::{
     DesignKind, DesignLifecycleState, DesignModule, DesignRecord, DesignStat, DesignUpgrade,
@@ -53,35 +51,6 @@ pub enum DesignCatalogRejection {
     DuplicateDisplayOrderId,
     DisplayOrderUnknownId,
     DisplayOrderMissingId,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdmittedDesignerView {
-    pub source_record_id: String,
-    pub transition_sequence: u64,
-    pub active: bool,
-    pub family: String,
-    pub current_country_tag_id: u32,
-    pub selected_country_tag_ids: Vec<u32>,
-    pub our_filter_enabled: bool,
-    pub foreign_filter_enabled: bool,
-    pub obsolete_filter_enabled: bool,
-    pub ordered: Vec<DesignRecord>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DesignerViewRejection {
-    MissingContext,
-    InactiveRows,
-    UnknownDesignId,
-    NonVariantDesign,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CurrentDesignerAdmissionError {
-    PortableJoin(DesignCatalogJoinError),
-    Catalog(DesignCatalogRejection),
-    View(DesignerViewRejection),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -404,71 +373,6 @@ fn admit_observer_design_catalogue_records(
     Ok(AdmittedObserverDesignCatalogue {
         owner_tag: owner_tag.into(),
         family,
-        ordered,
-    })
-}
-
-/// Legacy player-local handoff: admit only the A27 records selected by d78 and retain d78 as
-/// ordering authority. This carries the recording player's filter state and is not the observer
-/// catalogue path.
-pub fn admit_current_designer_frame(
-    frame: &WorldFrame,
-) -> Result<AdmittedDesignerView, CurrentDesignerAdmissionError> {
-    let current = frame
-        .current_design_catalog()
-        .map_err(CurrentDesignerAdmissionError::PortableJoin)?;
-    admit_current_designer_catalog(&current, frame.design_catalog_context())
-}
-
-pub fn admit_current_designer_catalog(
-    current: &CurrentDesignCatalog,
-    context: &DesignCatalogContextView,
-) -> Result<AdmittedDesignerView, CurrentDesignerAdmissionError> {
-    let catalog = admit_design_catalog(&current.records, &current.display_order)
-        .map_err(CurrentDesignerAdmissionError::Catalog)?;
-    admit_designer_view(&catalog, context).map_err(CurrentDesignerAdmissionError::View)
-}
-
-/// Bind d78's exact filtered equipment-designer order to the admitted A27 catalog.
-///
-/// This legacy admission carries the recording player's filter state and is not the observer
-/// catalogue path. The stable runtime identity is `id:70`; no token/name/map order is consulted
-/// and a missing d78 context is unavailable, never an empty list.
-pub fn admit_designer_view(
-    catalog: &AdmittedDesignCatalog,
-    view: &DesignCatalogContextView,
-) -> Result<AdmittedDesignerView, DesignerViewRejection> {
-    if view.status != ViewStatus::Present {
-        return Err(DesignerViewRejection::MissingContext);
-    }
-    let context = view
-        .context
-        .as_ref()
-        .ok_or(DesignerViewRejection::MissingContext)?;
-    if !context.active && !context.ordered_design_ids.is_empty() {
-        return Err(DesignerViewRejection::InactiveRows);
-    }
-    let mut ordered = Vec::with_capacity(context.ordered_design_ids.len());
-    for id in &context.ordered_design_ids {
-        let stable_id = format!("{id}:70");
-        let row = catalog
-            .get(&stable_id)
-            .ok_or(DesignerViewRejection::UnknownDesignId)?;
-        if row.kind == DesignKind::DivisionTemplate {
-            return Err(DesignerViewRejection::NonVariantDesign);
-        }
-        ordered.push(row.clone());
-    }
-    Ok(AdmittedDesignerView {
-        source_record_id: context.completeness_record_identity.clone(),
-        transition_sequence: context.transition_sequence,
-        active: context.active,
-        family: context.family.clone(),
-        current_country_tag_id: context.current_country_tag_id,
-        selected_country_tag_ids: context.selected_country_tag_ids.clone(),
-        our_filter_enabled: context.our_filter_enabled,
-        foreign_filter_enabled: context.foreign_filter_enabled,
-        obsolete_filter_enabled: context.obsolete_filter_enabled,
         ordered,
     })
 }

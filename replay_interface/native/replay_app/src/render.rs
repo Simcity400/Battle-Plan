@@ -1400,7 +1400,7 @@ impl CapturedPassLayer {
                     stats.weather_joins,
                 );
             }
-            // Files-first per-frame exposure adaptation (GRADING_LAW.md
+            // Files-first per-frame exposure adaptation
             // "LAW 2 — adaptation / exposure"): reduce the just-rendered HDR
             // MainScene through the ported
             // downsample_luminance.shader chain and rewrite the exposure's
@@ -2948,7 +2948,7 @@ fn restore_full_postfx_from_files(
     // height first, then ordinary-to-winter, then spatial region. NGraphics is
     // the final inheritance fallback; there is no endpoint-only bloom lookup.
     let bloom = restore_bloom_law_for_grade(&grade)?;
-    // Files-first per-frame exposure adaptation (GRADING_LAW.md "LAW 2 —
+    // Files-first per-frame exposure adaptation (implemented by
     // adaptation / exposure"): the
     // `MinHdr_MaxHdr` clamp bounds come from the same resolved/blended scalar state and let
     // the composite pass recompute AvgLum from the rendered scene each frame via

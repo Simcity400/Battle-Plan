@@ -255,8 +255,9 @@ pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<St
     // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
     // resolver enumeration failure into an empty file list. Under a modded set
     // that silently discarded the whole 1936 cosmetic-tag history and fell back
-    // to base country colors — the exact class of mod loss MOD_COMPATIBILITY.md
-    // forbids, and invisible in the output. Carry the resolver error instead.
+    // to base country colors — the exact class of mod loss forbidden by the
+    // `PROJECT.md` heading "Content and mod contract", and invisible in the
+    // output. Carry the resolver error instead.
     let history_files = resolver
         .resolve_dir_files_recursive("history/countries", Some("txt"))
         .map_err(|error| -> Box<dyn std::error::Error> {
@@ -361,8 +362,9 @@ pub(crate) fn load_country_colors_from_game_resolver(
     // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
     // resolver enumeration failure into an empty file list. Under a modded set
     // that silently discarded the whole 1936 cosmetic-tag history and fell back
-    // to base country colors — the exact class of mod loss MOD_COMPATIBILITY.md
-    // forbids, and invisible in the output. Carry the resolver error instead.
+    // to base country colors — the exact class of mod loss forbidden by the
+    // `PROJECT.md` heading "Content and mod contract", and invisible in the
+    // output. Carry the resolver error instead.
     let history_files = resolver
         .resolve_dir_files_recursive("history/countries", Some("txt"))
         .map_err(|error| -> Box<dyn std::error::Error> {

@@ -508,7 +508,7 @@ pub(crate) enum NativeD3d11WaterRefractionSource {
     /// the offscreen `NativeD3d11UnderwaterPass` target (a re-render of the
     /// terrain geometry with `PixelShaderUnderwater`) as `WaterRefraction`
     /// instead of the app-owned approximation snapshot. See
-    /// [`crate::underwater_pass`] and documents/WATER_LAW.md.
+    /// [`crate::underwater_pass`] and [`crate::water_law`].
     UnderwaterPass,
 }
 
@@ -529,7 +529,7 @@ pub(crate) enum NativeD3d11WaterRefractionSource {
 /// - `ShippedFileCube`: the `--water-full` path. Uploads the REAL captured
 ///   256x256x6 nine-mip cube (validated for shape, fail-closed) which is
 ///   byte-identical to the shipped, mod-resolvable `map/terrain/reflection.dds`
-///   (see documents/WATER_LAW.md). This restores directional reflections.
+///   This restores directional reflections.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeD3d11ReflectionCubeSource {
@@ -3586,7 +3586,7 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
             // re-renders the reflection cube around the live camera every
             // frame" is FALSE. The captured ReflectionCubeMap is byte-identical
             // (all 6 faces x 9 mips) to the STATIC shipped, mod-resolvable file
-            // map/terrain/reflection.dds (see documents/WATER_LAW.md). So the
+            // map/terrain/reflection.dds. So the
             // mean-color flatten is not required for correctness at other
             // cameras - it is only the conservative default kept for flag-OFF
             // byte-identity. Under --water-full the real cube is uploaded via
@@ -3626,7 +3626,7 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
         // the exact SHIPPED cube contract so a shape-valid-but-wrong cube cannot
         // be uploaded in place of map/terrain/reflection.dds. The shipped asset
         // is 256x256, 9 mips, 6 faces (TEXTURECUBE), B8G8R8A8_UNORM_SRGB
-        // (DXGI 91). Fail closed on any deviation (see documents/WATER_LAW.md).
+        // (DXGI 91). Fail closed on any deviation.
         let is_reflection_cube = resource.declared_name.as_deref() == Some("ReflectionCubeMap");
         if is_reflection_cube
             && reflection_cube_source == NativeD3d11ReflectionCubeSource::ShippedFileCube
@@ -3685,7 +3685,7 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
                         "production native D3D11 terrain replay blocked: draw {} \
                          ReflectionCubeMap slot {} resolver-decoded map/terrain/reflection.dds \
                          ({} B) != captured payload ({} B) — provenance byte-verify failed \
-                         (see documents/WATER_LAW.md)",
+                         (see water_law.rs)",
                         draw.draw_index,
                         resource.slot,
                         decoded.len(),
@@ -3863,7 +3863,7 @@ unsafe fn native_d3d11_uniform_reflection_cube(
 /// real-cube upload (`NativeD3d11ReflectionCubeSource::ShippedFileCube`).
 ///
 /// The shipped, mod-resolvable `map/terrain/reflection.dds` — proven
-/// byte-identical to the captured cube (documents/WATER_LAW.md) — is
+/// byte-identical to the captured cube — is
 /// `256x256`, `9` mips, `6` faces (`TEXTURECUBE`), `B8G8R8A8_UNORM_SRGB`
 /// (DXGI 91). The generic payload validator checks internal shape/coverage
 /// consistency but not this specific asset contract, so a shape-valid but

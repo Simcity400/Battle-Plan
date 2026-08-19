@@ -119,8 +119,8 @@ const fn round_up_to_chunk(bytes: usize) -> usize {
 const ZIP_MAGIC: &[u8; 4] = b"PK\x03\x04";
 
 /// Persisted format marker for a source-bound, fully certified stream index.
-/// Version 3 carries the recording's EXCLUDED hours beside its served ones
-/// (owner ruling 2026-08-12, task #189), which changes what a reader must
+/// Version 3 carries the recording's EXCLUDED hours beside its served ones,
+/// which changes what a reader must
 /// account for rather than merely adding an optional field: without those rows
 /// a served hour's byte range runs to the next SERVED hour and silently covers
 /// an excluded hour's records.
@@ -723,8 +723,8 @@ pub struct DecodeStats {
     /// to end and closed canonically (each with the digest of the records it is
     /// made of), and which are excluded, each with a named reason.
     ///
-    /// This is the per-hour verdict the seal publishes against (owner ruling
-    /// 2026-08-11, task #188). `boundary_error`/`ends_at_frame_end` above are
+    /// This is the per-hour verdict the seal publishes against.
+    /// `boundary_error`/`ends_at_frame_end` above are
     /// still the whole-stream verdict and still mean exactly what they did:
     /// `certification_verdict` below is unchanged, because `take_index` and
     /// `certify_complete` need the stronger end-to-end claim.
@@ -1213,7 +1213,7 @@ pub struct CertifiedReplayArtifacts {
     /// packaged cache was actually built from, so a stream swapped between the
     /// two walks would publish one walk's `basis_sha256` values over the other
     /// walk's cache, and every VERIFIED claim would then be backed by bytes
-    /// nobody serves (Codex review round 2, finding 4).
+    /// nobody serves.
     pub hour_coverage: recorder_host::hour_coverage::HourCoverageMap,
     /// Placement-authoritative CID1 the complete fold retained, in the same
     /// manifest shape the legacy per-hour JSON fold publishes. `None` for a
@@ -2947,20 +2947,20 @@ impl HourCursor {
         // AN EXCLUDED HOUR NEVER ENTERS THE CERTIFIED INDEX.
         //
         // The index is what the replay cache's hours are enumerated from, so an
-        // excluded hour left in it is an excluded hour served (Codex review
-        // round 1, finding 2). Dropping the row here is the single point that
+        // excluded hour left in it is an excluded hour served. Dropping the row
+        // here is the single point that
         // decides it, because every certified artifact — H4IX rows, H4CP cache
         // hours, the hour count on the manifest — is derived from this vector.
         //
         // AN EXCLUDED HOUR THE WALK DELIVERED BECOMES A NAMED HOLE, and it
         // KEEPS ITS PLACE in the byte account.
         //
-        // Until the owner's interior-hole ruling (2026-08-12, task #189) only
-        // a TRAILING exclusion could be dropped: the certified structures were
+        // In the older contiguous shape only a TRAILING exclusion could be
+        // dropped: the certified structures were
         // contiguous by construction — first row at decoded offset zero,
         // consecutive rows abutting — so an interior excluded hour was refused
         // by name instead of producing an index the format rejects for a reason
-        // that says nothing about the hour (lane GY, residual GY-4). The
+        // that says nothing about the hour. The
         // structures now carry hole rows, so the hour is skipped by name
         // instead of costing the recording.
         //
@@ -2984,11 +2984,9 @@ impl HourCursor {
         //    reconstructs a different world than the hour it names
         //    (`HourCursor` does not advance `cur_hour_start` at a
         //    `FRAME_REFUSED`; see `tests::a_stream_that_ends_on_a_canonical_frame_refused_certifies`
-        //    and the refused-hour index test beside it). The owner ruled that
-        //    exact arrangement correct on 2026-08-12 (lane GY, residual GY-3:
-        //    *"an excluded hour's STATE still reaches the next published hour,
-        //    and that hour's H4CR range still covers the excluded hour's bytes
-        //    … the semantics as built are correct"*). A hole row for it is
+        //    and the refused-hour index test beside it). An excluded hour's
+        //    state still reaches the next published hour, and that hour's H4CR
+        //    range still covers the excluded hour's bytes. A hole row for it is
         //    therefore not merely unnecessary but unrepresentable: its range
         //    would OVERLAP the following served hour's, which the tiling law
         //    refuses. It, too, is named by the coverage map.
@@ -3093,15 +3091,14 @@ impl HourCursor {
         self.validate_complete()
     }
 
-    /// What a certified index asserts, since the owner's per-hour ruling
-    /// (2026-08-11, task #188).
+    /// What a certified index asserts.
     ///
     /// It used to be the whole-stream verdict: the stream had to have been
     /// walked end to end with every byte framed, or no index could be minted at
     /// all. That is what made the ruling UNREACHABLE on the production binary
     /// branch — `build_certified_replay_artifacts` calls `take_index`, and its
     /// failure propagated out of finalize long before the per-hour seal gate
-    /// downstream could read a coverage map (Codex review round 1, finding 1).
+    /// downstream could read a coverage map.
     ///
     /// What replaces it is not weaker, it is per-hour: the recording must have
     /// at least one hour it can vouch for, its coverage map must be
@@ -3161,12 +3158,9 @@ impl HourCursor {
                         if self.stats.stop_reason.is_none() {
                             self.stats.stop_reason = Some(message.clone());
                         }
-                        // GQ-2: pick the stream back up at the next well-formed
-                        // record rather than discarding every intact byte after
-                        // the damage. Measured before this existed: one flipped
-                        // bit in hour 1's record magic cost hours 2..8, all of
-                        // which were physically present and independently
-                        // decodable (`runs/gq_bad_hour/MATRIX.md`, cell c1).
+                        // Pick the stream back up at the next well-formed record
+                        // rather than discarding every intact byte after the
+                        // damage.
                         match if self.compressed {
                             // A compressed source is not resynchronised: its
                             // storage checksum proves the decoded bytes are
@@ -3206,7 +3200,7 @@ impl HourCursor {
                             // Past the window the scanned region is DISCARDED
                             // and framing keeps going. Stopping here left the
                             // stream half-read and cost hours that had already
-                            // closed cleanly (Codex review round 4). Only the
+                            // closed cleanly. Only the
                             // COMPRESSED arm below still stops, deliberately.
                             recorder_host::stream_fold::FramingResync::NeedMoreData
                             | recorder_host::stream_fold::FramingResync::Exhausted
@@ -3278,7 +3272,7 @@ impl HourCursor {
                         // simply vanish: before this, the prefix still sealed
                         // while everything after the illegal identity record was
                         // silently amputated, with no excluded row and no named
-                        // loss anywhere (Codex review round 9). Naming it as
+                        // loss anywhere. Naming it as
                         // stream damage also latches `framing_damage_seen`, so
                         // nothing after it can be vouched for either.
                         let before = recorder_host::stream_fold::FoldDamageWatch::before(
@@ -4252,14 +4246,14 @@ pub fn seek_to_hour(
     //    uncertifiable stream — so `found` holds it like any other hour. The
     //    only thing that stopped this certified API returning it before was
     //    that a recording with an interior exclusion minted no index at all,
-    //    and `take_index` now mints one (Codex review round 3, finding 1).
+    //    and `take_index` now mints one.
     //  * it has to be asked of the CERTIFIED index because the caller's copy is
     //    unauthenticated until the equality check above passes. Refusing from
     //    it earlier — which is what this did first — let a stale or foreign
     //    index declare any hour excluded and supply any reason, from a source
     //    this function had not opened, which is precisely the source-binding
-    //    contract the rest of this function exists to keep (Codex review round
-    //    4, finding 1). The refusal costs a full decode; so does every other
+    //    contract the rest of this function exists to keep. The refusal costs a
+    //    full decode; so does every other
     //    answer this API gives.
     if let Some(hole) = certified
         .excluded
@@ -4291,13 +4285,6 @@ pub fn seek_to_hour(
     }
     found.ok_or(SeekError::HourNotFound(target))
 }
-
-/// Lane DQ H4CP v3 stage-2 prototype. Never on by default and never packaged; it
-/// runs a canonical-binary section state and mutation journal beside the v2 path
-/// on a real capture so the architecture decision is taken from a measurement
-/// rather than from the design study's prediction.
-#[cfg(feature = "dq-v3-prototype")]
-pub mod dq_v3_prototype;
 
 // The lanes CZ, DQ, EE and FR measurement instruments used to be declared here
 // behind `cz-finalize-profile`, `dq-v3-prototype` and `fr-mem-profile`. They

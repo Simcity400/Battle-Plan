@@ -1701,7 +1701,7 @@ pub fn shader_bytecode_has_mapname_transp_offset_marker(bytecode: &[u8]) -> bool
 /// POSITION is `int4` (component_type SINT32=2, mask 0x0f) — the opposite of the
 /// border VS's `float3` (FLOAT32=3, mask 0x07) position. Masks use exact equality:
 /// D3D reflection reports the declared component set, so a `float4` position would
-/// report `0x0f` and must NOT match. BORDER_LAW.md's earlier prose "float3 + int2"
+/// report `0x0f` and must NOT match. replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv's earlier prose "float3 + int2"
 /// was a source-level guess; THIS is the fxc-compiled bytecode truth.
 ///
 /// A genuine engine border draw always runs this VS (the shipped `Effect border`

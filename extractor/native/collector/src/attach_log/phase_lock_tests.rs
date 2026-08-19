@@ -921,7 +921,7 @@ fn a_sweep_that_outlives_the_hour_leaves_the_loop_exactly_as_it_was() {
 }
 
 // ---------------------------------------------------------------------------
-// The guard's own inputs on the wire (CAPTURE_FLOOR_S0.md NEGATIVE 9)
+// The guard's own inputs on the wire
 // ---------------------------------------------------------------------------
 
 /// Fill the process-global rendezvous with a measurable period.
@@ -946,8 +946,8 @@ fn sweep_shape_at(fanout_origin_us: u64, crit_wall_us: u64) -> SweepShapeEstimat
 /// THE TWO NUMBERS THE GUARD COMPARED REACH THE PROBE, and they are the ones it
 /// compared rather than a later reading of the same state.
 ///
-/// This is `CAPTURE_FLOOR_S0.md` NEGATIVE 9. The document could report WHICH arm
-/// the guard took (the `start_reasons` counters) but not WHY, so §3E's threshold
+/// The `start_reasons` counters report WHICH arm the guard took but not WHY, so
+/// the threshold
 /// arithmetic had to reconstruct the two running medians from per-frame
 /// percentiles and a harness clock bracket — and the reconstruction predicts the
 /// counter backwards across captures (t50 rebuilds to 0.98, below the threshold,
@@ -1031,7 +1031,7 @@ fn a_sweep_that_fits_the_hour_publishes_an_armed_guard() {
     hour_phase::reset_for_test();
     seed_global_period(PERIOD_US);
 
-    // Half-yield well under the hour: the regime §4 solves for.
+    // Half-yield well under the hour: the short-sweep regime.
     let shape = sweep_shape_at(8_000, 12_000);
     let half_yield_us = shape.half_yield_us().expect("five builds is the estimate");
     assert!(half_yield_us < PERIOD_US, "fixture check");
@@ -1131,7 +1131,7 @@ fn a_rendezvous_past_the_deadline_publishes_no_guard_inputs() {
 }
 
 // ---------------------------------------------------------------------------
-// The observer's poll gaps (CAPTURE_FLOOR_S0.md NEGATIVE 11)
+// The observer's poll gaps
 // ---------------------------------------------------------------------------
 
 /// THE SKIP ARITHMETIC, which is what the whole instrument turns on.
@@ -1139,8 +1139,8 @@ fn a_rendezvous_past_the_deadline_publishes_no_guard_inputs() {
 /// An hour is lost to the clock exactly when the observer's next stamp is more
 /// than one hour past its last: the hours between reach no scheduler admission
 /// and become `skipped_hour` in the host's ledger. At t50 that arm was 92 of 897
-/// hours — 10.27 % of elapsed hours — and `CAPTURE_FLOOR_S0.md` NEGATIVE 11 is
-/// that nothing committed says whether it falls when the sweep shortens.
+/// hours — 10.27 % of elapsed hours. Nothing committed says whether it falls
+/// when the sweep shortens.
 ///
 /// kills: counting the advance instead of the hours between it, which would
 /// report every ordinary boundary as a skipped hour; treating a backwards step

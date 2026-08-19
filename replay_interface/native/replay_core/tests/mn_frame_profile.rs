@@ -42,12 +42,10 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
-/// Lane MY: split the reader's stage into the three things it actually does.
-///
-/// WHY. MV's `NEXT.md` prices "the reader's world tree" as ONE 374 ms number
-/// covering the cursored delta walk, the whole-world `canon_to_json::to_value`
-/// projection, and `Snapshot::from_world_value`. Those three have completely
-/// different fixes, and the second design round has to know which one holds the
+/// Split the reader's stage into the three things it actually does: the
+/// cursored delta walk, the whole-world `canon_to_json::to_value` projection,
+/// and `Snapshot::from_world_value`. Those three have different fixes, and a
+/// performance investigation has to know which one holds the
 /// milliseconds before it commits to an in-place canonical JSON tree.
 ///
 /// The split needs no new instrument inside the shipped reader. Asking the

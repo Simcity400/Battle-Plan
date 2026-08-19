@@ -1,13 +1,13 @@
-//! The §7.2 update row: a change mask, new state bits for the changed fields
+//! The update-row contract update row: a change mask, new state bits for the changed fields
 //! only, then their values.
 //!
-//! An insert carries a full §3 record; an update carries only what moved. The
+//! An insert carries a full record-state contract record; an update carries only what moved. The
 //! reader chooses between them by looking the key up in the state it has already
 //! reconstructed, so the distinction costs no discriminator byte and cannot
 //! disagree between implementations.
 //!
-//! This is also the only place §4's monotone differencing has any effect, since
-//! it is defined against a reconstructed prior value that exists only here. §6's
+//! This is also the only place schema-kind contract's monotone differencing has any effect, since
+//! it is defined against a reconstructed prior value that exists only here. derived-field contract's
 //! derived rule is *not* one of those: it holds in every frame, so it lives in
 //! `record::encode_plain_value` where baselines and inserts reach it too.
 
@@ -40,13 +40,13 @@ pub fn encode(
 ) -> Result<()> {
     let fields: Vec<&Field> = collection.value_fields().collect();
     // Both records in full, not just the changed fields. An update only routes
-    // what moved through the value encoder, so a §3 violation sitting on an
+    // what moved through the value encoder, so a record-state contract violation sitting on an
     // unchanged field — a derived field holding its live variant, say — reached
     // the wire here while `Record::encode` rejected the identical record.
     prior.validate(collection)?;
     next.validate(collection)?;
 
-    // §7.1: a mask bit is set if and only if that field's state or value differs.
+    // delta-minimality contract: a mask bit is set if and only if that field's state or value differs.
     // A bit on an unchanged field is a second encoding of the same row.
     // Stored equality, not `==`: under `fixed(2)` a field moving 0.33 → 0.331 is
     // the same stored value, and a mask bit on it would encode a row the decoder
@@ -174,7 +174,7 @@ pub fn decode(
         if null && unknown {
             return Err(WireError::Corrupt("field sets both null and unknown"));
         }
-        // §7.2: "a changed field whose new presence bit is 0 has its null,
+        // update-row contract: "a changed field whose new presence bit is 0 has its null,
         // unknown and escape bits 0". Without this, `became absent` has four
         // encodings instead of one — the same defect as an unconstrained escape
         // bit, and it survives a round trip because the decoder never reads the
@@ -220,7 +220,7 @@ pub fn decode(
             pos = next;
             v
         };
-        // §7.1: a mask bit is set if and only if the field changed, so a bit on a
+        // delta-minimality contract: a mask bit is set if and only if the field changed, so a bit on a
         // field that decodes back to the prior value is a second encoding of a
         // shorter row. The encoder cannot emit one; the decoder must not accept
         // one, or byte-identity between two writers is not enforceable.
@@ -231,12 +231,12 @@ pub fn decode(
     Ok((Record::new(values), pos))
 }
 
-/// §4: inside a `DELTA` a monotone counter is a `zigzag` difference against the
+/// schema-kind contract: inside a `DELTA` a monotone counter is a `zigzag` difference against the
 /// reconstructed prior value, and absolute when that prior has no concrete value.
 ///
-/// §6's derived rule is frame-independent, so it lives in `encode_plain_value`;
+/// derived-field contract's derived rule is frame-independent, so it lives in `encode_plain_value`;
 /// the check here is only to keep a derived monotone field off the differencing
-/// path, since §6 overrides the kind-2 rule.
+/// path, since derived-field contract overrides the kind-2 rule.
 fn encode_delta_value(
     field: &Field,
     prior: Value,
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn a_monotone_counter_may_legally_decrease() {
-        // §4: monotone is an encoding hint, never a validity constraint.
+        // schema-kind contract: monotone is an encoding hint, never a validity constraint.
         let c = collection();
         let prior = rec(1, Value::Unsigned(5), 500, 0.5);
         let next = rec(1, Value::Unsigned(5), 400, 0.5);

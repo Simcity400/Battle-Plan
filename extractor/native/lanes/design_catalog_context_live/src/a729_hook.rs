@@ -39,8 +39,8 @@ pub const HOOK_RECEIPT_COUNT: usize = 1;
 /// `install_a729_selected_designer_hooks` installs this first and calls it the
 /// "d78 prerequisite", since equipment family ordering is joined to this
 /// refresh -- and this comment said the name would move when a D78 group
-/// existed. It has: the owner descheduled domain 85
-/// (`documents/DECISIONS.md`), the seven selected-designer detours left the
+/// existed. It has: `domain_registry.json` deschedules domain 85, the seven
+/// selected-designer detours left the
 /// production hook registry with it, and this site stayed as
 /// `StandardHookReceiptGroup::D78`'s only member because domain 78 was never
 /// descheduled. The registry now calls

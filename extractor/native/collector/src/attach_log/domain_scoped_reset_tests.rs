@@ -7,8 +7,8 @@
 //! are 82.0% of all bytes; of those, **273.15 MB in 2,554 records** were
 //! emitted by a domain that had NO gap of its own and lost its pin only because
 //! somebody else crossed an hour boundary. Those are the records this narrowing
-//! converts back into deltas. The larger 1,126.91 MB row in
-//! `DELTA_WIRE_DESIGN.md` §2.3 is a different bucket — keyframes following the
+//! converts back into deltas. The larger 1,126.91 MB measurement is a
+//! different bucket — keyframes following the
 //! domain's OWN gap — and this change deliberately does not touch it.
 //!
 //! [`for_each_domain_scoped_tracker`] narrows that to the domains actually

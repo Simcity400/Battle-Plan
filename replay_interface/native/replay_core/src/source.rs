@@ -1,7 +1,6 @@
 //! Ingest boundary: recording bytes -> raw per-hour frames.
 //!
-//! The only place recording bytes enter the replay layer
-//! (REPLAY_ARCHITECTURE.md, "Ingest boundary"). Backend 1 — the
+//! The only place recording bytes enter the replay layer. Backend 1 — the
 //! snapshot-flavor `.battleplan` container or directory store — is read
 //! through the verified `snapshot` crate reader (reuse, not a fork).
 //! Backend 2 — a compact-stream-only container — remains rejected by the
@@ -674,9 +673,9 @@ pub enum SourceError {
     /// A sibling of [`SourceError::Open`] (identical Display shape) typed so
     /// consumers can classify "these bytes are corrupt or substituted" apart
     /// from "this recording is malformed" without matching on error text
-    /// (`SEAM_CONTRACTS.md`, ingest boundary). Integrity is a strictly stronger
-    /// claim than malformation: it names bytes that were authenticated against a
-    /// declared digest and lost.
+    /// (the `PROJECT.md` heading "Portable boundary"). Integrity is a strictly
+    /// stronger claim than malformation: it names bytes that were authenticated
+    /// against a declared digest and lost.
     Integrity(String),
     /// The recording path does not exist. A sibling of [`SourceError::Open`]
     /// (identical Display shape) typed so consumers can classify "not found"
@@ -784,10 +783,10 @@ fn source_error_from_container(error: &snapshot::ContainerError, message: String
     }
 }
 
-/// One raw, schema-shaped frame (REPLAY_SCHEMA.md §1).
+/// One raw, schema-shaped frame.
 ///
-/// `hour_index` is the INDEX's hour for this frame — the index is the
-/// canonical authority (§0.3). `rest` carries every other top-level domain
+/// `hour_index` is the index's hour for this frame — the index is the canonical
+/// authority. `rest` carries every other top-level domain
 /// untouched, so unknown schema growth is preserved and reachable, never
 /// dropped. This type deliberately does not expose `snapshot` crate types.
 #[derive(Debug, Clone)]
@@ -800,14 +799,15 @@ pub struct RawFrame {
 }
 
 /// One recorder-DECLARED main-timeline coverage gap, carried verbatim from the
-/// recording index (`index.coverage`; `STITCHING_DESIGN.md` §7.1) across the
-/// ingest boundary.
+/// recording index (`index.coverage`; the `PROJECT.md` heading "Loss and
+/// coverage") across the ingest boundary.
 ///
 /// This is the recorder's own statement that a span of hours is missing and
 /// WHY. It is never inferred from hour arithmetic: a downstream consumer that
 /// reconstructs anonymous ranges from discontinuous hours has lost the reason,
-/// the witness, and the owning segment. Per `documents/DECISIONS.md` a gap
-/// carries its hour, its reason, the domains it affects, and a witness:
+/// the witness, and the owning segment. Per the `PROJECT.md` heading "Loss and
+/// coverage", a gap carries its hour, its reason, the domains it affects, and a
+/// witness:
 /// * hours — `start_hour..=end_hour`, inclusive, on the canonical hour axis;
 /// * reason — `reason`, the recorder's reason text, plus the `kind` class;
 /// * affected domains — an index coverage row is a WHOLE-HOUR absence, so every
@@ -879,8 +879,8 @@ impl DeclaredCoverageGap {
 }
 
 /// The recording index's own declared coverage statement — the stitched-index
-/// fields (`STITCHING_DESIGN.md` §7.1) that the ingest boundary must carry
-/// instead of dropping.
+/// fields (the `PROJECT.md` heading "Loss and coverage") that the ingest
+/// boundary must carry instead of dropping.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeclaredCoverage {
     /// `index.index_schema` (`"stitched-main-v1"` for a stitched index).
@@ -911,7 +911,7 @@ impl DeclaredCoverage {
     }
 }
 
-/// The stitched index schema id (`STITCHING_DESIGN.md` §7.1).
+/// The stitched index schema id (the `PROJECT.md` heading "Loss and coverage").
 const STITCHED_INDEX_SCHEMA: &str = "stitched-main-v1";
 
 /// The complete set of non-snapshot coverage dispositions the recorder emits
@@ -1451,7 +1451,7 @@ fn open_store_impl(
             )),
             Some(hour) => {
                 // REFUSE, never resolve. The index is the canonical authority
-                // for an hour (REPLAY_SCHEMA.md §0.3); two rows claiming one
+                // for an hour; two rows claiming one
                 // hour means the recording states two different truths about
                 // it, and "keep the first" silently picks one — including its
                 // date and its file — with no evidence that the first is the
@@ -1489,7 +1489,7 @@ fn open_store_impl(
     }
     // A declared gap and a playable snapshot cannot both own an hour: the
     // stitched index "never lists a superseded snapshot and never hides a main
-    // gap" (STITCHING_DESIGN.md §7.1).
+    // gap" (the `PROJECT.md` heading "Loss and coverage").
     for gap in &declared_coverage.gaps {
         if let Some((hour, file)) = files_by_hour
             .range(gap.start_hour..=gap.end_hour)
@@ -4259,8 +4259,8 @@ fn parse_metadata_object(bytes: &[u8], context: &str) -> Result<Map<String, Valu
 ///    unscheduled domain reads `DomainAbsent` at every hour, and an absent
 ///    static artifact answers `None` from [`ReplaySource::static_artifact`] and
 ///    is never fabricated. Destroying the whole recording over an accounted
-///    absence is the thing `AGENTS.md` forbids: "A bad hour costs that hour
-///    with a named reason — never the recording."
+///    absence violates the `PROJECT.md` heading "Loss and coverage": a bad hour
+///    costs that hour with a named reason, never the recording.
 /// 2. WHAT MAY NOT BE MISSING IS CORRECTNESS.
 ///    `mandatory_domains_not_production_complete` is not a scope fact about
 ///    this capture at all — the recorder computes it from the descriptor
@@ -8894,14 +8894,6 @@ mod tests {
                     | ".join(\"xmap19_weather_visual_lifecycle_joint_certification.json\");"
                     | "let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {"
             ),
-            "snapshot/bin/container_codec_bench.rs" => matches!(
-                line,
-                "use std::fs::File;"
-                    | "use std::path::PathBuf;"
-                    | ".map(PathBuf::from)"
-                    | "let meta = std::fs::metadata(&path).map_err(|err| format!(\"stat {}: {err}\", path.display()))?;"
-                    | "let file = File::open(path).map_err(|err| format!(\"open {}: {err}\", path.display()))?;"
-            ),
             "snapshot/bin/pack_replay.rs" => matches!(
                 line,
                 "use std::fs::{self, OpenOptions};"
@@ -9221,8 +9213,7 @@ mod tests {
         String::from_utf8(masked).map_err(|_| "masked Rust source stopped being UTF-8".into())
     }
 
-    /// F4 dossier/dispatch scope ruling (2026-07-14): this is a
-    /// development-time, best-effort honest-mistake lint, not a runtime
+    /// This is a development-time, best-effort honest-mistake lint, not a runtime
     /// security boundary. It cheaply recognizes direct APIs and explicit
     /// link_name FFI declarations. Renamed FFI beyond that check,
     /// macro/proc-macro expansion, and generated/include! code remain known,

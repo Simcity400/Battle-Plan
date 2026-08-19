@@ -1,10 +1,8 @@
 //! Gap-coalescing policy: WHICH unread bytes a copy descriptor may bridge.
 //!
-//! The re-pricing's rule is one sentence long — "never merge merely because
-//! virtual addresses are close" — and the gap-curve replay measured exactly
-//! what the permissive version buys
-//! (`runs/s0_census/t35_gap_curve/verdict.txt`). Every row of that curve is an
-//! UPPER BOUND on a safety-constrained policy, because the curve merges on
+//! The rule is one sentence long: never merge merely because virtual addresses
+//! are close. A proximity-only curve is an UPPER BOUND on a safety-constrained
+//! policy, because it merges on
 //! proximity alone and this module refuses to.
 //!
 //! # The merge is gated on provenance, not on distance
@@ -33,8 +31,8 @@
 //!
 //! # Root reads are not anchors
 //!
-//! §4 of the gap-curve verdict is explicit: the re-pricing's per-family window
-//! recipes were anchored on the census `roots` column, which counts root READ
+//! Per-family window recipes must not be anchored on the census `roots` column,
+//! which counts root READ
 //! EVENTS, not root addresses, and for d42/d43 the two differ by more than an
 //! order of magnitude. Anchored honestly — on the pointer values the bracket
 //! dereferenced — d42's 2 KiB windows reach 71% of its bytes instead of 0.27%.
@@ -203,8 +201,8 @@ impl GapPolicy {
 }
 
 impl Default for GapPolicy {
-    /// The re-pricing's preferred starting policy: 32 B generic, 64 B inside a
-    /// proven object, 128 B inside a proven extent.
+    /// Starting policy: 32 B generic, 64 B inside a proven object, 128 B inside
+    /// a proven extent.
     fn default() -> Self {
         Self {
             generic: GENERIC_GAP_BYTES,

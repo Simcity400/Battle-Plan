@@ -1,5 +1,5 @@
-//! Modset + game-build binding for the session manifest (M2 in
-//! MOD_AND_UPDATE_ROBUSTNESS_PLAN.md).
+//! Modset + game-build binding for the session manifest. See `PROJECT.md`
+//! heading "Content and mod contract".
 //!
 //! Every capture records WHICH game build, enabled mods, and enabled DLCs the
 //! evidence was taken against, because all downstream joins (static catalogs,

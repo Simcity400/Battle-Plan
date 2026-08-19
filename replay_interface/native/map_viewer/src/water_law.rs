@@ -44,7 +44,7 @@
 //! time-of-day (`DayNight_Hour_SunDir`, CB0 offset 256) and are not present in
 //! any shipped shader/define file. We therefore treat the packed `.x`/moon `.z`
 //! as engine-runtime, modset-bound values read from the captured CB0 (a tracked
-//! gap, documented in documents/WATER_LAW.md). What this module DOES own and
+//! gap). What this module owns and
 //! validate from files is the *packing/swizzle law* — which component carries
 //! which define — because that is what selects the water glitter geometry.
 
@@ -302,15 +302,15 @@ pub fn underwater_depth_fog_alpha(prepos_y: f32) -> f32 {
 /// brighter/synthesized `TerrainColorTint`) rather than because the engine
 /// absorbs light. Multiplying the direct light by `(0.133, 0.234, 0.570)`
 /// darkened that lit arm into agreement and measurably improved one oracle (mean
-/// abs err 20.84 → 12.40; WATER_LAW §2a-ter), but it is now blocked from product
+/// abs err 20.84 → 12.40), but it is now blocked from product
 /// rendering. The engine's true light law for this pass is closed: *scene CB0
 /// unchanged* (see [`underwater_cb0_absorption_ratio`]). This constant and helper
 /// remain only for forensic comparisons and regression tests that demonstrate why
 /// the old hypothesis was rejected.
 ///
 /// Modset-bound evidence: fitted from vanilla `live_PAN2`, refuted-as-a-light-
-/// law from vanilla `session_CAPFIX2_GAPS_4`. Re-validate per modset
-/// (MOD_COMPATIBILITY.md).
+/// law from vanilla `session_CAPFIX2_GAPS_4`. Re-validate per modset (the
+/// `PROJECT.md` heading "Content and mod contract").
 pub const UNDERWATER_LIGHT_ABSORPTION: [f32; 3] = [0.133, 0.234, 0.570];
 
 /// Forensic helper: apply [`UNDERWATER_LIGHT_ABSORPTION`] to a raw 416-byte
@@ -727,7 +727,7 @@ mod tests {
         // `engine_underwater_cb0_carries_unabsorbed_white_sun`). The correction
         // must attenuate every channel (components in (0,1)) and be
         // blue-dominant (r < g < b) — the water-absorption shape both empirical
-        // fits show (lit-arm ratio (0.133,0.234,0.570); WATER_LAW scene fit
+        // fits show (lit-arm ratio (0.133,0.234,0.570); scene fit
         // (0.13,0.20,0.42)).
         let [r, g, b] = UNDERWATER_LIGHT_ABSORPTION;
         assert!(r > 0.0 && r < 1.0, "red absorption {r}");
@@ -821,7 +821,7 @@ mod tests {
     /// (`session_CAPFIX2_GAPS_4/underwater_frame_draw000_ps_constant_buffer_slot0.bin`,
     /// fnv1a64 `35a789eed695ca48`; draws 4-9 `dc539bf57791534e` carry the same
     /// light) — the first capture of the engine's underwater draw. See
-    /// `documents/WATER_LAW.md` §2a-ter.
+    /// the exact content-admission path above.
     const CAPFIX2_UNDERWATER_SUN: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
     const CAPFIX2_UNDERWATER_MOON: [f32; 4] = [0.217_637_63, 0.546_751_38, 1.0, 2.5];
     const CAPFIX2_UNDERWATER_DAY_GATE: f32 = 0.0;

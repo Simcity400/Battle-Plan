@@ -6,9 +6,7 @@ bytes by whether a DOMAIN_GAP for THAT domain intervened since the domain's
 previous DOMAIN_DATA record, and reports the delta/keyframe split from the
 payload status word.
 
-This is the method §2.3 / §7 of DELTA_WIRE_DESIGN.md use; it is reproduced here
-so the ranking can be taken over every domain rather than the seven that were
-tabulated by hand.
+The ranking is computed over every domain.
 
 Read-only with respect to the corpus.
 """
@@ -34,8 +32,7 @@ RT_FRAME_DEGRADED = 7
 STATUS_DELTA_DATA = 1 << 10
 
 # Domains that do NOT use the shared 20-byte DOMAIN_DATA payload header, so
-# reading a status word at payload[16..20] is not promised for them
-# (DELTA_WIRE_DESIGN.md §2.3, "two caveats on the table").
+# reading a status word at payload[16..20] is not promised for them.
 NON_SHARED_HEADER_DOMAINS = {48, 53, 83, 91, 93}
 
 _HDR = struct.Struct("<4sHHQiHHII")

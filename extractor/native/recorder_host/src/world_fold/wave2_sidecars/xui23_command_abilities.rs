@@ -36,8 +36,7 @@
 //! # The contract, for the lane that fills it
 //!
 //! `schema` must equal `XUI23_PRODUCER_AUTHORITY_SCHEMA` =
-//! `"replay.xui23-passive-command-abilities-authority.v1"` (`:112`). Note the
-//! gap map's §4.1 row quotes a different, stale spelling; the consumer is the
+//! `"replay.xui23-passive-command-abilities-authority.v1"`; the consumer is the
 //! authority.
 //!
 //! The payload also carries `replay_frame_identity_sha256`, computed over the

@@ -1100,8 +1100,7 @@ function Get-PassiveCaptureReadyFeatureBits {
 # control_transport/payloads.rs refuses a payload claiming zero freezes beside
 # live detours. Runs t57, t58, t59 and t60 (on C:) and t62 and t63 (on L:) were
 # all refused on `ready_payload_sha256` alone and all reported 13, which is why
-# the volume looked like the variable and was not; the evidence is in
-# `runs/lp_refusal_volume/EVIDENCE.md`.
+# the volume looked like the variable and was not.
 function Get-PassiveCaptureReadyInstallFreezeCount {
     param([Parameter(Mandatory = $true)][object]$Ready)
 

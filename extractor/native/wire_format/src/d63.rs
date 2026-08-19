@@ -1,12 +1,11 @@
 //! d63 `country_core_scalars_live` — per-country core scalars.
 //!
-//! Derived from `world_fold.rs:12822`-`:13041`
+//! Derived from `world_fold.rs:12805`-`:13024`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
-// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=12822-13041 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=431a4783b4b8acd96c6da35934e1419c7679d828c32835b251a588590b3a65c1
+// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=12805-13024 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=84fc999aa045f8c1b4262e15be46e43082272dba4f53cff67b07a56568814708
 //! collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
-//! `extractor/documents/domains/d63_country_core_scalars_live.md` carries no
-//! field-level knowledge, so the fold and the collector read are the whole basis.
+//! The fold and collector read are the field-level basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_country_core_scalars`): a 20-byte header —
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
@@ -32,23 +31,23 @@
 //!
 //! **Every gated field is `unknown`, never `null` or `absent`, when its gate is
 //! clear.** `fold_country_core_scalars` emits JSON `Null` uniformly on a clear
-//! gate (`world_fold.rs::fold_country_core_scalars`), which per `WIRE_FORMAT.md` §3 decides value-vs-nothing
+//! gate (`world_fold.rs::fold_country_core_scalars`), which decides value-vs-nothing
 //! and nothing else. The collector decides the rest, and it is explicit
 //! (`attach_log.rs:60576`): *"Fail-closed per field: an unreadable/out-of-range
 //! value folds ABSENT (null), never a fabricated 0."* Each flag is exactly
 //! `Option::is_some()` (`:60730`-`:60741`) over a read that returns `None` only
 //! when the memory is unreadable, the pointer is not a heap object, the
 //! experience vtable does not match, or the value fails its range filter
-//! (`:60578`-`:60634`). That is §3's **unknown** — "applicable, not captured" —
+//! (`:60578`-`:60634`). That is record-state contract's **unknown** — "applicable, not captured" —
 //! word for word. None of these four concepts is a relation that can point at
 //! nothing (so not `null`), and every one of them applies to every country row
 //! the D18 roster carries (so not `absent`). A country that has genuinely
 //! destroyed no convoys reads `0` with its flag **set**, and that is a real
 //! `Zero`, not one of the three empty states.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: the `*_daily` channels are per-day gain *rates* whose own value moves,
-//! not a stored quantity a clock-linear transform holds constant, and §6 admits
+//! not a stored quantity a clock-linear transform holds constant, and derived-field contract admits
 //! kinds `0`/`1`/`2` only — the seven experience channels are continuous. The
 //! mapper still takes `frame_tick` so every domain's boundary has one shape.
 
@@ -60,7 +59,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 63;
 pub const COUNTRIES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const TAG_DB_ID: u32 = 1;
     pub const MANPOWER_POOL: u32 = 2;
@@ -131,22 +130,22 @@ pub fn schema() -> Schema {
         // filtered cache, so d63 is a superset of D18 on real captures
         // (439 vs 356 in all 903 deepwar_t1 hours) and the historical
         // bijectivity gate folded zero hours. ContentId because a country tag is
-        // content-defined (§5) — a manifest must resolve it for it to keep its
+        // content-defined (content-identity contract) — a manifest must resolve it for it to keep its
         // meaning under another mod set, which is the deciding question for
         // ContentId-vs-Unsigned. d20 classes its `owner` country the same way.
         Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
         // A pool that is spent and regenerates, not a counter: `Unsigned`.
         Field::new(f::MANPOWER_POOL, Kind::Unsigned).unknown_capable(),
         // Cumulative lifetime counters. `Monotone` is an encoding hint and never
-        // a validity constraint (§4), so a counter the engine may reset or trim
+        // a validity constraint (schema-kind contract), so a counter the engine may reset or trim
         // still declares it.
         Field::new(f::CONVOYS_DESTROYED, Kind::Monotone).unknown_capable(),
         Field::new(f::DIVISIONS_LOST, Kind::Monotone).unknown_capable(),
     ];
 
     // The seven experience channels. `Quant::Exact` for every one of them, on
-    // §6's own rule: "A field is `exact` unless its quantization is justified in
-    // the domain document", and `domains/d63_country_core_scalars_live.md`
+    // derived-field contract's own rule: "A field is `exact` unless its quantization is justified in
+    // domain evidence",
     // carries no field-level knowledge at all — there is no recorded precision
     // and no showing that any rounding is invisible, so no quantization is
     // justified and none is declared. Both vetoes also have live edges here: the
@@ -175,7 +174,7 @@ pub fn schema() -> Schema {
             // Full-replace each frame (`world_fold.rs::fold_country_core_scalars` requires
             // `changed_rows == row_count`), but `tag_db_id` is a stable identity
             // that persists across hours, which is what a keyed set needs — and
-            // only a keyed set has a delta grammar (§7.3).
+            // only a keyed set has a delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -255,7 +254,7 @@ pub fn tag_db_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// onto its stored Record. `row` is the raw 48-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d63 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d63 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -267,11 +266,11 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d63 has no derived field; §6's transform input is unused. Named rather
+    // d63 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row)?;
-    // `tag_db_id` is the key and so is not carried in the record body (§3), but
+    // `tag_db_id` is the key and so is not carried in the record body (record-state contract), but
     // its validity is still part of this row's validity.
     let _ = tag_db_id_of_row(row)?;
 
@@ -357,7 +356,7 @@ pub fn record_from_row(
 }
 
 /// A gate that is clear means the collector could not read the value, not that
-/// the value is nothing — see the module docs. §3 calls that **unknown**.
+/// the value is nothing — see the module docs. record-state contract calls that **unknown**.
 fn gated_unsigned(present: bool, value: u64) -> Value {
     if present {
         Value::Unsigned(value)
@@ -463,7 +462,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(c.fields.len(), 11, "1 key + 3 scalars + 7 experience channels");
@@ -475,7 +474,7 @@ mod tests {
         // exactly one empty state. Absent would claim the concept does not apply
         // to a country; Null would claim we know there is nothing. The collector
         // clears a gate only when the read failed (`attach_log.rs:60576`), which
-        // is §3's "applicable, not captured".
+        // is record-state contract's "applicable, not captured".
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
         assert!(
@@ -497,9 +496,9 @@ mod tests {
     #[test]
     fn no_continuous_field_is_quantized() {
         // Step 4's "quantization saves bytes" test does not apply: d63 declares
-        // no quantized field. §6 makes `exact` the default and requires the
+        // no quantized field. derived-field contract makes `exact` the default and requires the
         // domain document to justify anything else, and
-        // `domains/d63_country_core_scalars_live.md` records no field-level
+        // No retained evidence specifies field-level
         // knowledge — no precision, no showing that rounding is invisible. The
         // accumulated pools are also spent against thresholds (outcome test) and
         // the `*_daily` rates are integrable between samples (appearance test).
@@ -519,7 +518,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d63 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d63 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
     }
@@ -577,7 +576,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every flag set, every value zero: the row the collector packs for a
-        // country that has destroyed no convoys and lost no divisions. §3 keeps
+        // country that has destroyed no convoys and lost no divisions. record-state contract keeps
         // zero out of the three empty states.
         let c = collection();
         let r = record_from_row(&c, &raw_row(1, KNOWN_FLAGS, [0; 3], [0; 7]), 0).expect("maps");

@@ -1,6 +1,4 @@
-//! C1 stage A — per-subsource status-origin evidence units (G4 amendment 4;
-//! spec = the C0_DOSSIERS.md "ranked telemetry" ledger + per-domain deciding
-//! units, 2026-07-11/12).
+//! Per-subsource status-origin evidence units.
 //!
 //! A domain's OR'd status word says a bit was set but not WHERE or WHY: seven
 //! d69 failure reasons once collapsed into one boolean, and the C0 census left

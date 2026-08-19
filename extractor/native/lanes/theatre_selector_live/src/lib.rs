@@ -8,8 +8,7 @@
 //! predecessor walked exactly one country -- the recorder POV -- so it could
 //! never authorize a differently-selected observer country, and no other
 //! compact domain preserves theatre parentage, engine order, and the air
-//! hierarchy together (see
-//! `replay_interface/re_evidence/rendering_laws/XUI07/THEATRE_EXTRACTOR_DEPENDENCY_CONTRACT.md`).
+//! hierarchy together.
 //!
 //! # Shape
 //!
@@ -45,9 +44,7 @@
 //! What is *not* true of that list is that the read laws are unknown. XUI07's
 //! `manifest.json` carries function-level `controller_law_evidence` for every
 //! one of them; the gap is implementation, and for two of them it is an
-//! architectural blocker rather than missing evidence. See
-//! `runs/gs_theatre_reads/READ_LAWS.md` for the per-field verdict and the exact
-//! step that closes each remaining row.
+//! architectural blocker rather than missing evidence.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,15 +64,13 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
 /// `CInGameIdler + 0x6b8`, one instance per client, and the earlier briefs'
 /// premise that it lives at `country + 0x2a0` is factually wrong. A
 /// host-side all-country producer has nothing to read, so no amount of work in
-/// this crate closes that row. See
-/// `runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md`.
+/// this crate closes that row.
 ///
 /// The other schema-6 blocker did close: the strategic-region `pinned_frame`
-/// map-mode key is no longer an engine virtual call at all
-/// (`runs/hv_theatre_devirt/DOSSIER_F1B_pinned_frame.md`). It is not emitted
+/// map-mode key is no longer an engine virtual call at all. It is not emitted
 /// here because THS2 carries no strategic-region rows yet and a lone field on
 /// an absent row is bytes replay cannot consume; the rest of that subtree is
-/// `READ_LAWS.md` §6 F2 work.
+/// not implemented.
 ///
 /// So the version stays at 4 deliberately. Bumping it would ship a shape replay
 /// refuses anyway, with the difference that the refusal would look like a
@@ -128,23 +123,20 @@ pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
 /// It used to say that "no exact a729 read law is established" for these. That
 /// was never true as a blanket claim and is now removed: XUI07's
 /// `manifest.json` `controller_law_evidence` carries function-level artifacts
-/// for all of them. Each remaining row is here for one of exactly two reasons,
-/// and `runs/gs_theatre_reads/READ_LAWS.md` plus lane HV's dossiers say which:
+/// for all of them. Each remaining row has one of exactly two causes:
 ///
 /// * **Unimplemented** -- the law is a plain field read (or a walk over
 ///   structures this producer already reaches) and nothing but work stands
 ///   between it and capture. Every `strategic_region_*` row is in this class,
 ///   including the `pinned_frame` that used to be a virtual: lane HV resolved
-///   that dispatch to a pure field chain
-///   (`runs/hv_theatre_devirt/DOSSIER_F1B_pinned_frame.md`), so what is left
+///   that dispatch to a pure field chain, so what is left
 ///   there is the rest of the strategic subtree, not research.
 /// * **Not authoritative state** -- the value is local client UI state, which
 ///   this recorder does not capture at all (it records host-visible
 ///   authoritative state, never client UI). Only the three
 ///   `*.combat_log_ownership_and_eligibility` rows are in this class, and they
 ///   are permanent: lane HV proved the law's receiver is a single per-client
-///   `CCombatLogView`, not a per-country object
-///   (`runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md`). Reading it and
+///   `CCombatLogView`, not a per-country object. Reading it and
 ///   labelling it as every country's state would be a false measurement, which
 ///   is worse than the named absence carried here.
 ///

@@ -13,7 +13,7 @@
 
 use super::*;
 
-// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=4d68e6710f155e9f9598cd171526cc1134abb89685600ed063be18678f2d8f21
+// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=3349999ada55dc5ab043187ef1e8010e42db3edd125d851bf38ec2f06171779a
 const A729_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 const MANAGER_OFF: usize = 0x450;

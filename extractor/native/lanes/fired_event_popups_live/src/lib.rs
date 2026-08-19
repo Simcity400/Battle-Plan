@@ -1290,7 +1290,7 @@ mod frozen_window_audit_tests {
     /// are the same number of them. Both may only move when a human decides
     /// they should, and only DOWNWARD.
     ///
-    /// SIX, DOWN FROM 89, AND ALL SIX ARE ONE THING. `install_sites` does not
+    /// All remaining findings have one cause. `install_sites` does not
     /// drop the freeze it takes: it moves the guard into the returned
     /// `InstalledHookSet` and `publish()` releases it, from `a729_runtime.rs`.
     /// So the window is not bounded by the function that took it, and
@@ -1305,17 +1305,8 @@ mod frozen_window_audit_tests {
     /// before the baseline is read is counted twice; read the baseline earlier
     /// and one that fires after it is lost. Closing it needs the baseline to
     /// become idempotent against the live detour on the game's own instance id,
-    /// and the design review of that (`codex_d1_reply.txt`, thread
-    /// 01a007ca-0470-7fe3-bc35-b64845566c33) rejected the straightforward
-    /// version and specified a prepared-baseline/validate/commit protocol with
-    /// twenty proof properties. It is its own lane, and the specification is in
-    /// `extractor/native/runs/kz_freeze_audit_ratchets/D75_REMAINING.md`.
-    ///
-    /// The 83 that ARE closed were closed by moving preparation out: the patch
-    /// ranges, the callback unwind regions, the slot rosters and the
-    /// execution-range buffer are all built before the first suspension, the
-    /// release receipts are minted after the resume, and the recovery custody
-    /// path drops the freeze before it takes the custody lock.
+    /// and closing it requires a prepared-baseline/validate/commit protocol
+    /// that is idempotent against the live detour on the game's own instance id.
     const OPEN_FINDINGS: usize = 6;
     const OPEN_FINDINGS_FINGERPRINT: u64 = 14225969886152033195u64;
 

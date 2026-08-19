@@ -343,8 +343,7 @@ const STORE_COUNT: usize = D81_FAMILY_COUNT + 2;
 /// nine families plus the two closing stores — eleven `partition_point`
 /// binary searches over large, cold arrays per read — because the
 /// single-family rule needs to know whether a SECOND family also contains
-/// the span. Lane LM measured that at t61 (`runs/lm_perf_budget/
-/// IN_HOUR_BUDGET_30MS.md` §5): d81's post-bracket walk went 14.26 → 70.36 ms
+/// the span. At t61, d81's post-bracket walk went 14.26 → 70.36 ms
 /// per invocation against a 1.26x background drift, ~80,700 windows per
 /// frame, and every read paying eleven searches.
 ///

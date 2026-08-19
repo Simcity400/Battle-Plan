@@ -14,15 +14,3 @@ path = "src/lib.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
-
-[[bin]]
-name = "appointed_fixture_gate"
-path = "src/bin/appointed_fixture_gate.rs"
-
-[[bin]]
-name = "adapter_fixture_gate"
-path = "src/bin/adapter_fixture_gate.rs"
-
-[[bin]]
-name = "scheduled_adapter_benchmark"
-path = "src/bin/scheduled_adapter_benchmark.rs"

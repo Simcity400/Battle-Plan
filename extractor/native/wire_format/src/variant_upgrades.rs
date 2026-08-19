@@ -7,7 +7,7 @@
 //! at `:23893`-`:23907`, and the collector read and payload writer that produce
 //! the rows (`extractor/native/collector/src/attach_log.rs:54023`-`:54196`,
 //! `:57566`-`:57630`, `:70563`-`:70609`). Neither domain has a dossier
-//! (`documents/domains/UNDOCUMENTED_DOMAINS.md` lists 39 and 40), so the fold and
+//! (domains 39 and 40), so the fold and
 //! the collector read are the whole basis.
 //!
 //! # One grammar, two domains
@@ -18,14 +18,14 @@
 //! The payload grammar is therefore byte-identical, and duplicating it into two
 //! modules would give the fan-out two copies of one authority to keep in step.
 //!
-//! §11 assigns field ids **per domain**, so the two domains still need two
+//! schema-identity contract assigns field ids **per domain**, so the two domains still need two
 //! `Schema`s with two `domain` values. This module holds the whole grammar once,
 //! parameterized by a [`Domain`] descriptor — a plain `(id, name)` value, not a
 //! type parameter — and `crate::d39` / `crate::d40` are thin identity modules
 //! that bind that descriptor and re-export the recipe's fixed boundary
 //! (`record_from_*_row`, `key_from_*_row`, `split_payload`, `fold_payload`) at
 //! each domain's own name. Field ids are numerically identical in both domains
-//! because the fields are identical; that is not id reuse under §11, whose rule
+//! because the fields are identical; that is not id reuse under schema-identity contract, whose rule
 //! is per-domain and forbids reusing an id for a *different* field.
 //!
 //! # Payload grammar
@@ -182,7 +182,7 @@
 //! `variant_id`, a nonzero `flags` word, a range outside the entry array, and the
 //! exact-coverage rule.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: a variant's upgrade levels move when a player edits a design. The
 //! mappers still take `frame_tick` so every domain's boundary has one shape.
 
@@ -216,7 +216,7 @@ pub const VARIANTS_INDEX: usize = 0;
 pub const UPGRADES_INDEX: usize = 1;
 pub const COLLECTION_COUNT: usize = 2;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// *different* field. The two domains have independent id spaces and identical
 /// fields, so they use the same numbers for the same concepts — `variant_id` is
 /// deliberately one id across both collections and both domains.
@@ -243,7 +243,7 @@ pub const ENTRY_ROW_LEN: usize = 8;
 
 /// The schema for one of the two domains.
 ///
-/// Both schemas are the same grammar under two `domain` values: §11's canonical
+/// Both schemas are the same grammar under two `domain` values: schema-identity contract's canonical
 /// bytes cover the collections and their fields, not the domain id, so
 /// `d39::schema().schema_hash() == d40::schema().schema_hash()` — the identity
 /// `the_two_domains_are_one_grammar` asserts.
@@ -261,7 +261,7 @@ pub fn schema(domain: Domain) -> Schema {
         collection_id: VARIANTS,
         // `variant_id` is a stable identity that persists across hours (it is the
         // fold's own map key, `world_fold.rs:15582`), which is what a keyed set
-        // needs — and only a keyed set has a delta grammar (§7.3), which this
+        // needs — and only a keyed set has a delta grammar (collection-shape contract), which this
         // domain needs because the shipping stream re-states a variant only when
         // it changes.
         shape: Shape::KeyedSet,
@@ -304,7 +304,7 @@ pub fn schema(domain: Domain) -> Schema {
             // Raw `u32`, never scaled (`world_fold.rs:23904`). `Unsigned` and not
             // `Monotone`: a level is a property of a design, not a counter, and a
             // redesign lowers it — the monotone hint would be a claim about the
-            // data rather than merely an unhelpful one. Not `Continuous`, so §6's
+            // data rather than merely an unhelpful one. Not `Continuous`, so derived-field contract's
             // quantization has no surface here at all.
             Field::new(f::LEVEL, Kind::Unsigned),
         ],
@@ -554,7 +554,7 @@ pub fn key_from_upgrade_row(variant_id: u32, ordinal: u32) -> Key {
 /// its stored Record. `row` is the raw 16-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); there is exactly one
 /// variant row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// this domain declares no derived field, so it is taken and ignored — every
 /// domain's mapper has the same shape.
 ///
@@ -570,7 +570,7 @@ pub fn record_from_variant_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // No derived field; §6's transform input is unused. Named rather than
+    // No derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let _ = variant_id_of_row(domain, row)?;
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn the_two_domains_are_one_grammar() {
-        // §11's canonical bytes cover the collections and their fields, not the
+        // canonical schema bytes cover the collections and their fields, not the
         // domain id, so the shared fold's byte-identical grammar shows up as
         // identical schema hashes. If a future edit gives one domain a field the
         // other lacks, this is what fails.
@@ -1004,7 +1004,7 @@ mod tests {
             assert_eq!(
                 keys[0].kind,
                 Kind::Unsigned,
-                "a variant id is a runtime instance identity, not content (§5)"
+                "a variant id is a runtime instance identity, not content (content-identity contract)"
             );
             assert!(keys[0].kind.legal_as_key());
             assert_eq!(v.fields.len(), 1, "the key and nothing else");
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; a variant's upgrades move
+        // derived-field contract derived fields are clock-linear integers; a variant's upgrades move
         // when a player edits a design, so `frame_tick` never enters a value.
         for domain in domains() {
             for c in [variants_c(domain), upgrades_c(domain)] {
@@ -1132,7 +1132,7 @@ mod tests {
     #[test]
     fn a_real_zero_level_is_a_value_not_an_empty_state() {
         // 43 of the 228 d40 entries in the reference capture are level 0: a real
-        // upgrade slot that has not been upgraded. §3 keeps zero out of the three
+        // upgrade slot that has not been upgraded. record-state contract keeps zero out of the three
         // empty states, and this schema has no empty state to collapse it into.
         for domain in domains() {
             let c = upgrades_c(domain);

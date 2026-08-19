@@ -573,8 +573,7 @@ fn the_supply_province_ceiling_is_the_shared_province_envelope() {
 /// envelope". It is pinned in the focus lane's own suite instead
 /// (`the_numeric_decision_target_is_a_state_identity_at_the_shared_width`), and
 /// the sweep that can see ALL of them is
-/// `runs/ia_province_caps/probe_01_definitions.txt`, re-runnable from the
-/// command in `SWEEP.md` section 6.
+/// `runs/ia_province_caps/probe_01_definitions.txt`.
 ///
 /// The general lesson, since this fixture is where it bit: a hand-maintained
 /// list bounded by a crate's dependency graph cannot honour a claim about

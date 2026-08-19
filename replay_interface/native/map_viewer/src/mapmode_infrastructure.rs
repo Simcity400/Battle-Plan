@@ -1,5 +1,4 @@
-//! Infrastructure map mode (E3 lane; the mode set and its selection law are in
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode manager").
+//! Infrastructure map mode.
 //!
 //! The infrastructure map mode (`ui_mapmode_infrastructure`, F9) fills each
 //! **state** with a gradient keyed on its infrastructure building level. This

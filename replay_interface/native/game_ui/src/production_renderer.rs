@@ -8648,9 +8648,6 @@ mod tests {
     // coverage RUNS in the central battery instead of being skipped: the
     // guards under test all precede the first authored-asset read, so an
     // installed corpus would add nothing to them.
-    //
-    // Full classification of what was lost, ported and retired:
-    // `extractor/native/runs/kh_renderer_coverage/CLASSIFICATION.md`.
     // ------------------------------------------------------------------
 
     /// This file with its own test module cut off.

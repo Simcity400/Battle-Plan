@@ -828,8 +828,7 @@ fn uncaptured_controller_fields_are_declared() {
     ] {
         assert!(
             UNCAPTURED_CONTROLLER_FIELDS.contains(&permanent),
-            "{permanent} is client-local UI state and must stay declared uncaptured \
-             (runs/hv_theatre_devirt/DOSSIER_F1A_combat_log_owned.md)"
+            "{permanent} is client-local UI state and must stay declared uncaptured"
         );
     }
     let mut sorted = UNCAPTURED_CONTROLLER_FIELDS.to_vec();

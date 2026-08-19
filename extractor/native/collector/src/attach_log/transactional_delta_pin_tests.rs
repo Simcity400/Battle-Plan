@@ -48,8 +48,6 @@
 //! back in step, because the rejected frame's records were replaced with a
 //! `DOMAIN_GAP` and the fold's mirror is exactly the pre-frame state.
 //!
-//! See `extractor/documents/DELTA_WIRE_DESIGN.md` §7.1.
-
 use super::*;
 
 const D29: u16 = COMPACT_DOMAIN_SHIPS;
@@ -1022,8 +1020,8 @@ fn the_generation_authority_is_not_rolled_back_with_the_pins() {
 // D31 is a merge-after-first domain with NO transactional pin, so its own
 // rejection wipes a pin the fold has a baseline for, and the whole payload it
 // emits next is MERGED -- a bucket that emptied during the gap is never removed.
-// That is `DELTA_WIRE_DESIGN.md` §7.1's defect, still live, and the wire
-// primitive is the right answer for it rather than a transaction: d31's rows are
+// The wire primitive is the right answer for this rather than a transaction:
+// d31's rows are
 // AGGREGATES recomputed from the whole wing walk, so "here is the whole truth,
 // replace what you have" is a claim it can always make.
 

@@ -5,7 +5,7 @@
 //! It is loss-LESS by
 //! construction: payload files are stored as RAW BYTES, never re-serialized, so
 //! the Absent/null/0 trichotomy, the rollback filenames, and compact-JSON
-//! formatting all survive unchanged (spec §5).
+//! formatting all survive unchanged.
 //!
 //! It also backs a tiny CLI (`src/bin/pack_replay.rs`) so a directory store can be
 //! packed/round-tripped from the command line for verification.
@@ -217,8 +217,8 @@ pub struct PackOptions {
     /// Replace the first manifest entry's role with an arbitrary raw value.
     pub first_role_raw: Option<Value>,
     /// PRODUCTION: the `container_version` to declare (default `None` -> 1). A
-    /// stitched (reload/relaunch) container sets this to 2 (`STITCHING_DESIGN.md`
-    /// §9). Not a negative-test knob.
+    /// stitched (reload/relaunch) container sets this to 2 (the `PROJECT.md`
+    /// heading "Portable boundary"). Not a negative-test knob.
     pub container_version: Option<u64>,
     /// PRODUCTION: the `required_features` to declare (default `None` -> `[]`). A
     /// stitched container sets `["timeline_segments_v1"]`. Distinct from the
@@ -1284,7 +1284,7 @@ pub fn pack_borrowed_with_writer<W: Write>(
         file_count += 1;
     }
 
-    // manifest.json is written LAST (spec §6). The omit-manifest test fixture
+    // manifest.json is written last. The omit-manifest test fixture
     // produces a recovery-only file (no manifest) to exercise the NoManifest path.
     if !opts.omit_manifest {
         let mut manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
@@ -1998,19 +1998,6 @@ fn finish_zip<W: Write>(
     write_all_counted(out, &mut written, &zip32_field(cd_off).to_le_bytes())?;
     write_all_counted(out, &mut written, &0u16.to_le_bytes())?; // comment len
     Ok(())
-}
-
-/// Lane CE measurement hook: THE production entry encoder, exposed under the
-/// measurement feature so the size instrument prices candidate cache encodings
-/// with the compressor the container actually seals with. Replicating the
-/// profile in the instrument would let the two drift, and every number the
-/// instrument publishes is a container-layer number.
-#[cfg(feature = "ce-cache-anatomy")]
-pub fn ce_production_zstd_encoder<W: Write>(
-    writer: W,
-    profile: CompressionProfile,
-) -> std::io::Result<zstd::stream::write::Encoder<'static, W>> {
-    configured_zstd_encoder(writer, profile)
 }
 
 fn configured_zstd_encoder<W: Write>(

@@ -1,14 +1,14 @@
 //! d68 `session_header_live` — the campaign's top-level save/session header.
 //!
-//! Derived from `world_fold.rs:13836`-`:13970`
+//! Derived from `world_fold.rs:13818`-`:13952`
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
-// @world-fold-authority domain=68 functions=fold_session_header lines=13836-13970 sha256=435065b56b7b527e05c2a15aac7c47b014814e64bbfc73faa3609a259a23b98b closure=410fcdbebc1983700ad2158221976469bd9d92d4010b48f82b5c08a9a5c0ebae
+// @world-fold-authority domain=68 functions=fold_session_header lines=13818-13952 sha256=435065b56b7b527e05c2a15aac7c47b014814e64bbfc73faa3609a259a23b98b closure=aff3cb005166eca9e04b3ddc696d2dfe3ee726153942342c26982cab9696f300
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
 //! `world_fold.rs::build_session_header_value`, and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
-//! `extractor/documents/domains/d68_session_header_live.md` carries campaign-identity
-//! RE knowledge but no field-level wire knowledge, so the fold and the collector
-//! read are the whole basis.
+//! `domain-68::Overview` in `extractor/documents/technical_evidence.json`
+//! carries campaign-identity RE knowledge but no field-level wire knowledge, so
+//! the fold and collector read are the whole basis.
 //!
 //! **This domain is a SPLIT deliverable.** The five scalars — `player_tag_db_id`,
 //! `dlcs`, `start_date_raw`, `save_version`, `session` — are ported here. The
@@ -70,11 +70,11 @@
 //! A clear bit therefore carries no data, which is what makes "unchanged" the only
 //! reading it can have.
 //!
-//! ## Four-state semantics: what §3 `Absent` means under merge
+//! ## Four-state semantics: what record-state contract `Absent` means under merge
 //!
 //! This is the domain's one real judgement, and it deserves the whole argument.
 //!
-//! **1. §3's four states are properties of a stored record field, and the stored
+//! **1. record-state contract's four states are properties of a stored record field, and the stored
 //! record here is the merged accumulator.** `fold_session_header` stores the
 //! merged header (`world_fold.rs::fold_session_header`); `build_session_header_value` publishes that
 //! merged header, not the frame (`world_fold.rs::build_session_header_value`); and the measurement's reader
@@ -83,13 +83,13 @@
 //!
 //! **2. A clear presence bit is a statement about the UPDATE, not about the
 //! value.** Its meaning is "do not change the stored field". The wire format
-//! already expresses exactly that, one level above §3: a keyed set's delta carries
+//! already expresses exactly that, one level above record-state contract: a keyed set's delta carries
 //! only the rows that changed, and within a changed row the update mask sets a bit
-//! only for the fields that changed (§7.1 minimality, `body.rs`). Frame-level
+//! only for the fields that changed (delta-minimality contract minimality, `body.rs`). Frame-level
 //! presence maps onto **delta mask bits**, not onto a four-state code. That
 //! correspondence is the reason this domain fits the existing grammar at all.
 //!
-//! **3. Reading a clear bit as §3 `Absent` would be silent data loss.** `Absent`
+//! **3. Reading a clear bit as record-state contract `Absent` would be silent data loss.** `Absent`
 //! is "not applicable, or unsupported by this schema" and encodes as presence bit
 //! `0` in the record body, which a conforming reader reconstructs as *this field
 //! has no value*. Applied to the frame after the collector momentarily failed to
@@ -100,7 +100,7 @@
 //!
 //! **4. The one empty state a stored d68 field can hold is `Unknown`** — the
 //! accumulator has never had a successful read of that field, so it is
-//! "applicable, not captured", §3's unknown word for word. The collector is
+//! "applicable, not captured", record-state contract's unknown word for word. The collector is
 //! explicit (`attach_log.rs:61788`-`:61790`): *"Each field is read independently
 //! and presence-flagged: a torn/absent read clears its bit (never a fabricated
 //! value)."* Every per-field guard behind that bit is a read failure or a validity
@@ -132,7 +132,7 @@
 //! alternatives both fail:
 //!
 //! - **`session` as the key fails the key rules** — it is presence-gated, so it
-//!   can be `Unknown`, and §11 requires a key member to be concrete
+//!   can be `Unknown`, and schema-identity contract requires a key member to be concrete
 //!   (`Schema::validate` returns `KeyMemberNotConcrete`, `schema.rs:302`-`:308`).
 //! - **`session` as the key would also lose data**, which is the stronger reason.
 //!   The fold merges every frame into the SAME carried header whatever the session
@@ -143,7 +143,7 @@
 //!   `session` is a **value** in this grammar, not an identity.
 //!
 //! The constant key is concrete, totally ordered, present in every row and carries
-//! no capability, so it satisfies §11 outright; and it persists across hours in the
+//! no capability, so it satisfies schema-identity contract outright; and it persists across hours in the
 //! sense step 5 requires, because the singleton it names is the same carried header
 //! every hour. The two levels of optionality stay separate and neither collapses:
 //!
@@ -160,12 +160,12 @@
 //!
 //! `ideology`, `cosmetic_tag` and `version` are `read_msvc_string` /
 //! `read_module_ascii_cstr` tokens (`attach_log.rs:61850`-`:61880`), carried as
-//! `u16` length + UTF-8 bytes (`world_fold.rs::fold_session_header`). §4 declares no
+//! `u16` length + UTF-8 bytes (`world_fold.rs::fold_session_header`). schema-kind contract declares no
 //! string kind (`schema.rs:12`-`:20`), and the three do not stop for the same
 //! reason:
 //!
 //! - `ideology` (`"fascism"`) and `cosmetic_tag` (`"FRA_VICHY"`) are
-//!   **content-defined tokens**, which step 3 of the recipe does NOT stop: §5's
+//!   **content-defined tokens**, which step 3 of the recipe does NOT stop: content-identity contract's
 //!   rule makes them a `ContentId` resolved through a caller-supplied symbol
 //!   table, exactly as d29 does. They are stopped **by this assignment's scope**,
 //!   not by a technical blocker, and the deliverable says what the resolver would
@@ -173,7 +173,7 @@
 //! - `version` (`"Operation Postern v1.19.2.0.a729"`) is a **build banner** read
 //!   from module `.rdata`. No content manifest defines the set of build strings —
 //!   it is engine-authored text whose vocabulary is the set of every build ever
-//!   shipped or patched — so §5's symbol rule can never reach it. That is the
+//!   shipped or patched — so the symbol rule can never reach it. That is the
 //!   Scope stop ("text no content manifest can ever resolve"), whose only recorded
 //!   instance so far is player-authored text. It stops on the rule, not on scope.
 //!
@@ -198,7 +198,7 @@ pub const DOMAIN: u32 = 68;
 /// The single collection: the merged session header, one row.
 pub const SESSION: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     /// The constant singleton key — see "Key and shape" in the module docs.
     pub const SESSION_SINGLETON: u32 = 1;
@@ -213,15 +213,11 @@ pub mod field {
 
 // THE LAYOUT BELOW IS NOT RESTATED HERE ANY MORE.
 //
-// This module used to declare its own copy of the two block lengths, the eight
-// presence bits and the token ceiling, and `parse_update` was a line-for-line
-// transcription of `fold_session_header`. That is the shape that failed for d13
-// on 2026-08-14: a tail was added at the producer and one reader, and the other
-// readers were still transcriptions of the old grammar. This port now EXECUTES
-// `d68_grammar` -- the same crate the producer, the fold and the authority
-// validator execute -- and keeps only its own semantic layer and its own
-// diagnostics. The constants stay `pub` under their original names because
-// this crate's tests and its schema are written against them.
+// This module executes `d68_grammar`, the same crate used by the producer, fold,
+// and authority validator, so structural constants cannot drift between copied
+// decoders. It keeps only its own semantic layer and diagnostics. The constants
+// stay `pub` under their original names because this crate's tests and schema are
+// written against them.
 
 /// `d68_grammar::HEADER_LEN`.
 pub const HEADER_LEN: usize = d68_grammar::HEADER_LEN;
@@ -269,13 +265,13 @@ pub fn schema() -> Schema {
         // resolve this id for it to keep its meaning across mod sets?" is No).
         Field::new(f::SESSION_SINGLETON, Kind::Unsigned).key(0),
         // The country the human player is playing. `ContentId`: a country's
-        // `tag_db_id` is content-defined (§5) — under another mod set the same id
+        // `tag_db_id` is content-defined (content-identity contract) — under another mod set the same id
         // is a different country — which is what d63's key and d20's `owner`
         // class the same way.
         Field::new(f::PLAYER_TAG_DB_ID, Kind::ContentId).unknown_capable(),
         // A bitmask of enabled DLCs (`attach_log.rs:61861`). `Unsigned`, not
         // `Enum`: the bits are independent, so a code space would have to be the
-        // whole 2^32 power set, and §4's `Enum` is for mutually exclusive codes.
+        // whole 2^32 power set, and schema-kind contract's `Enum` is for mutually exclusive codes.
         // Not `ContentId` either — a DLC is an engine artifact, not mod content,
         // and no manifest resolves a DLC bit; step 3's "engine
         // constants/discriminators are still not content" case.
@@ -286,7 +282,7 @@ pub fn schema() -> Schema {
         // `date_from_raw` apply to it unchanged (`calendar.rs:8`-`:47`). Measured:
         // 60,759,371 == 1936.1.1 hour 12, against a capture whose own hours are
         // 60,831,018.. == 1944.3.7. `Unsigned` and RAW: it is a point in time, not
-        // a counter that rises (§4's `Monotone` is a hint for accumulating
+        // a counter that rises (schema-kind contract's `Monotone` is a hint for accumulating
         // counters, and this field is constant for a whole campaign), and the
         // calendar conversion is the reader's business — a mapper that applied it
         // would bake `DATE_EPOCH_CONST` into stored bytes and lose every raw value
@@ -535,7 +531,7 @@ pub fn parse_update(payload: &[u8]) -> core::result::Result<Update, String> {
 
 /// The carried header itself — the fold's `SessionHeaderFoldState`
 /// (`world_fold.rs:2258`). Every field is independently `Option`, and a `None`
-/// means "no successful read of this field has ever folded", which is §3's
+/// means "no successful read of this field has ever folded", which is record-state contract's
 /// `Unknown`.
 ///
 /// **This is the INNER half of the fold's state.** The outer half — whether a
@@ -672,7 +668,7 @@ pub fn key_from_header(_state: &Header) -> Key {
 /// The merged session header onto its stored Record — the recipe's
 /// `record_from_row` with the row replaced by the accumulator, because d68 has no
 /// rows (see "This is not a table"). The three fixed arguments keep their meaning:
-/// `frame_tick` is §6's derived-field input, and d68 declares no derived field, so
+/// `frame_tick` is derived-field contract's derived-field input, and d68 declares no derived field, so
 /// it is taken and ignored.
 ///
 /// Fail-closed: a state carrying a `player_tag_db_id` the fold would have rejected
@@ -683,7 +679,7 @@ pub fn record_from_header(
     state: &Header,
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d68 has no derived field; §6's transform input is unused. Named rather than
+    // d68 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     if collection.collection_id != SESSION {
@@ -859,7 +855,7 @@ mod tests {
         assert!(keys[0].kind.legal_as_key());
         assert!(
             !keys[0].optional && !keys[0].nullable && !keys[0].unknown_capable,
-            "§11 requires a concrete key member"
+            "a key member must be concrete"
         );
         assert_eq!(c.fields.len(), 6, "1 constant key + 5 scalars");
 
@@ -877,7 +873,7 @@ mod tests {
     #[test]
     fn session_cannot_be_the_key_and_the_schema_proves_it() {
         // The rule half of the constant-key defense: `session` is presence-gated,
-        // so it is `unknown_capable`, and §11 rejects a key member that is not
+        // so it is `unknown_capable`, and schema-identity contract rejects a key member that is not
         // concrete (`schema.rs:302`-`:308`). This is machine-checked rather than
         // asserted in prose.
         let mut s = schema();
@@ -903,7 +899,7 @@ mod tests {
     fn no_field_is_optional_or_nullable_and_every_value_field_is_unknown_capable() {
         // The four-state decision, machine-checked. `Absent` is unreachable
         // because a clear presence bit means "unchanged", which the delta grammar
-        // expresses and §3 does not; `Null` is unreachable because none of the
+        // expresses and record-state contract does not; `Null` is unreachable because none of the
         // five is a relation that can point at nothing.
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
@@ -938,8 +934,8 @@ mod tests {
 
     #[test]
     fn exactly_one_field_is_a_content_id() {
-        // The §13 retrofit sweep needs "checked, this one" rather than silence:
-        // now that §5's manifest-id assignment exists, this mapper's raw cast
+        // The codec-measurement contract retrofit sweep needs "checked, this one" rather than silence:
+        // now that content-identity contract's manifest-id assignment exists, this mapper's raw cast
         // must become a resolver lookup. It is a ContentId VALUE, not a key, so the
         // retrofit does not reorder any key or change a baseline's byte layout.
         let c = collection();
@@ -1069,7 +1065,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states. Every flag set with every
+        // record-state contract keeps zero out of the three empty states. Every flag set with every
         // scalar zero is not a legal frame — `player_tag_db_id` must be
         // `1..=MAX_PLAYER_TAG_DB_ID`
         // when its bit is set (`world_fold.rs::fold_session_header`) — so this is the largest

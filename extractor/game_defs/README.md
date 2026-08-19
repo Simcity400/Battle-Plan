@@ -1,4 +1,4 @@
-# game_defs — mod-aware STATIC GAME-DATA parsers (binding-sweep bucket-(c))
+# game_defs — mod-aware static game-data parsers
 
 Parses the **effective mod-over-vanilla** installed content (`common/` + `events/` +
 `localisation/`) into structured JSON for the replacement replay surface. This
@@ -40,7 +40,7 @@ file-level override by relpath + `replace_path`) and the tolerant
 Shared spine: `resolver.py` (layer build + `LocDB`), `clausewitz_ops.py`
 (operator + variable-op harvesting from the tolerant parser).
 
-## Runtime static-bundle authority
+## Runtime static bundle
 
 `build_runtime_static_bundle.py` builds all seven required roles in parallel from the exact v2
 source inventory. Definition layers preserve integrated and active-product DLC plus ordered active

@@ -400,7 +400,7 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
 ///
 /// WHY THAT IS THE RULE, from `hoi4.exe 1.19.2.0.a729`
 /// (`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`) — full
-/// working in `extractor/native/runs/la_two_vfs/engine_lookup_rule_from_a729.md`:
+/// working in `extractor/native/runs/la_two_vfs/ENGINE_LOOKUP_RULE_A729.txt`:
 ///
 /// * `PHYSFS_stat` (`0x1424e0b00`) walks the search path and takes the FIRST
 ///   hit. It has no ambiguity concept, so neither has this.
@@ -637,9 +637,7 @@ const ENGINE_MAX_PATH: usize = 260;
 /// KNOWN LIMIT OF THAT READING, because it is load-bearing here: it proves the
 /// stat function adds no prefix, NOT that its caller passed none. The directory
 /// archiver's stat entry (`+0x68` in the archiver vtable), which joins the mount
-/// root to the sanitized path, is still unread. Full working and the whole-image
-/// `\\?\` scan:
-/// `extractor/native/runs/lf_vfs_consolidate/engine_path_namespace_from_a729.md`.
+/// root to the sanitized path, is still unread.
 /// Works in UTF-16 code units, not `to_string_lossy`, because a lossy
 /// conversion would silently REWRITE a root containing unpaired surrogates --
 /// turning "the root I was given" into "a root that looks like it" without

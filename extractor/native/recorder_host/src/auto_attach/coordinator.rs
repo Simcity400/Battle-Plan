@@ -1,4 +1,4 @@
-//! The resident auto-attach coordinator (design §1, §4, §5).
+//! The resident auto-attach coordinator.
 //!
 //! One coordinator per Windows session drives every detected the game identity
 //! through the attach state machine. It is written as a deterministic
@@ -6,8 +6,7 @@
 //! source, environment, stager, spawner) so the whole control flow — dual-order
 //! discovery, the subscribe/snapshot race, PID reuse, WMI loss, identity
 //! fail-close, the no-double-inject guard, multi-instance, and crash recovery —
-//! is exercised by fakes with zero live game (design §9 abstraction rationale;
-//! design §10 deterministic gates).
+//! is exercised by deterministic fakes with zero live game.
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -29,13 +28,13 @@ use super::staging::{generate_attempt_id, generate_pipe_token, generate_secret_1
 use super::state::{CandidateState, ReasonCode};
 
 /// Static configuration for a coordinator instance. No correctness policy is
-/// user-tunable (design §7); these are identity/location facts resolved at boot.
+/// user-tunable; these are identity/location facts resolved at boot.
 pub struct CoordinatorConfig {
     pub coordinator_instance_id: String,
     /// Output root for per-attempt run directories.
     pub out_root: PathBuf,
     /// The coordinator's own Windows session id and token-SID hash, used to
-    /// prove a candidate is same-user/same-session (design §3). A candidate that
+    /// prove a candidate is same-user/same-session. A candidate that
     /// does not match is never admitted.
     pub own_session_id: u32,
     pub own_sid_hash: String,
@@ -211,7 +210,7 @@ impl Coordinator {
         Ok(self.workers.is_empty())
     }
 
-    /// Recover from a prior journal (design §8, gate 10). Every nonterminal
+    /// Recover from a prior journal. Every nonterminal
     /// identity that had COMMITTED an injection but whose completion is not
     /// proven is poisoned as `Failed` so it can never be re-injected — the
     /// SINGLE-INJECTION LAW under supervisor restart. If its live process is
@@ -275,7 +274,7 @@ impl Coordinator {
         let now = self.deps.clock.now_ms();
         // First step: subscribe (already done by the event source ctor) THEN
         // enumerate a complete snapshot and drain queued events — the exact
-        // startup order (design §2). We enumerate first so game-first is closed
+        // startup order. We enumerate first so game-first is closed
         // even if no push events ever arrive.
         if !self.started {
             self.ingest_snapshot(now)?;
@@ -305,7 +304,7 @@ impl Coordinator {
     }
 
     /// Enumerate live processes, admit new same-user `hoi4.exe` identities, and
-    /// reconcile exits against the authoritative live set (design §2).
+    /// reconcile exits against the authoritative live set.
     fn ingest_snapshot(&mut self, now: u64) -> Result<(), String> {
         let snapshot = self.deps.probe.snapshot()?;
         let mut live: BTreeSet<ProcessKey> = BTreeSet::new();
@@ -317,7 +316,7 @@ impl Coordinator {
             }
             // Authority-grade identity from the live handle. A the game pid we cannot
             // identify (access denied / different session) is NOT admitted —
-            // fail closed (design §3, gate 5).
+            // fail closed.
             let id = match self.deps.probe.identify(e.pid) {
                 Ok(id) => id,
                 Err(_) => {
@@ -367,7 +366,7 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Handle low-latency push events (design §2). Start events add via probe;
+    /// Handle low-latency push events. Start events add via probe;
     /// stop events are hints that force a prompt reconcile.
     fn ingest_events(&mut self, now: u64) -> Result<(), String> {
         let events = self.deps.events.drain_events();
@@ -578,7 +577,7 @@ impl Coordinator {
 
     /// `Preparing`: stage a fresh unique DLL, verify its hash, then — guarded by
     /// the no-double-inject registry — spawn exactly one worker and commit to
-    /// `Injecting` (design §5). Any failure fails the attempt closed (loud); we
+    /// `Injecting`. Any failure fails the attempt closed (loud); we
     /// never leave a half-committed key that could be re-injected.
     fn prepare_and_inject(&mut self, key: ProcessKey, now: u64) -> Result<(), String> {
         let attempt_id = generate_attempt_id(&self.config.coordinator_instance_id, key, now);
@@ -703,8 +702,8 @@ impl Coordinator {
             Ok(h) => h,
             Err(e) => {
                 // The child never started, so no hook was installed. Fail closed
-                // and do NOT retry in the same process identity (conservative;
-                // design §5 self-refutation "retry is not automatically safe").
+                // and do NOT retry in the same process identity because an
+                // uncertain injection is not automatically safe to repeat.
                 self.fail(
                     key,
                     ReasonCode::DiskFailure,
@@ -718,7 +717,7 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Advance a committed candidate by polling its worker (design §5 ladder:
+    /// Advance a committed candidate by polling its worker (liveness ladder:
     /// heartbeat for residency, then a valid session frame for recording). Also
     /// enforces the handshake deadline and the post-commit process-exit
     /// finalization.
@@ -728,7 +727,7 @@ impl Coordinator {
             (c.state, c.state_entered_ms, c.process_gone_after_commit)
         };
 
-        // Post-commit process exit: finalize the valid prefix (design §6).
+        // Post-commit process exit: finalize the valid prefix.
         if gone
             && matches!(
                 state,
@@ -762,7 +761,7 @@ impl Coordinator {
             return Ok(());
         }
 
-        // Handshake deadline (design §4): loud timeout, no second DLL.
+        // Handshake deadline: loud timeout, no second DLL.
         if state == CandidateState::Handshaking
             && now.saturating_sub(entered) > policy::HANDSHAKE_DEADLINE_MS
         {
@@ -1872,7 +1871,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 1: dual order ------------------------------------------
+    // ---- Dual startup order ------------------------------------------
 
     #[test]
     fn gate1_game_first_startup_snapshot_attaches() {
@@ -1924,7 +1923,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 2: subscribe race / dedup ------------------------------
+    // ---- Subscribe race / dedup --------------------------------------
 
     #[test]
     fn gate2_snapshot_and_wmi_produce_one_attempt() {
@@ -1952,7 +1951,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 3: PID reuse -------------------------------------------
+    // ---- PID reuse ---------------------------------------------------
 
     #[test]
     fn gate3_reused_pid_is_new_attempt() {
@@ -1991,7 +1990,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 4: WMI loss / recovery cadence -------------------------
+    // ---- WMI loss / recovery cadence ---------------------------------
 
     #[test]
     fn gate4_reconcile_cadence_tracks_health() {
@@ -2023,7 +2022,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 5: identity fail-close ---------------------------------
+    // ---- Identity fail-close -----------------------------------------
 
     #[test]
     fn gate5_wrong_session_never_admitted() {
@@ -2133,7 +2132,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 6/7: pipe barrier + injection uncertainty --------------
+    // ---- Pipe barrier + injection uncertainty ------------------------
 
     #[test]
     fn gate6_no_heartbeat_never_reaches_recording() {
@@ -2232,7 +2231,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 9: multi-instance --------------------------------------
+    // ---- Multi-instance ----------------------------------------------
 
     #[test]
     fn gate9_two_games_attach_independently() {
@@ -2257,7 +2256,7 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Gate 10: crash recovery -------------------------------------
+    // ---- Crash recovery ----------------------------------------------
 
     #[test]
     fn gate10_recovery_poisons_committed_identity() {
@@ -2445,7 +2444,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ---- Gate 11 (offline slice): process exit finalization ----------
+    // ---- Offline process-exit finalization ---------------------------
 
     #[test]
     fn gate11_recording_process_exit_finalizes_prefix() {

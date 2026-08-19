@@ -13,7 +13,7 @@
 //! the binding, the texels from the file.
 //!
 //! Proven byte-identical to the captured payload for vanilla (see
-//! `documents/WATER_LAW.md` and the scratch `repack_verify.py`): the repacked
+//! the retained reflection-cube evidence and the scratch `repack_verify.py`): the repacked
 //! buffer == the captured `session_20260702c_fixed` payload, full 2112768 bytes,
 //! FNV-1a-64 `e267c5bfc5d499c8`. The gate asserts FULL byte-equality, not the
 //! hash alone.
@@ -645,7 +645,7 @@ mod tests {
         // Self-contained capture-equality proof (no capture corpus needed on
         // disk): the captured ReflectionCubeMap upload payload measured
         // 2,112,768 bytes with FNV-1a64 e267c5bfc5d499c8 (recorded in the
-        // capture bundle and in the WATER1 evidence; see WATER_LAW.md §1 -- all
+        // capture bundle and in the WATER1 evidence -- all
         // 54 subresources byte-identical to the shipped DDS). Decoding the
         // REAL shipped map/terrain/reflection.dds through the resolver into
         // the captured 128-aligned layout must reproduce exactly that byte

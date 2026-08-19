@@ -14,7 +14,7 @@
 //!    + `map/definition.csv` (province types) into naval regions and their sea
 //!    province sets. The sea province set of a zone IS the field geometry that
 //!    the GradientBorder (GB) field fills — the same province-set -> pixel
-//!    mechanism the political fill rides (`POLITICAL_COLOR_LAW.md`,
+//!    mechanism the political fill rides (`xmap05_d3d_handoff.rs`,
 //!    `CGradientBorderManager` / `CGradientBorder::CFillBufferThreaded`). This
 //!    module produces the per-zone RGBA the GB field is keyed with; the pixel
 //!    rasterisation + parity vs a captured supremacy frame is capture-gated and
@@ -24,7 +24,8 @@
 //!    `NavalSupremacyRow`, requirements item 5 / extractor D56) plus the country
 //!    colour table, compute each zone's tint. Fails **closed** to open ocean
 //!    (no tint) when supremacy data is absent — matching the engine, which draws
-//!    no sea lines with no naval data (`REPLAY_DATA_REQUIREMENTS.md` §5).
+//!    no sea lines with no naval data (the `PROJECT.md` heading
+//!    "Fidelity and truth states").
 //!
 //! Colours are computed replay-side from inputs, **never recorded** (standing
 //! override). Every colour/threshold below is FILE-cited to

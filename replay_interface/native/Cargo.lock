@@ -385,21 +385,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "replay_package_runtime"
-version = "0.1.0"
-dependencies = [
- "portable_test_fs_retry",
- "serde",
- "serde_json",
- "sha2",
- "windows-sys",
-]
-
-[[package]]
-name = "replay_qa"
-version = "0.1.0"
-
-[[package]]
 name = "replay_test_gates"
 version = "0.1.0"
 

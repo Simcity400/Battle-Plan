@@ -1,4 +1,4 @@
-//! Schemas and their canonical serialization, per `WIRE_FORMAT.md` §4 and §11.
+//! Schemas and their canonical serialization.
 //!
 //! The serialization is the thing `schema_hash` is taken over, so it is written
 //! once here and never re-derived: two implementations that serialize differently
@@ -6,7 +6,7 @@
 
 use crate::varint::{write_varint, write_zigzag, Result, WireError};
 
-/// §4 scalar kinds. The codes are normative — they appear in the hashed bytes.
+/// schema-kind contract scalar kinds. The codes are normative — they appear in the hashed bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Kind {
@@ -24,24 +24,24 @@ impl Kind {
         self as u64
     }
 
-    /// §7.4 restricts key members to the kinds that encode as a self-delimiting
+    /// key-encoding contract restricts key members to the kinds that encode as a self-delimiting
     /// varint or zigzag on their own.
     pub fn legal_as_key(self) -> bool {
         matches!(self, Kind::Unsigned | Kind::Signed | Kind::ContentId)
     }
 
-    /// §6 derived fields are clock-linear integers only.
+    /// derived-field contract derived fields are clock-linear integers only.
     pub fn legal_as_derived(self) -> bool {
         matches!(self, Kind::Unsigned | Kind::Signed | Kind::Monotone)
     }
 
-    /// §3 puts enums, booleans and unescaped `ratio(d)` in the bit-packed region.
+    /// record-state contract puts enums, booleans and unescaped `ratio(d)` in the bit-packed region.
     pub fn bit_packed(self, quant: Quant) -> bool {
         matches!(self, Kind::Enum | Kind::Boolean) || matches!(quant, Quant::Ratio(_))
     }
 }
 
-/// §6 quantization declaration.
+/// derived-field contract quantization declaration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Quant {
     None,
@@ -74,7 +74,7 @@ impl Quant {
     }
 }
 
-/// Clock-linear transform, §6: `stored = v + c * (frame_tick >> u)`.
+/// Clock-linear transform, derived-field contract: `stored = v + c * (frame_tick >> u)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Derived {
     pub c: i64,
@@ -88,7 +88,7 @@ pub struct Field {
     pub optional: bool,
     pub nullable: bool,
     pub unknown_capable: bool,
-    /// `Some(position)` when this field is a key member, per §11 `key_position`.
+    /// `Some(position)` when this field is a key member, per schema-identity contract `key_position`.
     pub key_position: Option<u32>,
     pub derived: Option<Derived>,
     pub enum_card: Option<u32>,
@@ -147,7 +147,7 @@ impl Field {
         self.key_position.is_some()
     }
 
-    /// §11 `flags`.
+    /// schema-identity contract `flags`.
     pub fn flags(&self) -> u64 {
         (self.optional as u64)
             | ((self.nullable as u64) << 1)
@@ -157,7 +157,7 @@ impl Field {
     }
 }
 
-/// §7.3 collection shapes. Only a keyed set has a delta grammar.
+/// collection-shape contract collection shapes. Only a keyed set has a delta grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Shape {
@@ -174,19 +174,19 @@ pub struct Collection {
 }
 
 impl Collection {
-    /// Non-key fields, in schema order — the ones a record body carries (§3).
+    /// Non-key fields, in schema order — the ones a record body carries (record-state contract).
     pub fn value_fields(&self) -> impl Iterator<Item = &Field> {
         self.fields.iter().filter(|f| !f.is_key())
     }
 
-    /// Key fields in `key_position` order (§7.4).
+    /// Key fields in `key_position` order (key-encoding contract).
     pub fn key_fields(&self) -> Vec<&Field> {
         let mut keys: Vec<&Field> = self.fields.iter().filter(|f| f.is_key()).collect();
         keys.sort_by_key(|f| f.key_position.unwrap_or(0));
         keys
     }
 
-    /// §3: the presence bitmap is always `ceil(O/8)` bytes, fixed by the schema.
+    /// record-state contract: the presence bitmap is always `ceil(O/8)` bytes, fixed by the schema.
     pub fn optional_count(&self) -> usize {
         self.value_fields().filter(|f| f.optional).count()
     }
@@ -209,7 +209,7 @@ pub struct Schema {
 }
 
 /// Why a schema is not well-formed. Every one of these is a hard writer and CI
-/// error per §11 — none is a warning, because each admits two encodings or an
+/// error per schema-identity contract — none is a warning, because each admits two encodings or an
 /// unjoinable identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SchemaError {
@@ -221,8 +221,8 @@ pub enum SchemaError {
     CollectionHasNoFields { collection_id: u32 },
     DuplicateFieldId { collection_id: u32, field_id: u32 },
     EventFieldMarkedKey { field_id: u32 },
-    /// §9 event records have an observation tick but may contain occurrences
-    /// from different ticks, so §6's single-frame-tick transform is undefined.
+    /// event-continuity contract event records have an observation tick but may contain occurrences
+    /// from different ticks, so derived-field contract's single-frame-tick transform is undefined.
     EventFieldMarkedDerived { field_id: u32 },
     EventHasNoFields { collection_id: u32 },
     DuplicateFrontierComponentId { component_id: u32 },
@@ -243,15 +243,15 @@ pub enum SchemaError {
     /// Quantization is serialized only for continuous fields, so setting it
     /// elsewhere changes record bytes without changing `schema_hash`.
     QuantOnNonContinuousField { field_id: u32 },
-    /// §1.1: a tick index is a `u64`, so `2^ticks_per_hour_log2` must fit one.
+    /// tick-grid contract: a tick index is a `u64`, so `2^ticks_per_hour_log2` must fit one.
     TicksPerHourTooLarge { ticks_per_hour_log2: u8 },
-    /// §9: the frontier's sequence index must name one of its own components.
+    /// event-continuity contract: the frontier's sequence index must name one of its own components.
     SequenceIndexOutOfRange { sequence_index: u32, components: usize },
 }
 
 impl Schema {
     pub fn validate(&self, ticks_per_hour_log2: u8) -> core::result::Result<(), SchemaError> {
-        // §1.1 counts ticks in a `u64`, so the shift that builds ticks-per-hour
+        // tick-grid contract counts ticks in a `u64`, so the shift that builds ticks-per-hour
         // has to be representable. Unbounded, `1u64 << 64` panics under this
         // workspace's overflow checks and is masked to `1u64 << 0` without them —
         // a silently wrong grid rather than a rejected schema.
@@ -320,7 +320,7 @@ impl Schema {
                         kind: field.kind,
                     });
                 }
-                // §11: a key must be a concrete, totally ordered value present in every row.
+                // schema-identity contract: a key must be a concrete, totally ordered value present in every row.
                 if field.optional
                     || field.nullable
                     || field.unknown_capable
@@ -350,7 +350,7 @@ impl Schema {
                     });
                 }
             }
-            // §9: the frontier designates exactly one of its components as the
+            // event-continuity contract: the frontier designates exactly one of its components as the
             // sequence. An index past the end names nothing, so the frontier has
             // no ordering and the schema is not implementable.
             if (event.sequence_index as usize) >= event.frontier_component_ids.len() {
@@ -431,7 +431,7 @@ impl Schema {
         Ok(())
     }
 
-    /// §11 canonical serialization. These are the bytes `schema_hash` is over.
+    /// schema-identity contract canonical serialization. These are the bytes `schema_hash` is over.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_varint(&mut out, 1); // format_tag
@@ -458,7 +458,7 @@ impl Schema {
         out
     }
 
-    /// §11: the first eight bytes of the BLAKE3 digest of the canonical bytes.
+    /// schema-identity contract: the first eight bytes of the BLAKE3 digest of the canonical bytes.
     pub fn schema_hash(&self) -> u64 {
         let digest = blake3::hash(&self.canonical_bytes());
         let bytes = digest.as_bytes();

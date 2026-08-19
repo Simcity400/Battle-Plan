@@ -1,9 +1,9 @@
 //! d94 `pov_province_visibility_live` — the observing country's fog-of-war level
 //! for every province, as one complete engine byte vector per hour.
 //!
-//! Derived from `world_fold.rs:14374`-`:14435`
+//! Derived from `world_fold.rs:14356`-`:14417`
 //! (`fold_pov_province_visibility`, dispatched at `:4745`, its error arm at
-// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=14374-14435 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=297926f60222b7aed17702519e5bfcd03922d05ea60dd0a3557fc5ae4954c749
+// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=14356-14417 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=925254b1d4e04575b27ba6de31d4df1dbd5acefcc98808dbaf7717362f6cf9c3
 //! `:4917`-`:4925`, its hour reset at `world_fold.rs::reset_hour_state`) and from the payload codec
 //! the domain already owns, `compact_contract/src/pov_visibility.rs` (recipe
 //! authority 2). There is no `extractor/documents/domains/d94_*.md`, which is
@@ -52,7 +52,7 @@
 //! byte, there is no flag word anywhere in the grammar, and no read in the fold or
 //! the codec can leave one slot unfilled — the vector is copied whole or the
 //! payload is rejected whole. So `level` is always a plain value, a `0` is a real
-//! measured Zero (§3 keeps zero out of the three empty states: it is the level of
+//! measured Zero (record-state contract keeps zero out of the three empty states: it is the level of
 //! a province this country cannot see, which is a fact about the world and not a
 //! failure to capture it), and the schema declares no `.optional()`, no
 //! `.nullable()` and no `.unknown_capable()`. A province id at or above `count`
@@ -67,7 +67,7 @@
 //!   [`Roster`].
 //! - the **prior record of the same hour**, for the strictly-increasing
 //!   `capture_sequence` rule (`world_fold.rs::fold_pov_province_visibility`). See [`State`].
-//! - §6's `frame_tick`, which d94 has no derived field for and therefore ignores,
+//! - derived-field contract's `frame_tick`, which d94 has no derived field for and therefore ignores,
 //!   so every domain's mapper keeps one shape.
 //!
 //! **Every non-folding path retracts the hour.** `fold_pov_province_visibility`
@@ -88,7 +88,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 94;
 pub const PROVINCES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const POV_COUNTRY_ID: u32 = 1;
     pub const PROVINCE_ID: u32 = 2;
@@ -150,13 +150,13 @@ pub fn schema() -> Schema {
             collection_id: PROVINCES,
             // Full-replace each hour (`world_fold.rs::fold_pov_province_visibility`), but the key is a
             // stable identity that persists across hours — which is what a keyed
-            // set needs, and only a keyed set has a delta grammar (§7.3). This is
+            // set needs, and only a keyed set has a delta grammar (collection-shape contract). This is
             // the whole point of the port: the shipping arm re-sends 13,414 bytes
             // an hour for a table where a handful of slots move.
             shape: Shape::KeyedSet,
             fields: vec![
                 // Key component 0: the observing country. `ContentId` because a
-                // country tag is content-defined (§5) — a manifest must resolve
+                // country tag is content-defined (content-identity contract) — a manifest must resolve
                 // it for it to keep its meaning under another mod set, the
                 // deciding question for ContentId-vs-Unsigned. d20's `owner` and
                 // d63's `tag_db_id` are the same identity classed the same way.
@@ -261,7 +261,6 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     // not fit. Checking the tail's PRESENCE but not its VALUE would leave a
     // payload the recorder's own authority refuses and this restatement accepts,
     // which is exactly the drift the restatement exists to make impossible.
-    // (Codex review round 1, finding 2.)
     //
     // It sits HERE, between the length check and the `validate` mirror, because
     // that is where `decode` does it: the codec reads the hour word while
@@ -269,7 +268,6 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, &[u
     // three checks below, a payload with BOTH a zero sequence and an
     // out-of-range hour would report a different first reason here than the
     // codec reports, and this module's contract is that only which rejection is
-    // reported first may never differ. (Codex review round 2, 2a.)
     if hour_words == 1 {
         let at = HEADER_LEN + header.count as usize;
         let word = i64::from_le_bytes(payload[at..at + HOUR_LEN].try_into().expect("8 bytes"));
@@ -332,18 +330,18 @@ pub fn key_from_province_slot(
 /// indexed the vector. d94 has exactly one slot form, so length selects nothing
 /// and a wrong length is rejected.
 ///
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d94 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
-/// The key components are not carried in the record body (§3); they come from
+/// The key components are not carried in the record body (record-state contract); they come from
 /// [`key_from_province_slot`]. Nothing here can panic on any input.
 pub fn record_from_row(
     collection: &Collection,
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d94 has no derived field; §6's transform input is unused. Named rather than
+    // d94 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // The record is per collection, and this domain's single collection carries
@@ -669,11 +667,11 @@ mod tests {
             assert_eq!(
                 k.kind,
                 Kind::ContentId,
-                "field {}: a country tag and a province id are both content-defined (§5)",
+                "field {}: a country tag and a province id are both content-defined (content-identity contract)",
                 k.field_id
             );
             assert!(k.kind.legal_as_key());
-            // §7.4: a key member is concrete — never optional, nullable,
+            // key-encoding contract: a key member is concrete — never optional, nullable,
             // unknown-capable or derived.
             assert!(!k.optional && !k.nullable && !k.unknown_capable);
             assert!(k.derived.is_none());
@@ -719,7 +717,7 @@ mod tests {
     #[test]
     fn no_field_is_quantized_because_none_is_continuous() {
         // Recipe step 8's quantization test does not apply: quantization is
-        // declared on continuous fields only (§6, `schema.rs:228`), and d94 has
+        // declared on continuous fields only (derived-field contract, `schema.rs:228`), and d94 has
         // no continuous field at all — the payload is one unsigned byte per
         // province, emitted raw by the fold with no scale
         // (`compact_contract/src/pov_visibility.rs:65`). There is nothing to
@@ -737,7 +735,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; a fog-of-war level does
+        // derived-field contract derived fields are clock-linear integers; a fog-of-war level does
         // not change deterministically with the clock, so `frame_tick` never
         // enters a value — the mapper takes it and ignores it.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
@@ -753,7 +751,7 @@ mod tests {
 
     #[test]
     fn every_field_is_a_content_id_key_or_the_level() {
-        // Recipe's §13 sweep marker: "this domain has no ContentId" is a result,
+        // Recipe's codec-measurement contract sweep marker: "this domain has no ContentId" is a result,
         // not a silence — and so is the opposite. d94 has TWO, and both are KEY
         // components, which is the heavier retrofit class: key components sort
         // and delta-encode by raw value, so a manifest remap reorders keys and
@@ -792,7 +790,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
-        // The level of a province this country cannot see. §3 keeps zero out of
+        // The level of a province this country cannot see. record-state contract keeps zero out of
         // the three empty states, and it is by far the commonest level in the
         // capture (11,615,074 of 13,856,662 slots).
         let c = collection();
@@ -867,26 +865,8 @@ mod tests {
     /// This restatement must accept and reject exactly what the codec does,
     /// including the producer-hour tail — a restatement that drifts from the
     /// recorder is a harness that can be wrong with nothing failing.
-    ///
-    /// MUTATION RUN: drop the `hour_words` term from `expected` in
-    /// `split_payload`. OBSERVED: FAILED -- `assertion failed:
-    /// split_payload(&flag_without_tail).is_err()`.
-    ///
-    /// MUTATION RUN: slice the body as `&payload[HEADER_LEN..]` again.
-    /// OBSERVED: FAILED -- `assertion `left == right` failed: the hour word is
-    /// not a province byte / left: [0, 1, 2, 56, 58, 160, 3, 0, 0, 0, 0] /
-    /// right: [0, 1, 2]`.
-    ///
-    /// MUTATION RUN: check the hour tail's presence but not its value, i.e.
-    /// drop the `i32::try_from` refusal. OBSERVED: FAILED -- `hour word
-    /// 4294967296`. This is the case Codex review round 1 found: the codec
-    /// refuses that payload and, before the fix, this restatement accepted it.
-    ///
-    /// MUTATION RUN: move the hour check BELOW the capture-sequence check, so
-    /// the two rules are applied in a different order from the codec's.
-    /// OBSERVED: FAILED -- `the codec reports the hour first; this reported
-    /// "pov_province_visibility capture sequence is zero"`. (Codex review
-    /// round 2, 2a: the accepted set was already right; the precedence was not.)
+    /// The cases below pin trailer sizing, the body boundary, hour bounds, and
+    /// error precedence against the codec.
     #[test]
     fn split_payload_enforces_the_codecs_structural_rules() {
         // `PovVisibilitySnapshot::decode` + `::validate`, rule by rule

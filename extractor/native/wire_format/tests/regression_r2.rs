@@ -1,10 +1,6 @@
-//! Regression tests for the six defects the round-2 adversarial review found in
-//! the code written to fix round 1.
-//!
-//! Each is the reviewer's probe with its assertion inverted: the probe passed
-//! when the defect was real, so this passes only while the fix holds. They live
+//! Regression tests for encoder, decoder, and schema invariants. They live
 //! apart from `golden.rs` because they pin *behaviour*, not bytes — except where
-//! the defect was a byte, and then the byte is written out literally.
+//! an invariant is byte-level, in which case the byte is written out literally.
 
 use wire_format::body::{
     check_minimal, decode_delta, diff, key, KeyedState,
@@ -23,7 +19,7 @@ fn keyed(fields: Vec<Field>) -> Schema {
     }
 }
 
-/// §7.2: "A changed field whose new presence bit is 0 has its null, unknown and
+/// update-row contract: "A changed field whose new presence bit is 0 has its null, unknown and
 /// escape bits 0." Without the check, `became absent` had four encodings.
 #[test]
 fn state_bits_on_a_field_that_became_absent_are_rejected() {
@@ -45,7 +41,7 @@ fn state_bits_on_a_field_that_became_absent_are_rejected() {
     assert_eq!(v.values, vec![Value::Absent]);
 }
 
-/// §7.1: "so is a mask bit on a field whose value is re-emitted unchanged."
+/// delta-minimality contract: "so is a mask bit on a field whose value is re-emitted unchanged."
 #[test]
 fn a_mask_bit_re_emitting_the_prior_value_is_rejected() {
     let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)]);
@@ -78,7 +74,7 @@ fn a_persistent_nan_diffs_as_unchanged() {
     assert!(d.changed.is_empty(), "identical states must diff as unchanged");
     assert_eq!(check_minimal(c, &state, &state.clone(), &d), Ok(()));
 
-    // And a NaN with a different payload is the same value, because §0 says the
+    // And a NaN with a different payload is the same value, because canonical primitive contract says the
     // payload is not game state.
     let mut other = KeyedState::new();
     other.insert(
@@ -115,7 +111,7 @@ fn a_negative_zero_transition_is_a_change() {
     assert_eq!(check_minimal(c, &prior, &next, &d), Ok(()));
 }
 
-/// §6: "always encoded as an absolute zigzag, whatever its kind and whatever the
+/// derived-field contract: "always encoded as an absolute zigzag, whatever its kind and whatever the
 /// frame." The update path had it; baselines and inserts did not.
 #[test]
 fn a_derived_field_is_absolute_zigzag_in_a_baseline_too() {
@@ -126,7 +122,7 @@ fn a_derived_field_is_absolute_zigzag_in_a_baseline_too() {
     let c = &s.collections[0];
 
     // A derived field's STORED value is Signed whatever the live kind, because
-    // §6's transform can carry an otherwise unsigned quantity negative.
+    // derived-field contract's transform can carry an otherwise unsigned quantity negative.
     let mut bytes = Vec::new();
     Record::new(vec![Value::Signed(1)]).encode(c, &mut bytes).unwrap();
     assert_eq!(bytes, vec![0x02], "zigzag(1) is 2; the plain varint would be 1");
@@ -147,7 +143,7 @@ fn a_derived_field_is_absolute_zigzag_in_a_baseline_too() {
     assert_eq!(Record::decode(c, &neg, 0).unwrap().0.values, vec![Value::Signed(-5)]);
 }
 
-/// §7.1 constrains both delta lists on read as well as on write: the decoder
+/// delta-minimality contract constrains both delta lists on read as well as on write: the decoder
 /// holds the same reconstructed prior state the writer did, so every rule it can
 /// decide, it must.
 #[test]
@@ -212,8 +208,7 @@ fn the_changed_row_path_checks_key_arity_and_order() {
 }
 
 /// The escape bit is only meaningful on a quantized field, and only when that
-/// field carries a value — checked here on the update path, where round 1 fixed
-/// it on the record path.
+/// field carries a value. This checks the update path as well as the record path.
 #[test]
 fn an_escape_on_a_valueless_update_field_is_rejected() {
     let s = keyed(vec![
@@ -230,7 +225,7 @@ fn an_escape_on_a_valueless_update_field_is_rejected() {
     );
 }
 
-// ---- Round 2b: the second reviewer's findings, one regression test each. ----
+// ---- Additional malformed-input regressions. ----
 
 /// Minimality is a statement about the **stored** value. Under `fixed(2)` a
 /// field moving 0.33 → 0.331 does not change the bytes, so no update exists to
@@ -313,7 +308,7 @@ fn a_prior_state_list_of_the_wrong_length_is_rejected() {
     );
 }
 
-/// §2 orders baseline rows by the full key tuple, and the baseline path had
+/// canonical ordering contract orders baseline rows by the full key tuple, and the baseline path had
 /// neither the read-side order check nor the write-side arity check the delta
 /// path grew.
 #[test]
@@ -364,7 +359,7 @@ fn a_rejected_frame_does_not_advance_the_writer() {
     );
 }
 
-/// §1's invariants are enforced on read as well as on write: a forged block is
+/// frame contract's invariants are enforced on read as well as on write: a forged block is
 /// one `BlockWriter` could never have produced.
 #[test]
 fn read_block_rejects_a_forged_block() {
@@ -378,7 +373,7 @@ fn read_block_rejects_a_forged_block() {
     bytes.push(0xAA);
     assert_eq!(
         read_block(&bytes, 1),
-        Err(WireError::Corrupt("block violates a §1 invariant"))
+        Err(WireError::Corrupt("block violates a frame contract invariant"))
     );
 
     // Off-grid: stride 8, a baseline at tick 0 then a delta at tick 3.
@@ -392,7 +387,7 @@ fn read_block_rejects_a_forged_block() {
     bytes.push(0xBB);
     assert_eq!(
         read_block(&bytes, 8),
-        Err(WireError::Corrupt("block violates a §1 invariant"))
+        Err(WireError::Corrupt("block violates a frame contract invariant"))
     );
 }
 

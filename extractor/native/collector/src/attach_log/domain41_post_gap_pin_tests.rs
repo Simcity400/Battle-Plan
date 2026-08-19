@@ -7,8 +7,8 @@
 //! own bracket was rejected. That takes `baseline_seeded` with it, and the next
 //! accepted read therefore emits a whole 1.46 MB KEYFRAME instead of a patch.
 //!
-//! Measured by replaying t26's real D41 sequence through the repaired emit path
-//! (`domain41_t26_replay_tests`, `DELTA_WIRE_DESIGN.md` §6.2): 291 records
+//! Measured by replaying t26's real D41 sequence through the repaired emit path:
+//! 291 records
 //! become 92 keyframes and 199 patches, and **91 of those keyframes — carrying
 //! 133,955,040 of the 134,126,662 remaining payload bytes — follow an own gap
 //! since d41's previous data record**, which is the candidate set this pin
@@ -19,7 +19,7 @@
 //!
 //! # Why this is a size lever and not a correctness repair
 //!
-//! Unlike d29 (§7.1), d41 leaks no identity across a gap today.
+//! Unlike d29, d41 leaks no identity across a gap today.
 //! `world_fold::fold_special_projects` branches on `COMPACT_STATUS_DELTA_DATA`
 //! itself instead of calling `replace_or_sparse_after_first`: its non-delta arm
 //! starts every section from an empty map and overwrites `self.special_projects`

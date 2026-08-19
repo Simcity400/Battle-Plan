@@ -137,7 +137,7 @@ fn cmd_pack(args: &[String]) -> i32 {
             return 1;
         }
     };
-    // atomic finalize: write to .tmp then rename (spec §6)
+    // Publish atomically by writing the temporary container before rename.
     if let Err(e) = publish_verified_container(&out, &container) {
         eprintln!("pack: durable publication failed: {e}");
         return 1;

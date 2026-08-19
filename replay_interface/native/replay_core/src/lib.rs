@@ -5,7 +5,8 @@
 //! The only place recording bytes enter the replay layer. Everything
 //! downstream (replay_app, tools) consumes [`WorldTimeline`] /
 //! [`WorldFrame`] and never touches container or schema internals.
-//! See `replay_interface/documents/REPLAY_ARCHITECTURE.md`.
+//! Durable product boundaries are documented under the `PROJECT.md` heading
+//! "Replay".
 
 pub mod agency_upgrade_controller;
 pub mod army_battleplans;

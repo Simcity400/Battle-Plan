@@ -1600,9 +1600,7 @@ pub fn normalize_game_relative_path(path: &str) -> Result<String, String> {
 /// used to name a file.
 ///
 /// From `sanitizePlatformIndependentPath` (`0x1424e3ff0`) in `hoi4.exe
-/// 1.19.2.0.a729` / `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`
-/// (full working:
-/// `extractor/native/runs/lf_vfs_consolidate/engine_path_namespace_from_a729.md`):
+/// 1.19.2.0.a729` / `870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`:
 ///
 /// * leading `/` runs are stripped;
 /// * `:` or `\` ANYWHERE fails with `PHYSFS_ERR_BAD_FILENAME` (error `0x17`) --

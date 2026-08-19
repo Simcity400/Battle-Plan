@@ -39,7 +39,7 @@ and absent from the save. Facility *health* is likewise absent here, but is a
 ``damage_building`` target of prototype rewards, so a damaged facility's health
 would live in the STATE/province building-damage data (parse_state_detail
 territory), not in this section. The scientist *reassignment* cooldown IS stored
-(``facilities[].unassigned_scientist``). See ``re_scratch/WIRE_projects.md``.
+(``facilities[].unassigned_scientist``).
 
 stdlib only. Reuses the shared tokenizer via ``deep_common``.
 """

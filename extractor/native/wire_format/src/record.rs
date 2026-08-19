@@ -1,7 +1,7 @@
-//! Record encode and decode, per `WIRE_FORMAT.md` §3.
+//! Record encode and decode.
 //!
 //! Four schema-conditional bitmaps, then a bit-packed region, then value bytes.
-//! Key fields never appear here — a keyed row is its key (§7.4) followed by a
+//! Key fields never appear here — a keyed row is its key (key-encoding contract) followed by a
 //! record of the non-key fields only.
 
 use crate::bitmap::Bitmap;
@@ -22,7 +22,7 @@ fn qualifies_escape(f: &Field) -> bool {
     f.quant.is_quantized()
 }
 
-/// §3: a conditional bitmap's width counts the qualifying fields **present in
+/// record-state contract: a conditional bitmap's width counts the qualifying fields **present in
 /// this row** — every required qualifying field, which has no presence bit and is
 /// always present, plus every optional qualifying field the presence bitmap marks
 /// present. Excluding required fields would leave a required nullable field with
@@ -65,7 +65,7 @@ impl Record {
     }
 
     /// Whether two records are the same **as stored** under `collection` — the
-    /// equality §7.1 means by "differs". See `value::stored_eq`: for anything
+    /// equality delta-minimality contract means by "differs". See `value::stored_eq`: for anything
     /// unquantized this is `==`, and for a quantized field it compares what the
     /// bytes will actually hold.
     ///
@@ -83,7 +83,7 @@ impl Record {
             .all(|(i, f)| crate::value::stored_eq(f, self.values[i], other.values[i]))
     }
 
-    /// §3 record validity, independent of layout.
+    /// record-state contract record validity, independent of layout.
     ///
     /// This is shared rather than inlined because the column-major arm needs the
     /// identical rules: when it carried its own copy it silently accepted a
@@ -110,7 +110,7 @@ impl Record {
                     "unknown on a field the schema does not declare unknown-capable",
                 ));
             }
-            // §4: "a value the writer cannot map into 0..n-1 is a failed sample
+            // schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample
             // and a typed gap, never a coerced code." The check has to be here
             // and not only in the value encoder, because an update touches
             // nothing but its changed fields — an out-of-range code sitting on
@@ -179,7 +179,7 @@ impl Record {
             map.encode(out);
         }
 
-        // §3 validity: at most one of null and unknown, escape only with a value.
+        // record-state contract validity: at most one of null and unknown, escape only with a value.
         for (field, value) in fields.iter().zip(&self.values) {
             if value.is_null() && value.is_unknown() {
                 return Err(WireError::Corrupt("field sets both null and unknown"));
@@ -269,7 +269,7 @@ impl Record {
                 return Err(WireError::Corrupt("field sets both null and unknown"));
             }
             if is_null || is_unknown {
-                // §3: the escape bit is legal only alongside a value. A set bit
+                // record-state contract: the escape bit is legal only alongside a value. A set bit
                 // here is a second encoding of null/unknown, so the frame is
                 // corrupt rather than leniently accepted.
                 let escaped = index_in(&escape_fields, field.field_id)
@@ -349,7 +349,7 @@ pub(crate) fn encode_plain_value(
     bits: &mut Vec<bool>,
     tail: &mut Vec<u8>,
 ) -> Result<()> {
-    // §6: a derived field's stored value "is always encoded as an absolute
+    // derived-field contract: a derived field's stored value "is always encoded as an absolute
     // zigzag, whatever its kind and whatever the frame". Baselines and inserts
     // reach this function too, so the rule belongs here and not only in the
     // update path — otherwise the same field encodes two different ways
@@ -364,7 +364,7 @@ pub(crate) fn encode_plain_value(
     match (field.kind, value) {
         (Kind::Boolean, Value::Bool(b)) => bits.push(b),
         (Kind::Enum, Value::Enum(code)) => {
-            // §4: "a value the writer cannot map into 0..n-1 is a failed sample,
+            // schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample,
             // never a coerced code." The check lives here rather than only in
             // `Record::encode` because the update path writes values through this
             // function too, and there the truncation to the field's bit width was
@@ -464,7 +464,7 @@ pub(crate) fn decode_plain_value(
                 let (raw, next) = read_zigzag(buf, pos)?;
                 let x = dequantize(raw, field.quant);
                 // The dual of the check below, and needed for the same reason.
-                // §6's fourth condition forces an unstable integer to escape, so
+                // derived-field contract's fourth condition forces an unstable integer to escape, so
                 // no legal writer emits one unescaped — and two unstable integers
                 // can share a reconstruction, which would give one value two
                 // reader-accepted encodings.
@@ -481,12 +481,12 @@ pub(crate) fn decode_plain_value(
                 }
                 let bits = u64::from_le_bytes(buf[pos..pos + 8].try_into().unwrap());
                 let x = f64::from_bits(bits);
-                // §0: NaN is normalised, so a non-canonical payload is a second
+                // canonical primitive contract: NaN is normalised, so a non-canonical payload is a second
                 // encoding of the same value.
                 if x.is_nan() && bits != crate::value::CANONICAL_NAN_BITS {
                     return Err(WireError::Corrupt("NaN payload is not the canonical pattern"));
                 }
-                // §6: the escape fires on exactly the listed conditions. A value
+                // derived-field contract: the escape fires on exactly the listed conditions. A value
                 // escaped that did not need to be is likewise a second encoding.
                 if escaped && field.quant.is_quantized() && !escapes(x, field.quant) {
                     return Err(WireError::Corrupt(

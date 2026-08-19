@@ -9,16 +9,9 @@
 //! gated it, and `wire_format::d68::{split_payload, parse_update}` ported it.
 //! The three readers were line-for-line copies of each other, each with its own
 //! spelling of the same eight presence flags, the same two block lengths, the
-//! same 128-byte token ceiling and the same tag ceiling — twenty layout facts
-//! independently restated (`runs/ko_domain_grammars/survey.md`).
-//!
-//! That is the shape that failed for d13 on 2026-08-14: lane JO added a tail at
-//! the producer and one reader, two other readers never learned it, and one of
-//! them refused 59 of 59 live records of the domain. Nothing in d68 has gone
-//! stale yet — the cross-site value check found no disagreement
-//! (`runs/ko_domain_grammars/value_disagreement.txt`) — and the point of
-//! converting it before it does is that a NINTH presence field is now a compile
-//! error at all four sites instead of a diff four people have to remember.
+//! same 128-byte token ceiling and the same tag ceiling. Centralizing the
+//! grammar makes a new presence field a compile-time change at every consumer
+//! instead of a manually synchronized transcription.
 //!
 //! # What is grammar here, and what is not
 //!

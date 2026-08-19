@@ -1,17 +1,17 @@
 //! d83 `nuke_stockpile_live` — per-country nuclear stockpile containers.
 //!
-//! Derived from `world_fold.rs:15576`-`:15645`
+//! Derived from `world_fold.rs:15558`-`:15627`
 //! (`fold_nuke_stockpile`) and the payload codec the fold calls, which for this
-// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=15576-15645 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=5b2bcc1989d9cc18812dc87b1335f68ef13656aa096198315f4b95925a5522dd
+// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=15558-15627 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=fab54fdd06851a19c22a1ca3340f755b2d828e36ee7b6602cefa011e821de06e
 //! domain lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/nuke_stockpile_live/src/lib.rs` (`encode_payload` at
 //! `:293`, `decode_payload` at `:328`, `validate_frame` at `:270`,
 //! `validate_snapshot` at `:243`) over the exact-a729 leaf
 //! `lanes/nuke_stockpile_live/nuke_stockpile_exact.rs` (`NUKE_TYPE_COUNT` at
 //! `:19`, `built_count_from_raw` at `:99`-`:106`).
-//! `extractor/documents/domains/d83_nuke_stockpile_live.md` states the row shape
-//! this module mirrors — `tag_db_id -> {container_capacity, [{nuke_type_raw,
-//! amount_raw, nukes_ready}]}` — and the oracle used in the tests below
+//! `domain-83::Overview` in `extractor/documents/technical_evidence.json`
+//! states the row shape this module mirrors — `tag_db_id ->
+//! {container_capacity, [{nuke_type_raw, amount_raw, nukes_ready}]}` — and the oracle used in the tests below
 //! (`amount_raw = 8000, nukes_ready = 0` projects **zero** built nukes).
 //!
 //! **Payload grammar** (`lib.rs:293`-`:326`, mirrored by `decode_payload`):
@@ -76,7 +76,7 @@
 //! **The four 32-byte header hashes are domain-level authority evidence and are
 //! not on the wire.** Four reasons, each sufficient:
 //! 1. None of them varies with a country or an entry, so there is no collection
-//!    whose rows they could be fields of. §3's record grammar is per row; a
+//!    whose rows they could be fields of. record-state contract's record grammar is per row; a
 //!    frame-level scalar has no slot, exactly as d63's `elapsed_wall_ms` and
 //!    d62's `total_settings_nodes` have none.
 //! 2. All four are compile-time constants on **every** payload this schema can
@@ -89,8 +89,8 @@
 //!    Corroborated empirically — across all 903 d83 DATA records of
 //!    `runs/batch1/deepwar_t1/collector_stream.bin` the receipt blob is the
 //!    producer/consumer constant in every one.
-//! 3. §4 has no kind for a 32-byte blob (`schema.rs:12`-`:20`), so carrying one
-//!    is a `WIRE_FORMAT.md` §13 change, not a schema-side choice.
+//! 3. schema-kind contract has no kind for a 32-byte blob (`schema.rs:12`-`:20`), so carrying one
+//!    requires a producer-side format change, not a schema-side choice.
 //! 4. The invariant the omission rests on is **enforced**, not assumed:
 //!    [`split_payload`] checks all four exactly as the codec does, so a payload
 //!    from another executable or another authority artifact is refused here too.
@@ -110,8 +110,8 @@
 //! `COMPACT_STATUS_SOURCE_UNAVAILABLE` frame with **no snapshot at all**
 //! (`attach_log.rs:32117`-`:32133`), which the fold treats as a failed
 //! domain-hour that folds nothing (`world_fold.rs::fold_nuke_stockpile`). That is an
-//! hour with no d83 state, not a row with an empty field — §3's four states are
-//! per field. Declaring a capability no mapper can emit would cost real bits (§3
+//! hour with no d83 state, not a row with an empty field — record-state contract's four states are
+//! per field. Declaring a capability no mapper can emit would cost real bits (record-state contract
 //! sizes the null and unknown bitmaps by the fields that declare them) and
 //! assert a state that cannot occur.
 //!
@@ -126,19 +126,19 @@
 //! measured rather than implied. It is `2` in all 396 417 country rows of the
 //! real capture, but empirically constant is not invariantly constant, and
 //! dropping a measured value because one campaign never moved it is the fidelity
-//! loss §3 exists to prevent.
+//! loss record-state contract exists to prevent.
 //!
 //! **`nuke_type_raw` is a key component, not a droppable derived word.** The
 //! codec enforces `nuke_type_raw == index` (`lib.rs:258`-`:265`), which makes it
 //! a function of the entry's *position in the payload array* — and a keyed set
 //! has no positions. It is exactly the discriminator that keeps a country's two
-//! entries apart, so dropping it would collide the two rows onto one key. §5 puts
+//! entries apart, so dropping it would collide the two rows onto one key. content-identity contract puts
 //! it at `Unsigned`, not `ContentId`: `NUKE_TYPE_COUNT` is an engine constant of
 //! pinned a729 (`nuke_stockpile_exact.rs:19`), no content manifest resolves an
-//! ordinal the reader hard-rejects when it is not its own index, and §7.4 admits
+//! ordinal the reader hard-rejects when it is not its own index, and key-encoding contract admits
 //! only `Unsigned`/`Signed`/`ContentId` as key kinds anyway (`schema.rs:29`).
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: a stockpile moves when the country builds or spends a warhead, not on
 //! a clock-linear rule. The mapper still takes `frame_tick` so every domain's
 //! boundary has one shape.
@@ -159,7 +159,7 @@ pub const COUNTRIES_INDEX: usize = 0;
 pub const STOCKPILE_ENTRIES_INDEX: usize = 1;
 pub const COLLECTION_COUNT: usize = 2;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// *different* field. Ids are unique per collection, and `TAG_DB_ID` names the
 /// same concept in both collections, so it is deliberately the same id.
 pub mod field {
@@ -259,7 +259,7 @@ pub fn schema() -> Schema {
     // `countries`: the stockpile-container roster. The key is the country's
     // `tag_db_id` (`world_fold.rs::fold_nuke_stockpile`), the same identity d18 keys its roster
     // by and the one d63 keys its own rows by. `ContentId` because a country tag
-    // is content-defined (§5) — a manifest must resolve it for it to keep its
+    // is content-defined (content-identity contract) — a manifest must resolve it for it to keep its
     // meaning under another mod set, which is the deciding question for
     // ContentId-vs-Unsigned. d20 classes its `owner` country the same way, and
     // d62/d63 class `tag_db_id` the same way.
@@ -320,7 +320,7 @@ pub fn schema() -> Schema {
         // clears it on failure (`world_fold.rs::fold_nuke_stockpile`) — but
         // `tag_db_id` and `(tag_db_id, nuke_type)` are stable identities that
         // persist across hours, which is what a keyed set needs, and only a keyed
-        // set has a delta grammar (§7.3).
+        // set has a delta grammar (collection-shape contract).
         collections: vec![countries, stockpile_entries],
         event_part: None,
     }
@@ -647,7 +647,7 @@ pub fn key_from_stockpile_entry_row(
 /// onto its stored Record. `row` is the raw 12-byte country row (the caller has
 /// already consumed the payload header via [`split_payload`] and the block via
 /// [`split_country_block`]); d83 has exactly one country row form, so length
-/// selects nothing and a wrong length is rejected. `frame_tick` is §6's
+/// selects nothing and a wrong length is rejected. `frame_tick` is derived-field contract's
 /// derived-field input (stored = v + c * (frame_tick >> u)); d83 declares no
 /// derived field, so it is taken and ignored — every domain's mapper has the
 /// same shape.
@@ -980,7 +980,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(c.fields.len(), 2, "1 key + container_capacity");
@@ -1015,7 +1015,7 @@ mod tests {
         // unconditionally and range-rejected, and a failed read produces a
         // rowless unavailable FRAME rather than a row with a hole
         // (`attach_log.rs:32117`-`:32133`). Absent, Null and Unknown are
-        // therefore all unreachable, and §3 sizes the presence/null/unknown
+        // therefore all unreachable, and record-state contract sizes the presence/null/unknown
         // bitmaps by the fields that declare them — so declaring one would cost
         // bytes to encode a state that cannot occur.
         for c in [countries(), entries()] {
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; a stockpile moves when a
+        // derived-field contract derived fields are clock-linear integers; a stockpile moves when a
         // warhead is built or spent, so `frame_tick` never enters a value.
         for c in [countries(), entries()] {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -1151,7 +1151,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // The whole measured capture is this row: capacity 2, both entries zero.
-        // §3 keeps zero out of the three empty states, and there is no state here
+        // record-state contract keeps zero out of the three empty states, and there is no state here
         // for it to be collapsed into.
         let c = countries();
         let e = entries();

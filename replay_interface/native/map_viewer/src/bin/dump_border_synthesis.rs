@@ -363,7 +363,7 @@ fn plot_thick(
 /// CLASSES visually separable so the synthesis (which edge got which rank) can be
 /// eyeballed. They are explicitly a category legend, **NOT vanilla appearance**:
 /// the authentic per-class colours are near-black/navy/brown (decoded in
-/// `map_viewer::border_texture_law`; see BORDER_LAW.md), which would be
+/// `map_viewer::border_texture_law`), which would be
 /// indistinguishable in a structural dump. Because the user-facing appearance
 /// mandate forbids implying vanilla draws a red/hot country border, the country
 /// legend hue is a neutral teal here rather than the old `[255,83,73]` red — no

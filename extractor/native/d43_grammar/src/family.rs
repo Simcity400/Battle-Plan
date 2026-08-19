@@ -919,10 +919,8 @@ pub enum RowStep {
 
 /// The pull cursor over a trailer's rows.
 ///
-/// A site never adds a row width to an offset: it asks this cursor. That is
-/// the property Codex asked for when it wanted the parent cursor moved into a
-/// child (design thread `01a00772-ce5c-7f53-892d-887c3711ca13`, section B) —
-/// no site owns row arithmetic — obtained without threading the outer cursor
+/// A site never adds a row width to an offset: it asks this cursor. No site owns
+/// row arithmetic. This is obtained without threading the outer cursor
 /// through every family, which would have rewritten the four sites' loop shapes
 /// and with them the ORDER their diagnostics come out in.
 ///

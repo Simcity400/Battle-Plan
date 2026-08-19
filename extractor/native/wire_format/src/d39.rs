@@ -2,16 +2,16 @@
 //!
 //! **The grammar lives in [`crate::variant_upgrades`]**, which d39 shares
 //! byte-for-byte with d40 `stockpile_variant_upgrades`. The shared fold is
-//! `world_fold.rs:21072`-`:21153`; dispatch lines 4714 and 4715 call it for both
+//! `world_fold.rs:21048`-`:21129`; dispatch lines 4714 and 4715 call it for both
 //! domains, and the
 //! only divergences inside it are the accumulator it writes (`world_fold.rs::fold_variant_upgrades`)
 //! and the name in its error strings (`world_fold.rs::fold_variant_upgrades`). Read that module for
-// @world-fold-authority domain=39 functions=fold_variant_upgrades lines=21072-21153 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781 closure=15ca0b14afae12e73c56bcbf39cad4bf24bead410f50c775f7c95db65bbdc208
+// @world-fold-authority domain=39 functions=fold_variant_upgrades lines=21048-21129 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781 closure=2ef2ddaf40bbc48559fe97cd71414e07b981f4e9e0425bdfce814f876398e713
 //! the payload tables, the four-state decision (none: `flags` must be exactly
 //! zero, `world_fold.rs::fold_variant_upgrades`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.
 //!
-//! This module is the **domain identity**: §11 assigns field ids per domain, so
+//! This module is the **domain identity**: schema-identity contract assigns field ids per domain, so
 //! each domain needs its own `Schema` with its own `domain` value, and each needs
 //! the recipe's fixed boundary (`record_from_*_row`, `key_from_*_row`,
 //! `split_payload`, `fold_payload`) reachable at its own name. Every function

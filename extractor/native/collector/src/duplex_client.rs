@@ -1,7 +1,6 @@
 //! Collector-side H4CT duplex-control CLIENT (injected DLL endpoint).
 //!
-//! This is the injected-DLL counterpart of the recorder's control server
-//! described in `extractor/documents/DUPLEX_CONTROL_TRANSPORT.md`. It opens the
+//! This is the injected-DLL counterpart of the recorder's control server. It opens the
 //! per-attach control pipe, speaks FIRST by sending the 72-byte capabilities
 //! `CollectorHello` (the recorder-side admission,
 //! `DuplexWorkerSession::receive_collector_hello`, begins by waiting for it; no
@@ -23,8 +22,8 @@
 //!
 //! # Deadlines
 //!
-//! The proof-of-concept [`ControlChannel`] is deadline-free. Per the design (§4
-//! "Timeouts and liveness", §5), every production send/receive must carry an
+//! The proof-of-concept [`ControlChannel`] is deadline-free. Every production
+//! send/receive must carry an
 //! explicit absolute monotonic deadline. This module supplies that on top of the
 //! shared codec: [`DeadlineControlIo`] is the deadline-bearing backend, and
 //! [`DeadlineBridge`] adapts it to the shared `ControlIo` by injecting the
@@ -281,7 +280,7 @@ pub trait MonotonicClock {
 }
 
 /// One checked absolute deadline. Computed once from a nonzero budget and used
-/// without reset or extension across the operations it governs (§4).
+/// without reset or extension across the operations it governs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MonotonicDeadline(MonotonicInstant);
 
@@ -323,7 +322,7 @@ impl MonotonicDeadline {
     /// rounded UP to a whole millisecond and clamped to `1..=MAXDWORD-1`. `None`
     /// once no positive budget remains — the caller must then not call
     /// `WaitNamedPipeW` at all, because `0` means "server default" and `MAXDWORD`
-    /// means "wait forever" (§5).
+    /// means "wait forever".
     pub fn wait_named_pipe_timeout_ms(&self, now: MonotonicInstant) -> Option<u32> {
         if now >= self.0 {
             return None;
@@ -458,7 +457,7 @@ impl<T: DeadlineControlIo> ControlIo for DeadlineBridge<T> {
 /// injected instance the same way it hands over the pipe token — no
 /// `RecorderHello` frame ever carries it). Exact byte equality of the resulting
 /// hello with the recorder's expectation is what proves the connected injected
-/// instance answered (§3).
+/// instance answered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CollectorIdentity {
     // PRIVATE fields: a `CollectorIdentity` can ONLY be built through
@@ -496,7 +495,7 @@ impl CollectorIdentity {
 }
 
 /// Nonzero, versioned product-policy durations. The handshake budget is the one
-/// 30-second initial-handshake budget (§4); heartbeat and first-frame budgets
+/// 30-second initial-handshake budget; heartbeat and first-frame budgets
 /// are separate explicit policies that never reset or extend the handshake or
 /// each other. The five-minute first-frame window matches the recorder's
 /// Continue-save world-admission deadline.
@@ -523,7 +522,7 @@ impl Default for DuplexClientPolicy {
     }
 }
 
-/// The collector's reported production state for `HeartbeatProof.state` (§3).
+/// The collector's reported production state for `HeartbeatProof.state`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProductionState {
     WaitingForWorld,
@@ -559,7 +558,7 @@ pub enum ClientPhase {
     AwaitingNewHeaderAck,
     /// Cleanly stopped (graceful stop by request or peer close).
     Stopped,
-    /// Terminally failed/poisoned. No reconnect, no reinjection (§4).
+    /// Terminally failed/poisoned. No reconnect, no reinjection.
     Failed,
 }
 
@@ -2133,8 +2132,7 @@ pub trait PipeConnector {
     fn discard(&mut self, handle: Self::Handle);
 }
 
-/// Drive the bounded client open loop (§5 "Each client open runs its local
-/// `CreateFileW`/`WaitNamedPipeW` retry loop"). Every `CreateFileW`,
+/// Drive the bounded client `CreateFileW`/`WaitNamedPipeW` retry loop. Every `CreateFileW`,
 /// `WaitNamedPipeW`, and retry consumes the one unchanged `deadline`; a handle
 /// first observed at/after it is discarded and never published.
 ///
@@ -2197,8 +2195,7 @@ fn open_control_pipe_inner<P: PipeConnector, C: MonotonicClock>(
     }
 }
 
-/// The client control-pipe name for one attach (§1). The example in the design
-/// is components, not a literal path; `token` is the per-attempt CSPRNG token
+/// The client control-pipe name for one attach. `token` is the per-attempt CSPRNG token
 /// delivered in the collector's control block (same channel as the H4CR data
 /// pipe token).
 pub fn control_pipe_name(pid: u32, token: &str) -> String {
@@ -2263,7 +2260,7 @@ const WORKER_POLL: Duration = Duration::from_millis(1);
 
 /// Run `work` on a dedicated worker thread and wait for it only until
 /// `join_deadline`. This is the isolated-worker + finite-wait +
-/// zero-time-join-or-quarantine contract (§1, §5): the driver never blocks past
+/// zero-time-join-or-quarantine contract: the driver never blocks past
 /// the deadline, never calls `TerminateThread`, and transfers a still-running
 /// worker to terminal quarantine rather than waiting again.
 ///
@@ -2327,8 +2324,8 @@ where
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
 mod win32 {
-    //! Real named-pipe connector and overlapped control I/O. Per the design's
-    //! residual-risk section these Win32 behaviors (DACL, overlapped
+    //! Real named-pipe connector and overlapped control I/O. These Win32
+    //! behaviors (DACL, overlapped
     //! cancellation, weaker-PC/AV environments) cannot be proven by offline fake
     //! tests; they are validated live and remain dormant behind the activation
     //! freeze. The bounded retry, ms-clamp, deadline, and state-machine logic

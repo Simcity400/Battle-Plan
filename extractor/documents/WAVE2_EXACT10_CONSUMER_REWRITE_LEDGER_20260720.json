@@ -366,7 +366,7 @@
       ]
     },
     {
-      "consumer_path": "extractor/documents/dossiers/A30/GH04.md",
+      "consumer_path": "extractor/documents/technical_evidence.json#technical-gh04",
       "consumer_sha256_at_audit": "fe1fd443c695997c3ff1ad27373b302b05eee5830531fe5d8cdb8ed1e098773e",
       "disposition": "pinned",
       "reason": "The GH04 exact-ten topology body is pinned and semantically integrated as INGR v3 per-state strength. Promotion remains pinned pending an authenticated same-frame runtime fixture.",
@@ -636,7 +636,7 @@
       ]
     },
     {
-      "consumer_path": "extractor/documents/dossiers/D81_EXACT_RAIL_REPLAY_STATE.md",
+      "consumer_path": "extractor/documents/technical_evidence.json#technical-d81-exact-rail-replay-state",
       "consumer_sha256_at_audit": "197be73f9c53e9063630561d3ef8a9aba5d65f614cc4ce345135814ac76d0cef",
       "disposition": "pinned",
       "reason": "Schema-v2 encoder/fold/replay admission is enabled and receipt-pinned, while live capture remains v1 because the authenticated double-read reader is still absent.",
@@ -895,7 +895,7 @@
       ]
     },
     {
-      "consumer_path": "extractor/documents/dossiers/X4_PRODUCTION_LEGACY_RESIDUAL_CLOSEOUT_20260719.md",
+      "consumer_path": "extractor/documents/technical_evidence.json#technical-x4-production-legacy-residual-closeout-20260719",
       "consumer_sha256_at_audit": "c1c394b4125471963f61fd86b74c571c2e4e177996f7562f58e518e886abefb1",
       "disposition": "enabled",
       "reason": "The native extractor/replay fields are already wired and need no human input; exact-ten receipts now replace discovery-only provenance.",
@@ -1279,7 +1279,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/native/lanes/focus_research_decisions_depth_live/A2_A12_RE_REPORT.md",
       "consumer_sha256_at_audit": "e949bd7753dd4719091f333351d743d5a2803d2f5919dcd9ee850e48dda07296",
       "disposition": "enabled",
       "reason": "The A2 pause, A12 cooldown, and targeted-decision payload union are documented production-ready; exact-ten receipts replace only their discovery provenance.",
@@ -1465,7 +1464,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/native/lanes/naval_combat_live/A8_A9_B6_CLOSEOUT.md",
       "consumer_sha256_at_audit": "6eb8b82603ddaac9c01469f05100ac6d578fda9e7a50a13c4f6f18aa89937490",
       "disposition": "deliberately_still_false",
       "reason": "Exact-ten evidence is pinned, but D56 receiver/base semantics and route-linked terminal convoy attribution remain unavailable rather than guessed.",
@@ -2321,7 +2319,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/native/lanes/occupation_resistance_compliance_live/GARRISON_RESIDUAL_ANALYSIS.md",
       "consumer_sha256_at_audit": "6b661b7bf623a53a0eb382e0d7d6accd4a9fa245136b70619f6ed6d4a70c90fe",
       "disposition": "enabled",
       "reason": "The three production per-state garrison scalars are closed and wired; the isolated serializer decompile failure is retained only as negative retry evidence.",
@@ -2753,7 +2750,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/native/project_progress_live_lane/SPECIAL_PROJECT_LIFECYCLE_REWARD_RE_20260719.md",
       "consumer_sha256_at_audit": "2400a726d1a7f6360d78745ef8c394fda17abfdc0b0a6f13edfc7b6f6143beca",
       "disposition": "enabled",
       "reason": "The exact-ten promotion manifest is pinned and the lifecycle/reward carrier is enabled without a remaining human gate.",
@@ -2848,7 +2844,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/re_evidence/A6_A7_SUPPLY_CONVOY/STATIC_CLOSEOUT.md",
       "consumer_sha256_at_audit": "c30ada5e369945df62c49fd0fe54d1cc41d634779723df841ad608cc556a82ed",
       "disposition": "deliberately_still_false",
       "reason": "The static owner/active join is pinned, while exact terminal route attribution still requires the pre-collapse controlled acquisition.",
@@ -2896,7 +2891,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/re_evidence/A6_A7_SUPPLY_CONVOY/TERMINAL_ROUTE_ATTRIBUTION_CLOSEOUT.md",
       "consumer_sha256_at_audit": "968306f39853a110b563c713a0f1b386db0767f31344c2090531da4e09a7b0ec",
       "disposition": "deliberately_still_false",
       "reason": "Every named static function/data root is now exact-ten authority; the missing runtime route-manager join remains a separate live evidence gate.",
@@ -3121,7 +3115,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/re_evidence/SNOW_MUD_PREUPLOAD_SEAM/README.md",
       "consumer_sha256_at_audit": "400266f052532a5607cfeb3154852ceec885cd6262ff3bee4840105e0aa62ebe",
       "disposition": "deliberately_still_false",
       "reason": "The static H/H2 workflow is complete, but promotion_state remains false until the two required live capture/replay receipt pairs exist.",
@@ -3247,7 +3240,6 @@
       ]
     },
     {
-      "consumer_path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md",
       "consumer_sha256_at_audit": "a536c2417894e333b4223b942e6a9b865f418581761827e051b7aeff90b0ee8a",
       "disposition": "deliberately_still_false",
       "reason": "Implemented terminal/result fields retain authority, while current losses and width stay unavailable with both activation constants false.",
@@ -3471,7 +3463,6 @@
       ]
     },
     {
-      "consumer_path": "replay_interface/documents/lane_reports/rendering_laws/XN14Q_RUNTIME_WIRING_AUDIT.md",
       "consumer_sha256_at_audit": "109f8688804920574df4d49efd43292f794556771b4dfcb0e14ce8281bb3a8f0",
       "disposition": "deliberately_still_false",
       "reason": "The named-registry chain is exact-ten pinned, but active weather still lacks authenticated initial-state/per-update visibility and selected-submit sequence ownership.",
@@ -3520,7 +3511,6 @@
       ]
     },
     {
-      "consumer_path": "replay_interface/re_evidence/rendering_laws/C02/INTEGRATION_STATUS.md",
       "consumer_sha256_at_audit": "b9b23f2405964d16ced559ecab77a3945d6dc121ec02f67303eafe5bc5c4092e",
       "disposition": "enabled",
       "reason": "The non-human camera carrier seam is complete and requires no human input; exact-ten provenance is now pinned.",

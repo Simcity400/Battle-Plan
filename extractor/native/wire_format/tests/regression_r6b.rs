@@ -1,5 +1,4 @@
-//! Regression tests for round 6's second reviewer: four defects reachable from
-//! outside the crate's own happy path.
+//! Regression tests for malformed states reachable outside the crate's happy path.
 
 use wire_format::body::{decode_baseline, encode_baseline, encode_delta, Key, KeyedDelta, KeyedState, Row};
 use wire_format::record::Record;
@@ -16,7 +15,7 @@ fn keyed(fields: Vec<Field>) -> Schema {
     }
 }
 
-/// `Key` holds `i128` so one type carries every §7.4 key kind, which means the
+/// `Key` holds `i128` so one type carries every key-encoding contract key kind, which means the
 /// range has to be checked: an unchecked `as u64` mapped `u64::MAX + 1` onto `0`
 /// and emitted another key's bytes on every path.
 #[test]
@@ -90,7 +89,7 @@ fn update_decode_rejects_a_malformed_prior_instead_of_panicking() {
     assert_eq!(back.values, vec![Value::Unsigned(1)]);
 }
 
-/// §1.1 counts ticks in a `u64`, so `2^ticks_per_hour_log2` must fit one. At 64
+/// tick-grid contract counts ticks in a `u64`, so `2^ticks_per_hour_log2` must fit one. At 64
 /// the shift panics under this workspace's overflow checks and is masked to
 /// `1 << 0` without them — a silently wrong grid rather than a rejected schema.
 #[test]
@@ -109,7 +108,7 @@ fn the_tick_grid_is_bounded_at_a_representable_shift() {
     assert!(s.validate(63).is_err(), "u = 64 exceeds a 63 grid");
 }
 
-/// §9's frontier designates exactly one of its components as the sequence. An
+/// event-continuity contract's frontier designates exactly one of its components as the sequence. An
 /// index past the end names nothing, so the frontier has no ordering at all.
 #[test]
 fn an_event_sequence_index_must_name_a_frontier_component() {

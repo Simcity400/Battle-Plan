@@ -135,7 +135,8 @@ fn leaf_word<T>(leaf: &Leaf<T>) -> &'static str {
 /// `raids.countries` entry and still returns `Present`, and `build_occupation`
 /// does the same for a non-numeric state key. Those losses are invisible to
 /// this report by construction, which is exactly why the rows they belong to
-/// are unadmitted (see `runs/hx_admission_b/RESIDUALS.md` R2). Read a zero here
+/// are unadmitted (see `extractor/documents/technical_evidence.json` anchor
+/// `technical-r2-validation-bounds-audit::Census scope and observed failure class`). Read a zero here
 /// as "no *recorded* drop", never as "nothing was lost".
 fn dropped_row_warnings(frame: &WorldFrame) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();

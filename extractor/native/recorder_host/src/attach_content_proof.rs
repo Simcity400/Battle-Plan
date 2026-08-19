@@ -135,8 +135,7 @@ pub const D81_PROVINCE_CATALOG_PURPOSE: &str = "D81 province catalog";
 /// Windows' `THREAD_MODE_BACKGROUND_BEGIN` throttles I/O to the lowest band as
 /// well as lowering CPU priority. It was implemented, and then MEASURED on a
 /// live capture: the identical walk over the identical corpus took **349,732
-/// ms** against **81,886 ms** at normal priority — 4.3x
-/// (`runs/jb_kind_c_certification/FINGERPRINT_COST.md`).
+/// ms** against **81,886 ms** at normal priority — 4.3x.
 ///
 /// That 4.3x is the one thing those runs establish, and even it is not
 /// attributable to a mechanism: background mode changes CPU priority AND I/O
@@ -147,9 +146,8 @@ pub const D81_PROVINCE_CATALOG_PURPOSE: &str = "D81 province catalog";
 /// What ships is therefore chosen on ONE mechanical property and no
 /// performance claim at all: `THREAD_PRIORITY_BELOW_NORMAL` lowers CPU
 /// scheduling priority and does not enter the background I/O band. Its actual
-/// speed, and its actual effect on a capture, are UNKNOWN — see residual (e)
-/// in `runs/jb_kind_c_certification/RESIDUALS.md` for the controlled
-/// measurement that would settle them.
+/// speed, and its actual effect on a capture, are UNKNOWN pending a controlled
+/// measurement.
 ///
 /// Best-effort by construction: a failure to lower priority is not a reason to
 /// refuse a capture, and the walk is correct at any priority.

@@ -8,7 +8,7 @@ use crate::*;
 
 fn base_golden() -> Vec<u8> {
     // 40-byte header, one stockpile, one military line, no naval line, one
-    // construction row. Every byte is written from GRAMMAR.md's table.
+    // construction row. The byte fixture below spells the exact grammar.
     vec![
         1, 0, 0, 0, 0, 0, 0, 0, // elapsed_wall_ms
         1, 0, 0, 0, // country_count

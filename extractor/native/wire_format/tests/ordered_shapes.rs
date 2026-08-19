@@ -1,4 +1,4 @@
-//! Conformance properties for `WIRE_FORMAT.md` §7.3 ordered collections.
+//! Conformance properties for the ordered-collection codecs.
 
 use wire_format::body::{
     apply_shaped, collection_stored_eq, decode_shaped_baseline, decode_shaped_delta, diff_shaped,

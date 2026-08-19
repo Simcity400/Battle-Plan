@@ -2480,7 +2480,7 @@ fn read_exact_bytes(address: usize, len: usize) -> Result<Vec<u8>, String> {
 // freed, so there is nothing to prove quiescent.
 //
 // Why: no cheap evidence exists that no thread is still resident in a detour
-// body, a relay or an unwind path. `D55_NONSUSPENDING_HOOK_FEASIBILITY_20260729.md`
+// body, a relay or an unwind path. `d55_nonsuspending_hook_feasibility_a729.json`
 // records that the quiescent boundary is absent from the recovered static
 // evidence, and this policy routes around that absence instead of manufacturing
 // it. Deleting a function-table entry while a thread is unwinding through it is

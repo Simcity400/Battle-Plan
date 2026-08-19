@@ -169,8 +169,8 @@ const BLOCK_HOURS: usize = 48;
 /// blocks are measured on the clock, not the record count), or a measured hour
 /// that does not immediately follow the previous measured one. An hour this
 /// domain did not successfully sample is coverage the domain lost, which is
-/// §8's gap, and `WIRE_FORMAT.md:187`-`:190` is explicit: "A gap affecting
-/// the state part forces the next state observation to be a `BASELINE`. State
+/// a capture gap. State
+/// after a gap to resume from a complete baseline. State
 /// may have moved and returned while nobody was looking, so neither a delta
 /// nor an `UNCHANGED` can be justified across unobserved time." Delta-encoding
 /// across the gap would produce bytes that decode — the reader's prior is
@@ -311,7 +311,7 @@ fn check_frame_end_seal(payload: &[u8], at_byte: usize) -> Result<(u32, u32), St
 ///    record `malformed_payload_records`, which
 ///    `strict_stream_certification_verdict` (`recorder_host/src/stream_fold.rs:507`-`:510`) refuses.
 ///
-/// Round-4 review finding: excluding a record before checking its exact length let
+/// excluding a record before checking its exact length let
 /// a stream production refuses produce a plausible measurement. Two of the second
 /// authority's checks are not implied by the first authority's header set, and both
 /// are applied here to every record:
@@ -393,7 +393,7 @@ fn scan_stream(
     // record at sequence 1. A harness that sniffs therefore accepts a decapitated
     // identity stream as a healthy legacy one and measures it, which production
     // (invoked with `IdentityV1`) refuses as `WrongRecordSequence(1)`.
-    // Round-5 review finding: the mode is now a typed parameter, so the caller
+    // the mode is now a typed parameter, so the caller
     // states which protocol the capture is and a mismatch fails closed in both
     // directions — a legacy call on an identity stream trips on the CID1 record, an
     // identity call on a legacy stream trips on the missing one.
@@ -457,7 +457,7 @@ fn scan_stream(
             // bind the hour: a duplicate non-probe domain, a PERF for an hour other
             // than the open one, a PERF for an already-closed hour, or two different
             // pending hours before any DATA record opens one are each a refused
-            // stream in production, so each is one here. (Round-2 review finding.)
+            // stream in production, so each is one here.
             COMPACT_RECORD_TYPE_DOMAIN_PERF => {
                 if header.domain_id != PROBE_DOMAIN_ID
                     && !non_probe_perf_domains.insert(header.domain_id)
@@ -512,7 +512,6 @@ fn scan_stream(
                     // `recorder_host/src/stream_fold.rs:378`-`:386`, and it comes BEFORE the
                     // monotonicity check, as it does there: a DATA record may only
                     // open the hour the pending PERF records already bound.
-                    // (Round-3 review finding — the PERF arm alone does not cover
                     // this, because a single pending PERF hour is legal until a DATA
                     // record disagrees with it.)
                     if let Some(pending) = pending_perf_hour {
@@ -597,7 +596,6 @@ fn scan_stream(
             //
             // **This is the one place this harness is deliberately STRICTER than the
             // production stream boundary, and it is a property of the measurement,
-            // not of the grammar** (round-6 review finding, recorded rather than
             // removed). `BoundaryTracker` accepts a second DOMAIN_DATA record for the
             // hour already open (`recorder_host/src/stream_fold.rs:369`), and `ingest_record` would
             // fold both — the first establishing the baseline, the second applied
@@ -660,7 +658,6 @@ fn scan_stream(
             // Production's SECOND authority, which runs on every DOMAIN_DATA record
             // whatever its status and whose complaint refuses the stream at
             // certification. This must come BEFORE the exclusions, or a record the
-            // recorder would refuse gets quietly skipped instead. (Round-4 review
             // finding.)
             check_authority_payload(payload, &payload_header, pos)?;
 
@@ -812,7 +809,7 @@ fn main() {
     let first_measured_hour = scan.hours[0].game_hour;
     let mut last_block_index: Option<i64> = None;
     let mut baselines = 0usize;
-    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    // Baselines the gap handling forced outside a scheduled block start.
     let mut gap_forced_baselines = 0usize;
     let mut previous_measured_hour: Option<i32> = None;
     let mut baseline_bytes = 0usize;
@@ -861,7 +858,6 @@ fn main() {
         // New arm: BASELINE at each block start, stored-minimal DELTA between.
         //
         // The block index is taken from the GAME HOUR, not from the count of usable
-        // records (round-7 review finding). Keying it on the record count would let a
         // single excluded hour — a failure status, which d38's `PARTIAL_DATA` path
         // makes producer-reachable — slide every later baseline by one, so the first
         // "48-hour block" would span 49 game-clock hours and a change landing on the
@@ -873,7 +869,7 @@ fn main() {
             .div_euclid(BLOCK_HOURS as i64);
         let block_start = Some(block_index) != last_block_index;
         last_block_index = Some(block_index);
-        // §1.5: a gap in measured hours forces the baseline even when the
+        // frame-run contract: a gap in measured hours forces the baseline even when the
         // game-clock block has not turned over (see `opens_baseline`).
         let baseline_here = opens_baseline(block_start, previous_measured_hour, hour.game_hour);
         if baseline_here && !block_start {
@@ -982,7 +978,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} every {BLOCK_HOURS} h on the game clock, \
-         {gap_forced_baselines} forced by a gap in measured hours — WIRE_FORMAT §1.5), \
+         {gap_forced_baselines} forced by a gap in measured hours —, \
          {baseline_bytes} raw bytes",
         baselines - gap_forced_baselines
     );
@@ -1006,7 +1002,6 @@ fn main() {
         // Both, not just the rows: a key deleted on a block boundary with no upsert
         // that hour is a real change the delta path never carried, and reporting
         // only the row difference printed "0 changes fell on a boundary" for it
-        // (round-7 review finding). Tombstones are an ordinary producer output —
         // this capture has 82 of them.
         real_changed_rows.saturating_sub(delta_changed_rows),
         real_tombstones.saturating_sub(delta_tombstones)
@@ -1432,7 +1427,6 @@ mod tests {
         // boundary, which accepts a second DOMAIN_DATA record for the open hour
         // (`recorder_host/src/stream_fold.rs:369`) and folds both. See `scan_stream` for why the
         // measurement model cannot represent that: one hour is one state is one wire
-        // record, and both arms are indexed by game hour. Round-6 review finding,
         // recorded as a divergence rather than removed.
         //
         // The rule is checked over EVERY d38 DATA record and before status-based
@@ -1581,12 +1575,10 @@ mod tests {
         // production's second authority checks the length on every DOMAIN_DATA
         // record whatever its status, and its complaint refuses the stream at
         // certification. See `an_excluded_record_is_still_structurally_validated`,
-        // which is where that case now lives (round-4 review finding).
     }
 
     #[test]
     fn an_excluded_record_is_still_structurally_validated() {
-        // Round-4 review finding. A record this harness excludes — failure status or
         // delta-before-baseline — is still validated by production's second
         // authority (`domain_data_authority.rs:15247`, run unconditionally from
         // `recorder_host/src/stream_fold.rs:1059`), so a violation there refuses the stream rather
@@ -1753,8 +1745,8 @@ mod tests {
 
     #[test]
     fn a_frame_end_that_does_not_seal_its_hour_refuses_the_stream() {
-        // Round-1 review finding, swept over the whole seal predicate rather than the
-        // one reported input. The reviewer's own case is the first row: `good_stream()`
+        // swept over the whole seal predicate rather than the
+        // one reported input. The regression case is the first row: `good_stream()`
         // with the first FRAME_END's reserved word set to 1 (overall byte 192) was
         // accepted and produced an unchanged, plausible measurement, while production's
         // `validate_frame_end_seal_fields` (`recorder_host/src/stream_fold.rs:46`) refuses it.
@@ -1867,7 +1859,7 @@ mod tests {
 
     #[test]
     fn perf_hour_binding_is_enforced() {
-        // Round-2 review finding: DOMAIN_PERF records carry no d38 data, but they
+        // DOMAIN_PERF records carry no d38 data, but they
         // bind the hour, and production refuses a stream that violates that binding
         // (`recorder_host/src/stream_fold.rs:328`-`:365`). Swept over the whole predicate rather than
         // the one reported input, which is the second row below.
@@ -1947,7 +1939,7 @@ mod tests {
         );
 
         // A DATA record opening an hour OTHER than the one the pending PERF records
-        // bound (`recorder_host/src/stream_fold.rs:378`-`:386`). Round-3 review finding: the PERF arm
+        // bound (`recorder_host/src/stream_fold.rs:378`-`:386`). the PERF arm
         // alone does not cover this, because one pending PERF hour is legal until a
         // DATA record disagrees with it — the reproducer below passed before the
         // DATA arm learned to consult `pending_perf_hour`, seal count and all.
@@ -2019,7 +2011,6 @@ mod tests {
 
     #[test]
     fn the_identity_protocol_is_stated_not_sniffed() {
-        // Round-5 review finding. A sniffing harness reads a decapitated IdentityV1
         // stream — one whose mandatory CID1 record has been spliced off — as a
         // healthy legacy stream and measures it, because both begin with an ordinary
         // record at sequence 1. Production takes the mode from its caller
@@ -2167,8 +2158,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." d38's block cadence is
+        // A complete
+        // baseline after a gap. d38's block cadence is
         // measured on the game clock, so the caller hands the clock decision in;
         // the gap clause is what this function adds on top of it.
         assert!(opens_baseline(true, None, 100), "a clock block start always opens");

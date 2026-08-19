@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: make_demo_recording --bundle <map_bundle_dir> --out <file.battleplan> [--hours N] [--start-hour N]";
 const GAME_ID: &str = "synthetic_demo";
-/// Clausewitz month lengths (365-day years, no leap; schema §0.3).
+/// Clausewitz month lengths for 365-day years without leap days.
 const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 fn main() {

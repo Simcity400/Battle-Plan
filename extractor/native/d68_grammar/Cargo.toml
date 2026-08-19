@@ -7,8 +7,7 @@ description = "The single structural walk of domain 68's (session_header_live) c
 # THIS CRATE HAS NO DEPENDENCIES, AND THAT IS THE POINT.
 #
 # The duplication this crate replaces existed because of deliberate crate
-# directions: `wire_format` takes no `recorder_host` dependency (it is an
-# independent reference implementation of WIRE_FORMAT.md), and `recorder_host`
+# directions: `wire_format` takes no `recorder_host` dependency, and `recorder_host`
 # does not depend on `wire_format`. A leaf with no dependencies is the only
 # shape all four sites -- the collector's packer, the recorder's fold, the
 # recorder's authority validator and the wire port -- can depend on without any

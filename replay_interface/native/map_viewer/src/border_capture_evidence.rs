@@ -1,6 +1,6 @@
 //! BORD3 — decode & classify the one captured "borders_pass" IA geometry.
 //!
-//! BORDER_LAW.md flagged the single `diag23b` `borders_pass` capture as an
+//! The single `diag23b` `borders_pass` capture is an
 //! *unresolved* unknown; this module turns that suspicion into a **decoded,
 //! regression-protected verdict**. It reads the recorded IA vertex/index layout
 //! (as the bundle JSON reports it) and classifies whether the geometry is a real

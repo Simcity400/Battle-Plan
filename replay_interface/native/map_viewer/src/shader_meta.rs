@@ -915,7 +915,7 @@ pub(crate) fn write_political_scene_fields(
 /// evaluated at `hour24 = hour_fraction * 24` — the SAME hour that feeds
 /// `DayNight_Hour_SunDir.x`, so the rig and the terminator share one clock.
 /// The rig no longer follows the pan camera (that FIT is removed; see
-/// `write_virtual_light_rig_fields` and `LIGHT_LAW.md`).
+/// `write_virtual_light_rig_fields`).
 pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
     layout: &ShaderConstantBufferLayout,
     mut bytes: Vec<u8>,
@@ -987,7 +987,7 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
 ///   heights (SUN_LATITUDE 848, SECOND_*_LATITUDE 100 "to put a fake sun/moon
 ///   on the other side of the globe to hide the seam", SUN_HEIGHT 600,
 ///   SUN_HEIGHT_WATER 5000); no `.x` is defined in any file.
-/// - The `.x` longitude is engine-runtime, CLOSED as a law in `LIGHT_LAW.md`
+/// - The `.x` longitude is engine-runtime and implemented by `light_law`
 ///   from session_FINAL_1's unpaused CB0 samples (residual < 0.01 map units):
 ///   `sun.x = MAP_SIZE_X * (1 - hour24/24)` (mod MAP_SIZE_X), `moon.x` is
 ///   antipodal, and the two seam-hiding "second" bodies are the SWAPPED pair.

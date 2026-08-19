@@ -211,7 +211,6 @@ fn wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes() {
     let off = counter_frame_evidence(&root.join("hoi4_frame71288"))
         .expect("analyze FoW-OFF counter evidence");
 
-    // CAPTURE `w9-fow-producer.md:63-66`.
     assert_eq!((off.land_bases, on.land_bases), (57, 47));
     assert_eq!((off.land_overlays, on.land_overlays), (57, 47));
     assert_eq!((off.naval_bases, on.naval_bases), (1, 0));

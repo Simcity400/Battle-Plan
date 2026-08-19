@@ -1,17 +1,7 @@
-//! The fold seam, packaged for the Wave-2 scaffold lane to adopt.
+//! Pure fold-sidecar emission over authenticated carriers.
 //!
-//! # Why this is a module and not an edit to `world_fold.rs`
-//!
-//! `extractor/documents/REPLAY_PRODUCER_GAP_MAP.md` §7.1 declares
-//! `world_fold.rs::build_snapshot`'s `_r2_*` sidecar block **exclusive** to the
-//! Wave-2 scaffold lane (GP-W2), and says in terms that before that scaffold
-//! lands *"every lane adding a fold sidecar shares [it] … so nothing is
-//! disjoint and no lane below may start."* GP-W2 has not landed on this tip.
-//!
-//! So this lane does not touch that block. It supplies the emission as pure
-//! functions over the carriers, which the scaffold lane calls with one line per
-//! key. Nothing here reads or writes global state, so adopting it cannot
-//! conflict with another lane's sidecar.
+//! Nothing here reads or writes global state. The caller owns insertion into
+//! the frame and the transaction boundary around all emitted keys.
 //!
 //! # The absent/unobtained distinction the consumer already implements
 //!

@@ -4,7 +4,7 @@
 //!
 //! Four of the five Wave-5 skeletons wait on a Ghidra/live-RE session. GP-N3
 //! does not: the gap map lists its live need as "capture", not RE
-//! (`extractor/documents/REPLAY_PRODUCER_GAP_MAP.md`, Wave 5 table). Recording
+//! (`replay_interface/re_evidence/rendering_laws/XUI27/external_producer_dependencies.json`, Wave 5 table). Recording
 //! that here keeps a future reader from batching this lane into the RE campaign
 //! and leaving it parked behind twelve reverse-engineering questions it does
 //! not have.

@@ -6,7 +6,7 @@
 //! bundle (which is generated from the shipped map files); display strings come
 //! from `localisation/` through the mod-aware resolver. The placement law lives
 //! in `map_viewer::compute_country_label_placements` (see
-//! `documents/MAP_LABEL_LAW.md`).
+//! `map_label_law.rs`).
 //!
 //! Usage:
 //!   dump_map_labels --bundle <map_bundle dir> --game <the game dir> [--mod <dir>]...

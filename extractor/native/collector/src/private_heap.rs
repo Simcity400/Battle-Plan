@@ -7,9 +7,8 @@
 //! ordinary Win32/CRT calls. Every collector allocation therefore contends
 //! with the engine's on the same heap locks (the main heap lock for anything
 //! the low-fragmentation heap does not serve, the LFH bucket locks otherwise),
-//! and lane LM's audit named that as one of the ways an engine thread can be
-//! made to wait on the collector (`runs/lm_perf_budget/CODEX_A_WAIT_AUDIT_REPLY.txt`
-//! §2.3). It is also the hazard behind `reserve_confirmed_span_cache`: a read
+//! which is one way an engine thread can be made to wait on the collector. It is
+//! also the hazard behind `reserve_confirmed_span_cache`: a read
 //! taken inside a held freeze must not allocate because a SUSPENDED game
 //! thread may hold the process heap's lock with nobody left to release it.
 //! And it is the reason the below-normal worker-priority policy cannot ship:

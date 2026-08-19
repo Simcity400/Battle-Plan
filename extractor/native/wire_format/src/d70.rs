@@ -1,8 +1,8 @@
 //! d70 `sunk_convoy_history_live` — the global sunk-convoy history table.
 //!
-//! Derived from `world_fold.rs:14026`-`:14086`
+//! Derived from `world_fold.rs:14008`-`:14068`
 //! (`fold_sunk_convoy_history`), its two dispatch sites (`:4737` and `:4801`-`:4806`),
-// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=14026-14086 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a closure=ce10abf1d0cdc7d4f457686eee9adeb34bdc419f5b5a625335231b7d92ab7e98
+// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=14008-14068 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a closure=f531359bbea7cd1ef2e5d9ee7765b65b91da67bd3272af45dfe60308465363f9
 //! and the payload codec `extractor/native/compact_contract/src/naval_history.rs`,
 //! which is where this domain's row grammar actually lives. There is no dossier
 //! under `extractor/documents/domains/`, so those three are the whole basis.
@@ -76,7 +76,7 @@
 //! match. That is a refusal, and it is reproduced here rather than smoothed over.
 //!
 //! **`record_sequence: u64` is a new member of the recipe's step-7 typed-input
-//! family** (`DOMAIN_SCHEMA_RECIPE.md` §7's table lists `frame_tick`,
+//! family** (the event schema already lists `frame_tick`,
 //! `FrameMode`, `WarSegment`, `Symbols`, `RowScales`, the fold clock and
 //! `ordinal`; it does not list this one). It enters at [`fold_payload`], not at
 //! [`record_from_row`]: the binding is a property of the payload against its
@@ -137,7 +137,7 @@
 //! mismatch (`world_fold.rs::fold_sunk_convoy_history`). This is **not** d63's "retain the accumulator": the
 //! recorder says the domain-hour is unavailable, so a reader must not carry the
 //! previous hour's table forward across it. A keyed-set delta cannot express
-//! "the collection is unavailable this hour" — that is §8 gap normalisation,
+//! "the collection is unavailable this hour" — that is gap normalization,
 //! which has no implementation in this crate (`lib.rs`) — so [`FoldOutcome`]
 //! reports it and the measurement bin re-baselines after it rather than emitting
 //! a delta against a state the recorder has discarded. The reference capture has
@@ -151,7 +151,7 @@
 //! cross-domain writer, so the recipe's "other writers" enumeration is empty by
 //! inspection rather than by assertion.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock. The mapper still takes `frame_tick` so every domain's boundary has one
 //! shape.
 
@@ -164,7 +164,7 @@ pub const DOMAIN: u32 = 70;
 /// The one collection: the global sunk-convoy history table.
 pub const HISTORY: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const MONTH: u32 = 1;
     pub const KILLER_COUNTRY_TAG_DB_ID: u32 = 2;
@@ -290,7 +290,7 @@ pub fn schema() -> Schema {
             // `(month, killer, owner)` identity persists across hours — a bucket
             // keeps accumulating convoys for as long as the engine keeps it —
             // which is what a keyed set needs, and only a keyed set has a delta
-            // grammar (§7.3). The array order the payload also carries is
+            // grammar (collection-shape contract). The array order the payload also carries is
             // preserved by `SOURCE_ORDINAL` below, so no ordered shape is
             // needed; see the module docs.
             shape: Shape::KeyedSet,
@@ -310,14 +310,14 @@ pub fn schema() -> Schema {
                 // content manifest must resolve a country tag for it to keep its
                 // meaning under another mod set. d63's `tag_db_id` and d20's
                 // `owner` are the same call. Both are **ContentId keys**, the
-                // heavier retrofit class of `WIRE_FORMAT.md` §13 — see the
+                // heavier manifest-resolver retrofit class — see the
                 // deliverable's open questions.
                 Field::new(f::KILLER_COUNTRY_TAG_DB_ID, Kind::ContentId).key(1),
                 Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(2),
                 // Convoys sunk in this `(month, killer, owner)` bucket.
                 // `Monotone`: a bucket's count only grows while its month is
                 // live and then freezes — 91 increases and 0 decreases across
-                // the reference capture's 749 hour transitions. §4 makes
+                // the reference capture's 749 hour transitions. schema-kind contract makes
                 // monotone an encoding hint and never a validity constraint, so
                 // a future decrease is legal and costs only bytes.
                 //
@@ -390,7 +390,7 @@ pub enum FoldOutcome {
     /// A failure status: the accumulator is set to `None` and nothing is folded
     /// (`world_fold.rs::fold_sunk_convoy_history`). **An excluded hour, and an unavailable
     /// one** — the previous hour's table is discarded, not retained, so a reader
-    /// must not carry state across it. A keyed set cannot say that (§8 gap
+    /// must not carry state across it. A keyed set cannot say that (gap
     /// normalisation has no code in this crate), which is why the state is
     /// reported here.
     Unavailable { status_flags: u32 },
@@ -606,7 +606,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// extractor and every caller must count positions the same way, which is only
 /// true if exactly one of them counts.
 ///
-/// `frame_tick` is §6's derived-field input (`stored = v + c * (frame_tick >> u)`);
+/// `frame_tick` is derived-field contract's derived-field input (`stored = v + c * (frame_tick >> u)`);
 /// d70 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -619,7 +619,7 @@ pub fn record_from_row(
     ordinal: u32,
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d70 has no derived field; §6's transform input is unused. Named rather
+    // d70 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // A record built for the wrong collection would otherwise come out shaped by
@@ -1099,7 +1099,7 @@ mod tests {
             assert_eq!(
                 key.kind,
                 Kind::ContentId,
-                "a country tag is content-defined (§5), so a manifest must resolve it"
+                "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
             );
         }
         assert!(keys.iter().all(|k| k.kind.legal_as_key()));
@@ -1110,7 +1110,7 @@ mod tests {
 
     #[test]
     fn the_content_id_sweep_finds_exactly_the_two_country_tags() {
-        // §13's retrofit sweep can tell "checked, none" from "not checked" only
+        // the ContentId retrofit sweep can tell "checked, none" from "not checked" only
         // if every domain states its result. d70's is two — and both are KEY
         // components, the heavier retrofit class, because a manifest remap
         // reorders keys and changes the byte layout of every baseline.
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d70 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d70 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         let c = collection();

@@ -1,31 +1,28 @@
-//! W12C campaign/save identity binding (recorder_host side).
-//!
-//! Design of record: `extractor/documents/CAMPAIGN_IDENTITY_DESIGN.md`.
+//! Campaign/save identity binding (recorder_host side).
 //!
 //! The v1 campaign identity is the engine-persisted pair
 //! (`game_unique_id`, `game_unique_seed`). The external `campaign_id` is derived
 //! from their canonical representation (SHA-256 of a fixed preimage). Both raw
 //! components are preserved as first-class fields; the digest is only an index.
 //!
-//! ## Fail-closed reality at this revision
+//! ## Fail-closed behavior
 //!
 //! Exact-build static serializer/deserializer evidence now proves the candidate
 //! members (`i32[CGameState+0x720]` and MSVC `std::string[CGameState+0x728]`),
-//! but neither candidate is live-accepted or wired into the live d68
-//! `session_header_live` payload yet (design "Open items"; the current wire
-//! schema carries player tag / DLC mask / start date / save version / session /
+//! but neither candidate is live-accepted or wired into the d68
+//! `session_header_live` payload. That wire schema carries player tag / DLC
+//! mask / start date / save version / session /
 //! ideology / cosmetic tag / build banner and *no* `game_unique_*` field — see
 //! `world_fold.rs::fold_session_header` and
-//! `domain_data_authority.rs::decode_compact_session_header_data_payload`). Consequently every
-//! real capture at this revision resolves to `state = "unavailable"` (d68 rows
+//! `domain_data_authority.rs::decode_compact_session_header_data_payload`). Consequently a
+//! capture resolves to `state = "unavailable"` when d68 rows
 //! were seen but the components are not sourced) or `state = "unbound"` (no d68
 //! row was observed at all). Identity is NEVER fabricated from witnesses; a
 //! missing/torn/partial component yields an explicit null plus a reason note.
 //!
 //! The resolver, digest math, closed-grammar manifest validator, and stitching
-//! consumer interface are complete and test-covered so that the moment the
-//! collector sources the pair into the observation (a future, live-accepted
-//! change), a `state = "known"` binding flows through unchanged.
+//! consumer interface accept a `state = "known"` binding only when a validated
+//! collector observation supplies the complete pair.
 
 use serde_json::{json, Map, Value};
 use snapshot::sha256::{to_hex, Sha256};
@@ -40,7 +37,7 @@ use crate::stitching::{AppendTicket, CampaignIdentityResolution};
 /// Manifest schema tag for the campaign identity object.
 pub const CAMPAIGN_IDENTITY_SCHEMA: &str = "hoi4.campaign_identity.v1";
 
-/// Fixed digest preimage prefix (design "Canonical preimage"). Already carries a
+/// Fixed digest preimage prefix. Already carries a
 /// trailing NUL; a second NUL separates the UUID from the seed at digest time.
 pub const CID_PREIMAGE_PREFIX: &[u8] = b"hoi4-campaign-id-v1\0";
 
@@ -90,11 +87,10 @@ impl CampaignIdentityState {
 }
 
 /// Raw compatibility witnesses carried BESIDE the identity for conflict
-/// adjudication. These are NEVER substituted for the identity components (design
-/// "Ranked candidates": start date, session, scenario, roster, and modset are
-/// witnesses only). Only the two the recorder can source at this revision
-/// (`start_date_raw`, `session`, both from the d68 header) are ever populated;
-/// the rest stay null until a future path sources them.
+/// adjudication. These are NEVER substituted for the identity components:
+/// start date, session, scenario, roster, and modset are witnesses only. The d68
+/// header supplies `start_date_raw` and `session`; unsupported witnesses remain
+/// null.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CampaignIdentityWitnesses {
     pub start_date_raw: Option<u32>,
@@ -119,9 +115,9 @@ struct IdentityEvidenceProof {
 /// The identity-candidate observation extracted from the decoded d68 stream.
 ///
 /// `game_unique_id` / `game_unique_seed` are the ONLY v1 identity components.
-/// They are `None` at this revision (the wire schema does not carry them); a
-/// future collector change that sources them populates these fields and the
-/// resolver then produces a `known` binding with zero further wiring.
+/// They are `None` when the wire schema does not carry them. A validated
+/// collector observation that supplies both fields lets the resolver produce a
+/// `known` binding.
 #[derive(Debug, Clone, Default)]
 pub struct SessionHeaderIdentityObservation {
     /// Count of d68 records routed to the decoder, including malformed or
@@ -134,7 +130,7 @@ pub struct SessionHeaderIdentityObservation {
     pub game_unique_id: Option<String>,
     /// Exact engine `game_unique_seed` as a base-10 string (no cast/truncation).
     pub game_unique_seed: Option<String>,
-    /// Valid game hour bracketing the identity read (design stamping contract).
+    /// Valid game hour bracketing the identity read.
     pub observed_game_hour_raw: Option<i32>,
     /// Build-profile id that sourced (or failed to source) the identity.
     pub source_build_profile: Option<String>,
@@ -503,7 +499,7 @@ pub fn canonical_seed(raw: &str) -> Option<String> {
     Some(canonical)
 }
 
-/// SHA-256 of the canonical preimage, lowercase hex (design "Canonical preimage").
+/// SHA-256 of the canonical preimage, lowercase hex.
 pub fn compute_campaign_id(canonical_uuid: &str, canonical_seed: &str) -> String {
     let mut buf = Vec::with_capacity(
         CID_PREIMAGE_PREFIX.len() + canonical_uuid.len() + 1 + canonical_seed.len(),
@@ -638,10 +634,9 @@ pub fn resolve(obs: &SessionHeaderIdentityObservation) -> CampaignIdentity {
                 base(
                     CampaignIdentityState::Unavailable,
                     Some(format!(
-                        "d68 session_header_live observed ({} row(s)) but does not source \
-                         game_unique_id/game_unique_seed at this build revision; both components \
-                         are mandatory and absent (fail-closed pending live-accepted collector \
-                         reader -- see CAMPAIGN_IDENTITY_DESIGN.md activation gates)",
+                        "d68 session_header_live observed ({} row(s)) but its schema does not source \
+                         game_unique_id/game_unique_seed; both components are mandatory and absent \
+                         (fail-closed until a live-accepted collector observation supplies the pair)",
                         obs.session_header_rows
                     )),
                 )
@@ -664,7 +659,7 @@ fn witnesses_json(w: &CampaignIdentityWitnesses) -> Value {
     })
 }
 
-/// Serialize a resolved identity into the exact design manifest object.
+/// Serialize a resolved identity into the exact manifest schema object.
 /// External callers cannot construct or mutate the positive fields: a `Known`
 /// value originates only in this module's evidence-bound resolvers.
 pub fn to_manifest_json(id: &CampaignIdentity) -> Value {
@@ -704,8 +699,8 @@ pub fn to_manifest_json(id: &CampaignIdentity) -> Value {
 // is exactly the serializer's output. An unexpected key at any level, a
 // state/field-shape mismatch, or a digest that does not recompute is a shape the
 // recorder never wrote and fails the repack closed. This terminates manifest
-// drift by construction (design: "derive and hash-bind it from the first record;
-// mismatch is fatal").
+// drift by construction: identity fields are hash-bound and any mismatch is
+// fatal.
 
 const CAMPAIGN_IDENTITY_KEYS: &[&str] = &[
     "schema",
@@ -894,7 +889,7 @@ pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
             if canon_seed != seed {
                 return Err("campaign_identity game_unique_seed is not in canonical form".into());
             }
-            // Digest must recompute exactly (design: mismatch is fatal).
+            // Digest must recompute exactly; a mismatch is fatal.
             let recomputed = compute_campaign_id(&canon_uuid, &canon_seed);
             if recomputed != cid {
                 return Err(
@@ -967,8 +962,8 @@ pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
 }
 
 /// Tolerant wrapper for the pack/repack path: a session manifest WITHOUT a
-/// `campaign_identity` key is a legacy stream (identity-unavailable, unstitchable
-/// -- design). When the key is present it must satisfy the exact grammar.
+/// `campaign_identity` key is an identity-unavailable, unstitchable legacy
+/// stream. When the key is present it must satisfy the exact grammar.
 pub fn validate_in_session_manifest(manifest: &Value) -> Result<(), String> {
     match manifest.get("campaign_identity") {
         None => Ok(()),
@@ -1024,15 +1019,12 @@ pub fn from_manifest_json(value: &Value) -> Result<CampaignIdentity, String> {
 
 // --- Stitching consumer interface -----------------------------------------
 //
-// The reload/relaunch stitcher (STITCHING_DESIGN.md is absent at this base; this
-// interface is defined per CAMPAIGN_IDENTITY_DESIGN.md "Read and transition
-// semantics" and recorded in the W12C dossier) asks exactly one question of two
-// containers: may their streams be joined as the same persisted playthrough?
+// The reload/relaunch stitcher asks exactly one question of two containers: may
+// their streams be joined as the same persisted playthrough?
 //
 // The answer is fail-closed: two streams stitch ONLY when both identities are
 // `Known` and equal on the whole pair. An unavailable/unbound/conflict identity
-// on either side is never auto-stitched (design: legacy identity-unavailable
-// streams "cannot be stitched automatically across sessions").
+// on either side is never auto-stitched.
 
 /// The stitcher's decision for a pair of container identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1042,7 +1034,7 @@ pub enum StitchDecision {
     /// Both bound, whole pair differs -> distinct campaigns; must NOT join.
     DifferentCampaign,
     /// Both bound but exactly one raw component differs -> conflict; stop auto
-    /// stitching and surface both observations (design transition semantics).
+    /// stitching and surface both observations.
     ComponentConflict,
     /// At least one side is not bound -> identity-unavailable; never auto-join.
     IdentityUnavailable,
@@ -1072,8 +1064,8 @@ pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDeci
 
 // --- Reconciliation with the stitching CampaignIdentityResolution seam --------
 //
-// `STITCHING_DESIGN.md` §4 defines the fail-closed result the stitcher consumes
-// per verified save epoch. That seam type is `crate::stitching::
+// The stitcher consumes a fail-closed result per verified save epoch. That seam
+// type is `crate::stitching::
 // CampaignIdentityResolution`; this module is the identity *provider*. The two
 // independently-defined seams (this module's `CampaignIdentity` and stitching's
 // `CampaignIdentityResolution`) are joined here by ADAPTING a resolved identity
@@ -1087,7 +1079,7 @@ pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDeci
 //     filename / date / mod / path heuristic, matching stitching's opaque-key rule.
 
 /// Stream/identity scheme major for the v1 `(game_unique_id, game_unique_seed)`
-/// identity (design §4 `scheme_major`). Two epochs may be candidates for one
+/// identity. Two epochs may be candidates for one
 /// campaign only when their `scheme_major` **and** opaque `campaign_key` bytes match.
 pub const CAMPAIGN_IDENTITY_SCHEME_MAJOR: u16 = 1;
 
@@ -1124,7 +1116,7 @@ impl CampaignIdentity {
     }
 
     /// Bridge this resolved identity into the fail-closed stitching seam
-    /// (`crate::stitching::CampaignIdentityResolution`, design §4). This is the join
+    /// (`crate::stitching::CampaignIdentityResolution`). This is the join
     /// point that feeds `plan_stitch` real per-epoch results.
     ///
     /// * `Known` (and `is_bound()`) -> `Verified` with the opaque `campaign_key`
@@ -1183,13 +1175,13 @@ impl CampaignIdentity {
     /// Construct the stitching [`AppendTicket`] binding this bound identity's
     /// campaign participation to an ALREADY-ALLOCATED `play_order` plus the session
     /// provenance. `None` unless the identity is bound — an unresolved epoch never
-    /// acquires a ticket (design §4: bytes observed while identity is unresolved
+    /// acquires a ticket; bytes observed while identity is unresolved
     /// stay in an unbound recovery source).
     ///
     /// The durable, campaign-locked `play_order` *allocation* itself (the append
     /// ledger committed before the first campaign-bound byte is accepted) is the
-    /// campaign store's responsibility and is intentionally NOT built here — that is
-    /// the compact-stream/session-store lane. This method only binds an allocated
+    /// campaign store's responsibility and is intentionally NOT built here. This
+    /// method only binds an allocated
     /// ordinal to the same opaque `campaign_key` the resolution carries, so one key
     /// flows consistently to both `plan_stitch` inputs (identity result + ticket).
     pub fn append_ticket(

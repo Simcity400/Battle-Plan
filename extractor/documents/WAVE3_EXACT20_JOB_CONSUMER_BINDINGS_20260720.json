@@ -100,10 +100,6 @@
       },
       "literal_repository_consumers": [
         {
-          "path": "extractor/documents/dossiers/A18_DYNMOD_REAUDIT_20260720.md",
-          "sha256_at_binding": "fc5780c23b2855540380bd0f467428c0dcd8f4b70eedeb2efb737bd250dd6f8c"
-        },
-        {
           "path": "extractor/native/lanes/country_dynamic_modifiers_live/H_A18_EXACT10_REEXPORT_REQUEST_20260720.json",
           "sha256_at_binding": "1089c6ad20b33b4c1b9999b10764429368b6c78ee0f649627200dc9c08587d73"
         },
@@ -119,8 +115,7 @@
           "declared_downstream_consumers": [
             "extractor/native/collector/src/lib.rs",
             "extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs",
-            "extractor/native/recorder_host/src/world_fold.rs",
-            "replay_interface/documents/REPLAY_SCHEMA.md"
+            "extractor/native/recorder_host/src/world_fold.rs"
           ]
         }
       ],
@@ -274,10 +269,6 @@
           "sha256_at_binding": "63bf5891b904bd3abf9b4a5165889f8301399eaa07a654679462c9757ae86bed"
         },
         {
-          "path": "extractor/native/lanes/focus_research_decisions_depth_live/H_A31_FOCUS_ITEM_OWNER_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "1daa12c862be0fa303119025ee70a0c99003c376bda5448d3ce65b16767f1c80"
-        },
-        {
           "path": "extractor/native/lanes/focus_research_decisions_depth_live/H_A31_FOCUS_ITEM_OWNER_PRODUCER_RE_20260720.json",
           "sha256_at_binding": "9d2905514125be5a71825a0d9202c0a25a7bb5fec8ce0e7a81f76770a5184abb"
         }
@@ -358,10 +349,6 @@
         {
           "path": "extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json",
           "sha256_at_binding": "600ec03bbd90e70bff636f1e35c00960e7f8345b8c1494e247b0ec377dd0ab13"
-        },
-        {
-          "path": "extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md",
-          "sha256_at_binding": "098e0abbd751cc8e5f29bccbd7175ef37005912708f11aac5c84a4889dcbf917"
         }
       ],
       "exact_request_sources": [
@@ -457,10 +444,6 @@
         {
           "path": "extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json",
           "sha256_at_binding": "600ec03bbd90e70bff636f1e35c00960e7f8345b8c1494e247b0ec377dd0ab13"
-        },
-        {
-          "path": "extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md",
-          "sha256_at_binding": "098e0abbd751cc8e5f29bccbd7175ef37005912708f11aac5c84a4889dcbf917"
         }
       ],
       "exact_request_sources": [
@@ -543,10 +526,6 @@
           "sha256_at_binding": "b9c44c194f510ccad6097821c6b080001df15d63c70781da6d6711f84a5a3b68"
         },
         {
-          "path": "extractor/documents/dossiers/A36/ABILITY_LIST_HOOK_ENGINEERING_20260720.md",
-          "sha256_at_binding": "e1db7d929449915d4df9db5d657ff7c45b17ec760544bf58128c7e0406c0c793"
-        },
-        {
           "path": "extractor/documents/dossiers/A36/H_A36_EXACT20_AUTHORITY_RECEIPT_20260720.json",
           "sha256_at_binding": "785edb25f0cda6871b7387500f7c304c792816505e4ecb6456fa7f49714825e5"
         },
@@ -623,20 +602,8 @@
       },
       "literal_repository_consumers": [
         {
-          "path": "extractor/documents/dossiers/A29_A31_A37_A38_EXHAUSTION_20260719.md",
-          "sha256_at_binding": "ca55fcb24f7c92943d3d03a1a13c7e8277640005f97803cd9598054ae36367bf"
-        },
-        {
           "path": "extractor/documents/dossiers/A37/GHIDRA_LEDGER.json",
           "sha256_at_binding": "7e1017c5095f9a612dff7ff3ae210af3c921112fc3322c89cd830d9f42529312"
-        },
-        {
-          "path": "extractor/documents/RE_REMAINING.md",
-          "sha256_at_binding": "930ed388d33bc741ab4b190196280c71cc90c20d77ee8b12cfb5b846f7860e38"
-        },
-        {
-          "path": "extractor/native/lanes/power_balance_presentation_live/H_A37_CONTROLLER_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "3a0fb3e857dd3313104ff1effb652a77166f7744429369e222f9a3e8f96920b5"
         },
         {
           "path": "extractor/native/lanes/power_balance_presentation_live/H_A37_CONTROLLER_PRODUCER_RE_20260720.json",
@@ -736,10 +703,6 @@
         {
           "path": "extractor/documents/dossiers/A38_SCRIPTED_GUI_EVALUATION_INPUTS.json",
           "sha256_at_binding": "3009a91b1baeda6194b78ef57ebd828c6c637a4ee50e47f67768a33142b98549"
-        },
-        {
-          "path": "extractor/documents/dossiers/A38_SCRIPTED_GUI_RUNTIME_RE.md",
-          "sha256_at_binding": "7abdc56c3a1035f3882bc91dd6ac2b83c3d50ca693965deb82c224ea89016ddb"
         },
         {
           "path": "extractor/documents/dossiers/A38_STATIC_OWNER_ORDER_PORTABLE_IDENTITY_20260720.json",
@@ -874,10 +837,6 @@
         "live_source_promotion": false
       },
       "literal_repository_consumers": [
-        {
-          "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "f49a18880a3797abef3a2891a46b100bd3b75d56bee056759c3a636463a99c4f"
-        },
         {
           "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSURE_20260720.json",
           "sha256_at_binding": "aad29dfcfc522592fb6d114a00ad92c7a551eff629688fa478a995d1de792aa3"
@@ -1071,16 +1030,7 @@
         "supplements": [],
         "live_source_promotion": false
       },
-      "literal_repository_consumers": [
-        {
-          "path": "extractor/documents/dossiers/W15_CAMPAIGN_IDENTITY_STATIC_RE.md",
-          "sha256_at_binding": "f34b00649c4f9564b9ed59897fa75ab0d77ab307866f1c235ac6423bdbf2aff7"
-        },
-        {
-          "path": "extractor/documents/dossiers/W15_CID1_PREREQUISITE_REAUDIT_20260720.md",
-          "sha256_at_binding": "2b9c0e9cbc376306a56eccb681cc10641ddfed331dfe91a692dd5d3c75f4cb75"
-        }
-      ],
+      "literal_repository_consumers": [],
       "exact_request_sources": [],
       "pool_status_receipt_sha256": "b3fec56a454dfb3d613ca9bf6d297dc6834cd3d68739c948a8edfdb5295b71b6",
       "live_source_promotion": false
@@ -1153,7 +1103,6 @@
             "extractor/native/lanes/production_render_submit_live/src/a729_hook.rs",
             "extractor/native/lanes/production_render_submit_live/src/lib.rs",
             "portable_replay/native/render_stream/src/lib.rs",
-            "replay_interface/documents/lane_reports/rendering_laws/XN14Q_RUNTIME_WIRING_AUDIT.md",
             "replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json"
           ]
         }
@@ -1229,20 +1178,12 @@
           "sha256_at_binding": "f291bb121441b91040625ca770005d39f534d514097edc2cabbbc598e765ca19"
         },
         {
-          "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/H_X2_LOSS_WRITER_ENGINEERING_20260720.md",
-          "sha256_at_binding": "9fd83601e049cb158a01a46abbb52839e374ad50ffa0fcfc2b7714af37274d64"
-        },
-        {
           "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/H_X2_LOSS_WRITER_SEEDS_20260720.json",
           "sha256_at_binding": "d318fc57b781a7fa959613e8c88fdb65c032285864a297c552149e3ee6d49f8d"
         },
         {
           "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json",
           "sha256_at_binding": "547bda23f6f873d64a42221ccd0a0472b524f36327f104f4f44f73ce57d82394"
-        },
-        {
-          "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md",
-          "sha256_at_binding": "a536c2417894e333b4223b942e6a9b865f418581761827e051b7aeff90b0ee8a"
         }
       ],
       "exact_request_sources": [],
@@ -1318,7 +1259,6 @@
           "path": "extractor/native/lanes/army_battleplans_depth_live/NH_X8_EXACT10_REEXPORT_REQUEST_20260720.json",
           "sha256_at_binding": "5e7ffcaf9ead42d995e7e74ee3d56b76d8d637660ec0b3c100d18d890fd5881d",
           "declared_downstream_consumers": [
-            "extractor/documents/MASTER_EXTRACTION_CONTRACT.md",
             "extractor/native/collector/src/lib.rs",
             "extractor/native/lanes/army_battleplans_depth_live/src/lib.rs",
             "extractor/native/lanes/army_oob_orders_battleplans_live/D54_EXACT_FIXTURE_CARRIER_CONTRACT.json",
@@ -1451,11 +1391,7 @@
           "sha256_at_binding": "a870f5126588c6b9f868ab04a94dc0f71a3b5986099eb17e720c362dfa3b4218"
         },
         {
-          "path": "extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "d13301b12a2d6b6da019864ca1fa4492ee7f3f1a840cfc3b1f8bf4c39e4704c6"
-        },
-        {
-          "path": "extractor/documents/dossiers/A40/README.md",
+          "path": "extractor/documents/dossiers/A40/manifest.json",
           "sha256_at_binding": "c5bfab18e071e36ed14b0d83fb16a48a5413494d319507faa5720eaf8eb7cfd7"
         },
         {
@@ -1550,10 +1486,6 @@
           "sha256_at_binding": "f13992af1ab62e819cb18d5f71316ec450ad1d04cbcc9d5b3ff7aa8f77f6b6d0"
         },
         {
-          "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "f49a18880a3797abef3a2891a46b100bd3b75d56bee056759c3a636463a99c4f"
-        },
-        {
           "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSURE_20260720.json",
           "sha256_at_binding": "aad29dfcfc522592fb6d114a00ad92c7a551eff629688fa478a995d1de792aa3"
         },
@@ -1628,10 +1560,6 @@
         {
           "path": "extractor/native/lanes/focus_research_decisions_depth_live/DIRECT_EVENT_HOOK_RE_20260720.json",
           "sha256_at_binding": "31a00c82234a31ce81c12cba1720b6222d22fadb2a0bca99185868fff1464303"
-        },
-        {
-          "path": "extractor/native/lanes/focus_research_decisions_depth_live/DIRECT_EVENT_HOOK_RE_20260720.md",
-          "sha256_at_binding": "394e020e345b93843f05ebd225bd95fb35331c4ad7228080b36de4a481b9f476"
         }
       ],
       "exact_request_sources": [],
@@ -1710,10 +1638,6 @@
         {
           "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.json",
           "sha256_at_binding": "43031c7090b674edddad70914285a8d9f9d3e49f515caff9c4d0545842cdd2eb"
-        },
-        {
-          "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.md",
-          "sha256_at_binding": "5fdd6f8ed21d78910834f9a9f0bccf21d991f1ebad3a887b9d4a3ec9d7fca556"
         }
       ],
       "exact_request_sources": [],
@@ -1775,20 +1699,12 @@
       },
       "literal_repository_consumers": [
         {
-          "path": "extractor/documents/dossiers/A16_D53_SUBJECT_AUTONOMY_RE.md",
-          "sha256_at_binding": "05d58e5bf41e485c758295fc2d8469ddc81e56750fc8c521ba6254404d4685bb"
-        },
-        {
           "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_AUTHORITY_REEXPORT_REQUEST_20260720.json",
           "sha256_at_binding": "2e2e72966ddc27a931a4a4460cabf60d90e7af1bae9b72d6871ed4aba4feeabb"
         },
         {
           "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.json",
           "sha256_at_binding": "43031c7090b674edddad70914285a8d9f9d3e49f515caff9c4d0545842cdd2eb"
-        },
-        {
-          "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.md",
-          "sha256_at_binding": "5fdd6f8ed21d78910834f9a9f0bccf21d991f1ebad3a887b9d4a3ec9d7fca556"
         }
       ],
       "exact_request_sources": [
@@ -1853,14 +1769,6 @@
         "live_source_promotion": false
       },
       "literal_repository_consumers": [
-        {
-          "path": "extractor/documents/dossiers/A17_D83_PRODUCTION_INTEGRATION_20260720.md",
-          "sha256_at_binding": "2aa5336ba643b49cda6dc440198da51a84d4a6cdad328e5846cfd866a8fe3e29"
-        },
-        {
-          "path": "extractor/documents/dossiers/A17_NUKE_STOCKPILE_REAUDIT_20260720.md",
-          "sha256_at_binding": "5428996fc57ad8a9a5bfd9b0a325d3cdbb506c4bb64ebd4c3357ce1ed6e69d01"
-        },
         {
           "path": "extractor/re_evidence/A17_NUKE_STOCKPILE/EXACT10_PROMOTION_REQUEST_20260720.json",
           "sha256_at_binding": "14a16aa56356d557939c3ac36adfd923a33d919f0abdf6e803dc435e08d70f4f"
@@ -2077,10 +1985,6 @@
         {
           "path": "extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json",
           "sha256_at_binding": "600ec03bbd90e70bff636f1e35c00960e7f8345b8c1494e247b0ec377dd0ab13"
-        },
-        {
-          "path": "extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md",
-          "sha256_at_binding": "098e0abbd751cc8e5f29bccbd7175ef37005912708f11aac5c84a4889dcbf917"
         }
       ],
       "exact_request_sources": [
@@ -2151,10 +2055,6 @@
         {
           "path": "extractor/documents/dossiers/A33_A34_WAVE3_PROMOTION_SEEDS_20260720.json",
           "sha256_at_binding": "600ec03bbd90e70bff636f1e35c00960e7f8345b8c1494e247b0ec377dd0ab13"
-        },
-        {
-          "path": "extractor/documents/dossiers/A33_A34_WAVE3_WRITER_DEVIRTUALIZATION_20260720.md",
-          "sha256_at_binding": "098e0abbd751cc8e5f29bccbd7175ef37005912708f11aac5c84a4889dcbf917"
         }
       ],
       "exact_request_sources": [
@@ -2383,7 +2283,6 @@
             "extractor/native/lanes/production_render_submit_live/src/a729_hook.rs",
             "extractor/native/lanes/production_render_submit_live/src/lib.rs",
             "portable_replay/native/render_stream/src/lib.rs",
-            "replay_interface/documents/lane_reports/rendering_laws/XN14Q_RUNTIME_WIRING_AUDIT.md",
             "replay_interface/re_evidence/rendering_laws/XN14Q/retained_observation_census.json"
           ]
         }
@@ -2611,14 +2510,6 @@
       },
       "literal_repository_consumers": [
         {
-          "path": "extractor/documents/dossiers/A17_D83_PRODUCTION_INTEGRATION_20260720.md",
-          "sha256_at_binding": "2aa5336ba643b49cda6dc440198da51a84d4a6cdad328e5846cfd866a8fe3e29"
-        },
-        {
-          "path": "extractor/documents/dossiers/A17_NUKE_STOCKPILE_REAUDIT_20260720.md",
-          "sha256_at_binding": "5428996fc57ad8a9a5bfd9b0a325d3cdbb506c4bb64ebd4c3357ce1ed6e69d01"
-        },
-        {
           "path": "extractor/re_evidence/A17_NUKE_STOCKPILE/EXACT10_PROMOTION_REQUEST_20260720.json",
           "sha256_at_binding": "14a16aa56356d557939c3ac36adfd923a33d919f0abdf6e803dc435e08d70f4f"
         },
@@ -2702,10 +2593,6 @@
         {
           "path": "replay_interface/re_evidence/rendering_laws/UI09/H_A29_TECHNOLOGY_CANVAS_EXACT20_REQUEST_20260720.json",
           "sha256_at_binding": "8ca7adba60235edee401a6a1388f498ef080031b7f4d4a7defa19923c9cb7ba7"
-        },
-        {
-          "path": "replay_interface/re_evidence/rendering_laws/UI09/H_A29_TECHNOLOGY_CANVAS_PREREQUISITE_20260720.md",
-          "sha256_at_binding": "1caa24ea0caa1475fc3208235075006d133967f6db97ad9c2c9015ec396b4137"
         }
       ],
       "exact_request_sources": [
@@ -2780,10 +2667,6 @@
         {
           "path": "replay_interface/re_evidence/rendering_laws/UI09/H_A29_TECHNOLOGY_CANVAS_EXACT20_REQUEST_20260720.json",
           "sha256_at_binding": "8ca7adba60235edee401a6a1388f498ef080031b7f4d4a7defa19923c9cb7ba7"
-        },
-        {
-          "path": "replay_interface/re_evidence/rendering_laws/UI09/H_A29_TECHNOLOGY_CANVAS_PREREQUISITE_20260720.md",
-          "sha256_at_binding": "1caa24ea0caa1475fc3208235075006d133967f6db97ad9c2c9015ec396b4137"
         }
       ],
       "exact_request_sources": [
@@ -2854,20 +2737,12 @@
           "sha256_at_binding": "f291bb121441b91040625ca770005d39f534d514097edc2cabbbc598e765ca19"
         },
         {
-          "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/H_X2_LOSS_WRITER_ENGINEERING_20260720.md",
-          "sha256_at_binding": "9fd83601e049cb158a01a46abbb52839e374ad50ffa0fcfc2b7714af37274d64"
-        },
-        {
           "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/H_X2_LOSS_WRITER_SEEDS_20260720.json",
           "sha256_at_binding": "d318fc57b781a7fa959613e8c88fdb65c032285864a297c552149e3ee6d49f8d"
         },
         {
           "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/HUMAN_INPUT_REQUIREMENTS.json",
           "sha256_at_binding": "547bda23f6f873d64a42221ccd0a0472b524f36327f104f4f44f73ce57d82394"
-        },
-        {
-          "path": "extractor/re_evidence/X2_LAND_COMBAT_RESIDUALS/REPORT.md",
-          "sha256_at_binding": "a536c2417894e333b4223b942e6a9b865f418581761827e051b7aeff90b0ee8a"
         }
       ],
       "exact_request_sources": [],
@@ -2939,20 +2814,12 @@
       },
       "literal_repository_consumers": [
         {
-          "path": "extractor/documents/dossiers/A16_D53_SUBJECT_AUTONOMY_RE.md",
-          "sha256_at_binding": "05d58e5bf41e485c758295fc2d8469ddc81e56750fc8c521ba6254404d4685bb"
-        },
-        {
           "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_AUTHORITY_REEXPORT_REQUEST_20260720.json",
           "sha256_at_binding": "2e2e72966ddc27a931a4a4460cabf60d90e7af1bae9b72d6871ed4aba4feeabb"
         },
         {
           "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.json",
           "sha256_at_binding": "43031c7090b674edddad70914285a8d9f9d3e49f515caff9c4d0545842cdd2eb"
-        },
-        {
-          "path": "extractor/re_evidence/A16_SUBJECT_AUTONOMY/H_A16_PREREQUISITE_ENGINEERING_20260720.md",
-          "sha256_at_binding": "5fdd6f8ed21d78910834f9a9f0bccf21d991f1ebad3a887b9d4a3ec9d7fca556"
         }
       ],
       "exact_request_sources": [
@@ -3149,10 +3016,6 @@
           "sha256_at_binding": "411b939b8dd4333d37e53ba0453f26864028fdbe95978d1908619538cb2ebc15"
         },
         {
-          "path": "extractor/documents/dossiers/A40/H_A40_DESIGNERS_PREREQUISITE_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "d13301b12a2d6b6da019864ca1fa4492ee7f3f1a840cfc3b1f8bf4c39e4704c6"
-        },
-        {
           "path": "extractor/native/lanes/design_catalog_context_live/src/selected_designer_identity.rs",
           "sha256_at_binding": "f6f2123cfc8d468235b0cfefb2a527e7775d69b7ab4c721fb6a4a2d64ac3ee0b"
         }
@@ -3271,10 +3134,6 @@
           "sha256_at_binding": "f13992af1ab62e819cb18d5f71316ec450ad1d04cbcc9d5b3ff7aa8f77f6b6d0"
         },
         {
-          "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "f49a18880a3797abef3a2891a46b100bd3b75d56bee056759c3a636463a99c4f"
-        },
-        {
           "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSURE_20260720.json",
           "sha256_at_binding": "aad29dfcfc522592fb6d114a00ad92c7a551eff629688fa478a995d1de792aa3"
         },
@@ -3352,10 +3211,6 @@
         {
           "path": "extractor/documents/dossiers/A40/H_PEACE_BREAKDOWN_XREF_FUNCTION_REQUEST_20260720.json",
           "sha256_at_binding": "f13992af1ab62e819cb18d5f71316ec450ad1d04cbcc9d5b3ff7aa8f77f6b6d0"
-        },
-        {
-          "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSEOUT_20260720.md",
-          "sha256_at_binding": "f49a18880a3797abef3a2891a46b100bd3b75d56bee056759c3a636463a99c4f"
         },
         {
           "path": "extractor/documents/dossiers/A40/H_PEACE_FRESH_STRING_XREF_CLOSURE_20260720.json",

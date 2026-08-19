@@ -1,0 +1,29 @@
+{
+  "schema": "extractor.d55_nonsuspending_hook_feasibility.a729.v1",
+  "binary": {"id": "hoi4.exe 1.19.2.0.a729", "image_base": "0x140000000", "sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"},
+  "evidence": [
+    {"role": "function_and_xref", "job_id": "20260728T233708Z-d55-nonsuspending-hook-site-feasibility-387689ce", "artifact_sha256": "2f7d4c55a8282dabff5c48f3f834498d7c0102f04215fb7b67c00dfd9fe73897"},
+    {"role": "x2_all_data_xref_review", "job_id": "20260728T235243Z-d55-x2-adversarial-all-data-xrefs-1edca5a4", "artifact_sha256": "8ebaf4a9e49293afb6172d41a24e4f9ed39e6ca6d1431361882b766f9fbb355c"},
+    {"role": "x2_pointer_array_classification", "job_id": "20260728T234002Z-d55-x2-pointer-ref-classification-5712cf66", "artifact_sha256": "3ffc0820812523787e4a27a2f9e103e4e9b94bcfc8cba35b82c31983a4476e3b"},
+    {"role": "x2_direct_callers", "job_id": "20260728T234401Z-d55-x2-direct-caller-dispatch-feasibilit-8e9b6e2e", "artifact_sha256": "1b23367c931d403ac3ba97ca0a490ddaa736dfb4a10bdbe1d6f1c9754170e404"},
+    {"role": "x2_caller_slot_classification", "job_id": "20260728T234441Z-d55-x2-caller-dispatch-slot-classificati-93d6a9a3", "artifact_sha256": "868e7055b8eed8f152928c4c73732166280a38110ff489d21dbb604e7e4e9b36"},
+    {"role": "terminal_upstream_roots", "job_id": "20260728T234702Z-d55-terminal-upstream-engine-indirection-9a9875bf", "artifact_sha256": "9f48cd8e9b4ecb298098961d6ec9fc4ff29fd51803a0273606169284cdef37f0"},
+    {"role": "terminal_upstream_slot_classification", "job_id": "20260728T234950Z-d55-upstream-root-rdata-slot-classificat-d3a5c4c7", "artifact_sha256": "b0d8ffa660d2521ed560010eb58852db3f7b1ea1a9f91c47c9ace82377456153"}
+  ],
+  "x2_targets": [
+    {"address": "0x140C7BFC0", "semantics": "active_damage_loss_writer_before_after_delta", "direct_call_sites": 3, "other_refs": ["pdata"], "engine_owned_pointer_slots": []},
+    {"address": "0x141299850", "semantics": "participant_lifecycle_before_after_loss_delta", "other_refs": ["pdata"], "engine_owned_pointer_slots": ["0x1429914C8", "0x1429A5920"]},
+    {"address": "0x141299610", "semantics": "width_producer_side_ordered_group_final_sum", "direct_call_sites": 7, "other_refs": ["pdata"], "engine_owned_pointer_slots": []},
+    {"address": "0x140C6E270", "semantics": "division_width_leaf_ordered_exact_width", "other_refs": ["pdata"], "engine_owned_pointer_slots": ["0x142943C40"]},
+    {"address": "0x1415C9860", "semantics": "panel_side_materializer_leader_and_modifier_boundary", "direct_call_sites": 2, "other_refs": ["pdata"], "engine_owned_pointer_slots": []},
+    {"address": "0x1415BBF00", "semantics": "panel_modifier_membership_and_order", "direct_call_sites": 10, "other_refs": ["pdata", "unwind"], "engine_owned_pointer_slots": []},
+    {"address": "0x14129E190", "semantics": "panel_game_selected_leader", "other_refs": ["pdata", "unwind"], "engine_owned_pointer_slots": ["0x1429914A8", "0x1429A5900"]}
+  ],
+  "terminal_targets": {"count": 3, "exact_entries_have_engine_owned_pointer_slots": false, "semantic_incoming_edges": "direct_calls", "other_refs": ["pdata", "unwind"], "microsoft_hotpatch_prefix_proven": false, "quiescent_installation_boundary_proven": false},
+  "upstream_pointer_slots": [
+    {"role": "normal_root", "target": "0x140C78A90", "slot": "0x142943B60", "rejected_as_terminal_substitute": true},
+    {"role": "overrun_root", "target": "0x1413D93F0", "slot": "0x1429A5750", "rejected_as_terminal_substitute": true}
+  ],
+  "allocator_boundary": {"address": "0x140CC9F10", "writer_local_stack_record_and_returned_index_visible_to_upstream_root": false},
+  "conclusion": {"all_ten_sites_implementable_with_engine_owned_pointer_slots": false, "isolated_x2_targets_with_viable_atomic_slots": 3, "mandatory_x2_targets_without_exact_slots": 4, "terminal_targets_without_exact_slots": 3, "complete_quiescent_boundary_proven": false, "unresolved_fact": "hook_primitive"}
+}

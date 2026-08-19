@@ -1,9 +1,9 @@
 //! d56 `naval_missions_status_live` — per-task-force naval mission status, plus
 //! the per-strategic-region naval-supremacy sidecar.
 //!
-//! Derived from `world_fold.rs:29207`-`:29314`
+//! Derived from `world_fold.rs:29176`-`:29283`
 //! (`fold_naval_missions_status`, dispatched at `:4723`), the row grammar in
-// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=29207-29314 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=467b12449c30ec96530948c0de7c6a1fa2dd6c481e9b7b03edc1b6d75215e1bc
+// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=29176-29283 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=668c4717767d566e34146f43f36dbd8c4b5d5b6a29428f77a317cb662aff1151
 //! `extractor/native/lanes/naval_missions_status_live/src/domain56_compact.rs`
 //! (authority #2 for offsets, bounds and scales), and the collector read that
 //! produces the presence flags,
@@ -93,7 +93,7 @@
 //!   (`:572`-`:582`): both come from `read_cprovince_id` (`:753`-`:785`), which
 //!   returns `None` on a torn pointer read, a null pointer, a non-heap pointer, a
 //!   vtable mismatch, a torn id read, or an out-of-range id. Only the second of
-//!   those six is §3's null; the other five are capture failures, and `None`
+//!   those six is record-state contract's null; the other five are capture failures, and `None`
 //!   collapses them. Undecidable → **Unknown** (tie-break), recorded.
 //! * `sunk_convoys` (`:583`-`:589`): the count is always computed, and the flag is
 //!   set exactly when the computed total is non-zero. The gate is therefore
@@ -115,10 +115,8 @@
 //! fold accepts. They are Booleans here. (Only a value the grammar *hard-enforces*
 //! as a function of carried state is not a field — that is the retired trio above.)
 //!
-//! **The naval-supremacy sidecar is an ordered occurrence list.** `WIRE_FORMAT.md`
-//! §7.3 classifies it by name — "ordered occurrence list — meaningful physical
-//! order, duplicates legitimate, no unique key. **d56 naval supremacy is this**" —
-//! and §13 records its measured port. The fold agrees: it calls the array an
+//! **The naval-supremacy sidecar is an ordered occurrence list:** meaningful
+//! physical order, legitimate duplicates, and no unique key. The fold calls the array an
 //! "ORDER-PRESERVING occurrence list, not a keyed map", full-replaces it on every
 //! successful frame regardless of the delta flag, and pushes every decoded row in
 //! emit order into a `Vec` (`world_fold.rs::fold_naval_missions_status`), and the decoder states
@@ -133,7 +131,7 @@
 //! recipe's step-5 test is about "every payload the FOLD accepts", not the payloads
 //! one capture contains, and the fold accepts both duplicates and any order. That
 //! this capture happens to be sorted and duplicate-free is a property of the stream
-//! (`runs/batch3/d56_naval_missions_status/measurement.md` records the numbers),
+//! (`extractor/re_evidence/document_migration/batch3_measurement_evidence.json` records the numbers),
 //! and keying by position would publish false continuity across an insertion —
 //! the shift is real in this capture, once. That counter-evidence remains part of
 //! the implemented reading rather than disappearing once the shape exists.
@@ -144,7 +142,7 @@
 //! production rejects. [`split_payload`] does the walk and [`check_supremacy_row`]
 //! the per-row bounds; nothing maps them into records.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; the mappers take `frame_tick` and ignore it so every domain's boundary
 //! has one shape.
 
@@ -157,7 +155,7 @@ pub const DOMAIN: u32 = 56;
 pub const TASK_FORCES: u32 = 1;
 pub const NAVAL_SUPREMACY: u32 = 2;
 
-/// Task-force field ids. Stable and append-only; §11 forbids reuse.
+/// Task-force field ids. Stable and append-only; schema-identity contract forbids reuse.
 pub mod field {
     pub const TASK_FORCE_ID: u32 = 1;
     pub const FLEET_ID: u32 = 2;
@@ -176,7 +174,7 @@ pub mod field {
     pub const SOURCE_DELTA_DATA: u32 = 15;
 
     // `naval_supremacy`. All are values because an occurrence list has no key
-    // (§3); `(region, controller)` is explicitly non-unique in the game array.
+    // (record-state contract); `(region, controller)` is explicitly non-unique in the game array.
     pub const SUPREMACY_REGION_ID: u32 = 20;
     pub const SUPREMACY_CONTROLLER_TAG_DB_ID: u32 = 21;
     pub const SUPREMACY_CURRENT: u32 = 22;
@@ -235,8 +233,7 @@ pub const MAX_OOB_ID: u32 = 4_000_000;
 /// gives `i32::MAX - 1`.
 pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_PROVINCE_ID`, `domain56_compact.rs:32`.
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was `1_000_000`, a guess; dossier `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// Structural width of the signed province id accepted here.
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `MAX_REGION_ID`, `domain56_compact.rs:33`.
 pub const MAX_REGION_ID: u32 = 100_000;
@@ -341,7 +338,7 @@ pub fn schema() -> Schema {
         // The fold keys its accumulator by `task_force_id` alone
         // (`world_fold.rs::fold_naval_missions_status`), a runtime identity that persists across hours,
         // which is what a keyed set needs — and only a keyed set has a delta
-        // grammar (§7.3). Full replace on a non-delta frame, upsert on a delta
+        // grammar (collection-shape contract). Full replace on a non-delta frame, upsert on a delta
         // one, no tombstone contract (`world_fold.rs::fold_naval_missions_status`).
         shape: Shape::KeyedSet,
         fields: vec![
@@ -350,7 +347,7 @@ pub fn schema() -> Schema {
             // identity, so `Unsigned`, not `ContentId` (d20's `div_id` rule).
             Field::new(f::TASK_FORCE_ID, Kind::Unsigned).key(0),
             Field::new(f::FLEET_ID, Kind::Unsigned),
-            // A country tag is content-defined (§5): a manifest must resolve it
+            // A country tag is content-defined (content-identity contract): a manifest must resolve it
             // for it to keep its meaning under another mod set. d63's `tag_db_id`
             // and d20's `owner` are the same call.
             Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId),
@@ -364,13 +361,13 @@ pub fn schema() -> Schema {
             Field::new(f::MISSION_STATE, Kind::Enum)
                 .enum_card(MAX_MISSION_STATE + 1)
                 .unknown_capable(),
-            // Provinces and strategic regions are content-defined (§5).
+            // Provinces and strategic regions are content-defined (content-identity contract).
             Field::new(f::LOCATION_PROVINCE_ID, Kind::ContentId).unknown_capable(),
             Field::new(f::STRATEGIC_REGION_ID, Kind::ContentId).unknown_capable(),
             Field::new(f::HOME_BASE_PROVINCE_ID, Kind::ContentId).unknown_capable(),
             Field::new(f::REPAIR_BASE_PROVINCE_ID, Kind::ContentId).unknown_capable(),
             // A cumulative count that ships carry with them, so transfers can
-            // lower it; §4 makes `Monotone` a hint, never a validity constraint
+            // lower it; schema-kind contract makes `Monotone` a hint, never a validity constraint
             // (d20's `cumulative_losses`). No capability: a clear gate is a
             // measured zero, see the module docs.
             Field::new(f::SUNK_CONVOYS, Kind::Monotone),
@@ -411,7 +408,7 @@ pub fn schema() -> Schema {
         domain: DOMAIN,
         // Hourly, like every other compact lane: one DATA record per game hour.
         cadence_log2: 0,
-        // The mixed-shape case §7 names: task forces use keyed deltas while the
+        // The mixed-shape case state-delta contract names: task forces use keyed deltas while the
         // occurrence list contributes a replacement only when its content moves.
         collections: vec![task_forces, naval_supremacy],
         event_part: None,
@@ -638,7 +635,7 @@ pub fn task_force_id_of_row(row: &[u8]) -> core::result::Result<u32, String> {
 /// onto its stored Record. `row` is the raw 64-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d56 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d56 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -650,7 +647,7 @@ pub fn record_from_task_force_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d56 has no derived field; §6's transform input is unused. Named rather than
+    // d56 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // A collection this mapper cannot fill would otherwise come out silently
@@ -665,7 +662,7 @@ pub fn record_from_task_force_row(
         ));
     }
     check_row_len(row)?;
-    // The key is not carried in the record body (§3), but its validity is part of
+    // The key is not carried in the record body (record-state contract), but its validity is part of
     // this row's validity.
     let _ = task_force_id_of_row(row)?;
     validate_oob_id(u32_at(row, 4), "fleet_id")?;
@@ -859,7 +856,7 @@ pub fn check_supremacy_row(row: &[u8], ordinal: u32) -> core::result::Result<(),
 }
 
 /// One `NSUP` row onto its ordered-occurrence record. Every field is carried:
-/// §3 gives an occurrence list no key prefix, and dropping either id would make
+/// record-state contract gives an occurrence list no key prefix, and dropping either id would make
 /// distinct game rows indistinguishable.
 pub fn record_from_supremacy_row(
     collection: &Collection,
@@ -1076,7 +1073,7 @@ impl State {
 // --- Shared helpers ----------------------------------------------------------
 
 /// A gate that is clear means the collector could not capture the value — see the
-/// module docs. §3 calls that **unknown**.
+/// module docs. record-state contract calls that **unknown**.
 fn gated_enum(present: bool, value: u32) -> Value {
     if present {
         Value::Enum(value)
@@ -1396,7 +1393,7 @@ mod tests {
 
     #[test]
     fn the_supremacy_sidecar_is_an_ordered_occurrence_collection() {
-        // `WIRE_FORMAT.md` §7.3 names this array an ordered occurrence list; the
+        // This array is an ordered occurrence list; the
         // schema now carries exactly that shape with no fabricated key.
         let s = schema();
         assert_eq!(s.collections.len(), 2);
@@ -1457,7 +1454,7 @@ mod tests {
         // The premise of the shape, tested rather than asserted: two entries with
         // the same `(region, controller)` and different values are accepted by the
         // decoder (`domain56_compact.rs:438`-`:449`), so any keyed reading of this
-        // array must either lose one of them or key by position — and §7.3 says
+        // array must either lose one of them or key by position — and collection-shape contract says
         // position is not an identity here. Both rows validate and both are mapped.
         let a = supremacy_row([29, 22, 100_000, 0, 0, 0, 0, 1]);
         let b = supremacy_row([29, 22, 200_000, 0, 0, 0, 0, 2]);
@@ -1479,7 +1476,7 @@ mod tests {
         // Absent would claim the concept does not apply to a task force; Null would
         // claim we know there is nothing. The collector clears these gates only
         // when the read failed or could not be validated (`lib.rs:515`-`:582`),
-        // which is §3's "applicable, not captured".
+        // which is record-state contract's "applicable, not captured".
         let c = task_force_collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
         assert!(
@@ -1889,7 +1886,7 @@ mod tests {
 
     #[test]
     fn no_field_is_a_content_id_key() {
-        // The §13 retrofit sweep needs "checked, none" to be distinguishable from
+        // The codec-measurement contract retrofit sweep needs "checked, none" to be distinguishable from
         // "not checked". d56 HAS ContentId values (five of them across the two
         // collections) but no ContentId key, which is the lighter retrofit class.
         for c in schema().collections {
@@ -2420,7 +2417,7 @@ mod tests {
         // byte-identical repeat "can legitimately occur for zero/steady-state
         // entries" (`domain56_compact.rs:446`-`:449`). Any map keyed by the row's
         // own words would hold one. The count this port tracks holds three, which
-        // §7.3's shape retains the rows themselves, not merely their count.
+        // collection-shape contract's shape retains the rows themselves, not merely their count.
         let schema = schema();
         let rows = [
             supremacy_row([9, 1, 5, 0, 0, 0, 0, 0]),

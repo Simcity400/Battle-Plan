@@ -114,7 +114,7 @@ const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last); \
---dump-hour selects the exact canonical REPLAY_SCHEMA hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
+--dump-hour selects the exact canonical hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
 --benchmark-stress-output runs the checked-in non-semantic 1920x1080 stress workload; --benchmark-output requires --benchmark-contract only to select the logical stream/hour, executes and measures the complete packet-native map composition with GPU completion, and writes no benchmark receipt unless exhaustive map-family admission and native execution succeed; --benchmark-warmup-frames and --benchmark-sample-frames configure either benchmark profile; \
 --verify-xmap22-dump decodes the immutable sibling <out.bmp>.xmap22.json receipt through the production Rust type and verifies that the canonical BMP dimensions and top-down BGRA bytes match it; \
@@ -180,7 +180,7 @@ struct CliOptions {
     day_night_hour: Option<f32>,
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
-    /// COLOR-lane debug readback: also write the rendered HDR MainScene (the
+    /// COLOR debug readback: also write the rendered HDR MainScene (the
     /// captured-pass RGBA16F output target, at the capture's native
     /// dimensions, BEFORE the composite/postfx) to this path, with a
     /// `<path>.json` sidecar. This is the byte-level artifact the engine
@@ -825,8 +825,8 @@ fn run(args: &[String]) -> Result<()> {
         let (path, logical_stream_id) = parse_validate_recording_args(args)?;
         return run_validate_recording(&path, logical_stream_id, |name| std::env::var_os(name));
     }
-    // Lane MH: the same product open, reported as data rather than a verdict —
-    // per hour, the frame's coverage warnings and the complete XMAP00
+    // The same product open, reported as data rather than a verdict: per hour,
+    // the frame's coverage warnings and the complete XMAP00
     // map-authority projection. Intercepted here for the same reason
     // `--validate-recording` is: it opens a recording and nothing else, and its
     // own strict parser rejects every unrelated token.

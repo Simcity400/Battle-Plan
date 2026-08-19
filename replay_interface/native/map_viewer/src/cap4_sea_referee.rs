@@ -1,7 +1,7 @@
 //! CAP4-SEA (2026-07-09) — clean, no-FOW open-sea base-color referee.
 //!
 //! # Why this exists (the political sea BASE look, formerly UNKNOWN — see
-//! `replay_interface/documents/POLITICAL_COLOR_LAW.md`)
+//! `xmap05_d3d_handoff.rs`)
 //!
 //! The prior sea-base referee (the political borders-pass post-RT) showed a
 //! "pale grey-green" open sea and was used to argue our dark reflective water

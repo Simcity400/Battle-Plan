@@ -103,7 +103,7 @@
 //!
 //! **An excluded d70 hour is not d63's "retain the accumulator".** It *discards*
 //! it: the recorder is saying the table is unavailable, not that it is unchanged.
-//! A keyed-set delta cannot express that (§8 gap normalisation has no code in this
+//! A keyed-set delta cannot express that (gap normalization has no code in this
 //! crate), so this harness forces a BASELINE on the first measured hour after any
 //! excluded one rather than emitting a delta against a table the recorder has
 //! thrown away. The reference capture has **zero** excluded hours, so that path is
@@ -163,30 +163,29 @@ struct D70Hour {
     /// MEASURED hour AND no unavailable record intervened. False on the first
     /// measured hour and after ANY gap — an unavailable hour, or a whole hour
     /// the capture never scheduled — which is what forces the encoder to open a
-    /// fresh baseline: `WIRE_FORMAT.md:187`-`:190`, "A gap affecting the state
-    /// part forces the next state observation to be a `BASELINE`."
+    /// fresh baseline. requires
+    /// state after a gap to resume from a complete baseline.
     /// `follows_unavailable` above is the narrower, reported reason; this field
-    /// is the §1.5 decision input.
+    /// is the frame-run contract decision input.
     follows_previous: bool,
 }
 
 /// Whether the wire arm opens a BASELINE at this measured hour: the 48-hour
-/// block cadence, or a §1.5 gap (`WIRE_FORMAT.md:187`-`:190`) — an unavailable
+/// block cadence, or a capture gap — an unavailable
 /// hour or a non-contiguous hour step, both of which clear `follows_previous`.
 /// Neither a delta nor a retained reader state can be justified across a gap.
 fn opens_baseline(hours_seen: usize, follows_previous: bool) -> bool {
     hours_seen % BLOCK_HOURS == 0 || !follows_previous
 }
 
-/// One wire-arm hour: the §1.5/block baseline decision, the encode, and the
+/// One wire-arm hour: the frame-run contract/block baseline decision, the encode, and the
 /// per-hour reader replay. Factored out of `main` so the tests execute the
 /// PRODUCTION encode path over a scanned stream: a mutant that reverts the
 /// baseline decision here to block-position-only fails the gap test (a Codex
-/// round-1 finding — the earlier tests exercised the decision function but not
 /// this callsite).
 struct WireHourOutcome {
     opened_baseline: bool,
-    /// The baseline sits outside a scheduled block start — §1.5 gap-forced.
+    /// The baseline sits outside a scheduled block start — gap-forced.
     gap_forced: bool,
     emitted: bool,
     changed_rows: usize,
@@ -1035,7 +1034,7 @@ fn main() {
         }
 
         // New arm: BASELINE at each block start, stored-minimal DELTA between —
-        // and a FORCED baseline at every §1.5 gap (`WIRE_FORMAT.md:187`-`:190`):
+        // and a forced baseline at every capture gap:
         // after an unavailable hour, because the recorder discarded its
         // accumulator there and a delta would assert continuity it does not
         // have, and across any non-contiguous hour step, because state may have
@@ -1124,7 +1123,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} (every {BLOCK_HOURS} h; {forced_baselines} forced by \
-         a WIRE_FORMAT \u{a7}1.5 state gap, {forced_after_unavailable} of them after an \
+         a state gap, {forced_after_unavailable} of them after an \
          unavailable hour)"
     );
     println!("delta hours          {delta_hours}   empty hours {empty_hours}");
@@ -1381,7 +1380,7 @@ mod tests {
             );
             assert!(
                 !scan.hours[1].follows_previous,
-                "bit {bit}: the \u{a7}1.5 decision input agrees"
+                "bit {bit}: the discontinuity decision input agrees"
             );
             assert_eq!(scan.non_contiguous, 1, "bit {bit}: the skipped hour shows");
         }
@@ -1389,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_skipped_hour_forces_the_next_observation_to_be_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: the OTHER gap shape — a whole hour the
+        // The other gap shape is a whole hour the
         // capture never scheduled, with no unavailable record to witness it.
         // `follows_unavailable` cannot see it; `follows_previous` must.
         let mut s = Vec::new();

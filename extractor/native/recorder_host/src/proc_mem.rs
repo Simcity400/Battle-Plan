@@ -11,8 +11,8 @@
 //! A process peak answers G5 with one number and can never say WHICH owner it
 //! belongs to, which is why [`crate::mem_account`] now publishes the component
 //! table beside it. Nor is G5 settled by these counters: the artifact build was
-//! measured world-size-dominated from 129 to 602 game hours
-//! (`extractor/native/runs/fr_recorder_mem/RESULTS.md`), but the session
+//! measured world-size-dominated from 129 to 602 game hours in the retained
+//! `t30_*_report.json` and `t31_final_report.json` receipts, but the session
 //! manifest's own rewrite — 33.5 KB of JSON per game hour — happens after this
 //! reading is taken and is not covered by it.
 

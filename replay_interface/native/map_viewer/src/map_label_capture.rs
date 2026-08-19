@@ -3,7 +3,7 @@
 //!
 //! This module is the capture-side counterpart to [`crate::map_label_law`]: it
 //! never feeds the runtime label path (captures validate, they do not drive
-//! render — see `documents/MAP_LABEL_LAW.md` §5). It exists so a test can decode
+//! render). It exists so a test can decode
 //! the REAL captured bytes with field-level assertions and so the placement
 //! law's arc model can be scored against the engine's own glyph geometry.
 //!

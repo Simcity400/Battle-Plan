@@ -128,9 +128,8 @@ const BLOCK_HOURS: usize = 48;
 /// Two reasons, and the second is not a cadence choice: the 48-hour block
 /// boundary, or a measured hour that does not immediately follow the previous
 /// measured one. An hour this domain did not successfully sample is coverage
-/// the domain lost, which is §8's gap, and `WIRE_FORMAT.md:187`-`:190` is
-/// explicit: "A gap affecting the state part forces the next state observation
-/// to be a `BASELINE`. State may have moved and returned while nobody was
+/// the domain lost. State
+/// after a gap to resume from a complete baseline. State may have moved and returned while nobody was
 /// looking, so neither a delta nor an `UNCHANGED` can be justified across
 /// unobserved time." Delta-encoding across the gap would produce bytes that
 /// decode — the reader's prior is never invalidated, so the local replay
@@ -166,7 +165,7 @@ struct Counts {
     /// Measured hours carrying `WAR_SEGMENT_ABSENT` — the at-war collection's
     /// membership was not measured in any of them. The accumulator still folds
     /// exactly as `fold_diplomacy` does; the format cannot mark a collection-hour
-    /// unknown (§8 has no code here), so the count is reported.
+    /// unknown (gap contract has no code here), so the count is reported.
     war_segment_absent: usize,
     /// Measured hours whose `WAR_BRIDGE_APPLIED` bit disagrees with the
     /// complement of `WAR_SEGMENT_ABSENT`. The collector sets one exactly when
@@ -178,8 +177,8 @@ struct Counts {
     changed_rows_disagreements: usize,
     country_rows: usize,
     /// At-war rows the stream carried. **None are stored**: the war graph is a
-    /// reported stop condition (`d17`'s module docs — §5 has no symbol-id
-    /// assignment rule for the enemy TAG, and §4 has no string kind). Printed so
+    /// reported stop condition (`d17`'s module docs — content-identity contract has no symbol-id
+    /// assignment rule for the enemy TAG, and schema-kind contract has no string kind). Printed so
     /// the stop's cost is a number rather than a silence.
     at_war_rows_not_stored: usize,
     /// Of those, rows the fold itself drops (`world_fold.rs:13822`).
@@ -741,7 +740,7 @@ fn main() {
     let mut reader: Option<Vec<KeyedState>> = None;
     let mut hours_seen = 0usize;
     let mut baselines = 0usize;
-    // Baselines the §1.5 gap rule forced outside a scheduled block start.
+    // Baselines the gap handling forced outside a scheduled block start.
     let mut gap_forced_baselines = 0usize;
     let mut previous_measured_hour: Option<i32> = None;
     let mut empty_hours = 0usize;
@@ -928,7 +927,7 @@ fn main() {
     );
     println!(
         "baselines            {baselines} ({} every {BLOCK_HOURS} h, {gap_forced_baselines} \
-         forced by a gap in measured hours — WIRE_FORMAT §1.5)",
+         forced by a gap in measured hours —",
         baselines - gap_forced_baselines
     );
     println!("delta hours          {delta_hours_with_change}   empty hours {empty_hours}");
@@ -1876,8 +1875,8 @@ mod tests {
 
     #[test]
     fn a_gap_between_measured_hours_forces_a_baseline() {
-        // `WIRE_FORMAT.md:187`-`:190`: "A gap affecting the state part forces
-        // the next state observation to be a `BASELINE`." An excluded or missing
+        // A complete
+        // baseline after a gap. An excluded or missing
         // hour between two measured ones is such a gap; delta-encoding across it
         // would decode cleanly while asserting a continuity the capture does not
         // have. The decision function, over its whole input space:

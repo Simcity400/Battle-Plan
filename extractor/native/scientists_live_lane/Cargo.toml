@@ -6,12 +6,7 @@ edition = "2021"
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "scientists_stream_proof"
-path = "src/bin/scientists_stream_proof.rs"
-
 [dependencies]
 compact_contract = { path = "../compact_contract" }
-compact_stream = { path = "../compact_stream" }
 serde_json = "1"
 sha2 = "0.10"

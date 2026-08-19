@@ -1,10 +1,12 @@
 //! d20 `divisions_live` — the reference domain schema.
 //!
-//! Derived from `world_fold.rs:25511`-`:26064`
-// @world-fold-authority domain=20 functions=fold_divisions,fold_division_document lines=25511-26064 sha256=d2fe41cff1381f2b35b9aedcb651f7fed9bb2a34574d3c76d31f759e4800353a closure=6ced6f20d5d67b07801f28bd3a0d36f512626b713df2a7a271cb0482def8c93a
-//! (row decode and object build) and `extractor/documents/domains/d20_divisions_live.md`.
-//! The rationale for every quantization choice is in
-//! `extractor/native/runs/d20_reference/07_schema_v1.md`.
+//! Derived from `world_fold.rs:25482`-`:26035`
+// @world-fold-authority domain=20 functions=fold_divisions,fold_division_document lines=25482-26035 sha256=a8a69bf224e133476f768ba499e3994bc3129f9f567037a4ebef92e2267aaa85 closure=5afbe78fac63b1da3bdf137753d394c4c57f38ec1be620d4eabde2f31da6a776
+//! (row decode and object build) and `domain-20::Overview` in
+//! `extractor/documents/technical_evidence.json`.
+//! The quantization rationale is preserved in
+//! `extractor/re_evidence/document_migration/d20_d55_evidence.json`
+//! under the `wire_schema_rationale` source receipt.
 //!
 //! **v1 excludes the four hook-derived counter fields.** Their predicate depends
 //! on live engine helper calls, so they cost a sentinel-gated hook, and
@@ -16,7 +18,7 @@ use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 pub const DOMAIN: u32 = 20;
 pub const DIVISIONS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const DIV_ID: u32 = 1;
     pub const DIV_TYPE: u32 = 2;
@@ -75,7 +77,7 @@ pub fn schema() -> Schema {
     }
     // The A15 extension fields. A legacy 104-byte row does not carry them
     // (`world_fold.rs::fold_divisions`), and the schema does support them, so their
-    // state on such a row is **unknown**, not absent — §3 reserves absent for
+    // state on such a row is **unknown**, not absent — record-state contract reserves absent for
     // "not applicable, or unsupported by this schema".
     fields.push(
         Field::new(f::MAX_ORGANISATION, Kind::Continuous)
@@ -142,7 +144,7 @@ pub fn schema() -> Schema {
             .nullable(),
     );
     fields.push(Field::new(f::CURRENT_MANPOWER, Kind::Unsigned).optional().nullable());
-    // Aggregate of per-division counters; transfers can decrease it, so §4's
+    // Aggregate of per-division counters; transfers can decrease it, so schema-kind contract's
     // "monotone is a hint, never a validity constraint" applies.
     fields.push(Field::new(f::CUMULATIVE_LOSSES, Kind::Monotone).optional().nullable());
     fields.push(Field::new(f::ARMY_ID, Kind::Unsigned).optional().nullable());

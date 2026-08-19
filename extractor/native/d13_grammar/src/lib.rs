@@ -5,19 +5,12 @@
 //! D13's DATA payload grammar was walked in FOUR places: the collector's packer
 //! wrote it, `recorder_host::world_fold::fold_tech` folded it,
 //! `recorder_host::domain_data_authority::decode_compact_tech_data_payload`
-//! validated it, and `wire_format::d13` ported it. On 2026-08-14 lane JO added a
-//! trailing section (the XUI09 witness tail) and TWO of the four went stale the
-//! same day. One of them refused every D13 record of a 43-hour live capture —
-//! 59 of 59, the whole domain's research data — and the seal recorded the
-//! exclusions lawfully, so nothing failed until someone counted
-//! (`extractor/native/runs/jt_a29_values/LIVE_D13_EXCLUSION.md`). The other
-//! refused every payload a shipping recorder writes.
-//!
-//! The owner ruled (2026-08-15) that the fix is architectural: ONE shared
-//! decoder for the grammar, with all four sites delegating their structural
-//! walking to it. Each site keeps its own SEMANTIC layer — what it does with the
+//! validated it, and `wire_format::d13` ported it. A trailing-section change
+//! proved that duplicated structural walks could reject otherwise valid
+//! payloads. This crate provides one shared decoder while each site keeps its
+//! own semantic layer — what it does with the
 //! spans, which violations are fatal, and how it spells its diagnostics. The
-//! ruling is about the grammar, not about merging responsibilities.
+//! shared boundary is grammar only, not merged responsibility.
 //!
 //! # What is grammar here, and what is not
 //!

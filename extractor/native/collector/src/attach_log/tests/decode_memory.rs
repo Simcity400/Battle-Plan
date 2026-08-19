@@ -1500,8 +1500,7 @@ fn baseline_portrait_identity(
 /// helpers, and each other. Nothing else. The `_in` suffix and the shipped
 /// names of everything this lane migrated are both forbidden.
 ///
-/// (That the transcriptions MATCH b346f6c2 is a separate, point-in-time check,
-/// recorded in `extractor/native/runs/gb_lanememory/oracle_transcription.md`:
+/// The transcriptions match b346f6c2 in a separate point-in-time check:
 /// each body stripped of comments and whitespace and compared character for
 /// character against `git show b346f6c2:...attach_log.rs`. All six are
 /// identical but for three grammatically inert trailing commas.)

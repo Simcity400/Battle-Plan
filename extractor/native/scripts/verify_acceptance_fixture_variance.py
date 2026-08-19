@@ -5,7 +5,7 @@ The production recorder folds one JSON snapshot per game hour into the replay
 container.  This tool grades an *extracted* snapshot directory; it never infers
 success from aggregate row counters in ``native_session_manifest.json``.
 
-It asserts the four observations called out by LIVE_ACCEPTANCE_RUNBOOK:
+It asserts four fixture-variance observations:
 
 * A16: the same authenticated current-status row changes autonomy state and/or
   signed score;

@@ -1311,9 +1311,7 @@ function Get-BatteryDepInfoOwners {
     literal -- `include!(concat!(env!("OUT_DIR"), "/x.rs"))`, a macro that
     expands to `#[path = ...]` -- leaves no literal to read. Lane JD proved that
     residual is not closable by adding patterns: it needs macro expansion and a
-    real Rust lexer, and a regex that recognises Rust cannot be made sound
-    (runs/jd_battery_granularity/WHY_THIS_DID_NOT_LAND.md, 18 findings over 4
-    adversarial rounds).
+    real Rust lexer, and a regex that recognises Rust cannot be made sound.
 
     Cargo and rustc already emit the ground truth. Every compiled unit gets a
     dep-info file listing exactly the source files that went into it, AFTER

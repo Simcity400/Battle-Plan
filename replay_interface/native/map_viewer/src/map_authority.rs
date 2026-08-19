@@ -675,7 +675,7 @@ fn province_snow_accumulator_status(frame: &WorldFrame) -> ViewStatus {
 ///
 /// Both halves of the pair are checked, and against each other. `hour_index` is
 /// the schema's canonical sort key and is *derived from* `date`
-/// (`REPLAY_SCHEMA.md` §0.3), so recomputing it from the stamp and requiring
+/// so recomputing it from the stamp and requiring
 /// equality is what makes this a statement about the admitted payload rather
 /// than about one field of it. A stamp that parses but disagrees with the sort
 /// key is not a measurement of anything.
@@ -691,8 +691,7 @@ fn calendar_time_status(frame: &WorldFrame) -> ViewStatus {
 }
 
 /// Month lengths of the **engine's** calendar, which is 365-day with **no leap
-/// years** (`extractor/native/compact_contract/src/calendar.rs`,
-/// `REPLAY_SCHEMA.md` §0.3). February is always 28: a Gregorian rule here would
+/// years** (`extractor/native/compact_contract/src/calendar.rs`). February is always 28: a Gregorian rule here would
 /// admit `1936.2.29`, which the game cannot produce.
 const ENGINE_MONTH_LENGTHS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -823,9 +822,7 @@ fn ended_combats_dropped_rows(frame: &WorldFrame) -> bool {
 /// it cannot be complete against a roster that silently lost members.
 ///
 /// It returns the TAG set rather than a bare status because that is what a
-/// joining census needs; `country.current_capital_state` was the first such
-/// census and is currently refused for a producer-side reason recorded in
-/// `extractor/native/runs/hw_admission_a/ROW_PROOFS.md` (HW-F6).
+/// joining census needs.
 fn complete_d18_roster(frame: &WorldFrame) -> Result<BTreeSet<String>, ViewStatus> {
     let roster = frame.d18_country_roster();
     if roster.status != ViewStatus::Present {
@@ -1171,9 +1168,7 @@ pub fn map_authority_requirement_metadata(
         }
         // XMAP05 has proved its roster row (ledger disposition
         // `owner_proven_production_consumer`), so its blocker names the hour's
-        // missing measurement instead of a pending proof. Its sibling rows above
-        // keep theirs, each for a producer-side reason recorded in
-        // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`: the POV rows need
+        // missing measurement instead of a pending proof. The POV rows need
         // the all-country `complete_pov_roster` FOW1 census no producer emits.
         // `country.presentation_identity` needed a cosmetic-tag spelling that
         // distinguishes "legitimately absent" from "could not read" across the
@@ -1235,16 +1230,14 @@ pub fn map_authority_requirement_metadata(
         // XMAP16's three rows stay unproven: `build_rail_replay` admits only the
         // `exact_a729_crailwaygfx_carrier` document, and the recorder's D81 fold
         // emits `exact_a729_supply_simulation_tables` with a different field set,
-        // so no capture can make `rail_replay` anything but unavailable. Recorded
-        // in `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`.
+        // so no capture can make `rail_replay` anything but unavailable.
         "logistics.rail_hub_frames" | "logistics.rail_topology_state" | "mapmode.supply_state" => {
             "XMAP16 must prove exact topology/hub/state identities, order, completeness, and authenticated producer/content joins"
         }
         // `country.current_capital_state` stays unproven for a producer reason,
         // not a replay one: `capital_state` is minted only by the collector's
         // direct-JSON country renderer and appears nowhere in `recorder_host/`,
-        // so the fold never writes it into the hourly snapshot. HW-F6 in
-        // `extractor/native/runs/hw_admission_a/ROW_PROOFS.md`.
+        // so the fold never writes it into the hourly snapshot.
         "country.current_capital_state" | "map_furniture.current_victory_points" => {
             "XMAP21 must prove the exact live furniture value, identity, cadence, completeness, and authenticated producer/content joins"
         }

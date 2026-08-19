@@ -130,10 +130,9 @@ from pathlib import Path
 # Citing side: THE WHOLE REPOSITORY, minus the directories below.
 #
 # An enumerated root list was tried first and is the wrong shape for this gate.
-# It scanned six trees and therefore silently exempted everything else -- the
-# repository-root documents (`ACCEPTANCE.md` alone carries an ambiguous
-# `lib.rs:<line>`), `tools/`, `extractor/coverage_audit/`, the fixture trees --
-# and nothing about the list said which files were outside it.  The world_fold
+# It scanned six trees and therefore silently exempted everything else --
+# repository-root documents, `tools/`, `extractor/coverage_audit/`, and fixture
+# trees -- and nothing about the list said which files were outside it. The world_fold
 # gate had already been bitten by exactly this: `replay_interface/documents` was
 # found citing `world_fold.rs` 28 times while only `extractor/documents` was
 # being scanned.  Scanning everything and naming the exclusions makes the

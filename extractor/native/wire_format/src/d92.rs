@@ -1,8 +1,8 @@
 //! d92 `country_preferred_tactic_live` — each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:14107`-`:14170`
+//! Derived from `world_fold.rs:14089`-`:14152`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
-// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=14107-14170 sha256=e4436fb8ebaf47d966fe6c3de1a84dd93092909f34ef8d462e9a4b6c15746d2a closure=db611fd7964df58b1dbcf3cff33b6ddd5a529140a031ae505d1cbcd126350ea2
+// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=14089-14152 sha256=e4436fb8ebaf47d966fe6c3de1a84dd93092909f34ef8d462e9a4b6c15746d2a closure=cd8c2959534b7e666737292db0a632aea457297bbb21798d14425b14512b7614
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
 //! (`extractor/native/collector/src/attach_log.rs:32490`-`:32557`,
@@ -61,7 +61,7 @@
 //!
 //! So a row that reaches this mapper at all is a row whose read succeeded, and
 //! the empty shape means the country's preferred-tactic slot genuinely points at
-//! the no-tactic sentinel. That is §3's **null** — "applicable, the relation
+//! the no-tactic sentinel. That is record-state contract's **null** — "applicable, the relation
 //! genuinely points at nothing" — word for word. It is not `unknown`, because a
 //! failed read never produces a row; it is not `absent`, because every country in
 //! the D18 roster has the slot. **No d92 field is ever `unknown` or `absent`**,
@@ -90,10 +90,9 @@
 //! population" (`preferred_tactic.rs:43`-`:45`) — so under another mod set the
 //! same integer denotes a different tactic, which is exactly step 3's deciding
 //! question ("must a content manifest resolve this id for it to keep its meaning
-//! across mod sets?"). `runs/batch3/domain_classification.md:1057`-`:1059` calls
-//! it `Unsigned`; that is survey guidance and this module disagrees with it
+//! across mod sets?"). The survey called it `Unsigned`; this module disagrees with it
 //! deliberately, because classing a content-resolved id as `Unsigned` would hide
-//! it from §13's ContentId retrofit sweep — the one failure the sweep exists to
+//! it from codec-measurement contract's ContentId retrofit sweep — the one failure the sweep exists to
 //! prevent. The disagreement is recorded in the deliverable's open questions.
 //!
 //! # `source_sequence` — carried, in a singleton collection
@@ -106,12 +105,12 @@
 //! a constant key, the shape d68 established for a payload-level scalar with no
 //! natural key (`d68.rs:130`-`:146`, `:248`-`:259`).
 //!
-//! It is **not** declared a §6 derived field, though it looks like one: the
+//! It is **not** declared a derived-field contract derived field, though it looks like one: the
 //! collector computes it as `hour_index_from_raw(game_hour_raw) + 1`
 //! (`attach_log.rs:33335`, `calendar.rs:22`-`:26`), which is clock-linear with
 //! `c = 1`, `v = 1`. Two reasons it stays a plain value. The fold enforces
 //! nothing of the kind — it stores whatever u64 decodes — so declaring the
-//! transform would refuse frames the recorder folds, and §6's `u` must equal the
+//! transform would refuse frames the recorder folds, and derived-field contract's `u` must equal the
 //! container's `ticks_per_hour_log2` for the term to be the game hour
 //! (`lib.rs`'s `the_derived_shift_recovers_the_game_hour`), which is a container
 //! decision this crate does not get to freeze into a schema. The identity is
@@ -179,7 +178,7 @@ pub const COUNTRIES: u32 = 1;
 /// The payload-level scalar carried under a constant key — see the module docs.
 pub const FRAME: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. Numbered uniquely across the whole domain, not per collection, so a
 /// later reader cannot confuse two collections' ids.
 pub mod field {
@@ -269,15 +268,15 @@ pub fn schema() -> Schema {
                 // Full replace each hour (`world_fold.rs::fold_country_preferred_tactics`), but `tag_db_id`
                 // is a stable identity that persists across hours, which is what
                 // a keyed set needs — and only a keyed set has a delta grammar
-                // (§7.3). The roster is constant at 439 rows on the measured
+                // (collection-shape contract). The roster is constant at 439 rows on the measured
                 // capture, so the delta path is what this domain actually costs.
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The country's `tag_db_id` (`world_fold.rs::fold_country_preferred_tactics`), the same
                     // identity D18 keys its roster by and which d92 is gated on
                     // being EQUAL to. `ContentId` because a country tag is
-                    // content-defined (§5); d63 and d83 class theirs the same.
-                    // This is a ContentId **key**, the heavier §13 retrofit class
+                    // content-defined (content-identity contract); d63 and d83 class theirs the same.
+                    // This is a ContentId **key**, the heavier codec-measurement contract retrofit class
                     // — key components sort and delta-encode by raw value.
                     Field::new(f::TAG_DB_ID, Kind::ContentId).key(0),
                     // Null exactly when the country's slot points at the engine's
@@ -298,7 +297,7 @@ pub fn schema() -> Schema {
                     // content manifest resolves (d68.rs:255`-`:259`).
                     Field::new(f::FRAME_SINGLETON, Kind::Unsigned).key(0),
                     // The producer advances it once per captured hour
-                    // (`attach_log.rs:33335`). §4 makes `Monotone` an encoding
+                    // (`attach_log.rs:33335`). schema-kind contract makes `Monotone` an encoding
                     // hint and never a validity constraint, so a producer that
                     // reset it would still encode. Always present: the header
                     // always carries the word, so no capability is declared.
@@ -310,19 +309,19 @@ pub fn schema() -> Schema {
     }
 }
 
-// --- §5 symbol resolution ----------------------------------------------------
+// --- content-identity contract symbol resolution ----------------------------------------------------
 
 /// The content-defined `tactic_id` vocabulary, as manifest ids.
 ///
-/// §4 declares no string kind and `Kind::legal_as_key` admits only `Unsigned`,
-/// `Signed` and `ContentId` (`schema.rs:29`-`:31`), but §5 already answers what
+/// schema-kind contract declares no string kind and `Kind::legal_as_key` admits only `Unsigned`,
+/// `Signed` and `ContentId` (`schema.rs:29`-`:31`), but content-identity contract already answers what
 /// these payloads carry: "Country tags, equipment names, province and state ids
 /// are content-defined. The stream carries manifest ids as varints, never text"
-/// (`WIRE_FORMAT.md:346`-`:351`). A combat-tactic token is content-defined —
+/// A combat-tactic token is content-defined —
 /// `IDENTITY_EVIDENCE_SHA256` pins the registry population that mints it — so it
 /// is a `ContentId` resolved through a table the **caller supplies**.
 ///
-/// §5's ids are file-global and in-stream interning is forbidden — "it must be
+/// content-identity contract's ids are file-global and in-stream interning is forbidden — "it must be
 /// fully read before any seek" — so this table is an **input** to the boundary,
 /// built once from the whole content set before any record is mapped, and never
 /// grown by the mapper.
@@ -337,16 +336,16 @@ pub fn schema() -> Schema {
 /// (`d29.rs:205`); two properties make it safe here:
 ///
 /// - Nothing downstream computes from the id's value. `ContentId` is a plain
-///   varint (§4), and `tactic_id` is a **value** field, not a key, so no key
+///   varint (schema-kind contract), and `tactic_id` is a **value** field, not a key, so no key
 ///   ordering or delta layout depends on the choice. (This domain's key is a
 ///   `ContentId` too, but its ids are raw `tag_db_id` casts, not symbol ids —
 ///   a separate retrofit, flagged separately.)
 /// - The measurement is invariant to it over **this domain's own vocabulary**:
 ///   any assignment over fewer than 128 symbols is a one-byte varint for every
-///   row. §5's ids are file-global, so an assignment over a whole content set can
+///   row. content-identity contract's ids are file-global, so an assignment over a whole content set can
 ///   still widen the varint; the claim made is the one measured, not more.
 ///
-/// During this mapper's §5 integration, this type is replaced by the
+/// During this mapper's content-identity contract integration, this type is replaced by the
 /// container's manifest resolver and every call site changes with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
@@ -690,9 +689,9 @@ pub fn key_from_frame() -> Key {
 /// [`split_payload`], which is also what decoded and validated this row; d92 has
 /// exactly one row form, so nothing here selects between forms.
 ///
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d92 declares no derived field, so it is taken and ignored — every domain's
-/// mapper has the same shape. `symbols` is step 3's §5 resolver, the typed input
+/// mapper has the same shape. `symbols` is step 3's content-identity contract resolver, the typed input
 /// a content-defined text field requires (d29's `symbols: &Symbols`).
 ///
 /// Fail-closed throughout: an unresolvable token is an `Err`, never a value
@@ -705,7 +704,7 @@ pub fn record_from_row(
     frame_tick: u64,
     symbols: &Symbols,
 ) -> core::result::Result<Record, String> {
-    // d92 has no derived field; §6's transform input is unused. Named rather
+    // d92 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     // A record built for the wrong collection would otherwise come out shaped by
@@ -716,7 +715,7 @@ pub fn record_from_row(
             collection.collection_id
         ));
     }
-    // The key is not carried in the record body (§3), but its validity is still
+    // The key is not carried in the record body (record-state contract), but its validity is still
     // part of this row's validity.
     let _ = key_from_row(row)?;
     // `TacticRow` is publicly constructible, so `split_payload` having checked
@@ -730,7 +729,7 @@ pub fn record_from_row(
     for f in collection.value_fields() {
         let value = match f.field_id {
             // Null on the authenticated no-tactic sentinel — see the module docs.
-            // The raw cast is §13's open manifest-id assignment: today's boundary
+            // The raw cast is the unresolved manifest-id assignment: today's boundary
             // mappers cast the source id straight into `ContentId`, and this field
             // is listed in the deliverable's retrofit sweep.
             field::TACTIC_DATABASE_ID => {
@@ -798,7 +797,7 @@ pub fn record_from_frame_header(
 }
 
 /// Every `tactic_id` token one payload carries, for building a [`Symbols`] table
-/// over a whole capture before any record is mapped (§5: fully read first).
+/// over a whole capture before any record is mapped (content-identity contract: fully read first).
 ///
 /// Shares [`split_payload`] rather than re-walking the payload, so the vocabulary
 /// and the records can never disagree about what a row says.
@@ -1116,7 +1115,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a country tag is content-defined (§5), so a manifest must resolve it"
+            "a country tag is content-defined (content-identity contract), so a manifest must resolve it"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(c.fields.len(), 3, "1 key + database id + token");
@@ -1181,7 +1180,7 @@ mod tests {
         assert_eq!(
             r.values[index_of(&c, field::TACTIC_DATABASE_ID)],
             Value::ContentId(42),
-            "the engine database index, raw-cast per §13"
+            "the engine database index, preserved as a raw integer"
         );
         assert_eq!(
             r.values[index_of(&c, field::TACTIC_ID)],
@@ -1194,7 +1193,7 @@ mod tests {
     fn the_no_tactic_sentinel_maps_to_null_on_both_fields() {
         // The ONLY path on which the collector emits this row is the
         // authenticated `COMBAT_TACTIC_NONE_VTABLE_RVA` sentinel
-        // (`attach_log.rs:32512`-`:32519`), so §3's "the relation genuinely
+        // (`attach_log.rs:32512`-`:32519`), so record-state contract's "the relation genuinely
         // points at nothing" is exactly right and `Unknown` would be a lie.
         let c = countries();
         let (_, rows) = split_payload(&payload_with(&[none_row(7)], 0, 0, 1)).expect("decodes");
@@ -1205,7 +1204,7 @@ mod tests {
 
     #[test]
     fn a_source_sequence_of_zero_is_a_value_not_an_empty_state() {
-        // §3 keeps zero out of the three empty states. The country collection
+        // record-state contract keeps zero out of the three empty states. The country collection
         // has no field that can carry a real zero — a zero `tag_db_id` is
         // rejected (`preferred_tactic.rs:194`) and a zero `tactic_database_id`
         // IS the null sentinel — so the frame singleton is where this case lives.
@@ -1233,7 +1232,7 @@ mod tests {
     #[test]
     fn the_mapper_enforces_the_row_shape_on_a_hand_built_row() {
         // `TacticRow`'s fields are public, so a caller can reach `record_from_row`
-        // with a row that never came from a payload. Round-1 review finding: the
+        // with a row that never came from a payload. the
         // reviewer's input was `(tag 1, id 0, Some("shock"))`, which without a
         // check publishes `Null` for the database id beside a real `ContentId`
         // for the token — a four-state pairing no payload the fold accepts can
@@ -1387,20 +1386,20 @@ mod tests {
     fn no_field_is_derived() {
         // `source_sequence` LOOKS clock-linear — the collector computes it as
         // `hour_index_from_raw(game_hour_raw) + 1` (`attach_log.rs:33335`) — but
-        // the fold enforces nothing of the kind and §6's `u` is a container
+        // the fold enforces nothing of the kind and derived-field contract's `u` is a container
         // decision. See the module docs and the deliverable's open questions.
         for c in &schema().collections {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
         }
     }
 
-    // --- The §13 ContentId retrofit sweep. -----------------------------------
+    // --- The codec-measurement contract ContentId retrofit sweep. -----------------------------------
 
     #[test]
     fn the_content_id_inventory_is_asserted_for_the_retrofit_sweep() {
         // "This domain has no ContentId" is a sweep result, not a silence — and
         // so is the inventory when it is non-empty. Every one of these changes
-        // during the §5 resolver retrofit. `TAG_DB_ID` is the heavier
+        // during the content-identity contract resolver retrofit. `TAG_DB_ID` is the heavier
         // class: a ContentId **key** sorts and delta-encodes by raw value, so a
         // remap reorders keys and changes the byte layout of every baseline.
         let schema = schema();

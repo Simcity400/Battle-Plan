@@ -3,7 +3,7 @@
 //! the game stores an absolute hour counter (`raw_date`). The replay schema's
 //! canonical sort key `hour_index` is `raw_date - DATE_EPOCH_CONST`, i.e.
 //! `((year*365 + day_of_year)*24 + hour)` on a 365-day, no-leap calendar.
-//! See `replay_interface/documents/REPLAY_SCHEMA.md` §0.3.
+//! See `PROJECT.md` under `Time, identity, sessions, and files`.
 
 /// Offset between the engine's stored hour counter and the schema `hour_index`.
 pub const DATE_EPOCH_CONST: i32 = 43_799_999;
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn hour_index_matches_schema_definition() {
-        // 1940.9.2 hour 21 -> 17000277 per REPLAY_SCHEMA §0.3 example.
+        // 1940.9.2 hour 21 -> 17000277 under the canonical hour-index formula.
         // day_of_year_index for Sep 2 = (31+28+31+30+31+30+31+31) + 1 = 244.
         let doy_index = 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 1;
         let hour_index = (1940i64 * 365 + doy_index) * 24 + 21;

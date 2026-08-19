@@ -2,18 +2,14 @@
 //! mode 13), **Ideology** (`game_map_mode_ideology`, mode 16), and **Players**
 //! (`game_map_mode_players`, mode 15).
 //! XMAP00_VIEWER_VISUAL_INPUT: viewer.map_mode_selection
-//! The engine mode set and its selection law are in
-//! `replay_interface/documents/UI_LAYOUT_LAW.md` §6.2 "Map-mode
-//! manager".
-//!
 //! This module owns the *data law* for those three fills: the per-state RGBA the
 //! GradientBorder field is keyed with, plus (for States) the state-boundary
 //! outline geometry. It is the new-map-mode sibling of `naval_supremacy_tint`
 //! and follows the same three contracts:
 //!
 //! 1. **Colours are computed replay-side from recorded inputs, never recorded**
-//!    (standing override; UI_LAYOUT_LAW.md §6.2 marks the per-scope colour
-//!    result runtime/recording-gated, not file-carried). Every
+//!    because the per-scope colour result is runtime/recording-gated, not
+//!    file-carried. Every
 //!    colour/threshold below is FILE-cited to a shipped game file or fails
 //!    **closed** (no fill) — never an invented colour.
 //! 2. **Decoupled from `replay_core`.** The fill functions take neutral input

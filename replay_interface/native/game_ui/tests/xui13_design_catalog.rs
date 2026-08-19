@@ -1,14 +1,11 @@
 use game_ui::design_catalog::{
-    admit_current_designer_catalog, admit_design_catalog, admit_designer_view,
-    admit_observer_design_catalogue, DesignCatalogRejection, DesignKind, DesignLifecycleState,
-    DesignModule, DesignRecord, DesignStat, DesignUpgrade, DesignerViewRejection,
+    admit_design_catalog, admit_observer_design_catalogue, DesignCatalogRejection, DesignKind,
+    DesignLifecycleState, DesignModule, DesignRecord, DesignStat, DesignUpgrade,
     DisplayOrderSnapshot, FieldCompleteness,
 };
 use game_ui::readonly_design_peace::DesignerViewKind;
-use replay_core::world::{DesignCatalogContext, DesignCatalogContextView, ViewStatus};
 use replay_core::{
-    open_recording, CurrentDesignCatalog, WorldTimeline, A27_DESIGN_CATALOG_ARTIFACT_PATH,
-    A27_LIVE_CATALOG_SCHEMA,
+    open_recording, WorldTimeline, A27_DESIGN_CATALOG_ARTIFACT_PATH, A27_LIVE_CATALOG_SCHEMA,
 };
 use serde_json::json;
 use snapshot::{pack, PackEntry, PackIdentity};
@@ -193,88 +190,6 @@ fn owner_lifecycle_and_display_order_completeness_fail_closed() {
     assert_eq!(
         admit_design_catalog(&[row], &incomplete_order),
         Err(DesignCatalogRejection::UnknownCompleteness)
-    );
-}
-
-fn live_context(ids: &[u32]) -> DesignCatalogContextView {
-    DesignCatalogContextView {
-        status: ViewStatus::Present,
-        context: Some(DesignCatalogContext {
-            schema_version: 1,
-            authority: "exact_a729_designer_view".into(),
-            elapsed_wall_ms: 1,
-            frame_hour: 2,
-            completeness_record_identity: "a27:a729:transition:9".into(),
-            transition_sequence: 9,
-            active: true,
-            mode: 1,
-            family: "tank_designer_view".into(),
-            our_filter_enabled: true,
-            foreign_filter_enabled: false,
-            obsolete_filter_enabled: false,
-            current_country_tag_id: 17,
-            selected_country_tag_ids: vec![17, 42],
-            ordered_design_ids: ids.to_vec(),
-        }),
-    }
-}
-
-#[test]
-fn d78_exact_filtered_order_binds_by_stable_variant_identity() {
-    let records = vec![
-        record("7:70", DesignKind::TankVariant),
-        record("55:70", DesignKind::TankVariant),
-        record("100:70", DesignKind::TankVariant),
-    ];
-    let catalog = admit_design_catalog(&records, &order(&["7:70", "55:70", "100:70"])).unwrap();
-    let admitted = admit_designer_view(&catalog, &live_context(&[100, 7])).unwrap();
-    assert_eq!(
-        admitted
-            .ordered
-            .iter()
-            .map(|row| row.design_id.as_str())
-            .collect::<Vec<_>>(),
-        ["100:70", "7:70"]
-    );
-    assert_eq!(admitted.selected_country_tag_ids, [17, 42]);
-}
-
-#[test]
-fn portable_current_catalog_admits_without_heap_or_d59_order() {
-    let current = CurrentDesignCatalog {
-        // This is already the d78 order, not the full A27 heap-scan order.
-        records: vec![
-            record("100:70", DesignKind::EquipmentVariant),
-            record("7:70", DesignKind::EquipmentVariant),
-        ],
-        display_order: order(&["100:70", "7:70"]),
-    };
-    let admitted = admit_current_designer_catalog(&current, &live_context(&[100, 7])).unwrap();
-    assert_eq!(
-        admitted
-            .ordered
-            .iter()
-            .map(|row| row.design_id.as_str())
-            .collect::<Vec<_>>(),
-        ["100:70", "7:70"]
-    );
-}
-
-#[test]
-fn missing_or_unknown_d78_context_fails_closed() {
-    let row = record("7:70", DesignKind::TankVariant);
-    let catalog = admit_design_catalog(&[row], &order(&["7:70"])).unwrap();
-    let unavailable = DesignCatalogContextView {
-        status: ViewStatus::DomainUnavailable,
-        context: None,
-    };
-    assert_eq!(
-        admit_designer_view(&catalog, &unavailable),
-        Err(DesignerViewRejection::MissingContext)
-    );
-    assert_eq!(
-        admit_designer_view(&catalog, &live_context(&[999])),
-        Err(DesignerViewRejection::UnknownDesignId)
     );
 }
 

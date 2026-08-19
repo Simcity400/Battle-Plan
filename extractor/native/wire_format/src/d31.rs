@@ -1,9 +1,9 @@
 //! d31 `air_region_activity` — per-region air activity, aggregated into
 //! `(region, owner, mission)` buckets.
 //!
-//! Derived from `world_fold.rs:20227`-`:20375`
+//! Derived from `world_fold.rs:20204`-`:20351`
 //! (`fold_air_region_activity`), its payload constants at `:977`-`:978`, the
-// @world-fold-authority domain=31 functions=fold_air_region_activity lines=20227-20375 sha256=b812fe069d8065790671c8009998762b2c176e34cf2c8c1d4ded33824b7fa0ec closure=a6aa41ebfc8c96d53e14ec0b85191d74e51c097d5b6dd5150c89bdc1c0ca6692
+// @world-fold-authority domain=31 functions=fold_air_region_activity lines=20204-20351 sha256=06884767f94764ae24a0bdce96e6981a50e1fe1dd0431e6b2be0d00682d4ea36 closure=d4dd2066efea367e36e465996456e67367d1aeff471bbeb883d4a32dd690706f
 //! accumulator's own JSON projection (`world_fold.rs::insert_air_region_activity`), and the collector read
 //! that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:48122`-`:48160`,
@@ -83,7 +83,7 @@
 //! aggregates over the whole live wing walk: a record with no failure bit is a
 //! complete claim, so an absent bucket means empty rather than unmeasured. The
 //! producer emits it only after its own rejected bracket wiped a pin the fold
-//! already had a baseline for. `DELTA_WIRE_DESIGN.md` §10 is the whole rule;
+//! already had a baseline for. The two parts are independent;
 //! [`Accumulator::fold_payload`] takes it as the `baseline_clear` parameter.
 //!
 //! **Two paths return without folding**, and they are the caller's to honour
@@ -107,7 +107,7 @@
 //! must be accepted here. [`peek_header`] is the first group, [`split_payload`]
 //! adds the second.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock: the three counters are re-derived from the current air-wing sample every
 //! frame. `frame_tick` is taken and ignored so every domain's boundary has one
 //! shape.
@@ -121,7 +121,7 @@ pub const DOMAIN: u32 = 31;
 /// The one collection: one row per `(region, owner, mission)` activity bucket.
 pub const REGION_BUCKETS: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const REGION_ID: u32 = 1;
     pub const OWNER_TAG_DB_ID: u32 = 2;
@@ -154,7 +154,7 @@ pub fn schema() -> Schema {
         //
         // `region_id` is a strategic air region — map content a mod set defines,
         // so a content manifest must resolve it for the id to keep its meaning
-        // (§5's deciding question). ContentId, like d20's `location_province`.
+        // (content-identity contract's deciding question). ContentId, like d20's `location_province`.
         Field::new(f::REGION_ID, Kind::ContentId).key(0),
         // A country tag-db id, classed as ContentId by d20 (`owner`), d62 and
         // d63 for the same reason. The fold's own projection resolves it through
@@ -165,7 +165,7 @@ pub fn schema() -> Schema {
         // types are engine constants — no mod-set manifest resolves bit 9 into a
         // different mission — which is exactly d20's `div_type` case, an engine
         // discriminator that is stable everywhere and still not content. It is
-        // also not `Enum`: §7.4 admits only `Unsigned`, `Signed` and `ContentId`
+        // also not `Enum`: key-encoding contract admits only `Unsigned`, `Signed` and `ContentId`
         // as key kinds, and a bitmask is not a code in `0..n` anyway — the fold
         // constrains it not at all (`:14820` reads the word and uses it whole),
         // so any of the 2^32 words is a legal bucket. Measured on the capture:
@@ -174,7 +174,7 @@ pub fn schema() -> Schema {
         Field::new(f::MISSION_MASK, Kind::Unsigned).key(2),
         // The three counters, all `u32` read raw (`world_fold.rs::fold_air_region_activity`).
         //
-        // `Unsigned`, not `Monotone`: §4 makes monotone a hint that a value
+        // `Unsigned`, not `Monotone`: schema-kind contract makes monotone a hint that a value
         // usually rises, and none of these does. Each is recomputed from scratch
         // every frame as a sum over the wings currently flying that mission in
         // that region (`attach_log.rs:55893`-`:55896`), so it falls whenever
@@ -198,7 +198,7 @@ pub fn schema() -> Schema {
             collection_id: REGION_BUCKETS,
             // The fold upserts and deletes by key against a retained map
             // (`world_fold.rs::fold_air_region_activity`) — a keyed set is what that is, and
-            // only a keyed set has a delta grammar (§7.3).
+            // only a keyed set has a delta grammar (collection-shape contract).
             shape: Shape::KeyedSet,
             fields,
         }],
@@ -410,7 +410,7 @@ pub fn row_key(row: &Row) -> Key {
 /// today, onto its stored Record. `row` is the raw 32-byte row slice (the caller
 /// has already consumed the payload header via [`split_payload`]); d31 has
 /// exactly one row form, so length selects nothing and a wrong length is
-/// rejected. `frame_tick` is §6's derived-field input
+/// rejected. `frame_tick` is derived-field contract's derived-field input
 /// (stored = v + c * (frame_tick >> u)); d31 declares no derived field, so it is
 /// taken and ignored — every domain's mapper has the same shape.
 ///
@@ -425,7 +425,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d31 has no derived field; §6's transform input is unused. Named rather
+    // d31 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_row(row)?;
@@ -531,7 +531,7 @@ impl Accumulator {
     /// hand-copied mask. Delta-before-baseline is handled here instead, because
     /// `baseline_seen` is state this type holds.
     ///
-    /// `frame_tick` is §6's derived-field input; d31 declares no derived field.
+    /// `frame_tick` is derived-field contract's derived-field input; d31 declares no derived field.
     ///
     /// **Atomic on `Err`.** Every row is parsed and mapped before anything is
     /// written, so a payload this rejects leaves the accumulator exactly as it
@@ -548,7 +548,7 @@ impl Accumulator {
         baseline_clear: bool,
         frame_tick: u64,
     ) -> core::result::Result<FoldOutcome, String> {
-        // d31 has no derived field; §6's transform input is unused. Named rather
+        // d31 has no derived field; derived-field contract's transform input is unused. Named rather
         // than `_frame_tick` because the signature is the cross-domain contract.
         let _ = frame_tick;
         // `world_fold.rs::fold_air_region_activity`: the header-structural checks that
@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "an air region is map content a manifest must resolve (§5)"
+            "an air region is map content a manifest must resolve (content-identity contract)"
         );
         assert_eq!(
             keys[1].kind,
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; the three counters are
+        // derived-field contract derived fields are clock-linear integers; the three counters are
         // re-derived from the current air-wing sample every frame, so nothing
         // here changes deterministically with the clock and `frame_tick` never
         // enters a value.
@@ -836,7 +836,7 @@ mod tests {
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // The row shape the capture actually contains: planes present, none of
-        // them effective. §3 keeps zero out of the three empty states.
+        // them effective. record-state contract keeps zero out of the three empty states.
         let c = collection();
         let r = record_from_row(&c, &raw_row(9, 3, 1, 0, 2, 30, 0), 0).expect("maps");
         assert_eq!(

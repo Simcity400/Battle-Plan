@@ -1,7 +1,5 @@
-//! Regression test for round 8: the last one-sided §7.1 rule. The decoder
-//! rejects a tombstone for a key absent from the prior state; the encoder's
-//! round-7 fix mirrored the changed∩tombstoned rule but not this sibling, so
-//! `encode_delta` emitted bytes `decode_delta` refused.
+//! Regression test for a one-sided delta-minimality rule. The decoder rejects a
+//! tombstone for a key absent from the prior state, so the encoder must do the same.
 
 use wire_format::body::{
     decode_delta, encode_delta, KeyedDelta, KeyedState, MinimalityError, Row,
@@ -31,7 +29,7 @@ fn prior_with_key_1() -> KeyedState {
     prior
 }
 
-/// The reviewer's exact failing input: prior {1 -> 0}, delta tombstoning key 2.
+/// Regression input: prior {1 -> 0}, delta tombstoning key 2.
 /// Used to encode to [01, 00, 01, 02], which `decode_delta` rejects.
 #[test]
 fn encode_delta_refuses_a_tombstone_for_a_prior_absent_key() {

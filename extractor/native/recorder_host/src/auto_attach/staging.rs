@@ -1,10 +1,9 @@
-//! Per-attempt payload staging (design §5 "Unique DLL path").
+//! Per-attempt payload staging with a unique DLL path.
 //!
 //! Every attach attempt copies the packaged collector DLL into a fresh,
 //! never-before-used directory. A live incident proved that reusing a DLL path
 //! already hooked into a running game crashes the game; unique per-attempt
-//! directories fixed it (memory: `live-capture-2nd-injection-crash`,
-//! `PRODUCTION_ENDGAME_PLAN.md:211-239`). The staged copy's SHA-256 is verified
+//! directories fixed it. The staged copy's SHA-256 is verified
 //! against the source; a mismatch fails closed.
 
 use std::path::PathBuf;
@@ -23,7 +22,7 @@ static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a collision-resistant attempt id from (instance, pid, filetime,
 /// wall-ms, counter). Not a security token — just a never-repeating directory /
-/// pipe discriminator (design §7 "Generate random session/attempt ids").
+/// pipe discriminator.
 pub fn generate_attempt_id(instance_id: &str, key: ProcessKey, now_ms: u64) -> String {
     let n = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
     // Hash the composite so the id is fixed-width and filesystem-safe.
@@ -39,7 +38,7 @@ pub fn generate_attempt_id(instance_id: &str, key: ProcessKey, now_ms: u64) -> S
 
 /// Generate a random-ish pipe token (directory-unique discriminator) and return
 /// (raw_token, sha256_hex). The raw token is used to name the pipe; only the
-/// hash is ever journalled (design §8).
+/// hash is ever journalled.
 pub fn generate_secret_128() -> Result<[u8; 16], String> {
     #[cfg(windows)]
     {
@@ -332,9 +331,8 @@ impl PayloadStager for FsPayloadStager {
         std::fs::create_dir_all(&self.staging_root)
             .map_err(|e| format!("create staging root {}: {e}", self.staging_root.display()))?;
         let staging_dir = self.staging_root.join(format!("attempt_{attempt_id}"));
-        // A fresh directory per attempt: creation MUST fail if it already exists
-        // (design §5 "Atomically create a never-before-used attempt/staging
-        // directory"; gate 8 "existing destination fail closed").
+        // A fresh directory per attempt: creation MUST fail if it already
+        // exists so an attempt can never reuse a staging destination.
         std::fs::create_dir(&staging_dir).map_err(|e| {
             format!(
                 "staging dir {} already exists or cannot be created: {e}",
@@ -347,7 +345,7 @@ impl PayloadStager for FsPayloadStager {
             .map_err(|e| format!("copy collector dll: {e}"))?;
         let dll_sha256 = hash_file(&dll_path)?;
         if dll_sha256 != source_sha256 {
-            // Corrupt copy — remove and fail closed (gate 8).
+            // Corrupt copy — remove and fail closed.
             let _ = std::fs::remove_dir_all(&staging_dir);
             return Err(format!(
                 "staged dll hash {dll_sha256} != source {source_sha256}"
@@ -392,7 +390,7 @@ mod tests {
 
     #[test]
     fn attempt_ids_do_not_collide_over_1000() {
-        // Design gate 8: 1,000 generated attempt paths do not collide.
+        // 1,000 generated attempt paths must not collide.
         let key = ProcessKey::new(1234, 133_000_000_000_000_000);
         let mut seen = HashSet::new();
         for i in 0..1000 {

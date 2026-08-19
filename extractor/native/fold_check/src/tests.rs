@@ -3699,8 +3699,8 @@ fn the_ships_fold_equivalence_gate_can_tell_two_worlds_apart() {
 /// The proof is a tombstone. A keyframe cannot serve here: once a domain has a
 /// delta baseline, `replace_or_sparse_after_first` makes EVERY subsequent d29
 /// record sparse, so even a whole-state record merges and an omitted row is
-/// never dropped. Absence is not deletion on this wire (`DELTA_WIRE_DESIGN.md`
-/// §2.4) — only a tombstone removes a key. So the control stream tombstones
+/// never dropped. Absence is not deletion on this wire; only a tombstone
+/// removes a key. So the control stream tombstones
 /// ship 2 explicitly, and its hour C must hash differently from the stream that
 /// kept it.
 ///

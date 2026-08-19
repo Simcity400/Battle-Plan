@@ -1,17 +1,17 @@
-//! §9 event-body codec and frontier continuity checks.
+//! event-continuity contract event-body codec and frontier continuity checks.
 //!
-//! Event records are full §3 records in occurrence order. They deliberately do
-//! not use any of §7's state-diff machinery: an event has no key, tombstone,
+//! Event records are full record-state contract records in occurrence order. They deliberately do
+//! not use any of state-delta contract's state-diff machinery: an event has no key, tombstone,
 //! insert/update distinction, change mask, or prior-state minimality check.
 
 use crate::record::Record;
 use crate::schema::{Collection, EventPart, Kind, Quant, Shape};
 use crate::varint::{read_varint, write_varint, Result, WireError};
 
-/// One complete, non-empty §9 event batch.
+/// One complete, non-empty event-continuity contract event batch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventBatch {
-    /// Full §3 records, in producer occurrence order. Equal records remain
+    /// Full record-state contract records, in producer occurrence order. Equal records remain
     /// distinct entries.
     pub records: Vec<Record>,
     /// The schema-defined frontier tuple after `records`.
@@ -45,7 +45,7 @@ impl EventBatch {
     }
 }
 
-/// Encode one §9 body. The returned bytes are exactly the opaque body placed in
+/// Encode one event-continuity contract body. The returned bytes are exactly the opaque body placed in
 /// an `EVENTS` frame by the block layer.
 pub fn encode_event_body(part: &EventPart, batch: &EventBatch) -> Result<Vec<u8>> {
     validate_event_fields(part)?;
@@ -70,7 +70,7 @@ pub fn encode_event_body(part: &EventPart, batch: &EventBatch) -> Result<Vec<u8>
     Ok(out)
 }
 
-/// Decode one complete §9 body. Trailing bytes are corrupt: the enclosing frame
+/// Decode one complete event-continuity contract body. Trailing bytes are corrupt: the enclosing frame
 /// length already supplies the only legal boundary.
 pub fn decode_event_body(part: &EventPart, body: &[u8]) -> Result<EventBatch> {
     validate_event_fields(part)?;
@@ -80,7 +80,7 @@ pub fn decode_event_body(part: &EventPart, body: &[u8]) -> Result<EventBatch> {
     }
     let count = usize::try_from(count_u64)
         .map_err(|_| WireError::Corrupt("event count does not fit usize"))?;
-    // A validated event part has at least one field, and every full §3 record
+    // A validated event part has at least one field, and every full record-state contract record
     // therefore consumes at least one byte. Bound work and allocation by the
     // enclosing body before reserving attacker-selected capacity.
     if count > body.len().saturating_sub(pos) {
@@ -122,7 +122,7 @@ pub fn decode_event_body(part: &EventPart, body: &[u8]) -> Result<EventBatch> {
 }
 
 /// A continuity failure is data, not a codec error. The caller records the
-/// corresponding §8 event-part gap and then checks the next batch with no prior.
+/// corresponding gap contract event-part gap and then checks the next batch with no prior.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontierDiscontinuity {
     SchemaChanged,
@@ -152,7 +152,7 @@ pub enum FrontierOutcome {
     Discontinuous(FrontierDiscontinuity),
 }
 
-/// Apply §9's continuity rules when the frontier declaration is unchanged.
+/// Apply event-continuity contract's continuity rules when the frontier declaration is unchanged.
 ///
 /// Pass `None` for the first batch and for the first batch after the caller has
 /// recorded an event-part gap. Across a schema change, use
@@ -172,7 +172,7 @@ pub fn check_frontier(
     )
 }
 
-/// Apply §9 continuity across an optional schema change.
+/// Apply event-continuity contract continuity across an optional schema change.
 ///
 /// Frontier components are joined by `component_id`; tuple position is only
 /// the encoding order within one schema. A pure reordering is safe. Adding,
@@ -457,7 +457,7 @@ mod tests {
         };
         schema
             .validate(TickGrid::HOURLY.log2())
-            .expect("all seven kinds and §3 field states are event-legal");
+            .expect("all seven kinds and record-state contract field states are event-legal");
         let part = schema.event_part.as_ref().unwrap();
         let batch = EventBatch::new(
             vec![
@@ -492,7 +492,7 @@ mod tests {
             quant_schema.event_part.as_mut().unwrap().fields[6].quant = quant;
             quant_schema
                 .validate(TickGrid::HOURLY.log2())
-                .expect("each §6 quantizer keeps its ordinary event-record semantics");
+                .expect("each derived-field contract quantizer keeps its ordinary event-record semantics");
             let quant_part = quant_schema.event_part.as_ref().unwrap();
             let mut quant_batch = batch.clone();
             quant_batch.records[0].values[6] = Value::Continuous(sample);

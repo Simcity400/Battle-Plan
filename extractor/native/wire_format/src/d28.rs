@@ -1,9 +1,9 @@
 //! d28 `oob_command_live` — the order-of-battle command tree: army groups,
 //! armies, fleets and task forces, with their membership.
 //!
-//! Derived from `world_fold.rs:19742`-`:19942`
+//! Derived from `world_fold.rs:19719`-`:19919`
 //! (`fold_oob_command`), its payload constants at `:970`-`:972` and `:1019`-`:1038`,
-// @world-fold-authority domain=28 functions=fold_oob_command lines=19742-19942 sha256=f636e6e733751bf84ab8b8b6d30506f2464013bfbc06d210b0ba4994993bd486 closure=58aa444127964099e1e84485c1a91f8c89e5efb851a5b319bc97d9ca74213eff
+// @world-fold-authority domain=28 functions=fold_oob_command lines=19719-19919 sha256=f636e6e733751bf84ab8b8b6d30506f2464013bfbc06d210b0ba4994993bd486 closure=fed3ee71f4b7565e8f38636b7e2e3c53524bf42d10aaf321585cd144208eaae9
 //! the accumulator's own JSON projection (`:7948`-`:8010`, `:23542`-`:23560`), and
 //! the collector read that produces the flags, the status words and the member
 //! child rows (`extractor/native/collector/src/attach_log.rs:46680`-`:47160`,
@@ -143,7 +143,7 @@
 //! **No consumer indexes the array today**, which is why refusing rather than
 //! carrying loses nothing downstream. `army_refs` has no reader anywhere in
 //! `replay_interface/` — it appears only in the projection above, in the schema
-//! documentation (`replay_interface/documents/REPLAY_SCHEMA.md:775`) and in the
+//! wire contract and in the
 //! independent save oracle, which builds its own from the save
 //! (`extractor/save_oracle/parse_oob.py:229`, `:242`). The only reader of
 //! `order_of_battle.armies[]` is `xui17_oob_assignments`
@@ -155,7 +155,7 @@
 //! Seven flag gates (`world_fold.rs:1024`-`:1038`) and one status-driven field.
 //! The fold folds a clear gate to `None` for five of them, and — the hazard worth
 //! naming — to **`0`, not `None`**, for `owner_tag_db_id` (`world_fold.rs::fold_oob_command`).
-//! Per `WIRE_FORMAT.md` §3 the fold decides value-vs-nothing and nothing else;
+//! The fold decides value-vs-nothing and nothing else;
 //! the three-way choice below comes from the collector read that sets each flag.
 //!
 //! The decisive structure is that **which gate can be clear depends on the row's
@@ -163,8 +163,8 @@
 //! kinds and hard-codes `None` for the concepts a kind does not have
 //! (`attach_log.rs:46855`-`:46913` for armies and army groups, `:46940`-`:47010`
 //! for task forces and fleets). A gate the collector never even attempts for a
-//! kind is §3's **absent** ("not applicable, or unsupported by this schema"); a
-//! gate it attempts and fails is §3's **unknown** ("applicable, not captured").
+//! kind is record-state contract's **absent** ("not applicable, or unsupported by this schema"); a
+//! gate it attempts and fails is record-state contract's **unknown** ("applicable, not captured").
 //! `kind` is a key component, so the reader can always tell which case it is.
 //!
 //! | field | gate set | gate clear |
@@ -192,8 +192,8 @@
 //! * **`owner_tag_db_id`.** `compact_oob_owner_consensus` (`attach_log.rs:47036`)
 //!   returns `(None, "unknown")` when no member division yielded a readable owner
 //!   and `(None, "mixed")` when the members disagree. `"mixed"` is a *measured*
-//!   fact: the single-owner relation genuinely resolves to nothing, which is §3's
-//!   null. `"unknown"` is an unread owner, which is §3's unknown. The fold's `0`
+//!   fact: the single-owner relation genuinely resolves to nothing, which is record-state contract's
+//!   null. `"unknown"` is an unread owner, which is record-state contract's unknown. The fold's `0`
 //!   is a sentinel and not a country: the recorder's own projection renders it as
 //!   JSON `Null` (`country_ref_json`, `world_fold.rs::country_ref_json`), and `0` is
 //!   rejected as a `tag_db_id` everywhere else (d26 `:17404`, d63 `:9259`). So
@@ -303,7 +303,7 @@
 //! never sets the fold's `delta_baselines_seen`, because
 //! `replace_or_sparse_after_first` (`:14424`) is never reached.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock; `frame_tick` is taken and ignored so every domain's boundary has one
 //! shape.
 
@@ -320,9 +320,9 @@ pub const COMMANDS: u32 = 1;
 /// One row per membership edge, keyed by its command plus the member id.
 pub const MEMBERS: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reusing an id for a
+/// Field ids are stable and append-only; schema-identity contract forbids reusing an id for a
 /// different field. `KIND` and `OBJECT_ID` appear in both collections because
-/// they are the same field in both — the command's identity — which is what §11
+/// they are the same field in both — the command's identity — which is what schema-identity contract
 /// forbids reusing an id *against*.
 pub mod field {
     pub const KIND: u32 = 1;
@@ -391,7 +391,7 @@ pub const STATUS_UNKNOWN: u32 = 2;
 pub const STATUS_OVERFLOW: u32 = 3;
 pub const STATUS_VALIDATION_FAILED: u32 = 4;
 pub const STATUS_MIXED: u32 = 5;
-/// One past the highest status code; §4 rejects a code at or above this.
+/// One past the highest status code; schema-kind contract rejects a code at or above this.
 pub const STATUS_CARDINALITY: u32 = 6;
 
 /// The five status words, in row order, with their byte offsets
@@ -416,7 +416,7 @@ pub fn schema() -> Schema {
                 // Commands persist across hours and the frame grammar is
                 // first-frame-replaces / later-frames-upsert / low-bit-removes
                 // (`world_fold.rs::fold_oob_command`), which is exactly a keyed
-                // set's grammar — and only a keyed set has deltas (§7.3).
+                // set's grammar — and only a keyed set has deltas (collection-shape contract).
                 shape: Shape::KeyedSet,
                 fields: vec![
                     // The fold's key is the `(kind, object_id)` pair
@@ -425,9 +425,9 @@ pub fn schema() -> Schema {
                     // so both are concrete in every row.
                     //
                     // `kind` is `Unsigned`, not `Enum`, for two reasons that
-                    // point the same way. §7.4 admits only `Unsigned`, `Signed`
+                    // point the same way. key-encoding contract admits only `Unsigned`, `Signed`
                     // and `ContentId` as key components, so an `Enum` key is not
-                    // expressible at all; and §5 classes an engine
+                    // expressible at all; and content-identity contract classes an engine
                     // constant/discriminator as `Unsigned` regardless of how few
                     // values it takes — this is the same call d20 makes for
                     // `div_type`. The four-value set is enforced in the mapper,
@@ -444,7 +444,7 @@ pub fn schema() -> Schema {
                     Field::new(f::PARENT_ID, Kind::Unsigned)
                         .optional()
                         .unknown_capable(),
-                    // A country tag db id — content-defined (§5): a manifest
+                    // A country tag db id — content-defined (content-identity contract): a manifest
                     // must resolve it for it to keep its meaning under another
                     // mod set. d63 keys its countries the same way and d20
                     // classes its `owner` the same way. Nullable because
@@ -487,7 +487,7 @@ pub fn schema() -> Schema {
                     Field::new(f::OWNER_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
                     Field::new(f::LEADER_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
                     Field::new(f::LEADER_TRAIT_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
-                    // A province id: content-defined (§5), exactly as d20
+                    // A province id: content-defined (content-identity contract), exactly as d20
                     // classes `location_province`. A ContentId **value**, not a
                     // key, so it is the lighter retrofit class.
                     Field::new(f::LOCATION_PROVINCE_ID, Kind::ContentId)
@@ -818,7 +818,7 @@ pub fn key_from_member_row(
 /// onto its stored Record. `row` is the raw 80-byte row slice (the caller has
 /// already consumed the payload header via [`split_payload`]); d28 has exactly
 /// one row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d28 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -833,7 +833,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d28 has no derived field; §6's transform input is unused. Named rather
+    // d28 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_command_row(row)?;
@@ -848,7 +848,7 @@ pub fn record_from_row(
 
     // The five status words first: they gate three of the four-state decisions
     // below, so an out-of-vocabulary code must stop the row before it is read as
-    // a gate. §4: "a value the writer cannot map into 0..n-1 is a failed sample
+    // a gate. schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample
     // and a typed gap, never a coerced code."
     let mut statuses = [0u32; 5];
     for (i, (_, offset)) in STATUS_WORDS.into_iter().enumerate() {
@@ -1474,7 +1474,7 @@ mod tests {
             assert_eq!(
                 k.kind,
                 Kind::Unsigned,
-                "engine discriminator and runtime instance id are both Unsigned (§5)"
+                "engine discriminator and runtime instance id are both Unsigned (content-identity contract)"
             );
             assert!(k.kind.legal_as_key());
             assert!(!k.optional && !k.nullable && !k.unknown_capable);
@@ -1589,7 +1589,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d28 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d28 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         for c in schema().collections {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -1647,7 +1647,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
-        // Every gate set, every value zero: §3 keeps zero out of the three empty
+        // Every gate set, every value zero: record-state contract keeps zero out of the three empty
         // states. `owner_tag_db_id` is the pointed case — the fold folds a
         // *clear* owner gate to `0` (`world_fold.rs::fold_oob_command`), so a `0` under a
         // SET gate must still be a value here and not be confused with it.
@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn leader_trait_count_follows_leader_status_not_the_trait_status_alone() {
-        // Round-1 review finding, carried in as a regression: the reviewer's own
+        // carried in as a regression: the reviewer's own
         // input is the deepwar_t1 row at record offset 453616, sequence 14, hour
         // 60831018, row 1 — `kind=ARMY`, `object_id=13`, `flags=0x66`,
         // `leader_status=UNKNOWN`, `leader_trait_status=NONE`,

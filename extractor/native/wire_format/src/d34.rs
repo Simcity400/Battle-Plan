@@ -1,8 +1,8 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `world_fold.rs:20662`-`:20744`
+//! Derived from `world_fold.rs:20638`-`:20720`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=20662-20744 sha256=7e016bc6ad8f2b0b1038f0abe9d7d59b82698ccc322a61146577a461a5c13311 closure=e85d99a0a5a072f39cd202beade8c417dd6e941c69f8b62cc239cb8010e4e75b
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=20638-20720 sha256=7e016bc6ad8f2b0b1038f0abe9d7d59b82698ccc322a61146577a461a5c13311 closure=4f211c42014585ceb3bbad69c5633a90881c5bffbe2682e3c9c2864d24684d3c
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows
@@ -97,9 +97,8 @@
 //! *Recorded conflict.* Both JSON consumers render a zero province as
 //! `Value::Null` (`world_fold.rs:8940`-`:8944`, `:8948`-`:8952`, and
 //! `:8186`-`:8187` filters it out). JSON has no `unknown`, so that is the fold's
-//! uniform value-vs-nothing collapse (recipe §"Authorities", limit 1), not a
-//! semantic claim that outranks the fold's own comment. It is in the open
-//! questions.
+//! uniform value-vs-nothing collapse, not a semantic claim that outranks the
+//! fold's own comment.
 //!
 //! **Nothing else reaches an empty state.** `state_id`, `capacity`,
 //! `building_level`, `based_wing_count` and `based_plane_count` are read
@@ -115,7 +114,7 @@
 //! d26's mapper does; the removal is expressed by [`Accumulator`] dropping the
 //! key, which is where a keyed set puts it.
 //!
-//! **No derived field (§6).** Nothing here changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
 //! clock. The mapper still takes `frame_tick` so every domain's boundary has one
 //! shape.
 
@@ -127,7 +126,7 @@ use crate::value::Value;
 pub const DOMAIN: u32 = 34;
 pub const AIR_BASES: u32 = 1;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
     pub const AIR_BASE_ID: u32 = 1;
     pub const STATE_ID: u32 = 2;
@@ -178,8 +177,9 @@ pub const ROW_FLAG_DELETED: u32 = 1;
 /// (`claim_347234c20a542ca79032`). The engine also stores a province id in
 /// THIRTY-TWO bits (`CProvince + 0xA4`), so 65 535 was never a field width
 /// here; no wire row in this tree carries a province id in sixteen bits, which
-/// is why this is a bounds edit and not a format change. Full dossier:
-/// `extractor/native/runs/ia_province_caps/SWEEP.md`.
+/// is why this is a bounds edit and not a format change. The native identity
+/// carrier is retained as `domain-34::Air-base identity carrier` in
+/// `extractor/documents/technical_evidence.json`.
 ///
 /// Still not a province count: nothing here knows how many provinces the loaded
 /// mod set defines, and the number that does is on the producer side, which
@@ -199,7 +199,7 @@ pub fn schema() -> Schema {
         // engine object handle (`attach_log.rs:56151`), minted while the campaign
         // runs and bounded by `MAX_AIR_BASE_ID`. No content manifest resolves
         // "air base 407" — it is a runtime instance identity like d20's `div_id`,
-        // and §5's deciding question ("must a manifest resolve this for it to
+        // and content-identity contract's deciding question ("must a manifest resolve this for it to
         // keep its meaning under another mod set?") answers no.
         Field::new(f::AIR_BASE_ID, Kind::Unsigned).key(0),
         // The owning state's id (`world_fold.rs::fold_air_base_status`). `ContentId`: a state is
@@ -221,7 +221,7 @@ pub fn schema() -> Schema {
         Field::new(f::BASED_PLANE_COUNT, Kind::Unsigned),
         // The province the base sits in (`:15184`). `ContentId` — a province is
         // content-defined, exactly as d20 and d22 class theirs. `unknown_capable`
-        // and nothing else: see the module docs for why `0` is §3's *unknown*
+        // and nothing else: see the module docs for why `0` is record-state contract's *unknown*
         // rather than null, absent, or a real province zero.
         Field::new(f::PROVINCE_ID, Kind::ContentId).unknown_capable(),
     ];
@@ -234,7 +234,7 @@ pub fn schema() -> Schema {
             collection_id: AIR_BASES,
             // The fold keys by `air_base_id` into a `BTreeMap` that persists
             // across hours (`world_fold.rs:1870`, `:15192`) and removes keys by
-            // the DELETED bit — a keyed set with a delta grammar, which §7.3
+            // the DELETED bit — a keyed set with a delta grammar, which collection-shape contract
             // gives only to `KeyedSet`.
             shape: Shape::KeyedSet,
             fields,
@@ -262,7 +262,7 @@ pub struct PayloadHeader {
 /// Read the header **without** validating the payload's total length.
 ///
 /// This split exists because the fold's checks are ordered and the order is
-/// load-bearing (recipe §9: "derive the exclusion's POSITION from your fold's
+/// load-bearing (recipe event-continuity contract: "derive the exclusion's POSITION from your fold's
 /// call order"). `fold_air_base_status` runs, in this sequence:
 ///
 /// 1. `need(payload, 36)` and the `reserved != 0` rejection (`:15140`-`:15150`);
@@ -339,7 +339,7 @@ pub struct AirBaseRow {
     pub building_level: u32,
     pub based_wing_count: u32,
     pub based_plane_count: u32,
-    /// `None` is the `province unobtained` sentinel (`0`), §3's *unknown*.
+    /// `None` is the `province unobtained` sentinel (`0`), record-state contract's *unknown*.
     pub province_id: Option<u32>,
 }
 
@@ -398,7 +398,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// onto its stored Record. `row` is the raw 32-byte row slice (the caller has
 /// already consumed the table header via [`split_payload`]); d34 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d34 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -412,7 +412,7 @@ pub fn record_from_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d34 has no derived field; §6's transform input is unused. Named rather
+    // d34 has no derived field; derived-field contract's transform input is unused. Named rather
     // than `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     let parsed = parse_row(row)?;
@@ -773,7 +773,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // The row the collector packs for a real, complete air base that happens
         // to have no capacity, no building level and nothing based on it: every
-        // one of those zeros is a measured fact. §3 keeps zero out of the three
+        // one of those zeros is a measured fact. record-state contract keeps zero out of the three
         // empty states. `state_id` zero is included because the FOLD applies no
         // zero check to it (`:15176`) even though the collector's read does
         // (`attach_log.rs:56161`) — the fold is the authority.
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; nothing in d34 changes
+        // derived-field contract derived fields are clock-linear integers; nothing in d34 changes
         // deterministically with the clock, so `frame_tick` never enters a value.
         assert!(collection().fields.iter().all(|f| f.derived.is_none()));
         let c = collection();

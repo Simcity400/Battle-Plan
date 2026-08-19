@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The standing cross-workspace AUTHORITY PIN gate.
+"""Cross-workspace authority-pin gate.
 
 A producer/consumer authority pin is anything the Replay side REQUIRES a
 recorded frame to carry before it will admit it. Drift in a pin is silent by
@@ -7,46 +7,18 @@ construction: the producer keeps emitting, the consumer keeps refusing, and
 nothing in either workspace's own test suite can see the disagreement because
 the two halves never compile together. This script is the thing that sees it.
 
-WHY THIS FILE EXISTS -- three measured instances of one blindness
-----------------------------------------------------------------
-`runs/gp_ledger_map/authority_vocab_diff.py` was the gate before this one. It
-tokenises on ONE name prefix, `exact_a729_`, so a pin spelled any other way is
-not "unmet" -- it is invisible, and a lane reporting the gate green is
-reporting a fact about somebody else's carrier:
-
-  * IO-F6 (`runs/io_gp_u9/IO_F6_gate_blindness_proof.txt`). Row G4-X9S1's two
-    authorities are `a729_ctechnology_status_researched_vector_v1` and
-    `a729_country_technology_ui_state_classifier_v1` -- the right KIND of name,
-    spelled without `exact_`. Lane IO landed both as producer constants,
-    committed them, and re-ran the gate: all five counts identical. Not unmet.
-    Unmeasurable.
-  * Lane IZ (`runs/iz_gp_u14/DOSSIER_GP_U14_wing_visibility.md` section 8).
-    d95/SPU1 has NO authority name at all. Its cross-workspace pin is an
-    authority OBJECT whose fields `world.rs::parse_exact_spu1` checks one at a
-    time (`schema == "SPU1"`, `producer_rva == "0x016068c0"`,
-    `air_wings_available == false`, two manifest hashes, ...). IZ's report
-    states, correctly, that widening the prefix fixes G4-X9S1 and leaves d95
-    unmeasured.
-  * Lane IW (`runs/iw_gp_n5/DOSSIER_GP_N5_producer_seam.md` section 279-290).
-    The corrected xmap20/xmap09 carriers pin schema STRINGS --
-    `hoi4.xmap20.effect-frame.a729.v1`,
-    `hoi4.xmap09.semantic-lighting-input.a729.v1`. IW ran the old gate and
-    confirmed zero xmap20/xmap09 tokens in its vocabulary, then had to write a
-    lane-local probe because no standing gate covered the shape.
-
-So the gate measures THREE pin classes, and a lane may cite it for any of them:
+The gate measures three pin classes:
 
   name           a snake_case authority name carrying `a729` as a component:
-                 `exact_a729_passive_all_country_politics` (the old gate's
-                 whole world), `a729_country_technology_ui_state_classifier_v1`
-                 (IO-F6), `a729_xui16_occupation_ui_supplement_v1` (the
-                 exception the gap map's GP-U6 row had to write out in prose).
+                 `exact_a729_passive_all_country_politics`,
+                 `a729_country_technology_ui_state_classifier_v1`, or
+                 `a729_xui16_occupation_ui_supplement_v1`.
   schema_string  a dotted schema constant: `hoi4.xmap20.effect-frame.a729.v1`,
                  `replay.xui12.production-lines-authority.a729.v2`,
-                 `xmap17.faction_labels_exact.a729.v1` (IW).
+                 `xmap17.faction_labels_exact.a729.v1`.
   field_pin      a consumer requiring one FIELD of a JSON map to equal one
-                 exact value, checked field by field (IZ). SPU1, FOW1 and MAPC1
-                 are the three authority envelopes written this way today, but
+                 exact value, checked field by field. SPU1, FOW1 and MAPC1 are
+                 authority envelopes written this way, but
                  the class is found by parsing the COMPARISON, not by naming
                  them.
 
@@ -58,8 +30,7 @@ So the gate measures THREE pin classes, and a lane may cite it for any of them:
                  are both in this class and neither is an authority pin. The
                  class is what a producer/consumer field agreement WOULD look
                  like; membership is not a claim that a row is a seam pin. Read
-                 it as the predecessor's own header asks its numbers to be read:
-                 a lower bound on doubt, never a proof. The same applies to the
+                 it as a lower bound on doubt, never a proof. The same applies to the
                  `dynamic` census, which is why neither `dynamic` nor the loose
                  census is counted in `shipping_pins`.
 
@@ -113,8 +84,8 @@ SCOPE HAZARDS, all inherited deliberately from finding GP-F11:
     does not produce it. `check_scope_excludes_this_gate` asserts the exclusion
     holds rather than trusting the string above.
   * `extractor/native/runs/` is APPEND-ONLY LANE EVIDENCE, not producer code.
-    It holds lane dossiers, Codex reviewer transcripts that quote authorities
-    back verbatim, and previous gate outputs that enumerate the very tokens a
+    It holds evidence artifacts that quote authorities back verbatim and
+    previous gate outputs that enumerate the very tokens a
     gate searches for. It is excluded, or the gate measures itself and the
     error is always in the flattering direction.
   * Comments are stripped before any pin is extracted, so a `//!` header
@@ -196,8 +167,7 @@ SOURCE_SUFFIXES = (".rs", ".py")
 # ---------------------------------------------------------------------------
 
 # The build tag every a729-pinned authority carries. Pins are build-scoped by
-# construction (see any dossier's build-scope residual), which is what makes
-# the tag a reliable discriminator rather than a guess.
+# construction, which makes the tag a reliable discriminator rather than a guess.
 BUILD_TAG = "a729"
 
 # A path-shaped literal is never a pin. Without this, `"a729_hook.rs"` and
@@ -1362,9 +1332,8 @@ class SideScan:
                     # EVERY line the binding's chain and its comparison cover,
                     # not just the two endpoints. A multi-line `.get()` chain
                     # left its middle lines in the census, so the same pin was
-                    # reported as measured AND as unread -- which made the
-                    # dossier's "none of the census is read by a strict reader"
-                    # false. Review round 4, finding 3.
+                    # reported as measured AND as unread, contradicting the
+                    # strict-reader census.
                     for line_no in range(line_of(code, m.start()),
                                          line_of(code, at) + 1):
                         measured_lines.add(line_no)
@@ -2091,8 +2060,7 @@ def main() -> int:
         side.defs_by_name = defs
         side.ambiguous = ambiguous
         side.collect_tokens()
-    # FIELD PINS ARE SCANNED ON THE CONSUMER SIDE ONLY, which is what §5 item 6
-    # of the dossier already states about the ROWS. Scanning the producer for
+    # FIELD PINS ARE SCANNED ON THE CONSUMER SIDE ONLY. Scanning the producer for
     # them measured nothing -- a producer checking a field of its own manifest
     # is an internal consistency check, never a cross-workspace seam pin, and
     # `field_pin_rows` builds rows from the consumer alone. Because only the

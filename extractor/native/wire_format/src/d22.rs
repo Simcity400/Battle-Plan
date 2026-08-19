@@ -1,14 +1,13 @@
 //! d22 `map_control_live` — who owns and who controls every state and province.
 //!
-//! Derived from `world_fold.rs:29317`-`:29441`
+//! Derived from `world_fold.rs:29286`-`:29410`
 //! (`fold_map_control`), its row-length constants at `:386`-`:387`, the projection
-// @world-fold-authority domain=22 functions=fold_map_control lines=29317-29441 sha256=a7d6ab7667e6dadaec96b4ea080fa1b51be9deb9d7b3f88f9c0f4d736e98bfe2 closure=339c2ee65f9c4fc92140d2a14cd01611a4a541318b22f570508cb95abe27d31c
+// @world-fold-authority domain=22 functions=fold_map_control lines=29286-29410 sha256=78a9bbbfbd40b1faf44e6d45b3a3e9bf164c22d85fecfa8be226543976794ad9 closure=872f3da59f5db6ee7fad493bd2266f08abd901f4db975b9a6b0892184e34ac4b
 //! that merges its output into the shared state/province objects (`world_fold.rs::build_snapshot`),
 //! and the collector read and payload writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:59480`-`:59538`,
 //! `:59540`-`:59665` and `:71678`-`:71727`).
-//! `domains/UNDOCUMENTED_DOMAINS.md` lists d22 with no dossier; the fold and the
-//! collector read are the whole basis, which the recipe treats as sufficient.
+//! The fold and collector read are the field-level basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_map_control`, writer at
 //! `attach_log.rs:71687`-`:71699`): a 32-byte header —
@@ -44,7 +43,7 @@
 //!
 //! **Every gated field is `null`, never `unknown` and never `absent`, when its
 //! gate is clear.** The fold emits JSON `Null` uniformly on a clear gate, which
-//! per `WIRE_FORMAT.md` §3 decides value-vs-nothing and nothing else; the
+//! decides value-vs-nothing and nothing else; the
 //! collector decides the rest, and here it is decisive in a way d63's was not.
 //! The payload writer sets each bit as a pure non-zero test of the value it gates
 //! (`attach_log.rs:71702`-`:71720`):
@@ -59,7 +58,7 @@
 //! So a clear gate carries exactly one fact: **the value was read successfully and
 //! it is zero** — tag_db_id `0` is "no country", and a province `state_id` of `0`
 //! is a province whose `CProvince::state` pointer is null
-//! (`attach_log.rs:59588`), i.e. sea, lake or wasteland. That is §3's **null**,
+//! (`attach_log.rs:59588`), i.e. sea, lake or wasteland. That is record-state contract's **null**,
 //! "applicable, the relation genuinely points at nothing", word for word.
 //!
 //! It is specifically **not unknown**: an unreadable value never reaches a row at
@@ -102,7 +101,7 @@
 //!
 //! *Wire layer*: [`Accumulator`] replays the shipping layer into the two full
 //! per-hour keyed states, and only then does the wire grammar apply — a wire
-//! BASELINE at each block start and a stored-minimal wire DELTA (§7.1) between,
+//! BASELINE at each block start and a stored-minimal wire DELTA (delta-minimality contract) between,
 //! computed by `body::diff` from the previous hour's full state. The two layers do
 //! not line up one for one:
 //!
@@ -134,7 +133,7 @@
 //! the divergence between the writer's biconditional and the fold's one-way read
 //! is recorded as an open question rather than enforced here.
 //!
-//! **No derived field (§6).** Nothing in d22 changes deterministically with the
+//! **No derived field (derived-field contract).** Nothing in d22 changes deterministically with the
 //! clock: ownership and control move on player and AI action. The mappers still
 //! take `frame_tick` so every domain's boundary has one shape.
 //!
@@ -160,7 +159,7 @@
 //!   (`replay_app/src/map_labels.rs::measured_control_by_province`), so a null row
 //!   in a mirror is not neutral — it is a refusal.
 //! * an UNRESOLVED `tag_db_id` keeps its numeric spelling in the snapshot's
-//!   state/province objects (`world_fold.rs` §0.2, never fabricate a TAG). It must
+//!   state/province objects (`world_fold.rs` canonical primitive contract.2, never fabricate a TAG). It must
 //!   not reach a mirror, because replay's TAG charset is `[A-Z0-9_]` and would
 //!   accept `"286"` as a country.
 //!
@@ -185,7 +184,7 @@ pub const DOMAIN: u32 = 22;
 pub const STATES: u32 = 1;
 pub const PROVINCES: u32 = 2;
 
-/// Field ids are stable and append-only; §11 forbids reuse for a different field.
+/// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// Ids are unique across both collections even though the format only requires
 /// uniqueness within one, so a field id names one field in this domain.
 pub mod field {
@@ -220,10 +219,10 @@ pub fn schema() -> Schema {
     // Both collections are `Shape::KeyedSet`: rows have an identity that persists
     // across hours (`state_id` / `province_id` are the fold's own map keys,
     // `world_fold.rs:22266` and `:22293`), and only a keyed set has a delta
-    // grammar (§7.3) — which this domain needs, since its shipping form is
+    // grammar (collection-shape contract) — which this domain needs, since its shipping form is
     // incremental and most hours change a handful of rows out of ~14,500.
     //
-    // Kinds: every one of the six fields is `ContentId`. §5's deciding question is
+    // Kinds: every one of the six fields is `ContentId`. content-identity contract's deciding question is
     // whether a content manifest must resolve the id for it to keep its meaning
     // under another mod set.
     //   * `state_id`, `province_id`  — states and provinces are defined by map and
@@ -235,7 +234,7 @@ pub fn schema() -> Schema {
     //     quantity from `fold_divisions` (`world_fold.rs::fold_divisions`, also stringified)
     //     and is `ContentId`; d63's `tag_db_id` key is `ContentId` too. Classifying
     //     it `Unsigned` here would split one concept across sibling domains and
-    //     hide these fields from §5's manifest-assignment retrofit sweep.
+    //     hide these fields from the manifest-assignment retrofit sweep.
     // No field is `Monotone` (nothing counts), `Enum` (no bounded code),
     // `Boolean`, or `Continuous` (no measured quantity, hence no quantization).
     let states = Collection {
@@ -373,7 +372,7 @@ pub fn key_from_province_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// its stored Record. `row` is the raw 16-byte row slice (the caller has already
 /// consumed the payload header via [`split_payload`]); d22 has exactly one state
 /// row form, so length selects nothing and a wrong length is rejected.
-/// `frame_tick` is §6's derived-field input (stored = v + c * (frame_tick >> u));
+/// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
 /// d22 declares no derived field, so it is taken and ignored — every domain's
 /// mapper has the same shape.
 ///
@@ -383,7 +382,7 @@ pub fn record_from_state_row(
     row: &[u8],
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
-    // d22 has no derived field; §6's transform input is unused. Named rather than
+    // d22 has no derived field; derived-field contract's transform input is unused. Named rather than
     // `_frame_tick` because the signature is the cross-domain contract.
     let _ = frame_tick;
     check_row_len(row, STATE_ROW_LEN, "state")?;
@@ -446,7 +445,7 @@ pub fn record_from_province_row(
 }
 
 /// A clear gate means the value was read and it is zero — no country, or no state
-/// — not that it could not be captured. §3 calls that **null**. See the module
+/// — not that it could not be captured. record-state contract calls that **null**. See the module
 /// docs for the collector evidence.
 fn gated_id(present: bool, value: u32) -> Value {
     if present {
@@ -677,7 +676,7 @@ mod tests {
         assert_eq!(
             keys[0].kind,
             Kind::ContentId,
-            "a state is defined by map/history content (§5)"
+            "a state is defined by map/history content (content-identity contract)"
         );
         assert!(keys[0].kind.legal_as_key());
         assert_eq!(s.fields.len(), 3, "1 key + owner + controller");
@@ -703,7 +702,7 @@ mod tests {
         // keys on every row. Unknown would claim the value was not captured — but
         // an unreadable read fails the whole hour with
         // COMPACT_STATUS_SOURCE_UNAVAILABLE (`attach_log.rs:58564`) and never
-        // reaches a row. What is left is §3's null: the value was read and it is
+        // reaches a row. What is left is record-state contract's null: the value was read and it is
         // zero, meaning no country / no state.
         for c in [states(), provinces()] {
             assert_eq!(
@@ -751,7 +750,7 @@ mod tests {
 
     #[test]
     fn no_field_is_derived() {
-        // §6 derived fields are clock-linear integers; ownership and control move
+        // derived-field contract derived fields are clock-linear integers; ownership and control move
         // on player and AI action, so `frame_tick` never enters a value.
         for c in [states(), provinces()] {
             assert!(c.fields.iter().all(|f| f.derived.is_none()));
@@ -881,7 +880,7 @@ mod tests {
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // A set gate with a zero word: the fold stores `json!("0")` rather than
         // Null (`world_fold.rs::fold_map_control` tests the flag, never the value),
-        // so this mapper keeps the zero. §3 keeps zero out of the three empty
+        // so this mapper keeps the zero. record-state contract keeps zero out of the three empty
         // states. The collector's writer cannot produce this row — its flag is a
         // pure non-zero test (`attach_log.rs:71702`) — which is the open question
         // recorded in the deliverable, not a licence to diverge from the fold.
