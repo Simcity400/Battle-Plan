@@ -35,6 +35,13 @@ dq-v3-prototype = []
 # format change buys is measured on the encoder that ships rather than on a
 # model of it. Measurement only: no production path enables it.
 ll-revive-pricing = []
+# Lane MY copy-on-write census. Counts, during a real delta walk, how many
+# container element handles `apply_patch` actually copies because an earlier
+# hour still reaches the node -- the cost Codex's round-6 finding 6 warned
+# about, measured on a recording instead of on a synthetic array. Measurement
+# only: with the feature off every call compiles away and the hot path is
+# untouched, and no production path enables it.
+my-cow-census = []
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }

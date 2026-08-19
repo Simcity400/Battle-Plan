@@ -3986,6 +3986,80 @@ fn diff_value(
 /// world or writing the rule twice and hoping the copies agree. The encoder
 /// drives this over the previous hour it is about to discard, so both sides run
 /// this code and no second implementation exists to drift.
+/// Lane MY: how many element handles does a REAL delta walk actually copy?
+///
+/// Codex's round-6 finding 6 said `Arc<Vec<_>>` gives O(sum of the fan-out of
+/// the copied containers), and a synthetic array priced one handle at 12-16 ns.
+/// What that does not say is how many handles a real hour copies -- the answer
+/// depends on which containers a recording's deltas land in, and no synthetic
+/// array can stand in for that. This counts them where it happens.
+///
+/// A copy happens exactly when a patch arm is about to mutate a container that
+/// something else still reaches, which is `Arc::strong_count > 1` at the moment
+/// `Arc::make_mut` is called. That is the whole census: the count of such
+/// events and the number of handles they moved.
+///
+/// With the feature off, `note_copy` and `take` compile to nothing and the
+/// patch arms are byte for byte what they were.
+pub(crate) mod cow_census {
+    #[cfg(feature = "my-cow-census")]
+    use std::cell::Cell;
+
+    #[cfg(feature = "my-cow-census")]
+    thread_local! {
+        static ARRAY_COPIES: Cell<u64> = const { Cell::new(0) };
+        static ARRAY_SLOTS: Cell<u64> = const { Cell::new(0) };
+        static OBJECT_COPIES: Cell<u64> = const { Cell::new(0) };
+        static OBJECT_SLOTS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// One ARRAY was copied, moving `slots` element slots. Counted apart from
+    /// objects because the two slots are not the same thing and must not be
+    /// priced as if they were: an array slot is one `CanonValue`, while an
+    /// object slot is a `CanonValue` AND an owned member-name `String` whose
+    /// buffer is copied with it (Codex round-10, finding 2). Only the array
+    /// count is what chunked array storage would remove.
+    #[cfg(feature = "my-cow-census")]
+    #[inline]
+    pub(crate) fn note_array_copy(slots: usize) {
+        ARRAY_COPIES.with(|count| count.set(count.get().saturating_add(1)));
+        ARRAY_SLOTS.with(|count| count.set(count.get().saturating_add(slots as u64)));
+    }
+
+    /// One OBJECT was copied, moving `slots` member slots.
+    #[cfg(feature = "my-cow-census")]
+    #[inline]
+    pub(crate) fn note_object_copy(slots: usize) {
+        OBJECT_COPIES.with(|count| count.set(count.get().saturating_add(1)));
+        OBJECT_SLOTS.with(|count| count.set(count.get().saturating_add(slots as u64)));
+    }
+
+    /// Take and clear this thread's census:
+    /// (arrays copied, array slots, objects copied, object slots).
+    ///
+    /// `allow(dead_code)`: the only caller is the `#[ignore]`d measurement, so
+    /// a build without `cfg(test)` legitimately never reaches this.
+    #[cfg(feature = "my-cow-census")]
+    #[allow(dead_code)]
+    pub(crate) fn take() -> (u64, u64, u64, u64) {
+        (
+            ARRAY_COPIES.with(|count| count.replace(0)),
+            ARRAY_SLOTS.with(|count| count.replace(0)),
+            OBJECT_COPIES.with(|count| count.replace(0)),
+            OBJECT_SLOTS.with(|count| count.replace(0)),
+        )
+    }
+
+    /// With the feature off nothing is counted, so the census is all zeroes.
+    /// `allow(dead_code)`: the only caller is the `#[ignore]`d measurement, so
+    /// in a build without `cfg(test)` this is legitimately unreachable.
+    #[cfg(not(feature = "my-cow-census"))]
+    #[allow(dead_code)]
+    pub(crate) fn take() -> (u64, u64, u64, u64) {
+        (0, 0, 0, 0)
+    }
+}
+
 fn apply_patch(
     target: &mut CanonValue,
     patch: &Patch,
@@ -4163,6 +4237,10 @@ fn apply_patch(
             // handles when an earlier hour does still reach it. The copy is
             // shallow: each member's own subtree is another `Arc`, so it moves
             // by refcount and the two hours go on sharing everything below.
+            #[cfg(feature = "my-cow-census")]
+            if Arc::strong_count(members) > 1 {
+                cow_census::note_object_copy(members.len());
+            }
             let members = Arc::make_mut(members);
             // Removals first, then changes, both by merge walk over the
             // strictly increasing member list — the result stays sorted, so a
@@ -4255,6 +4333,10 @@ fn apply_patch(
             // Taken through `Arc::make_mut` for the reason the object arm
             // gives: in place while this array is uniquely held, one shallow
             // level of element handles when an earlier hour still reaches it.
+            #[cfg(feature = "my-cow-census")]
+            if Arc::strong_count(array) > 1 {
+                cow_census::note_array_copy(array.len());
+            }
             let old = std::mem::take(Arc::make_mut(array));
             // THE MEMORIES MOVE WITH THEIR ROWS. An element shadow is keyed by
             // INDEX, and this is the one patch that changes what index a row
@@ -4361,6 +4443,10 @@ fn apply_patch(
             // Same rule as the two arms above. A fixed-length array patch
             // rewrites only the slots it names, so once this node is unshared
             // every untouched row keeps the `Arc` it already had.
+            #[cfg(feature = "my-cow-census")]
+            if Arc::strong_count(array) > 1 {
+                cow_census::note_array_copy(array.len());
+            }
             let array = Arc::make_mut(array);
             let mut previous = None;
             for (slot, change) in changes {
@@ -10182,4 +10268,376 @@ mod tests {
             );
         }
     }
+
+    /// LANE MY, BATCH B GATE: what does the shallow copy of a WIDE shared
+    /// container actually cost?
+    ///
+    /// `Arc<Vec<_>>` gives O(sum of fan-out of the copied containers), NOT
+    /// O(changed leaves) — Codex's round-6 finding 6. Changing one row of a
+    /// 10,000-row array that an earlier hour still holds first copies 10,000
+    /// element handles. Every element is itself a shared node, so the copy is
+    /// one level deep and each handle is a pointer or a small inline scalar —
+    /// but "one level deep" over ten thousand rows is still ten thousand
+    /// moves, and the incremental projection is about to be built on top of
+    /// this. If the number is material the arrays need chunked storage BEFORE
+    /// anything is built on them, which is why this runs first.
+    ///
+    /// It is a measurement, not a budget: `#[ignore]`d, asserts nothing about
+    /// time, prints JSON. The comparison is the point — the SAME patch applied
+    /// to a uniquely-held tree (in place, no copy) and to a tree an earlier
+    /// hour still holds (one shallow copy of the row handles). Their
+    /// difference IS the fan-out cost, with the patch decode, the shadow
+    /// bookkeeping and the row's own object patch common to both and therefore
+    /// cancelled out.
+    #[test]
+    #[ignore = "measurement: prints the fan-out cost of a shared wide array"]
+    fn price_the_fan_out_of_a_shared_wide_array() {
+        fn row(seed: usize) -> CanonValue {
+            // Eight members, strictly increasing decoded names, the shape a
+            // division-ish row has: a few numbers and a couple of strings.
+            CanonValue::object(vec![
+                ("a".to_string(), CanonValue::Number(format!("{seed}"))),
+                ("b".to_string(), CanonValue::Number(format!("{}", seed * 3))),
+                ("c".to_string(), CanonValue::String(format!("tag{seed}"))),
+                ("d".to_string(), CanonValue::Number("1.5".to_string())),
+                ("e".to_string(), CanonValue::Bool(seed % 2 == 0)),
+                ("f".to_string(), CanonValue::Null),
+                ("g".to_string(), CanonValue::Number(format!("{}", seed + 7))),
+                ("h".to_string(), CanonValue::String("x".to_string())),
+            ])
+        }
+        fn world(rows: usize, changed_row_seed: usize) -> CanonValue {
+            let mut items: Vec<CanonValue> = (0..rows).map(row).collect();
+            if let Some(first) = items.first_mut() {
+                *first = row(changed_row_seed);
+            }
+            CanonValue::object(vec![("rows".to_string(), CanonValue::array(items))])
+        }
+
+        println!("{{\"measurement\":\"fan_out_of_a_shared_wide_array\"}}");
+        for rows in [100usize, 1_000, 10_000, 100_000] {
+            // Two worlds one row apart, and the encoder's own spelling of that
+            // one-row change in both directions so a uniquely-held tree can be
+            // patched over and over without ever being rebuilt.
+            let a = world(rows, 0);
+            let b = world(rows, 999_999);
+            let forward = diff_value(&a, &b, None, 0).expect("forward patch");
+            let backward = diff_value(&b, &a, None, 0).expect("backward patch");
+
+            let iterations = if rows >= 100_000 { 200 } else { 2_000 };
+
+            // UNIQUE: refcount 1 throughout, so every `Arc::make_mut` writes in
+            // place and nothing is copied.
+            let mut unique = world(rows, 0);
+            let started = std::time::Instant::now();
+            for index in 0..iterations {
+                let patch = if index % 2 == 0 { &forward } else { &backward };
+                apply_patch(
+                    &mut unique,
+                    patch,
+                    &mut Shadow::default(),
+                    &mut ShadowBudget::default(),
+                    0,
+                )
+                .expect("the patch applies to a uniquely held tree");
+            }
+            let unique_us =
+                started.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+            std::hint::black_box(&unique);
+
+            // SHARED: an earlier hour is still holding the tree, which is the
+            // ordinary case the whole design exists for — the viewer draws
+            // hour h while hour h+1 is built. Each iteration starts from a
+            // clone, so the row array is reached by two owners and the write
+            // has to copy it once.
+            let retained = world(rows, 0);
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                let mut running = retained.clone();
+                apply_patch(
+                    &mut running,
+                    &forward,
+                    &mut Shadow::default(),
+                    &mut ShadowBudget::default(),
+                    0,
+                )
+                .expect("the patch applies to a shared tree");
+                std::hint::black_box(&running);
+            }
+            let shared_us =
+                started.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+            std::hint::black_box(&retained);
+
+            println!(
+                "{{\"rows\":{rows},\"unique_us\":{unique_us:.3},\"shared_us\":{shared_us:.3},\
+                 \"fan_out_us\":{:.3},\"ns_per_row\":{:.2}}}",
+                shared_us - unique_us,
+                (shared_us - unique_us) * 1e3 / rows as f64,
+            );
+        }
+    }
+
+
+    /// LANE MY: is the delta walk O(record), or O(the containers the record
+    /// lands in)?
+    ///
+    /// The orchestrator's question after batch A: the walk costs 55-74 ms per
+    /// record on t53, and a forward step cannot beat that. What in it is not
+    /// proportional to the record?
+    ///
+    /// `Patch::Object` is the suspect. It rebuilds the WHOLE member vector of
+    /// every object it patches — `std::mem::take`, a merge walk over every
+    /// member into `kept`, then a second walk into `out` — so changing one
+    /// member of an object costs two allocations and N moves, where N is the
+    /// object's width and not the number of changed members. A world keyed by
+    /// id has very wide objects: on t53 `provinces` carries about 13,000
+    /// members and `countries` 443, and an hour that touches one province pays
+    /// for all 13,000.
+    ///
+    /// This isolates that cost from everything else: a uniquely-held tree, so
+    /// no sharing fan-out is involved, one member changed, object width swept.
+    /// A walk that is O(record) prints a flat number; one that is O(width)
+    /// prints a line through the origin.
+    ///
+    /// Measurement, not a budget: `#[ignore]`d, asserts no time.
+    #[test]
+    #[ignore = "measurement: prints the delta walk's cost against object width"]
+    fn price_the_delta_walk_against_object_width() {
+        fn wide_object(members: usize, changed_seed: usize) -> CanonValue {
+            // Names are strictly increasing decoded, and fixed width so the
+            // ordering is the numeric one.
+            let mut out: Vec<(String, CanonValue)> = (0..members)
+                .map(|index| {
+                    (
+                        format!("m{index:07}"),
+                        CanonValue::Number(format!("{index}")),
+                    )
+                })
+                .collect();
+            if let Some(first) = out.first_mut() {
+                first.1 = CanonValue::Number(format!("{changed_seed}"));
+            }
+            CanonValue::object(vec![("keyed".to_string(), CanonValue::object(out))])
+        }
+
+        println!("{{\"measurement\":\"delta_walk_against_object_width\"}}");
+        for members in [100usize, 1_000, 13_000, 100_000] {
+            let a = wide_object(members, 0);
+            let b = wide_object(members, 999_999);
+            let forward = diff_value(&a, &b, None, 0).expect("forward patch");
+            let backward = diff_value(&b, &a, None, 0).expect("backward patch");
+            let iterations = if members >= 100_000 { 200 } else { 2_000 };
+
+            let mut unique = wide_object(members, 0);
+            let started = std::time::Instant::now();
+            for index in 0..iterations {
+                let patch = if index % 2 == 0 { &forward } else { &backward };
+                apply_patch(
+                    &mut unique,
+                    patch,
+                    &mut Shadow::default(),
+                    &mut ShadowBudget::default(),
+                    0,
+                )
+                .expect("the patch applies");
+            }
+            let per_us = started.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+            std::hint::black_box(&unique);
+            println!(
+                "{{\"members\":{members},\"one_member_changed_us\":{per_us:.3},\
+                 \"ns_per_member\":{:.2}}}",
+                per_us * 1e3 / members as f64
+            );
+        }
+    }
+
+
+    /// LANE MY: WHERE the delta walk's 55-74 ms per record actually goes, on a
+    /// real recording.
+    ///
+    /// Batch A's split left one number unexplained: the walk. The two width
+    /// measurements above show it is not the container rebuilds — changing one
+    /// member of a 13,000-member object costs 159 microseconds, and the shared
+    /// fan-out of a 10,000-row array 124, so all of t53's wide containers
+    /// together are well under a millisecond. This times the three phases the
+    /// walk is actually made of, per record, on the fixture:
+    ///
+    ///   fetch+authenticate  the record read plus, on a file-backed cache, the
+    ///                       SHA-256 over its bytes;
+    ///   decode              `decode_patch_record` — the patch structure;
+    ///   apply               `apply_patch` — the tree mutation.
+    ///
+    /// Whichever dominates is where a forward step's floor lives, and it is the
+    /// only remaining thing between smooth scrubbing and the frame budget once
+    /// the projection is gone.
+    ///
+    /// Needs `MY_FIXTURE` pointing at a directory holding `hour_index.h4ix` and
+    /// `checkpoints.h4cp`; `#[ignore]`d, asserts no budget.
+    #[test]
+    #[ignore = "measurement: needs MY_FIXTURE pointing at a real index/cache pair"]
+    fn price_the_delta_walk_phases() {
+        // REFUSED, not skipped. An early `return` here would end the test
+        // without running a line of it, and libtest reports that as a PASS —
+        // `no_silent_skip` caught exactly that in the first cut of this test.
+        // The measurement is `#[ignore]`d, so the only way to reach this is to
+        // ask for it by name, and asking for it without saying which recording
+        // is a mistake worth hearing about.
+        let dir = std::env::var("MY_FIXTURE")
+            .expect("MY_FIXTURE names a directory holding hour_index.h4ix and checkpoints.h4cp");
+        let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
+        let index = crate::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
+        let source_len = index.source_len();
+        let source_sha = index.source_sha256().to_string();
+        let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp")).expect("open cache");
+        let cache = CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
+            .expect("admit cache");
+
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index()).collect();
+        let samples: usize = std::env::var("MY_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10);
+        // Refused, not clamped: a zero sample count, or a fixture with fewer
+        // hours than the window asks for, cannot produce the measurement that
+        // was requested, and indexing a window that does not exist would panic
+        // somewhere far less legible than here.
+        assert!(samples > 0, "MY_SAMPLES must be at least 1");
+        assert!(
+            hours.len() > samples,
+            "the fixture has {} hour(s); MY_SAMPLES={samples} needs more than that",
+            hours.len()
+        );
+        let start = hours.len() - samples - 1;
+
+        let mut fetch_ms: Vec<f64> = Vec::new();
+        let mut decode_ms: Vec<f64> = Vec::new();
+        let mut apply_ms: Vec<f64> = Vec::new();
+        let mut whole_ms: Vec<f64> = Vec::new();
+        let mut record_bytes: Vec<u64> = Vec::new();
+        let mut array_copies: Vec<u64> = Vec::new();
+        let mut array_slots: Vec<u64> = Vec::new();
+        let mut object_copies: Vec<u64> = Vec::new();
+        let mut object_slots: Vec<u64> = Vec::new();
+        // Whether the previous hour stays reachable, which is what decides
+        // whether a patch arm copies anything at all. Retaining it reproduces
+        // the shipped viewer's situation -- it draws hour h while h+1 is being
+        // built -- and without it every `Arc` is uniquely held and the census
+        // is trivially zero, which would be a measurement of the harness
+        // rather than of the recording.
+        let retain_previous = std::env::var("MY_RETAIN_PREVIOUS")
+            .map(|value| value != "0")
+            .unwrap_or(true);
+        let mut retained: Option<CanonValue> = None;
+
+        // Walk the window once, carrying the running value the way the cursor
+        // does, and time each record's three phases separately.
+        cache.cache.with_records(|records| {
+            let checkpoint_position = index.hours[start].checkpoint_position as usize;
+            let checkpoint = &index.hours[checkpoint_position];
+            let (_, _, payload) =
+                cache_record_authenticated(records, checkpoint).expect("checkpoint record");
+            let mut value = decode_value_exact(payload.as_ref()).expect("decode checkpoint");
+            drop(payload);
+            let mut shadow = Shadow::default();
+            let mut budget = ShadowBudget::default();
+            let mut names = NameDictionary::default();
+            for entry in &index.hours[checkpoint_position + 1..hours.len()] {
+                let position = entry.hour_index;
+                let timed = position >= hours[start + 1];
+                if retain_previous {
+                    // The hour a consumer is still holding while the next one
+                    // is built. Cloning it is one refcount bump.
+                    retained = Some(value.clone());
+                }
+                let _ = cow_census::take();
+
+                // WHOLE-RECORD, around everything, including the drops of the
+                // payload and of the decoded patch that the three phase timers
+                // below deliberately exclude and which therefore have to be
+                // caught somewhere (Codex round-9 finding 3). The phases are
+                // marginal costs and their medians do not add up to this; this
+                // is what moving one hour forward actually costs.
+                let record_started = std::time::Instant::now();
+
+                let started = std::time::Instant::now();
+                let (_, _, payload) =
+                    cache_record_authenticated(records, entry).expect("delta record");
+                let fetched = started.elapsed().as_secs_f64() * 1e3;
+
+                let started = std::time::Instant::now();
+                let patch = decode_patch_record(payload.as_ref(), &mut names).expect("decode patch");
+                let decoded = started.elapsed().as_secs_f64() * 1e3;
+                let bytes = payload.as_ref().len() as u64;
+                drop(payload);
+
+                let started = std::time::Instant::now();
+                apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0).expect("apply patch");
+                let applied = started.elapsed().as_secs_f64() * 1e3;
+
+                drop(patch);
+                // Released INSIDE the timer: dropping the hour a consumer was
+                // holding is part of moving forward, and leaving it outside
+                // would attribute its cost to nobody (Codex round-10,
+                // finding 3).
+                drop(retained.take());
+                let whole = record_started.elapsed().as_secs_f64() * 1e3;
+                let (arrays, array_slot_count, objects, object_slot_count) = cow_census::take();
+
+                if timed {
+                    fetch_ms.push(fetched);
+                    decode_ms.push(decoded);
+                    apply_ms.push(applied);
+                    whole_ms.push(whole);
+                    record_bytes.push(bytes);
+                    array_copies.push(arrays);
+                    array_slots.push(array_slot_count);
+                    object_copies.push(objects);
+                    object_slots.push(object_slot_count);
+                }
+            }
+            std::hint::black_box(&value);
+        });
+
+        let report = |label: &str, mut samples: Vec<f64>| {
+            samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+            let p50 = samples[samples.len() / 2];
+            let sum: f64 = samples.iter().sum();
+            println!(
+                "{{\"phase\":\"{label}\",\"n\":{},\"p50_ms\":{p50:.3},\"mean_ms\":{:.3}}}",
+                samples.len(),
+                sum / samples.len() as f64
+            );
+        };
+        println!(
+            "{{\"measurement\":\"delta_walk_phases\",\"artifact\":\"{}\"}}",
+            dir.replace(std::path::MAIN_SEPARATOR, "/")
+        );
+        report("fetch_and_authenticate", fetch_ms);
+        report("decode_patch_record", decode_ms);
+        report("apply_patch", apply_ms);
+        // The three above are MARGINAL and their medians do not sum to this
+        // one, which is the whole cost of moving one hour forward.
+        report("whole_record", whole_ms);
+        let mean = |values: &[u64]| values.iter().sum::<u64>() as f64 / values.len().max(1) as f64;
+        // ARRAY and OBJECT slots are reported apart and never added together:
+        // an array slot is one `CanonValue`, an object slot is a `CanonValue`
+        // plus an owned member-name `String`. Only the array figure is what
+        // chunked array storage would remove. NO per-slot price is applied
+        // here -- the cost of the copying is measured directly, by running
+        // this same harness with MY_RETAIN_PREVIOUS=0 and comparing
+        // whole_record.
+        println!(
+            "{{\"retained_previous_hour\":{retain_previous},\"mean_arrays_copied\":{:.1},\"mean_array_slots_copied\":{:.0},\"worst_array_slots_copied\":{},\"mean_objects_copied\":{:.1},\"mean_object_slots_copied\":{:.0},\"worst_object_slots_copied\":{}}}",
+            mean(&array_copies),
+            mean(&array_slots),
+            array_slots.iter().copied().max().unwrap_or(0),
+            mean(&object_copies),
+            mean(&object_slots),
+            object_slots.iter().copied().max().unwrap_or(0),
+        );
+        let mean_bytes =
+            record_bytes.iter().sum::<u64>() as f64 / record_bytes.len().max(1) as f64;
+        println!("{{\"mean_delta_record_payload_bytes\":{mean_bytes:.0}}}");
+    }
+
 }
